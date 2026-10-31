@@ -16,7 +16,7 @@
 #
 # Config: db-health-daily.conf next to the script or ~/.db-health-daily.conf (and the shared
 # oracle.conf / ~/.oracle.conf). Keys: HEALTH_OUT, SQL_CONNECT, PDB, ORDS_URL, ADMIN_URL,
-# FS_WARN=85 FS_CRIT=95 TS_WARN=85 TS_CRIT=95 FRA_WARN=85 FRA_CRIT=95 BACKUP_WARN_DAYS=2
+# FS_WARN=85 FS_CRIT=95 TS_WARN=85 TS_CRIT=95 FRA_WARN=85 FRA_CRIT=95 BACKUP_WARN_DAYS=2 (Exascale vaults use FS_*; ESCLI, EXA_WALLET, EXA_POOL_FREE_PCT=12)
 # BACKUP_CRIT_DAYS=7 DG_LAG_WARN_MIN=30 PROC_WARN=80 MAIL_TO.
 # Feed DELTA.md (or SUMMARY.md) to Claude: "here is today's db-health-daily delta, what needs doing?"
 
@@ -74,6 +74,34 @@ check_host() {
   if [ -n "$PREV" ] && [ -f "$PREV/processes.txt" ]; then
     comm -23 "$PREV/processes.txt" "$OUT/processes.txt" | while read -r p; do finding CRIT host "process present last run, gone now: $p"; done
   fi
+}
+
+# Exascale: vault used vs provisioned and pool free space, through escli with the oracle wallet (full picture: operations/exascale-space)
+check_exascale() {
+  local esc="${ESCLI:-}"; [ -n "$esc" ] || for c in escli /opt/oracle/dbserver/dbms/bin/escli /opt/oracle/cell/cellsrv/bin/escli /usr/sbin/escli; do command -v "$c" >/dev/null 2>&1 && { esc="$c"; break; }; done
+  [ -n "$esc" ] || return 0
+  local w=(); [ -n "${EXA_WALLET:-}" ] && w=(--wallet "$EXA_WALLET")
+  h2 "Exascale"
+  to 60 "$esc" "${w[@]}" lsvault --detail </dev/null >"$RAW/exa_vaults.txt" 2>&1 || { kv "escli" "lsvault failed: $(head -1 "$RAW/exa_vaults.txt" | cut -c1-120)"; kv_end; return 0; }
+  to 60 "$esc" "${w[@]}" lsstoragepool --detail </dev/null >"$RAW/exa_pools.txt" 2>&1
+  # attr value lines -> "vault|media|used|prov|pct"
+  awk 'function b(v,  u,n,m){ if (v=="unlimited") return "unlimited"; n=v; u=""; if (v ~ /[A-Za-z]+$/) { match(v,/[A-Za-z]+$/); u=toupper(substr(v,RSTART)); n=substr(v,1,RSTART-1) } m=1; if (u ~ /^K/) m=1024; else if (u ~ /^M/) m=1048576; else if (u ~ /^G/) m=1073741824; else if (u ~ /^T/) m=1099511627776; else if (u ~ /^P/) m=1125899906842624; return n*m }
+    function out(  i){ if (name=="") return; split("HC EF XT",t," "); for (i in t) { u=b(used[t[i]]); p=b(prov[t[i]]); if (u==0 && (p==0 || p=="unlimited")) continue; printf "%s|%s|%.0f|%s|%s\n", name, t[i], u, p, (p=="unlimited"||p==0)?"-":int(u*100/p) } name=""; delete used; delete prov }
+    /^[[:space:]]*$/ { out(); next } $1=="name" { out(); name=$2 } $1 ~ /^spaceUsed(HC|EF|XT)$/ { used[substr($1,10)]=$2 } $1 ~ /^spaceProv(HC|EF|XT)$/ { prov[substr($1,10)]=$2 } END { out() }' "$RAW/exa_vaults.txt" >"$RAW/exa_vaults.csv"
+  awk 'function b(v,  u,n,m){ n=v; u=""; if (v ~ /[A-Za-z]+$/) { match(v,/[A-Za-z]+$/); u=toupper(substr(v,RSTART)); n=substr(v,1,RSTART-1) } m=1; if (u ~ /^K/) m=1024; else if (u ~ /^M/) m=1048576; else if (u ~ /^G/) m=1073741824; else if (u ~ /^T/) m=1099511627776; else if (u ~ /^P/) m=1125899906842624; return n*m }
+    function out(){ if (name=="" || raw==0) return; printf "%s|%s|%d\n", name, media, (raw-used)*100/raw; name="" }
+    /^[[:space:]]*$/ { out(); next } $1=="name" { out(); name=$2; raw=0; used=0 } $1=="mediaType" { media=$2 } $1=="spaceRaw" { raw=b($2) } $1=="spaceUsed" { used=b($2) } END { out() }' "$RAW/exa_pools.txt" >"$RAW/exa_pools.csv"
+  local v m u p pct; while IFS='|' read -r v m u p pct; do
+    [ -n "$v" ] || continue; kv "vault @$v $m" "$(awk -v u="$u" -v p="$p" 'BEGIN{printf "%.1f TB used of %s", u/1099511627776, (p=="unlimited"?p:sprintf("%.1f TB", p/1099511627776))}') (${pct}%)"
+    [ "$pct" = "-" ] && continue
+    if [ "$pct" -ge "$FS_CRIT" ]; then finding CRIT exascale "vault @$v $m ${pct}% of provisioned space used - operations/exascale-space/exascale-space.sh plan"
+    elif [ "$pct" -ge "$FS_WARN" ]; then finding WARN exascale "vault @$v $m ${pct}% of provisioned space used"; fi
+  done <"$RAW/exa_vaults.csv"
+  local n f; while IFS='|' read -r n m f; do
+    [ -n "$n" ] || continue; kv "pool $n $m" "${f}% free"
+    if [ "$f" -lt 5 ]; then finding CRIT exascale "storage pool $n ($m) only ${f}% free"; elif [ "$f" -lt "${EXA_POOL_FREE_PCT:-12}" ]; then finding WARN exascale "storage pool $n ($m) ${f}% free, below the ${EXA_POOL_FREE_PCT:-12}% rebalance reserve"; fi
+  done <"$RAW/exa_pools.csv"
+  kv_end
 }
 
 check_listener() {
@@ -147,6 +175,7 @@ select name, state, round((total_mb-free_mb)*100/total_mb) pct_used, offline_dis
 select 'CHECK|'||case when p>=$FRA_CRIT then 'CRIT' else 'WARN' end||'|FRA '||p||'% full' from (select round((space_used-space_reclaimable)*100/space_limit) p from v\$recovery_file_dest where space_limit>0) where p>=$FRA_WARN;
 select 'CHECK|WARN|ASM '||name||' '||round((total_mb-free_mb)*100/total_mb)||'% used' from v\$asm_diskgroup where total_mb>0 and (total_mb-free_mb)*100/total_mb>=$FS_WARN;
 select 'CHECK|CRIT|ASM '||name||' has '||offline_disks||' offline disk(s)' from v\$asm_diskgroup where offline_disks>0;
+select 'CHECK|'||case when p>=$FS_CRIT then 'CRIT' else 'WARN' end||'|Exascale vault '||vault_name||' HC '||p||'% of provisioned (V\$EXA_VAULT)' from (select vault_name, round(hc_space_used*100/hc_space_prov) p from v\$exa_vault where hc_space_prov>0) where p>=$FS_WARN;
 select 'CHECK|'||case when current_utilization*100/to_number(limit_value)>=95 then 'CRIT' else 'WARN' end||'|'||resource_name||' '||current_utilization||' of '||limit_value from v\$resource_limit where resource_name in ('processes','sessions') and limit_value not like '%UNLIMITED%' and current_utilization*100/to_number(limit_value)>=$PROC_WARN;
 select 'CHECK|CRIT|'||count(*)||' session(s) blocked >60s by sid '||blocking_session from v\$session where blocking_session is not null and seconds_in_wait>60 group by blocking_session;
 select 'CHECK|'||case when nvl(max(start_time),sysdate-99)<sysdate-$BACKUP_CRIT_DAYS then 'CRIT' else 'WARN' end||'|last DB backup '||nvl(to_char(max(start_time),'YYYY-MM-DD'),'never') from v\$rman_backup_job_details where status like 'COMPLETED%' and input_type like 'DB%' having nvl(max(start_time),sysdate-99)<sysdate-$BACKUP_WARN_DAYS;
@@ -241,7 +270,7 @@ main() {
   PREV=""; local d; for d in "$HEALTH_OUT"/20*/; do d="${d%/}"; [ -d "$d" ] && [ "$d" != "$OUTDIR" ] && [ -f "$d/findings.txt" ] && PREV="$d"; done
   report_init "$OUTDIR"
   say "db-health-daily $VERSION -> $OUTDIR (previous: ${PREV:-none})"
-  check_host; check_listener
+  check_host; check_exascale; check_listener
   h1 "Databases"
   local sids; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
   for s in $(oratab_sids); do printf '%s\n' "$sids" | grep -qx "$s" || { grep -qE "^$s:.*:Y" /etc/oratab 2>/dev/null && finding CRIT db "$s is :Y in oratab but not running"; }; done

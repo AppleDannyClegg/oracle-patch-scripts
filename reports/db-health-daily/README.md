@@ -52,6 +52,7 @@ DG_LAG_WARN_MIN=30 PROC_WARN=80 MAIL_TO=...`.
   kills / I/O errors in the last day (needs `sudo -n journalctl`), and a **process inventory
   delta**: anything that was running last time (pmon, listener, WebLogic servers, ORDS, Node
   Manager, CRS daemons, GoldenGate manager, EM agent, TFA) and is gone now is CRIT.
+- **Exascale** (when `escli` is on the host): every vault's used vs provisioned space per media type against `FS_WARN`/`FS_CRIT`, every storage pool's free % against `EXA_POOL_FREE_PCT` (12); plus `V$EXA_VAULT` from inside each database. The full picture and the fixes are in `operations/exascale-space`.
 - **Listener**: responding, services registered.
 - **Each database**: connect as sysdba, instance/open mode/role, sessions and processes vs limits,
   FRA, last DB and archivelog backup, failed RMAN jobs, blocked sessions, invalid objects (and the

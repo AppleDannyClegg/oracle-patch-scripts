@@ -10,7 +10,7 @@ images-vs-database version), ORDS (config with passwords redacted, pools, logs, 
 check), WebLogic (homes, PSU level, domains, servers configured vs running, data sources,
 deployments, certificates, server logs, node manager, admin ready-check) and whatever else it finds:
 Grid Infrastructure / RAC / ASM, Data Guard broker, RMAN and ZDLRA, GoldenGate (classic and
-Microservices), Enterprise Manager agent and OMS, AHF/TFA, Exadata (cellcli/dbmcli), Key Vault
+Microservices), Enterprise Manager agent and OMS, AHF/TFA, Exadata (cellcli/dbmcli), Exascale (escli: pools, vaults, volumes), Key Vault
 client, Audit Vault agent, Connection Manager, OHS, OUD/OID, Forms/Reports, OBIEE/OAS, Tuxedo,
 TimesTen, ODA, Secure Backup, and presence of EBS, PeopleSoft, Siebel, Hyperion, ODI, SOA/OSB,
 OAM/OIM, WebCenter, FLEXCUBE, OBP and OFSAA.
@@ -85,7 +85,7 @@ Config: `oracle-diag.conf` next to the script or `~/.oracle-diag.conf` (see `ora
   running", node eviction messages, ASM rebalance (info).
 - **GoldenGate**: Manager down, ABENDED/STOPPED extracts and replicats, lag ≥15 min.
 - **OEM**: agent not Running and Ready, last upload >1 h, heartbeat not Ok, OMS not Up.
-- **Others**: AHF/TFA daemon down or repository full, Exadata critical alerts / disks not normal, Key
+- **Others**: AHF/TFA daemon down or repository full, Exadata critical alerts / disks not normal, Exascale vault over 85/95 % of its provisioning or a pool under the 12 % rebalance reserve, Key
   Vault servers unreachable on 5696, Audit Vault agent down, mod_wl_ohs cannot reach WebLogic, OHS
   configured but no httpd, >20 day-old frmweb processes, ODA failed jobs, OSB failed jobs.
 

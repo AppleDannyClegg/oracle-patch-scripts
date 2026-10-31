@@ -883,6 +883,36 @@ diag_exadata() {
   [ -x /opt/oracle.SupportTools/exachk ] && para "Run \`/opt/oracle.SupportTools/exachk\` or \`ahfctl\`/\`exachk\` from AHF for the full Exadata best-practice scan; the latest reports (if any) are listed under AHF."
 }
 
+# Exascale (Exadata 24.1+ storage pools and vaults instead of ASM): escli with the oracle user's wallet
+diag_exascale() {
+  local esc="${ESCLI:-}"; [ -n "$esc" ] || for c in escli /opt/oracle/dbserver/dbms/bin/escli /opt/oracle/cell/cellsrv/bin/escli /usr/sbin/escli; do command -v "$c" >/dev/null 2>&1 && { esc="$c"; break; }; done
+  [ -n "$esc" ] || ls /etc/oracle/cell/network-config/eswallet "${ORACLE_BASE:-/nonexistent}/admin/eswallet" >/dev/null 2>&1 || return 0
+  say "exascale"; h1 "Exascale"
+  [ -n "$esc" ] || { para "_an Exascale wallet exists but escli is not on this host (ESCLI= in oracle-diag.conf)_"; return 0; }
+  local w=""; [ -n "${EXA_WALLET:-}" ] && w="--wallet $EXA_WALLET"
+  section_sh exascale_cluster "$esc $w lscluster --detail 2>&1 | head -40; echo; $esc $w lsservice -l 2>&1 | head -40"
+  section_sh exascale_pools "$esc $w lsstoragepool --detail 2>&1; echo; $esc $w lspooldisk -l 2>&1 | head -60"
+  section_sh exascale_vaults "$esc $w lsvault --detail 2>&1; echo; $esc $w lsvolume -l 2>&1 | head -40; echo 'cluster alerts:'; $esc $w lsclusteralert -l 2>&1 | tail -30"
+  grep -qiE '^\$ |error|unable|denied' "$RAW/exascale_cluster.txt" && ! grep -qE '^[[:space:]]*(name|guid|version)[[:space:]]' "$RAW/exascale_cluster.txt" && { finding WARN exascale "escli cannot reach Exascale control services (wallet / --ctrl; see exascale_cluster)"; return 0; }
+  awk 'function b(v,  u,n,m){ if (v=="unlimited") return "unlimited"; n=v; u=""; if (v ~ /[A-Za-z]+$/) { match(v,/[A-Za-z]+$/); u=toupper(substr(v,RSTART)); n=substr(v,1,RSTART-1) } m=1; if (u ~ /^K/) m=1024; else if (u ~ /^M/) m=1048576; else if (u ~ /^G/) m=1073741824; else if (u ~ /^T/) m=1099511627776; else if (u ~ /^P/) m=1125899906842624; return n*m }
+    function out(  i){ if (name=="") return; split("HC EF XT",t," "); for (i in t) { u=b(used[t[i]]); p=b(prov[t[i]]); if (u==0 || p=="unlimited" || p==0) continue; printf "%s|%s|%d\n", name, t[i], u*100/p } name=""; delete used; delete prov }
+    /^[[:space:]]*$/ { out(); next } $1=="name" { out(); name=$2 } $1 ~ /^spaceUsed(HC|EF|XT)$/ { used[substr($1,10)]=$2 } $1 ~ /^spaceProv(HC|EF|XT)$/ { prov[substr($1,10)]=$2 } END { out() }' "$RAW/exascale_vaults.txt" >"$RAW/exascale_vaults.csv"
+  local v m p; while IFS='|' read -r v m p; do
+    [ -n "$v" ] || continue
+    [ "$p" -ge 95 ] && finding CRIT exascale "Vault @$v $m ${p}% of provisioned space used - operations/exascale-space/exascale-space.sh plan"
+    [ "$p" -ge 85 ] && [ "$p" -lt 95 ] && finding WARN exascale "Vault @$v $m ${p}% of provisioned space used"; done <"$RAW/exascale_vaults.csv"
+  awk 'function b(v,  u,n,m){ n=v; u=""; if (v ~ /[A-Za-z]+$/) { match(v,/[A-Za-z]+$/); u=toupper(substr(v,RSTART)); n=substr(v,1,RSTART-1) } m=1; if (u ~ /^K/) m=1024; else if (u ~ /^M/) m=1048576; else if (u ~ /^G/) m=1073741824; else if (u ~ /^T/) m=1099511627776; else if (u ~ /^P/) m=1125899906842624; return n*m }
+    function out(){ if (name=="" || raw==0) return; printf "%s|%s|%d\n", name, media, (raw-used)*100/raw; name="" }
+    /^[[:space:]]*$/ { out(); next } $1=="name" { out(); name=$2; raw=0; used=0 } $1=="mediaType" { media=$2 } $1=="spaceRaw" { raw=b($2) } $1=="spaceUsed" { used=b($2) } END { out() }' "$RAW/exascale_pools.txt" >"$RAW/exascale_pools.csv"
+  local n f; while IFS='|' read -r n m f; do
+    [ -n "$n" ] || continue
+    [ "$f" -lt 5 ] && finding CRIT exascale "Storage pool $n ($m) only ${f}% free"
+    [ "$f" -ge 5 ] && [ "$f" -lt 12 ] && finding WARN exascale "Storage pool $n ($m) ${f}% free, below the 12% a rebalance after a disk loss needs"; done <"$RAW/exascale_pools.csv"
+  grep -qiE 'status[[:space:]]+(offline|failed|predictive|error)' "$RAW/exascale_pools.txt" && finding CRIT exascale "Pool disk(s) not normal (lspooldisk)"
+  grep -qiE 'vault.*(space|full|quota)|space.*vault' "$RAW/exascale_vaults.txt" && finding WARN exascale "Cluster alert mentions vault space (lsclusteralert)"
+  para "Details and the fixes: \`operations/exascale-space/exascale-space.sh inspect | plan | grow | purge-archivelogs\`."
+}
+
 diag_okv() {
   local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora 2>/dev/null | head -5)"
   [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
@@ -1049,7 +1079,7 @@ main() {
   fi
   skipped ords || diag_ords
   skipped wls  || diag_wls
-  diag_grid; diag_goldengate; diag_em; diag_ahf; diag_exadata; diag_okv; diag_misc_products
+  diag_grid; diag_goldengate; diag_em; diag_ahf; diag_exadata; diag_exascale; diag_okv; diag_misc_products
   h1 "Environment of the user that ran this"
   section_sh env_user "env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)' | redact 2>/dev/null || env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)'; echo; cat ~/.bash_profile ~/.profile 2>/dev/null | grep -vE '^\s*#|^\s*$' | grep -iE 'export|ORACLE|JAVA|PATH' | head -30"
   local secs=$(( $(date +%s) - t0 ))
