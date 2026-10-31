@@ -26,6 +26,18 @@ with SYS access; the ORDS script needs Java. Run everything as the Oracle softwa
 Logs: every run writes to `~/<script>/runs/<timestamp>/`, with `runs/latest` pointing at the most
 recent one. The last line of `run` is either `SUCCESS ...` or an error naming the log file.
 
+## Getting the scripts
+
+On your own machine (Mac, Linux or WSL), one line fetches everything into `./oracle-patch-scripts`,
+no git or GitHub account needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
+```
+
+Run the same line again whenever you want the newest version; it keeps your `*.conf` files and
+leaves the old copy as `oracle-patch-scripts.old`.
+
 ## Running each script
 
 Each script lives in its own folder with its `*.conf.example` and guide: copy the folder to the
