@@ -5,3 +5,4 @@ extracted/
 apex-patch.conf
 ords-patch.conf
 *.conf
+tests/out/

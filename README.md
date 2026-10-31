@@ -195,7 +195,16 @@ database back on their own; that needs an explicit `rollback --allow-flashback`.
 
 ## Status
 
-Tested end to end against mocks (fake OPatch, fake My Oracle Support, fake `sqlplus`, fake `ords`,
-fake WebLogic deployer, local copies of the download zips) covering upgrade, failed apply, failed
-verify, rollback, flashback gating, already-current, dry-run and wrong-Java paths. Not yet run
-against real systems. Do `inspect`, `plan` and `preflight` on a test box first.
+The change-making scripts are tested end to end against mocks (fake OPatch, fake My Oracle Support,
+fake `sqlplus`, fake `ords`, fake WebLogic deployer, local copies of the download zips) covering
+upgrade, failed apply, failed verify, rollback, flashback gating, already-current, dry-run and
+wrong-Java paths. Not yet run against real systems. Do `inspect`, `plan` and `preflight` on a test
+box first.
+
+The read-only reports (db-health-daily, perf-snapshot, space-forecast, security-posture,
+patch-status, oracle-diag) have run against a real database: Oracle Database Free in a local
+container. `tests/oracle-free-container.sh` repeats that on any machine with docker (pulls
+`gvenzl/oracle-free:23-slim`, about 700 MB, runs the six scripts inside as `oracle`, copies the
+reports to `tests/out/`). `--trace` records every SQL statement and answer so errors the scripts
+swallow still show up; `--keep` leaves the container running for the next run. No WebLogic, ORDS,
+APEX, Data Guard, RAC or Exadata there, so those code paths are still mock-tested only.
