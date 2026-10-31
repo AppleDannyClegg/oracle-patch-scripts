@@ -2,9 +2,9 @@
 
 Done and committed, one folder each, all using `lib/oracle-lib.sh`:
 wls-patch, apex-patch, ords-patch, oracle-diag (standalone, pre-lib), db-health-daily, perf-snapshot,
-space-forecast, security-posture, patch-status, db-patch.
+space-forecast, security-posture, patch-status, db-patch, dg-switchover.
 
-Remaining, in order: dg-switchover, rman-ops, db-refresh, account-ops, java-patch, cert-renew,
+Remaining, in order: rman-ops, db-refresh, account-ops, java-patch, cert-renew,
 incident-pack, sr-draft, gg-ops, apex-export.
 
 Then: update `get.sh` (fetch + chmod every script folder and `lib/`), rewrite the top-level

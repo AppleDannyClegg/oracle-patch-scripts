@@ -1,0 +1,31 @@
+# dg-switchover.conf - copy next to the script (or ~/.dg-switchover.conf), chmod 600 if it holds a password.
+# All optional; the shared ../oracle.conf is read too. Command-line options win over this file.
+
+# Local instance to talk to (default: the only running instance on this host)
+#ORACLE_SID=PRODA
+
+# The standby to switch or fail over to, by db_unique_name (default: the only physical standby in the configuration)
+#DG_TARGET=PRODB
+
+# How DGMGRL connects for the role change itself (inspect/preflight always use "/" locally).
+#   sys@PRODB   connect to the target standby's TNS alias; the password is prompted once (or DG_PASSWORD below)
+#   /@PRODB     external password store (wallet) for that alias
+#   /           OS authentication - the broker then cannot restart the old primary by itself, you start it by hand
+# Default: "/" when the target is on this host, otherwise sys@<target>.
+#DG_CONNECT=sys@PRODB
+#DG_PASSWORD=
+
+# Client-side checks: the TNS aliases the applications use (both sites listed? which service?), and a real login to
+# try after the switch; it must land on the new primary. user/password@alias - keep this file mode 600.
+#APP_TNS=APP,APP_RO
+#APP_TEST_CONNECT=appcheck/secret@APP
+
+# Services that must be running on the primary after the switch (comma separated; also started if missing)
+#PRIMARY_SERVICES=APP_SVC,REPORTING
+
+# Thresholds and timeouts (seconds)
+#DG_MAX_LAG_SEC=60        # preflight fails when the target's apply lag is above this (transport lag must be 0)
+#DG_VERIFY_WAIT=300       # verify waits this long for status SUCCESS and both lags back to 0
+#DG_SWITCH_TIMEOUT=1800   # dgmgrl switchover/failover/reinstate are killed after this
+
+#RUN_BASE=/u01/backup/dg-switchover/runs
