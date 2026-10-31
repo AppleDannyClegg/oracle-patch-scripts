@@ -18,7 +18,7 @@
 #   --threads          3 thread dumps 10 s apart of every WebLogic/ORDS JVM, plus a class histogram
 #   --heap-dump        jcmd GC.heap_dump of those JVMs (large, pauses the JVM) - needs --yes
 #   --hang             oradebug hanganalyze 3 + systemstate 258 on each instance (minutes on big systems) - needs --yes
-#   --no-diag          do not run ../oracle-diag/oracle-diag.sh first
+#   --no-diag          do not run ../../reports/oracle-diag/oracle-diag.sh first
 #   --no-tfa           do not run tfactl diagcollect even when AHF/TFA is installed
 #   --split            always split the tarball into 1900 MB parts (automatic above 2 GB: MOS upload limit)
 #   --out DIR          where to build (default PACK_OUT or ~/incident-pack)
@@ -103,7 +103,7 @@ window_log() {
 # collectors
 # ---------------------------------------------------------------------------
 collect_diag() {
-  [ "$NO_DIAG" = 1 ] && return 0; local d="$SCRIPT_DIR/../oracle-diag/oracle-diag.sh"; [ -x "$d" ] || { warn "oracle-diag.sh not found next to this script: skipped"; return 0; }
+  [ "$NO_DIAG" = 1 ] && return 0; local d="$SCRIPT_DIR/../../reports/oracle-diag/oracle-diag.sh"; [ -x "$d" ] || { warn "oracle-diag.sh not found next to this script: skipped"; return 0; }
   log "oracle-diag (read-only health report)"; [ "$DRY_RUN" = 1 ] && return 0
   local days=$(( (UNTIL_EP-SINCE_EP)/86400 + 1 ))
   local extra=(); [ -n "$ONLY_SID" ] && extra+=(--sid "$ONLY_SID"); [ "$REDACT" = 0 ] && extra+=(--no-redact)

@@ -9,7 +9,7 @@ Runs as the Oracle software owner; `sr-draft.sh` turns the result into the SR te
 ## Quick start
 
 ```bash
-cd reports/incident-pack
+cd operations/incident-pack
 ./incident-pack.sh 3-12345678901 --hours 6                    # the last 6 hours, everything detected
 ./incident-pack.sh ORA600-kdsgrp1 --since "2026-10-31 02:00" --until "2026-10-31 04:00" --sid PRODDB --awr
 ./incident-pack.sh 3-12345678901 --component wls --threads    # WebLogic only, three thread dumps 10 s apart
@@ -24,7 +24,7 @@ or with `--split`), `.sha256` next to it. `MANIFEST.md` lists the facts and ever
 
 | dir | content |
 |---|---|
-| `00_oracle-diag/` | the read-only health report (`../oracle-diag/oracle-diag.sh`) with its FINDINGS; `--no-diag` skips it |
+| `00_oracle-diag/` | the read-only health report (`../../reports/oracle-diag/oracle-diag.sh`) with its FINDINGS; `--no-diag` skips it |
 | `tfa/` | `tfactl diagcollect -all -from .. -to ..` when AHF/TFA is installed (DB, GI, OS, OSWatcher for the window); then the alert/trace/host windows below are left to it. `--no-tfa` to collect directly instead |
 | `db/<sid>/sql/` | instance, non-default parameters, registry + sqlpatch + invalid objects, sessions/waits/blockers, locks + long ops, scheduler failures in the window, storage/FRA/archive dests/redo, `v$diag_alert_ext` errors in the window, `v$diag_problem`/`v$diag_incident`, Data Guard, RAC |
 | `db/<sid>/alert/` | the alert log lines inside the window (`.window`) and the full alert log (last `--cap-mb`) |
@@ -54,7 +54,7 @@ redacted in copied config files and logs (`--no-redact` keeps them). Hang dumps,
 `--since`, `--until`, `--hours`, `--sid`, `--component db,wls,ords,apex,gg,host,exa`, `--awr`,
 `--threads`, `--heap-dump`, `--hang`, `--no-diag`, `--no-tfa`, `--split`, `--out`, `--cap-mb`,
 `--no-redact`, `--dry-run`, `--yes`, `--verbose`. Config in `incident-pack.conf` (see the example)
-or the shared `oracle.conf`. Needs `lib/oracle-lib.sh` and `oracle-diag/` one folder up.
+or the shared `oracle.conf`. Needs `lib/oracle-lib.sh` and `reports/oracle-diag/` in the same tree.
 
 Tested against a fake Oracle home (sqlplus/adrci/opatch/lsnrctl/jcmd), an alert log with
 `Errors in file` lines, listener and WebLogic logs, an OSWatcher archive and the real

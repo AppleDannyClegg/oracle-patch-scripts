@@ -10,7 +10,7 @@ the likely cause. No network access; what it cannot find becomes a `TODO:`.
 ## Quick start
 
 ```bash
-cd reports/sr-draft
+cd operations/sr-draft
 ../incident-pack/incident-pack.sh 3-12345678901 --hours 6                 # collect first
 ./sr-draft.sh --pack ~/incident-pack/3-12345678901_dbhost01_20261031_021500 --prod \
    --business-impact "Online banking login fails for ~40% of users since 02:10; no workaround" \
