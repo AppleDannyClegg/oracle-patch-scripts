@@ -1,0 +1,53 @@
+# db-refresh.conf - copy next to the script on the TEST host, chmod 600 (it may hold passwords).
+# Command-line options win over this file; the shared ../oracle.conf is read first.
+
+# ---- what to refresh -------------------------------------------------------------------------
+#METHOD=pdb-clone            # pdb-clone (CDB to CDB over a database link) or rman-duplicate (whole database)
+#TEST_SID=TESTCDB            # the TEST instance on this host
+#PROD_PDB=PRODPDB            # pdb-clone: source PDB name on PROD
+#TEST_PDB=TESTPDB            # pdb-clone: the PDB to (re)create here
+#PROD_LINK=PRODLINK          # pdb-clone: database link in TEST's CDB$ROOT to PROD's root, as a common user with
+                             # CREATE PLUGGABLE DATABASE (e.g. C##CLONE). PROD needs ARCHIVELOG + local undo for a hot clone.
+#REFRESHABLE=1               # keep a refreshable golden copy <TEST_PDB>_GOLD and clone TEST from it (fast repeats, double space)
+#CLONE_PARALLEL=4
+#CLONE_OPTIONS=              # extra clauses, e.g. "create_file_dest='+DATA'" or "file_name_convert=('/prod/','/test/')"
+#KEYSTORE_PASSWORD=          # TDE source: TEST keystore password for 'keystore identified by' (prompted if unset)
+#KEEP_OLD=0                  # 1: rename the old TEST PDB to <TEST_PDB>_OLD instead of dropping it (rollback possible)
+
+# rman-duplicate
+#PROD_TNS=PROD               # alias of the production database (active duplicate); SYS password prompted or:
+#PROD_SYS_PASSWORD=
+#TEST_TNS=TESTDB_AUX         # alias PROD can reach while TEST is NOMOUNT (static listener entry); default: local /
+#TEST_PFILE=                 # pfile for the auxiliary (default: generated from TEST's spfile into the run dir)
+#DUPLICATE_OPTIONS="nofilenamecheck"
+#SECTION_SIZE=32G
+#RMAN_CHANNELS=4
+#PROD_DB_NAME=PROD           # --from-backup: db_name of the source and its DBID
+#PROD_DBID=
+#NOARCHIVELOG=no             # yes: switch the duplicated database to NOARCHIVELOG afterwards
+
+# ---- safety ----------------------------------------------------------------------------------
+#PROD_HOST_PATTERN='prod'    # regex: hosts/links matching this are production. The script refuses to run on such a
+                             # host and drops every database link whose host matches (fix-dblinks), verify fails if any remain.
+#REQUIRE_MASK=yes            # run must not finish with an unmasked clone; the PDB is closed again if the mask fails
+#MASK_SCRIPT=/u01/scripts/mask_customers.sql       # run in the new PDB as SYSDBA (whenever sqlerror exit)
+#MASK_VERIFY_SQL="select case when count(*)=0 then 'OK' else 'UNMASKED' end from app.customers where email like '%@realbank.example';"
+
+# ---- post-refresh hygiene --------------------------------------------------------------------
+#ACCOUNT_WHITELIST=APEX_PUBLIC_USER,ORDS_PUBLIC_USER,APEX_REST_PUBLIC_USER,APP_OWNER   # stay open (service accounts!)
+#TEST_ACCOUNTS=tester1,tester2        # unlocked and given TEST_ACCOUNT_PASSWORD (prompted if unset)
+#TEST_ACCOUNT_PASSWORD=
+#DBLINK_MAP=TO_CRM=crm-test.bank.example:1521/CRMTEST    # re-point a link instead of dropping it (password prompted)
+#SERVICE_MAP=PRODPDB_APP:TESTPDB_APP,REPORTS:REPORTS_TEST # explicit renames; otherwise PROD_PDB -> TEST_PDB substitution
+#APEX_PARAMS=SMTP_HOST_ADDRESS=mailrelay-test.bank.example,SMTP_FROM=noreply-test@bank.example
+#APEX_RESTORE_PARAMS=yes     # put the old TEST's APEX instance parameters (saved in backup) back first
+#APEX_TEST_URL=https://test-apex.bank.example/ords/r/app/login   # verify: must answer 200/30x
+#DISABLE_JOBS=ALL            # ALL (then re-enable what the old TEST had enabled) | OWNER.JOB,OWNER.JOB | NONE
+#DIRECTORY_MAP=/prod/files=/test/files,/prod/export=/test/export
+
+# ---- preservation (what the old TEST had that PROD does not) --------------------------------
+#PRESERVE_SCHEMAS=TEST_TOOLS,QA_DATA                 # exported before the drop, imported after (needs EXP_CONNECT)
+#EXP_CONNECT=dp_admin/secret@TESTPDB                 # user with DATAPUMP_EXP/IMP_FULL_DATABASE in the TEST PDB
+#DATA_PUMP_DIR=DATA_PUMP_DIR
+
+#RUN_BASE=/u01/backup/db-refresh/runs
