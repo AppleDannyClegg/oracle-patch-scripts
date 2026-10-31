@@ -306,7 +306,13 @@ cmd_heal() {
       *) warn "$sid$(cs "$pdb") $u: $st";;
     esac
   done
-  if [ -n "${ORDS_HOME:-}" ] && [ "$code" = 503 ]; then confirm "restart ORDS now?" && ords_restart; fi
+  if [ -n "${ORDS_HOME:-}" ]; then
+    case "${code:-000}" in
+      503) confirm "restart ORDS now?" && ords_restart;;
+      000) if [ -n "${ORDS_STOP_CMD:-}" ] || [ -n "${ORDS_SERVICE:-$(ords_service)}" ]; then warn "ORDS does not answer at all (no HTTP) - the process is down, not just the pool"; confirm "start ORDS now?" && ords_restart
+           else warn "ORDS does not answer at all (no HTTP): start it (ORDS_SERVICE or ORDS_STOP_CMD/ORDS_START_CMD let this script do it)"; fi;;
+    esac
+  fi
   code="$(url_code "${ORDS_URL:-http://localhost:8080/ords/}" 15)"; log "ORDS after healing: HTTP ${code:-none}"; cmd_verify
 }
 

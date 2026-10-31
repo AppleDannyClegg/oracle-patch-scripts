@@ -212,7 +212,8 @@ detect() {
   if [ -n "${ORDS_POOLS:-}" ]; then POOLS="$ORDS_POOLS"
   elif [ -d "${ORDS_CONFIG:-/nonexistent}/databases" ]; then POOLS="$(ls "$ORDS_CONFIG/databases" 2>/dev/null | tr '\n' ' ')"; fi
   [ -z "${ORDS_URL:-}" ] && ORDS_URL="http://localhost:8080/ords/"
-  DB_SCHEMA_VER="$(sql_val "ords.installed_version" 2>/dev/null)"
+  # not ords.installed_version: as SYS that raises ORA-06598 (INHERIT PRIVILEGES) on 19c+; the version table is readable
+  DB_SCHEMA_VER="$(sql_val "(select version from ords_metadata.ords_version where rownum=1)" 2>/dev/null)"
   return 0
 }
 setup_env() { export JAVA_HOME; detect || die "ORDS not found: no bin/ords directory and no ords.war deployed in a WebLogic domain here. Set ORDS_HOME (standalone) or WLS_DOMAIN_HOME (WebLogic) in ords-patch.conf"; }
@@ -245,7 +246,7 @@ EOF
 
 # date Oracle last published ords-latest.zip (cheap HEAD request); the version number is only inside the zip
 zip_published() {
-  net_ok || { local z; z="$(ls -t "$ORDS_BASE"/downloads/ords*.zip 2>/dev/null | head -1)"; printf '(no internet from here; %s)' "${z:+newest zip on disk: $z}${z:-put ords-latest.zip in $ORDS_BASE/downloads/}"; return 0; }
+  net_ok || { local z; z="$(ls -t "$ORDS_BASE"/downloads/ords*.zip 2>/dev/null | head -1)"; if [ -n "$z" ]; then printf '(no internet from here; newest zip on disk: %s)' "$z"; else printf '(no internet from here; put ords-latest.zip in %s/downloads/)' "$ORDS_BASE"; fi; return 0; }
   local h; h="$(curl -sIL --max-time 8 -A 'Mozilla/5.0' "$ORDS_DL_URL" 2>/dev/null | tr -d '\r')" || true
   local lm; lm="$(printf '%s\n' "$h" | sed -n 's/^[Ll]ast-[Mm]odified: *//p' | tail -1)"
   [ -n "$lm" ] && printf 'ords-latest.zip published %s (exact version known after '"'"'latest'"'"' downloads it)' "$lm" || printf '(download.oracle.com not reachable from here)'
