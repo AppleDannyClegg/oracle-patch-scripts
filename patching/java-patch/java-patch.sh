@@ -150,7 +150,7 @@ cmd_preflight() {
   discover; [ -n "$RUN_DIR" ] || init_run_dir preflight; pick_tar; local fail=0
   log "Preflight: $OLD_JH ($OLD_VER) -> $NEW_JH ($NEW_VER) from $TARBALL"
   [ -d "$NEW_JH" ] && { [ -x "$NEW_JH/bin/java" ] && log "$NEW_JH already unpacked ($(jdk_version "$NEW_JH"))" || { err "$NEW_JH exists but is not a JDK"; fail=1; }; }
-  [ "$NEW_VER" = "$OLD_VER" ] && { err "the tarball is the same build as the current JDK ($OLD_VER)"; fail=1; }
+  [ "$NEW_VER" = "$OLD_VER" ] && { [ "$FORCE" = 1 ] && warn "the tarball is the same build as the current JDK ($OLD_VER) - going on because of --force" || { err "the tarball is the same build as the current JDK ($OLD_VER) (--force to reinstall)"; fail=1; }; }
   if [ "$NEW_MAJOR" != "$OLD_MAJOR" ]; then [ "$FORCE" = 1 ] && warn "major change $OLD_MAJOR -> $NEW_MAJOR (--force): check the product matrix below carefully" || { err "major change $OLD_MAJOR -> $NEW_MAJOR; same-major updates only unless --force"; fail=1; }; fi
   local h; for h in $(wls_homes); do [ "$(readlink -f "$(wls_java_home "$h")")" = "$OLD_REAL" ] || continue
     local wv; wv="$(wls_version "$h")"; wls_major_ok "$wv" "$NEW_MAJOR"; local r=$?
@@ -188,7 +188,9 @@ cmd_backup() {
 
 cmd_apply() {
   discover; reuse_or_init apply; pick_tar
-  [ "$(state_get preflight || true)" = ok ] || [ "$FORCE" = 1 ] || warn "preflight has not passed in this run dir"
+  case "$(state_get preflight || true)" in ok) ;; failed) [ "$FORCE" = 1 ] || die "preflight FAILED in this run dir ($RUN_DIR): fix it or --force";; *) warn "preflight has not run in this run dir";; esac
+  [ "$NEW_VER" = "$OLD_VER" ] && { [ "$FORCE" = 1 ] && warn "the tarball is the same build as the current JDK ($OLD_VER) - reinstalling because of --force" || die "the tarball is the same build as the current JDK ($OLD_VER): nothing to do (--force to reinstall)"; }
+  [ "$(state_get backup || true)" = ok ] || cmd_backup
   if [ ! -x "$NEW_JH/bin/java" ]; then
     log "unpacking $TARBALL into $JAVA_BASE"; confirm "tar -xzf into $JAVA_BASE (new dir $NEW_JH)?" || die "aborted"
     [ "$DRY_RUN" = 1 ] || { tar -xzf "$TARBALL" -C "$JAVA_BASE" || die "unpack failed"; [ -x "$NEW_JH/bin/java" ] || die "$NEW_JH/bin/java missing after unpack"; }
@@ -239,6 +241,7 @@ cmd_verify() {
 cmd_rollback() {
   discover; reuse_or_init rollback
   local tgt; tgt="$(state_get link_target || true)"
+  [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
   if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; log "symlink restored -> $tgt"; fi
   local f b; for f in $(state_get backed_files || true); do b="$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"; [ -f "$b" ] && { log "restoring $f"; [ "$DRY_RUN" = 1 ] || cp -p "$b" "$f"; }; done
   [ -L /usr/java/latest ] && [ -n "$tgt" ] && [ -w /usr/java ] && { [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" /usr/java/latest; }

@@ -43,6 +43,8 @@
 #ORDS_HOME=/opt/oracle/ords              # found via `ords` on PATH, the running process or the usual dirs when unset
 #ORDS_CONFIG=/etc/ords/config            # the --config dir of the running ORDS when unset
 
+#VERIFY_WAIT=90                          # seconds verify waits for the port to serve the new certificate after a restart
+
 # Thresholds for inspect findings and the port scan cap
 #WARN_DAYS=30
 #INFO_DAYS=90

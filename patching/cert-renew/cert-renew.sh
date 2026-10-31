@@ -35,7 +35,7 @@
 #   --cn NAME  --san a,b  --bits N          for csr                 --alias NAME   identity alias (default server_cert)
 #   --wallet DIR                            wallet dir when it cannot be read from the config
 #   --trust-mode M                          WebLogic KeyStores value (CustomIdentityAndJavaStandardTrust | CustomIdentityAndCustomTrust)
-#   --restart        restart the target after apply     --no-scan      skip the live port scan in inspect
+#   --restart        restart the target after apply (also done when RESTART_CMDS names the target)   --no-scan  skip the live port scan
 #   --report  --out DIR  --dry-run  --yes  --force  --json  --verbose  --run-dir DIR
 #
 # Config: cert-renew.conf (mode 600), ~/.cert-renew.conf or the shared oracle.conf: KS_PASSWORDS (comma list tried on
@@ -55,7 +55,7 @@ CERT=""; KEY=""; CHAIN=""; CN=""; SAN=""; BITS="${CSR_BITS:-2048}"; CERT_ALIAS="
 DO_RESTART=0; NO_SCAN=0; REPORT_OUT=0
 KS_PASSWORDS="${KS_PASSWORDS:-}"; WLS_KS_PASS="${WLS_KS_PASS:-}"; WLS_KS_TYPE="${WLS_KS_TYPE:-JKS}"; WALLET_PASSWORD="${WALLET_PASSWORD:-}"
 CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"; KEY_PASSWORD="${KEY_PASSWORD:-}"; CSR_SUBJECT_SUFFIX="${CSR_SUBJECT_SUFFIX:-}"
-CERT_DIR="${CERT_DIR:-$HOME/cert-renew/csr}"; CERT_OUT="${CERT_OUT:-$HOME/cert-renew}"; CHECK_HOST="${CHECK_HOST:-$(hostname -f 2>/dev/null || hostname)}"
+VERIFY_WAIT="${VERIFY_WAIT:-90}"; CERT_DIR="${CERT_DIR:-$HOME/cert-renew/csr}"; CERT_OUT="${CERT_OUT:-$HOME/cert-renew}"; CHECK_HOST="${CHECK_HOST:-$(hostname -f 2>/dev/null || hostname)}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"; GG_DEPLOY_DIRS="${GG_DEPLOY_DIRS:-}"; OKV_DIRS="${OKV_DIRS:-}"; RESTART_CMDS="${RESTART_CMDS:-}"
 WARN_DAYS="${WARN_DAYS:-30}"; INFO_DAYS="${INFO_DAYS:-90}"; PORT_LIMIT="${PORT_LIMIT:-100}"
 CERTS=""        # rows: days|kind|target|where|cn|issuer|notafter|sig|bits|serial|flags
@@ -130,7 +130,7 @@ add_live() {
 kt() {
   local ks="$1" pw="$2"; shift 2; local pf
   if [ "$pw" = - ] || [ -z "$pw" ]; then printf '\n' | to 60 "$KEYTOOL" "$@" -keystore "$ks" 2>/dev/null
-  else pf="$(tmp_secret_file "$pw")"; to 60 "$KEYTOOL" "$@" -keystore "$ks" -storepass:file "$pf" 2>/dev/null; local rc=$?; rm -f "$pf"; return $rc; fi
+  else pf="$(tmp_secret_file "$pw")"; to 60 "$KEYTOOL" "$@" -keystore "$ks" -storepass:file "$pf" 2>>"${KT_ERR:-/dev/null}"; local rc=$?; rm -f "$pf"; return $rc; fi
 }
 # ks_pass <keystore> [type]: a password that opens it (KS_PASSWORDS, WLS_KS_PASS, defaults, demo) or "-"
 ks_pass() {
@@ -397,7 +397,7 @@ KP=(); KEYPF=""
 keypass_opt() { KP=(); [ -n "$KEY_PASSWORD" ] && { KEYPF="$(tmp_secret_file "$KEY_PASSWORD")"; KP=(-passin "file:$KEYPF"); }; return 0; }
 keypass_done() { [ -n "$KEYPF" ] && rm -f "$KEYPF"; KEYPF=""; KP=(); }
 check_material() { # --cert/--key/--chain consistent; sets NEW_SERIAL NEW_CN NEW_END NEW_DAYS
-  [ -n "$CERT" ] || die "--cert FILE is required"; [ -f "$CERT" ] || die "$CERT not found"
+  [ -n "$CERT" ] || { [ "$T_KIND" = java ] && [ -n "$CHAIN" ] && CERT="$CHAIN"; }; [ -n "$CERT" ] || die "--cert FILE is required$([ "$T_KIND" = java ] && echo ' (or --chain FILE with the CAs to trust)')"; [ -f "$CERT" ] || die "$CERT not found"
   [ "$T_KIND" = java ] || { [ -n "$KEY" ] || die "--key FILE is required for $T_KIND"; [ -f "$KEY" ] || die "$KEY not found"; }
   [ -n "$CHAIN" ] && { [ -f "$CHAIN" ] || die "$CHAIN not found"; }
   x509_facts "$CERT" || die "$CERT is not a PEM certificate"; NEW_SERIAL="$X_SERIAL"; NEW_CN="$X_CN"; NEW_END="$X_END"; NEW_DAYS="$X_DAYS"; NEW_SAN="$X_SAN"; NEW_ICN="$X_ICN"
@@ -435,7 +435,7 @@ import_cas() {
   for f in $(chain_cas "$RUN_DIR/chain"); do
     fp="$(openssl x509 -in "$f" -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f')"; printf '%s\n' "$present" | grep -q "$fp" && { dbg "CA $(openssl x509 -in "$f" -noout -subject | cut -c1-80) already trusted"; continue; }
     x509_facts "$f"; local alias; alias="cert-renew-$(printf '%s' "$X_CN" | tr -c 'A-Za-z0-9' '_' | cut -c1-40 | tr 'A-Z' 'a-z')"
-    log "importing CA '$X_CN' as $alias into $ks"; [ "$DRY_RUN" = 1 ] || kt "$ks" "$pw" -importcert -noprompt -trustcacerts -storetype "$t" -alias "$alias" -file "$f" >/dev/null || { err "import of $X_CN failed"; return 1; }; n=$((n+1))
+    log "importing CA '$X_CN' as $alias into $ks"; [ "$DRY_RUN" = 1 ] || KT_ERR="$LOG_FILE" kt "$ks" "$pw" -importcert -noprompt -trustcacerts -storetype "$t" -alias "$alias" -file "$f" >/dev/null || { err "import of $X_CN into $ks failed: $(grep -iE 'exception|error|denied|read-only' "$LOG_FILE" | tail -1)"; return 1; }; n=$((n+1))
   done; log "$n CA certificate(s) added to $ks"
 }
 # build_wallet <dir> <p12> <p12pass>: Oracle auto-login wallet from the PKCS12 (orapki import_pkcs12 + trusted certs)
@@ -527,7 +527,7 @@ cmd_preflight() {
   local fail=0 one; for one in $(expand_targets "$t"); do
     resolve_target "$one"; check_material
     case "$T_KIND" in
-      wls|nm|java) [ -n "$KEYTOOL" ] && log "keytool: $KEYTOOL" || { err "no keytool"; fail=1; }; [ "$T_KIND" = java ] && { [ -w "$T_FILE" ] && log "$T_FILE writable" || { err "$T_FILE not writable"; fail=1; }; }
+      wls|nm|java) [ -n "$KEYTOOL" ] && log "keytool: $KEYTOOL" || { err "no keytool"; fail=1; }; [ "$T_KIND" = java ] && [ -L "$T_FILE" ] && warn "$T_FILE is a symlink to $(readlink -f "$T_FILE"): an OS-managed trust store (update-ca-trust rebuilds it) - put the CA under /etc/pki/ca-trust/source/anchors and run update-ca-trust instead of importing here"; [ "$T_KIND" = java ] && { [ -w "$T_FILE" ] && log "$T_FILE writable" || { err "$T_FILE not writable"; fail=1; }; }
         [ "$T_KIND" = wls ] && { [ -w "$T_DOMAIN/security" ] && log "$T_DOMAIN/security writable" || { err "$T_DOMAIN/security not writable"; fail=1; }; [ -x "$T_HOME/oracle_common/common/bin/wlst.sh" ] && log "wlst.sh present" || { err "no wlst.sh in $T_HOME"; fail=1; }
           [ -n "${WLS_USERCONFIG:-}${WLS_ADMIN_USER:-}" ] && log "WebLogic credentials configured" || warn "no WebLogic credentials: the config change will be left to you (console)"
           [ "$DRY_RUN" = 0 ] && { port_open "$(printf '%s' "${WLS_ADMIN_URL:-t3://localhost:7001}" | sed 's#.*:##')" "$(printf '%s' "${WLS_ADMIN_URL:-t3://localhost:7001}" | sed 's#.*//##; s#:.*##')" && log "admin server port answers" || { warn "admin server ${WLS_ADMIN_URL:-t3://localhost:7001} not reachable: WLST will fail"; }; }
@@ -632,9 +632,9 @@ cmd_apply() {
     [ -d "$RUN_DIR/backup/$(printf '%s' "$one" | tr ':/' '__')" ] || { ARGS=("$one"); cmd_backup; ARGS=("$t"); }
     confirm "Switch $one to CN=$NEW_CN (serial $NEW_SERIAL, expires $NEW_END)?" || die "aborted"
     state_set new_serial "$NEW_SERIAL"; state_set target "$one"
-    case "$T_KIND" in wls) wls_apply_one || rc=1;; nm) nm_apply;; ords) ords_apply;; listener|ohs) wallet_apply;; java) java_apply;; esac
+    case "$T_KIND" in wls) wls_apply_one;; nm) nm_apply;; ords) ords_apply;; listener|ohs) wallet_apply;; java) java_apply;; esac || rc=1
     state_set "apply_$one" "$([ "$rc" = 0 ] && echo ok || echo partial)"
-    if [ "$DO_RESTART" = 1 ] || [ "$T_KIND" = listener ]; then restart_target || rc=1; fi
+    if [ "$DO_RESTART" = 1 ] || [ "$T_KIND" = listener ] || [ -n "$(restart_cmd_for "$T_NAME")" ]; then restart_target || { rc=1; [ "$T_KIND" = listener ] || err "$one: the config now names the new certificate but the running process still serves the old one until it restarts - fix the restart and run 'verify $one', or 'rollback --yes'"; }; fi
   done; return "$rc"
 }
 
@@ -651,6 +651,11 @@ cmd_verify() {
     [ -n "$T_PORT" ] || { warn "$one: no port known to probe"; continue; }
     local hp="${T_ADDR:-127.0.0.1}:$T_PORT" out; out="$RUN_DIR/verify_$(printf '%s' "$one" | tr ':/' '__').pem"
     [ "$DRY_RUN" = 1 ] && { log "would probe $hp"; continue; }
+    local waited=0; while :; do
+      if live_pem "$hp" "$out" && x509_facts "$out" && { [ -z "$want" ] || [ "$X_SERIAL" = "$want" ]; }; then break; fi
+      [ -n "$want" ] && [ "$waited" -lt "$VERIFY_WAIT" ] || break
+      [ "$waited" = 0 ] && log "$one: waiting up to ${VERIFY_WAIT}s for $hp to serve serial $want (restart in progress?)"; sleep 5; waited=$((waited + 5))
+    done
     if ! live_pem "$hp" "$out"; then err "$one: $hp does not answer TLS (not started yet, or SSL disabled)"; fail=1; continue; fi
     x509_facts "$out"
     if [ -n "$want" ]; then [ "$X_SERIAL" = "$want" ] && log "$one: $hp serves the new certificate (serial $want)" || { err "$one: $hp serves serial $X_SERIAL, expected $want - restart pending?"; fail=1; }; else log "$one: $hp serves CN=$X_CN serial $X_SERIAL"; fi
@@ -707,7 +712,7 @@ cmd_run() {
   local t="${ARGS[0]:-}"; [ -n "$t" ] || die "run <target> --cert --key [--chain]"; init_run_dir run; find_tools
   ARGS=("$t"); cmd_inspect >/dev/null 2>&1 || true; print_rows "$t"; echo
   cmd_plan; cmd_preflight || die "preflight failed - nothing changed"
-  confirm "Proceed with backup > apply > $([ "$DO_RESTART" = 1 ] && echo 'restart > ')verify for $t?" || die "aborted"
+  confirm "Proceed with backup > apply > $([ "$DO_RESTART" = 1 ] || [ -n "$(restart_cmd_for "$t")" ] && echo 'restart > ')verify for $t?" || die "aborted"
   cmd_backup
   cmd_apply || { err "apply did not complete"; confirm "Roll back?" && cmd_rollback; die "FAILED: apply. Log: $LOG_FILE"; }
   if ! cmd_verify; then err "verify failed"; confirm "Roll back to the previous certificate?" && cmd_rollback; die "FAILED: verify. Log: $LOG_FILE"; fi
