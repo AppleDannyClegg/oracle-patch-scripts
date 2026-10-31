@@ -1,0 +1,30 @@
+# oracle-diag.conf - copy to oracle-diag.conf next to the script (or ~/.oracle-diag.conf).
+# Everything is optional: the script auto-detects what it can. It also reads wls-patch.conf,
+# apex-patch.conf and ords-patch.conf if they sit next to it, so normally nothing is needed here.
+
+# Where reports go. Each run makes <host>_<timestamp>/REPORT.md + raw/ and a .tar.gz of it.
+#DIAG_OUT=/u01/oracle-diag
+# How many days of logs to look back, and how many lines of any one log to keep in REPORT.md.
+#DIAG_DAYS=3
+#DIAG_LINES=200
+
+# Database access. Default: every running instance from /etc/oratab, "/ as sysdba" with that home's sqlplus.
+#ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+#SQL_CMD="sqlplus -S"
+#SQL_CONNECT="/ as sysdba"
+# Also run the per-container checks in this PDB (open PDBs are found automatically).
+#PDB=PDB1
+
+# ORDS (auto-detected from the running java process, /opt/oracle/ords, /etc/ords/config ...).
+#ORDS_HOME=/opt/oracle/ords
+#ORDS_CONFIG=/etc/ords/config
+#ORDS_URL=https://localhost:8443/ords/
+#APEX_IMAGES_DIR=/opt/oracle/apex/images
+
+# WebLogic (auto-detected from the inventory and running JVMs).
+#DOMAIN_HOME=/u01/app/oracle/config/domains/prod_domain
+#ADMIN_URL=http://localhost:7001
+
+# Timeouts: a hung database or tool must not hang the report.
+#SQL_TIMEOUT=90
+#CMD_TIMEOUT=60

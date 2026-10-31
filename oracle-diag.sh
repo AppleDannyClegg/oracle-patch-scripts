@@ -218,12 +218,13 @@ diag_host() {
 # sql <sid> <sql>: run in instance <sid> as sysdba (or SQL_CONNECT), formatted for reading. Stdout = result.
 sql() {
   local sid="$1"; shift
+  local nl; nl=$'\n'; local q="${*//\\n/$nl}"
   local home; home="$(oratab_home "$sid")"
   [ -z "$home" ] && home="${ORACLE_HOME:-}"
   local cmd="${SQL_CMD:-$home/bin/sqlplus -S}"
   [ -x "${cmd%% *}" ] || command -v "${cmd%% *}" >/dev/null 2>&1 || { echo "no sqlplus for $sid ($cmd)"; return 1; }
   ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_DATE_FORMAT='YYYY-MM-DD HH24:MI:SS' NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" \
-    to "$SQL_TIMEOUT" bash -c "printf 'set pagesize 500 linesize 250 trimspool on tab off feedback off verify off echo off colsep \"  \"\nset numwidth 14\nalter session set nls_date_format=\"YYYY-MM-DD HH24:MI:SS\";\n%s\n%s\nexit\n' \"\${PDB_SET:-}\" \"\$1\" | $cmd \"\${SQL_CONNECT:-/ as sysdba}\" 2>&1" _ "$*"
+    to "$SQL_TIMEOUT" bash -c "printf 'set pagesize 500 linesize 250 trimspool on tab off feedback off verify off echo off colsep \"  \"\nset numwidth 14\nalter session set nls_date_format=\"YYYY-MM-DD HH24:MI:SS\";\n%s\n%s\nexit\n' \"\${PDB_SET:-}\" \"\$1\" | $cmd \"\${SQL_CONNECT:-/ as sysdba}\" 2>&1" _ "$q"
 }
 # sqlsec <sid> <name> <title> <sql>: a titled, fenced block in the report; full output in raw/
 sqlsec() {
@@ -263,7 +264,7 @@ diag_listener() {
   h2 "Listener"
   local homes h lsn
   homes="$(ps -eo args 2>/dev/null | grep -E '^[^ ]*/bin/tnslsnr ' | awk '{print $1, $2}' | sort -u)"
-  if [ -z "$homes" ]; then finding CRIT db "No tnslsnr process running - nothing can connect to the database over the network"; para "_no tnslsnr process_"; return; fi
+  if [ -z "$homes" ]; then para "_no tnslsnr process_"; [ -n "$(db_instances)" ] && finding CRIT db "No tnslsnr process running - nothing can connect to the database over the network"; return; fi
   printf '%s\n' "$homes" | while read -r bin lsn; do
     h="${bin%/bin/tnslsnr}"
     section "lsnr_${lsn}_status" env ORACLE_HOME="$h" "$h/bin/lsnrctl" status "$lsn"
@@ -499,7 +500,7 @@ diag_adr() { # ADR incidents and problems for the instance
 diag_apex_in() { # <sid> <container label>  (PDB_SET already exported by caller)
   local sid="$1" con="$2" tag="${2//[^A-Za-z0-9]/_}"
   local ver; ver="$(sqlval "$sid" "(select version_no from apex_release)" 2>/dev/null)"
-  [ -z "$ver" ] && { para "_APEX not installed in $con_"; return 0; }
+  [ -z "$ver" ] && { para "_APEX not installed in ${con}_"; return 0; }
   say "apex $sid/$con"
   h3 "APEX in $con (version $ver)"
   sqlsec "$sid" "apex_${tag}" "APEX $con: release, schema, accounts, jobs" "select version_no, patch_applied_on, api_compatibility from apex_release;
@@ -635,7 +636,7 @@ wls_homes() { # every FMW home we can find (inventory + guesses + running JVMs)
     done
     ls -d /u01/app/oracle/product/*/fmw* /u01/app/oracle/middleware* /u01/oracle/* /opt/oracle/* /opt/oracle/product/* "$HOME"/Oracle/Middleware* 2>/dev/null
     [ -n "${ORACLE_HOME:-}" ] && echo "$ORACLE_HOME"; [ -n "${MW_HOME:-}" ] && echo "$MW_HOME"
-    ps -eo args 2>/dev/null | grep -oE '[^ ]*/wlserver/' | sed 's#/wlserver/##'
+    ps -eo args 2>/dev/null | grep -oE '[^ ]*/wlserve[r]/' | sed 's#/wlserver/##'
   } 2>/dev/null | while read -r h; do [ -d "$h/wlserver" ] && echo "$h"; done | sort -u
 }
 wls_domains() { # <home>
@@ -835,13 +836,12 @@ diag_goldengate() {
   fi
   if [ -n "$ma" ]; then
     h2 "GoldenGate Microservices"
-    section_sh ogg_ma "ps -eo pid,etime,args | grep -E '[S]erviceManager|/bin/(adminsrvr|distsrvr|recvsrvr|pmsrvr)' | cut -c1-200; echo; systemctl list-units --no-legend 2>/dev/null | grep -i 'OracleGoldenGate\|ServiceManager'; echo; for d in \$(ps -eo args | grep -oE 'OGG_DEPLOYMENT_HOME=[^ ]+|--deploymentHome [^ ]+' | sed 's/.*[= ]//' | sort -u); do echo \"== deployment \$d\"; ls \$d 2>/dev/null; tail -50 \$d/var/log/ggserr.log 2>/dev/null; done; echo; echo 'service manager ports:'; ss -ltnp 2>/dev/null | grep -E 'ServiceMan|adminsrvr|distsrvr|recvsrvr|pmsrvr'"
-    for d in $(ps -eo args | grep -oE 'OGG_DEPLOYMENT_HOME=[^ ]+|--deploymentHome [^ ]+' | sed 's/.*[= ]//' | sort -u); do [ -f "$d/var/log/ggserr.log" ] && recent_errors "ogg_ma_$(basename "$d")" "$d/var/log/ggserr.log" 'ERROR|OGG-[0-9]+.*(ERROR|abend)|ORA-[0-9]+' >/dev/null; done
+    section_sh ogg_ma "ps -eo pid,etime,args | grep -E '[S]erviceManager|/bin/(adminsrvr|distsrvr|recvsrvr|pmsrvr)' | cut -c1-200; echo; systemctl list-units --no-legend 2>/dev/null | grep -i 'OracleGoldenGate\|ServiceManager'; echo; for d in \$(ps -eo args | grep -oE 'OGG_DEPLOYMENT_HOM[E]=[^ ]+|--deploymentHom[e] [^ ]+' | sed 's/.*[= ]//' | sort -u); do echo \"== deployment \$d\"; ls \$d 2>/dev/null; tail -50 \$d/var/log/ggserr.log 2>/dev/null; done; echo; echo 'service manager ports:'; ss -ltnp 2>/dev/null | grep -E 'ServiceMan|adminsrvr|distsrvr|recvsrvr|pmsrvr'"
+    for d in $(ps -eo args | grep -oE 'OGG_DEPLOYMENT_HOM[E]=[^ ]+|--deploymentHom[e] [^ ]+' | sed 's/.*[= ]//' | sort -u); do [ -f "$d/var/log/ggserr.log" ] && recent_errors "ogg_ma_$(basename "$d")" "$d/var/log/ggserr.log" 'ERROR|OGG-[0-9]+.*(ERROR|abend)|ORA-[0-9]+' >/dev/null; done
   fi
 }
 
 diag_em() {
-  local agents; agents="$(ps -eo args 2>/dev/null | grep -oE '^[^ ]*/agent_[0-9.]+/[^ ]*java|^[^ ]*/agent_inst[^ ]*|emwd.pl.*' | head -1)"
   local ah; for ah in $(ls -d /u01/app/oracle/agent*/agent_inst /u01/app/oracle/product/agent*/agent_inst /opt/oracle/agent*/agent_inst /u01/app/oracle/em*/agent_inst "${AGENT_HOME:-/nonexistent}" 2>/dev/null; ps -eo args | grep -oE -- '-Doracle.agent.inst.dir=[^ ]+|EMSTATE=[^ ]+' | cut -d= -f2); do
     [ -x "$ah/bin/emctl" ] || continue
     say "em agent"; h1 "Enterprise Manager agent ($ah)"
@@ -904,7 +904,7 @@ diag_misc_products() {
   h1 "Other Oracle products"
   local found=""
   # AVDF agent
-  local av; av="$(ps -eo args | grep -oE '[^ ]*av/agent[^ ]*|[^ ]*/avagent[^ ]*' | head -1 | sed 's#/bin/.*##; s#/lib/.*##')"
+  local av; av="$(ps -eo args | grep -oE '[^ ]*a[v]/agent[^ ]*|[^ ]*/a[v]agent[^ ]*' | head -1 | sed 's#/bin/.*##; s#/lib/.*##')"
   [ -z "$av" ] && av="$(ls -d /u01/app/oracle/avagent /opt/oracle/avagent /u01/app/avagent 2>/dev/null | head -1)"
   if [ -n "$av" ]; then found="$found AVDF"; h2 "Audit Vault agent ($av)"; section_sh avdf_status "'$av/bin/agentctl' status 2>&1; echo; ls -la '$av'/av/log 2>/dev/null | tail -5; tail -30 '$av'/av/log/av.agent*.log 2>/dev/null | grep -iE 'error|fail|warn' | tail -15"; grep -qiE 'is running|RUNNING' "$RAW/avdf_status.txt" || finding CRIT avdf "Audit Vault agent is not running - audit records are not being collected"; fi
   # CMAN
@@ -924,13 +924,13 @@ diag_misc_products() {
     section_sh idm_status "ps -eo pid,etime,rss,args | grep -E '[o]rg.opends.server.core.DirectoryServer|[o]idldapd|[o]idmon|[o]racle.oud' | cut -c1-160; echo; for d in \$(ps -eo args | grep -oE -- '-Dorg.opends.server.scriptName=[^ ]+|INSTANCE_ROOT=[^ ]+|[^ ]*asinst_[^ ]*|[^ ]*oud_instance[^ ]*|[^ ]*OUD/[^ ]*' | sed 's/.*=//' | sort -u | head -3); do [ -x \$d/bin/status ] && { echo \"== \$d\"; timeout 60 \$d/bin/status --offline 2>&1 | head -40; tail -30 \$d/logs/errors 2>/dev/null | grep -E 'SEVERE|ERROR' | tail -10; }; done; echo; echo 'anonymous rootDSE on listening LDAP ports:'; for p in \$(ss -ltnp 2>/dev/null | grep -E 'java|oidldapd' | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u); do printf '  port %s: ' \$p; timeout 5 ldapsearch -x -H ldap://localhost:\$p -s base -b '' vendorVersion 2>&1 | grep -E 'vendorVersion|result|error' | head -1; done"
   fi
   # Forms / Reports
-  if ps -eo args | grep -qE '[f]rmweb|[r]wserver|WLS_FORMS|WLS_REPORTS'; then
+  if ps -eo args | grep -qE '[f]rmweb|[r]wserver|WLS_FORM[S]|WLS_REPORT[S]'; then
     found="$found Forms/Reports"; h2 "Forms / Reports"
     section_sh forms_status "echo \"frmweb runtime processes: \$(pgrep -c frmweb)\"; ps -eo pid,etime,rss,args | grep '[f]rmweb' | sort -k2 -r | head -5 | cut -c1-120; echo; echo 'oldest frmweb (possible orphans):'; ps -eo pid,etime,args | grep '[f]rmweb' | awk '\$2 ~ /-/' | head -10; echo; ps -eo pid,etime,rss,args | grep -E '[r]wserver|WLS_REPORTS' | cut -c1-120; echo; echo 'reports server engines:'; ps -eo args | grep -c '[r]wEng'"
     local orph; orph="$(ps -eo etime,args | grep '[f]rmweb' | awk '$1 ~ /-/' | wc -l | tr -d ' ')"; [ "${orph:-0}" -gt 20 ] && finding WARN forms "$orph frmweb processes older than a day - orphaned Forms sessions eating memory"
   fi
   # OBIEE / OAS
-  if ps -eo args | grep -qE '[o]bis1|[o]bips1|[n]qsserver|[s]awserver|bi_server1'; then
+  if ps -eo args | grep -qE '[o]bis1|[o]bips1|[n]qsserver|[s]awserver|bi_serve[r]1'; then
     found="$found OBIEE/OAS"; h2 "Oracle Analytics / OBIEE"
     section_sh obi_status "ps -eo pid,etime,rss,args | grep -E '[o]bis[0-9]|[o]bips[0-9]|[o]bijh|[o]bisch|[o]biccs|[n]qsserver|[s]awserver|bi_server[0-9]' | cut -c1-140; echo; for d in \$(ps -eo args | grep -oE -- '-Ddomain.home=[^ ]+' | cut -d= -f2 | sort -u); do [ -x \$d/bitools/bin/status.sh ] && { echo \"== \$d\"; timeout 120 \$d/bitools/bin/status.sh 2>&1 | tail -15; echo 'nqserver / obis errors:'; ls -t \$d/servers/obis1/logs/*.log 2>/dev/null | head -2; }; done"
     for d in $(ps -eo args | grep -oE -- '-Ddomain.home=[^ ]+' | cut -d= -f2 | sort -u); do for lf in $(ls -t "$d"/servers/obis1/logs/nqserver.log "$d"/servers/obis1/logs/obis1-diagnostic.log 2>/dev/null | head -2); do recent_errors "obi_$(basename "$lf" .log)" "$lf" '\[ERROR|nQSError|\[CRITICAL|\[FATAL' >/dev/null; done; done
@@ -964,15 +964,15 @@ diag_misc_products() {
     pres "E-Business Suite (FNDLIBR/adopmon)" bash -c "ps -eo args | grep -qE '[F]NDLIBR|[a]dopmon|[F]NDSM' || [ -n \"\${APPL_TOP:-}\" ]"
     pres "PeopleSoft (psappsrv/psprcsrv)" bash -c "ps -eo args | grep -qE '[P]SAPPSRV|[p]sappsrv|[P]SPRCSRV|[p]sprcsrv' || [ -n \"\${PS_HOME:-}\" ]"
     pres "Siebel (siebmtshmw/siebsvc)" bash -c "ps -eo args | grep -qE '[s]iebmtshmw|[s]iebsvc'"
-    pres "Hyperion / EPM (HyS9*)" bash -c "ps -eo args | grep -qE '[H]yS9|[e]ssbase|ESSBASE'"
-    pres "Data Integrator agent (ODI)" bash -c "ps -eo args | grep -qE '[o]racle.odi.Agent|odi_server|ODI_AGENT'"
+    pres "Hyperion / EPM (HyS9*)" bash -c "ps -eo args | grep -qE '[H]yS9|[e]ssbase|ESSBAS[E]'"
+    pres "Data Integrator agent (ODI)" bash -c "ps -eo args | grep -qE '[o]racle.odi.Agent|odi_serve[r]|ODI_AGEN[T]'"
     pres "SOA Suite / OSB (soa_server/osb_server)" bash -c "ps -eo args | grep -qE 'weblogic.Name=(soa|osb)_server'"
     pres "OAM / OIM (oam_server/oim_server)" bash -c "ps -eo args | grep -qE 'weblogic.Name=(oam|oim)_server'"
-    pres "WebCenter (WC_)" bash -c "ps -eo args | grep -qE 'weblogic.Name=WC_'"
+    pres "WebCenter (WC_)" bash -c "ps -eo args | grep -qE 'weblogic.Name=W[C]_'"
     pres "Coherence standalone (DefaultCacheServer)" bash -c "ps -eo args | grep -qE '[D]efaultCacheServer|[c]oherence.*CacheServer'"
-    pres "FLEXCUBE (FCUBS)" bash -c "ps -eo args | grep -qiE 'fcubs|flexcube' || ls /*/FCUBS* /*/*/FCUBS* 2>/dev/null | grep -q ."
-    pres "Oracle Banking Platform (OBP)" bash -c "ps -eo args | grep -qE 'weblogic.Name=obp' || ls -d /*/obp* /*/*/obp* 2>/dev/null | grep -q ."
-    pres "OFSAA" bash -c "ps -eo args | grep -qiE 'ofsaa' || [ -n \"\${FIC_HOME:-}\" ]"
+    pres "FLEXCUBE (FCUBS)" bash -c "ps -eo args | grep -qiE 'fcub[s]|flexcub[e]' || ls /*/FCUBS* /*/*/FCUBS* 2>/dev/null | grep -q ."
+    pres "Oracle Banking Platform (OBP)" bash -c "ps -eo args | grep -qE 'weblogic.Name=ob[p]' || ls -d /*/obp* /*/*/obp* 2>/dev/null | grep -q ."
+    pres "OFSAA" bash -c "ps -eo args | grep -qiE '[o]fsaa' || [ -n \"\${FIC_HOME:-}\" ]"
     pres "Oracle NoSQL (kvstore)" bash -c "ps -eo args | grep -qE '[o]racle.kv'"
     pres "Oracle VM / OLVM agent" bash -c "ps -eo args | grep -qE '[o]vs-agent|[v]dsm'"
     pres "OSWatcher" bash -c "ps -eo args | grep -qE '[O]SWatcher'"
@@ -984,3 +984,83 @@ diag_misc_products() {
   kv "products found" "${found:-none beyond the main sections}"; kv_end
   ps -eo args | grep -qE '[O]SWatcher' || { [ -n "$(db_instances)" ] && finding INFO host "OSWatcher is not running - Oracle Support will ask for OS stats on performance SRs (AHF starts it)"; }
 }
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --out) DIAG_OUT="$2"; shift 2;;
+      --days) DIAG_DAYS="$2"; shift 2;;
+      --lines) DIAG_LINES="$2"; shift 2;;
+      --pdb) PDB="$2"; shift 2;;
+      --sid) ONLY_SID="$2"; shift 2;;
+      --skip) SKIP="$SKIP$2 "; shift 2;;
+      --threads) THREADS=1; shift;;
+      --no-redact) REDACT=0; shift;;
+      --no-tar) MAKE_TAR=0; shift;;
+      --quiet) QUIET=1; shift;;
+      -h|--help) usage; exit 0;;
+      *) die "Unknown option: $1 (see --help)";;
+    esac
+  done
+}
+
+write_header() { # final REPORT.md = header + findings + body
+  local body="$1" final="$2" secs="$3"
+  {
+    printf '# Oracle server diagnosis: %s\n\n' "$HOST"
+    printf -- '- generated: `%s` by oracle-diag.sh %s in %ss, as `%s`\n' "$(ts)" "$VERSION" "$secs" "$(id -un)"
+    printf -- '- look-back for logs: %s days; log excerpts capped at %s lines (full copies in raw/)\n' "$DIAG_DAYS" "$DIAG_LINES"
+    printf -- '- components: host%s%s%s%s%s\n' "$(skipped db || echo ', database')" "$(skipped apex || echo ', apex')" "$(skipped ords || echo ', ords')" "$(skipped wls || echo ', weblogic')" ", grid/dataguard/goldengate/em/ahf/exadata/zdlra/okv/other products where present"
+    printf -- '- passwords in copied config: %s\n\n' "$([ "$REDACT" = 1 ] && echo redacted || echo 'NOT redacted')"
+    printf '> **For the analyst (human or Claude):** this is a read-only snapshot. Start with the FINDINGS below (the script'"'"'s own rules, not exhaustive), then read the sections for evidence. For each real problem give: what is wrong, the evidence (section / raw file), the likely cause, the fix as exact commands, and what to check afterwards. Flag anything in the evidence the script'"'"'s rules missed. Say which findings are noise. Separate "fix now" from "tidy up later".\n\n'
+    printf '# FINDINGS  (%s critical, %s warnings, %s info)\n\n' "$NCRIT" "$NWARN" "$NINFO"
+    if [ -n "$FINDINGS" ]; then
+      printf '%s' "$FINDINGS" | grep '^- \*\*CRIT'; printf '%s' "$FINDINGS" | grep '^- \*\*WARN'; printf '%s' "$FINDINGS" | grep '^- \*\*INFO'
+    else echo "- nothing tripped the built-in rules"; fi
+    printf '\n---\n'
+    cat "$body"
+  } >"$final"
+}
+
+main() {
+  parse_args "$@"
+  load_config
+  [ -n "${ORACLE_BASE:-}" ] || ORACLE_BASE="$(grep -hvE '^\s*#|^\s*$' /etc/oratab 2>/dev/null | head -1 | cut -d: -f2 | sed 's#/product/.*##;s#/dbhome.*##')"
+  OUT="$DIAG_OUT/${HOST}_$STAMP"; RAW="$OUT/raw"; REPORT="$OUT/body.md"
+  mkdir -p "$RAW" || die "cannot create $RAW"
+  : >"$REPORT"
+  local t0; t0="$(date +%s)"
+  say "oracle-diag $VERSION writing to $OUT"
+  skipped host || diag_host
+  if ! skipped db; then
+    diag_db_env; diag_listener
+    local sids; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
+    [ -z "$sids" ] && { h2 "Database"; para "_no running database instance on this host_"; }
+    for s in $sids; do
+      diag_db_instance "$s"
+      skipped apex || diag_pdbs "$s"
+      diag_dgbroker "$s"; diag_rman "$s"
+    done
+  fi
+  skipped ords || diag_ords
+  skipped wls  || diag_wls
+  diag_grid; diag_goldengate; diag_em; diag_ahf; diag_exadata; diag_okv; diag_misc_products
+  h1 "Environment of the user that ran this"
+  section_sh env_user "env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)' | redact 2>/dev/null || env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)'; echo; cat ~/.bash_profile ~/.profile 2>/dev/null | grep -vE '^\s*#|^\s*$' | grep -iE 'export|ORACLE|JAVA|PATH' | head -30"
+  local secs=$(( $(date +%s) - t0 ))
+  write_header "$REPORT" "$OUT/REPORT.md" "$secs"
+  rm -f "$REPORT"
+  if [ "$MAKE_TAR" = 1 ]; then
+    (cd "$DIAG_OUT" && tar -czf "${HOST}_$STAMP.tar.gz" "${HOST}_$STAMP") && say "tarball: $DIAG_OUT/${HOST}_$STAMP.tar.gz ($(du -h "$DIAG_OUT/${HOST}_$STAMP.tar.gz" | cut -f1))"
+  fi
+  say "report: $OUT/REPORT.md ($(du -h "$OUT/REPORT.md" | cut -f1)) - $NCRIT critical, $NWARN warnings, $NINFO info, ${secs}s"
+  [ "$QUIET" = 1 ] || { echo; printf '%s' "$FINDINGS" | grep -E '^- \*\*(CRIT|WARN)' | sed 's/\*\*//g' | head -40; }
+  printf '\n%s\n' "$OUT/REPORT.md"
+}
+
+main "$@"

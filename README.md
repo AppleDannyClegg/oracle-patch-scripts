@@ -15,6 +15,7 @@ expert in each product. Same shape everywhere:
 | `wls-patch.sh` | Oracle WebLogic Server 12.2.1.x / 14.1.x (quarterly PSU + Coherence via OPatch, downloads from My Oracle Support) | [README-weblogic.md](README-weblogic.md) |
 | `apex-patch.sh` | Oracle APEX in the database (full release upgrades from Oracle's public download site) | [README-apex.md](README-apex.md) |
 | `ords-patch.sh` | Oracle REST Data Services, standalone or deployed inside WebLogic | [README-ords.md](README-ords.md) |
+| `oracle-diag.sh` | Nothing: read-only health check of the whole host (database, APEX, ORDS, WebLogic, Grid/RAC, Data Guard, GoldenGate, OEM, Exadata, ZDLRA, Key Vault and more) written to one report for Claude to analyse | [README-diag.md](README-diag.md) |
 
 Each script has a matching `*.conf.example`; copy it to `*.conf` next to the script only if
 auto-detection needs a hint or you want to store credentials. Real `*.conf` files are git-ignored.
