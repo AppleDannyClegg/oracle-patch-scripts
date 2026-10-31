@@ -12,10 +12,10 @@ expert in each product. Same shape everywhere:
 
 | Script | What it patches | Guide |
 |---|---|---|
-| `wls-patch.sh` | Oracle WebLogic Server 12.2.1.x / 14.1.x (quarterly PSU + Coherence via OPatch, downloads from My Oracle Support) | [README-weblogic.md](README-weblogic.md) |
-| `apex-patch.sh` | Oracle APEX in the database (full release upgrades from Oracle's public download site) | [README-apex.md](README-apex.md) |
-| `ords-patch.sh` | Oracle REST Data Services, standalone or deployed inside WebLogic | [README-ords.md](README-ords.md) |
-| `oracle-diag.sh` | Nothing: read-only health check of the whole host (database, APEX, ORDS, WebLogic, Grid/RAC, Data Guard, GoldenGate, OEM, Exadata, ZDLRA, Key Vault and more) written to one report for Claude to analyse | [README-diag.md](README-diag.md), [sending it to Claude](README-diag-analyse.md) |
+| `wls-patch.sh` | Oracle WebLogic Server 12.2.1.x / 14.1.x (quarterly PSU + Coherence via OPatch, downloads from My Oracle Support) | [wls-patch/README.md](wls-patch/README.md) |
+| `apex-patch.sh` | Oracle APEX in the database (full release upgrades from Oracle's public download site) | [apex-patch/README.md](apex-patch/README.md) |
+| `ords-patch.sh` | Oracle REST Data Services, standalone or deployed inside WebLogic | [ords-patch/README.md](ords-patch/README.md) |
+| `oracle-diag.sh` | Nothing: read-only health check of the whole host (database, APEX, ORDS, WebLogic, Grid/RAC, Data Guard, GoldenGate, OEM, Exadata, ZDLRA, Key Vault and more) written to one report for Claude to analyse | [oracle-diag/README.md](oracle-diag/README.md), [sending it to Claude](oracle-diag/ANALYSE.md) |
 
 Each script has a matching `*.conf.example`; copy it to `*.conf` next to the script only if
 auto-detection needs a hint or you want to store credentials. Real `*.conf` files are git-ignored.
@@ -82,7 +82,7 @@ cp ords-patch.conf.example ords-patch.conf   # ORDS_HOME/ORDS_CONFIG, SYS passwo
 ./oracle-diag.sh --skip wls --no-tar         # leave out a component, keep the folder only
 ```
 
-Changes nothing (details in [README-diag.md](README-diag.md)). Copy `REPORT.md` (or the tarball) off the box and hand it to Claude with
+Changes nothing (details in [oracle-diag/README.md](oracle-diag/README.md)). Copy `REPORT.md` (or the tarball) off the box and hand it to Claude with
 "analyse this oracle-diag report". Passwords in copied config are redacted unless `--no-redact`.
 
 ### Order when patching the whole stack

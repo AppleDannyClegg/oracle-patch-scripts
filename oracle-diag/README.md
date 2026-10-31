@@ -24,7 +24,7 @@ OAM/OIM, WebCenter, FLEXCUBE, OBP and OFSAA.
 
 It leaves `~/oracle-diag/<host>_<time>/REPORT.md` (plus `raw/` with the untruncated logs and command
 output) and a `.tar.gz` of the lot. Copy the tarball off (`scp`), then give Claude the REPORT.md or
-the whole archive and say **"analyse this oracle-diag report"** (step by step in [README-diag-analyse.md](README-diag-analyse.md)). The report starts with a FINDINGS
+the whole archive and say **"analyse this oracle-diag report"** (step by step in [ANALYSE.md](ANALYSE.md)). The report starts with a FINDINGS
 list from the script's own rules (disk/FRA/tablespace thresholds, locked APEX/ORDS accounts,
 expired passwords, ORA-600/4031/257/1555 in the alert log, Data Guard lag, missing backups, OOM
 kills, stuck threads, expiring certificates, offline cluster resources, GoldenGate abends and lag,

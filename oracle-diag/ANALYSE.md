@@ -87,7 +87,7 @@ After the fix, run `./oracle-diag.sh` again and hand Claude the new report with
 ## What Claude gets
 
 - A **FINDINGS** list at the top: the script's own rules (thresholds and log patterns, listed in
-  [README-diag.md](README-diag.md)) graded CRIT / WARN / INFO. Claude treats them as leads, not
+  [README.md](README.md)) graded CRIT / WARN / INFO. Claude treats them as leads, not
   conclusions, and is asked to say which are noise.
 - The **evidence**, one section per component (host, each database and PDB, APEX, ORDS,
   WebLogic domains, Grid/RAC, GoldenGate, OEM, Exadata, Key Vault, ...), each command shown with

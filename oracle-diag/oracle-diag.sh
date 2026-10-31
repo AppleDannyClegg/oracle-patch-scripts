@@ -131,7 +131,7 @@ pct_of() { # used% of a df line or "a of b"
 
 load_config() {
   local f
-  for f in "$SCRIPT_DIR/oracle-diag.conf" "$HOME/.oracle-diag.conf" "$SCRIPT_DIR/apex-patch.conf" "$SCRIPT_DIR/ords-patch.conf" "$SCRIPT_DIR/wls-patch.conf"; do
+  for f in "$SCRIPT_DIR/oracle-diag.conf" "$HOME/.oracle-diag.conf" "$SCRIPT_DIR/../apex-patch/apex-patch.conf" "$SCRIPT_DIR/../ords-patch/ords-patch.conf" "$SCRIPT_DIR/../wls-patch/wls-patch.conf"; do
     [ -f "$f" ] || continue
     while IFS='=' read -r k v; do
       case "$k" in ''|\#*) continue;; esac

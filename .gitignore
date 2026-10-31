@@ -4,3 +4,4 @@ wls-patch.conf
 extracted/
 apex-patch.conf
 ords-patch.conf
+*.conf
