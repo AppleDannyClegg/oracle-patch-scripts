@@ -1,6 +1,6 @@
 # wls-patch.sh — WebLogic patching without needing to be a WebLogic expert
 
-One script, runs on the WebLogic server itself, no agent or internet access needed.
+One script, runs on the WebLogic server itself, no agent needed (internet only for the optional downloads).
 It works out which WebLogic you have (12.2.1.x or 14.1.x), checks the patches you
 downloaded actually fit, backs everything up, stops WebLogic, applies the patches,
 starts WebLogic, checks it came back, and **undoes everything by itself if any step fails**.

@@ -1,4 +1,4 @@
-# ords-patch.sh — upgrade ORDS (standalone mode)
+# ords-patch.sh — upgrade ORDS (standalone, or deployed in WebLogic)
 
 Runs on the host where ORDS runs, as the ORDS owner. Download is public (`ords-latest.zip`).
 
