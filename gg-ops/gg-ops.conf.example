@@ -1,0 +1,35 @@
+# gg-ops.conf - copy next to the script (or ~/.gg-ops.conf). The shared ../oracle.conf is read too.
+# No database passwords here: ggsci logs in with "dblogin useridalias" (credential store); only the MA password is a secret.
+
+# Classic: the GoldenGate home (auto-detected from running mgr/extract/replicat or the usual paths)
+#OGG_HOME=/u01/app/oracle/product/19.1.0/oggcore_1
+# Report and parameter directories (default $OGG_HOME/dirrpt and dirprm; Microservices: <deployment>/var/lib/report and etc/conf/ogg)
+#GG_RPT_DIR=
+#GG_PRM_DIR=
+
+# Credential-store alias used for dblogin (trandata, info trandata) and the domain when not the default
+GG_ALIAS=ggadmin
+#GG_DOMAIN=OracleGoldenGate
+# The GoldenGate administrator schema (GGADMIN / C##GGADMIN) for the user, heartbeat and privilege checks
+#GG_SCHEMA=GGADMIN
+# Database for the SQL checks (default: every running instance on the host)
+#GG_SID=PRODDB
+
+# Microservices Architecture: set these and the script talks to adminclient instead of ggsci
+#GG_MA_URL=https://gghost:9001
+#GG_MA_DEPLOYMENT=prod_dep
+#GG_MA_USER=oggadmin
+#GG_MA_PASSWORD=              # chmod 600 this file; or leave empty to be prompted
+#ADMINCLIENT=/u01/app/oracle/product/21.3.0/oggma/bin/adminclient
+
+# Thresholds
+#GG_MAX_LAG_MIN=10            # WARN above, CRIT above 3x
+#GG_MAX_TXN_HOURS=4           # open transactions older than this (send showtrans / v$transaction)
+#GG_TRAIL_KEEP=3              # trail-cleanup keeps this many files below the oldest checkpoint
+#GG_ERR_HOURS=24              # ggserr.log and discard-file window
+#GG_EXPECTED_STOPPED=REPINIT,EXTOLD   # groups that are allowed to be STOPPED (no WARN, heal leaves them)
+
+# Where inspect --report writes (default ~/gg-ops) and the RMAN binary for heal's archivelog restore
+#GG_OUT=/u01/backup/gg-ops
+#RMAN_CMD=
+#RUN_BASE=~/gg-ops/runs
