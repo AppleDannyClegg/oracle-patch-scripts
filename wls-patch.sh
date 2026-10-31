@@ -22,14 +22,17 @@
 #                           Fetch patches from My Oracle Support into <patch-dir> - only the ones not
 #                           already there or already installed; picks the file for this release/platform,
 #                           verifies SHA-256, adds the OPatch kit (28186730) if OPatch is too old
-#   run <patch-dir>         Full flow: [download] > inspect > preflight > backup > stop > apply > start
-#                           > verify, automatic rollback (then restore) if apply or verify fails
+#   latest                  Ask My Oracle Support for the newest PSU (and Coherence patch) for THIS
+#                           release by name search; prints the patch numbers it would use
+#   run <patch-dir>         Full flow: [latest] > [download] > inspect > preflight > backup > stop > apply
+#                           > start > verify, automatic rollback (then restore) if apply or verify fails
 #
 # Options
 #   --oracle-home DIR   --domain-home DIR   --java-home DIR   --admin-url URL
 #   --backup-dir DIR    --run-dir DIR       --dry-run         --yes
 #   --no-backup         --force             --json            --verbose
 #   --patches ID,ID,..  (run) download these first if missing      --release 12.2.1.4.0 (download) pick file
+#   --latest            (run) look up this quarter's PSU/Coherence numbers on MOS, then download them
 #
 # Config file (optional): ./wls-patch.conf or ~/.wls-patch.conf, KEY=VALUE lines.
 # Every option has an env/config equivalent: ORACLE_HOME, DOMAIN_HOME, JAVA_HOME,
@@ -63,6 +66,7 @@ MOS_BASE="${MOS_BASE:-https://updates.oracle.com}"
 OPATCH_KIT_BUG="28186730"
 PATCHES=""
 PICK_RELEASE=""
+USE_LATEST=0
 
 WLS_VERSION=""
 WLS_FAMILY=""          # opatch | bsu | unknown
@@ -1102,6 +1106,85 @@ mos_pick_file() {
   printf '%s\n' "$pick"
 }
 
+# mos_name_search <text>: legacy MOS simple search by patch name. Prints "number|description" per row.
+mos_name_search() {
+  local q html
+  q="$(printf '%s' "$1" | sed 's/ /%20/g')"
+  html="$("${MOS_CURL[@]}" "$MOS_BASE/Orion/SimpleSearch/process_form?search_type=patch&patch_number=$q&plat_lang=2000P" | tr -d '\n\r')" || return 1
+  # one row per <tr>, tags stripped; keep rows with an 8-digit patch number
+  # trailing cells (platform, Download link) are cut off the description
+  printf '%s' "$html" | sed 's/<tr/\n<tr/g' | sed 's/<[^>]*>/ /g; s/&nbsp;/ /g; s/  */ /g' \
+    | grep -oE '\b[0-9]{8}\b.*' | awk '{n=$1; $1=""; sub(/^ /,""); print n "|" $0}' \
+    | sed -E 's/ (Generic Platform|Linux x86|Linux x86-64|Microsoft Windows|Oracle Solaris|IBM AIX|Download)( .*)?$//'
+}
+
+# cmd_latest: work out this quarter's patch numbers for the detected release.
+# Sets PATCHES; prints what it found. Returns 1 if nothing usable came back.
+cmd_latest() {
+  setup_env
+  [ -n "$RUN_DIR" ] || init_run_dir latest
+  [ "$WLS_FAMILY" = opatch ] || die "Not an OPatch home"
+  local short="${WLS_VERSION%.*}"      # 12.2.1.4.0 -> 12.2.1.4 ; 14.1.2.0.0 -> 14.1.2.0
+  case "$WLS_VERSION" in 14.1.*) short="${short%.*}";; esac   # 14.1.2.0 -> 14.1.2 (names use 14.1.2.0.0, both match)
+  mos_login
+  local found="" rows
+
+  # 1. WLS PSU: names are "WLS PATCH SET UPDATE <release>.<yymmdd>"; newest = highest date suffix
+  log "Searching MOS for the newest WLS PSU for $short"
+  # exact PSU rows only: no merge/backport/one-off look-alikes ("(BLR)", "MERGE", "OVERLAY")
+  rows="$(mos_name_search "WLS PATCH SET UPDATE $short" | grep -E "^[0-9]{8}\|WLS PATCH SET UPDATE $short(\.0)?\.[0-9]{6} *$" || true)"
+  if [ -n "$rows" ]; then
+    local psu psu_desc psu_level
+    psu="$(printf '%s\n' "$rows" | awk -F'|' '{match($2,/[0-9]{6}\)?$/); d=substr($2,RSTART,6); print d "|" $0}' | sort -t'|' -k1,1 -r | head -1 | cut -d'|' -f2-)"
+    psu_desc="${psu#*|}"; psu="${psu%%|*}"
+    psu_level="$(printf '%s' "$psu_desc" | grep -oE "$short(\.0)?\.[0-9]{6}" | head -1)"
+    if [ -n "$PSU_LEVEL" ] && version_ge "$PSU_LEVEL" "$psu_level"; then
+      log "  newest PSU is $psu ($psu_desc) - already at $PSU_LEVEL, nothing newer"
+    else
+      log "  newest PSU: $psu  $psu_desc  (installed: ${PSU_LEVEL:-none})"
+      found="$psu"
+    fi
+  else
+    warn "  MOS name search returned no WLS PSU rows for $short"
+  fi
+
+  # 2. Coherence cumulative patch, only if Coherence is installed
+  if grep -qi 'coherence' "$ORACLE_HOME/inventory/registry.xml" 2>/dev/null; then
+    log "Searching MOS for the newest Coherence patch for $short"
+    rows="$(mos_name_search "Coherence $short Cumulative Patch" | grep -iE "Coherence $short.* Cumulative Patch" || true)"
+    if [ -n "$rows" ]; then
+      local coh coh_desc coh_n installed_coh
+      coh="$(printf '%s\n' "$rows" | awk -F'|' '{match($2,/Cumulative Patch [0-9]+/); n=substr($2,RSTART+17,RLENGTH-17); printf "%05d|%s\n", n, $0}' | sort -r | head -1 | cut -d'|' -f2-)"
+      coh_desc="${coh#*|}"; coh="${coh%%|*}"
+      coh_n="$(printf '%s' "$coh_desc" | grep -oE 'Cumulative Patch [0-9]+' | grep -oE '[0-9]+$')"
+      installed_coh="$(printf '%s\n' "$INSTALLED_PATCHES" | grep -i 'Coherence' | grep -oE 'Cumulative Patch [0-9]+' | grep -oE '[0-9]+$' | sort -n | tail -1)"
+      if [ -n "$installed_coh" ] && [ "${installed_coh:-0}" -ge "${coh_n:-0}" ]; then
+        log "  newest Coherence patch is $coh ($coh_desc) - already have Cumulative Patch $installed_coh"
+      else
+        log "  newest Coherence: $coh  $coh_desc  (installed: ${installed_coh:-none})"
+        found="${found:+$found,}$coh"
+      fi
+    else
+      warn "  MOS name search returned no Coherence rows for $short"
+    fi
+  fi
+  mos_cleanup
+
+  if [ -z "$found" ]; then
+    if [ -n "$rows$psu" ]; then log "Nothing newer than what is installed."; state_set latest "uptodate"; return 0; fi
+    err "Could not work out patch numbers automatically. Get them from the CPU Patch Advisor for Fusion Middleware on MOS and pass --patches N,N"
+    return 1
+  fi
+  echo
+  echo "  Patches MOS says are current for WebLogic $short: $found"
+  echo "  (only the PSU and Coherence are looked up; other product bundles such as ADF/OPSS/OWSM"
+  echo "   still come from the CPU Patch Advisor document - add them with --patches)"
+  echo
+  PATCHES="${found}${PATCHES:+,$PATCHES}"
+  state_set latest "$found"
+  return 0
+}
+
 cmd_download() {
   local pdir="$1"; shift
   [ -n "$pdir" ] || die "download needs <patch-dir> <patch-number ...>"
@@ -1169,6 +1252,12 @@ cmd_run() {
   init_run_dir run
   setup_env
 
+  if [ "$USE_LATEST" = 1 ]; then
+    log "=== 0/7 look up this quarter's patches on MOS"
+    cmd_latest || die "Cannot determine patches. Nothing was changed on the server."
+    if [ "$(state_get latest)" = uptodate ] && [ -z "$PATCHES" ]; then log "Already up to date. Nothing to do."; return 0; fi
+    confirm "Download and apply these?" || return 1
+  fi
   if [ -n "$PATCHES" ]; then
     log "=== 0/7 download (missing patches only)"
     cmd_download "$pdir" || die "Download failed. Nothing was changed on the server."
@@ -1231,7 +1320,7 @@ cmd_run() {
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-usage() { sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local cmd="" args=()
@@ -1249,6 +1338,7 @@ main() {
       --force)       FORCE=1; shift ;;
       --patches)     CLI_PATCHES="$2"; shift 2 ;;
       --release)     PICK_RELEASE="$2"; shift 2 ;;
+      --latest)      USE_LATEST=1; shift ;;
       --json)        JSON_OUT=1; shift ;;
       --verbose|-v)  VERBOSE=1; shift ;;
       -h|--help|help) usage; exit 0 ;;
@@ -1265,6 +1355,7 @@ main() {
   [ -n "${CLI_ADMIN_URL:-}" ]   && ADMIN_URL="$CLI_ADMIN_URL"
   [ -n "${CLI_BACKUP_DIR:-}" ]  && BACKUP_DIR="$CLI_BACKUP_DIR"
   [ -n "${CLI_PATCHES:-}" ]     && PATCHES="$CLI_PATCHES"
+  [ "$PATCHES" = latest ] && { PATCHES=""; USE_LATEST=1; }
   export ORACLE_HOME DOMAIN_HOME JAVA_HOME ADMIN_URL
   case "$cmd" in
     inspect)   cmd_inspect ;;
@@ -1277,6 +1368,7 @@ main() {
     verify)    cmd_verify "${args[0]:-}" ;;
     rollback)  cmd_rollback "${args[@]}" ;;
     heal)      cmd_heal ;;
+    latest)    cmd_latest ;;
     download)  cmd_download "${args[@]}" ;;
     run)       cmd_run "${args[0]:-}" ;;
     *)         die "Unknown command: $cmd" ;;

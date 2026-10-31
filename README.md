@@ -5,14 +5,48 @@ It works out which WebLogic you have (12.2.1.x or 14.1.x), checks the patches yo
 downloaded actually fit, backs everything up, stops WebLogic, applies the patches,
 starts WebLogic, checks it came back, and **undoes everything by itself if any step fails**.
 
+## Quick start (the four commands)
+
+Run these on the WebLogic server as the `oracle` user, from the folder with the script.
+
+```bash
+# 1. What have I got?                      (changes nothing)
+./wls-patch.sh inspect
+
+# 2. What is Oracle offering for it?       (changes nothing, needs the MOS login)
+./wls-patch.sh latest
+
+# 3. Would it work?                        (downloads only; checks everything; changes nothing on WebLogic)
+./wls-patch.sh download /u01/patches/latest --patches latest
+./wls-patch.sh preflight /u01/patches/latest
+
+# 4. Do it.                                (backup > stop > apply > start > verify, auto-rollback on failure)
+./wls-patch.sh run /u01/patches/latest
+```
+
+Or steps 2 to 4 in one go once you trust it: `./wls-patch.sh run /u01/patches/latest --latest`
+(it shows the patch numbers it found and asks before touching anything).
+
+If `latest` cannot find the numbers, or Oracle lists extra bundle patches for your installation
+(ADF, OPSS, OWSM...), pass them by hand: `--patches 38111111,38555555`. Everything else is the same.
+
+First time only: `cp wls-patch.conf.example wls-patch.conf` and put your My Oracle Support login in
+(or in `~/.netrc`, see the file). The detail is below.
+
 ## What you do
 
-1. **Find the patch numbers for this quarter.** On My Oracle Support (support.oracle.com) open the
-   *Critical Patch Update Patch Availability Document for Oracle WebLogic Server* for your release
-   (12.2.1.4 or 14.1.x). It lists the patch numbers: the **WLS Patch Set Update (PSU)**, the
-   **Coherence** patch, and any bundle patches for other products installed (ADF, OPSS, OWSM...).
-   Write the numbers down. That is the only part the script cannot do for you, because Oracle
-   publishes them as a support note, not as data.
+1. **Find the patch numbers for this quarter.** `./wls-patch.sh latest` asks My Oracle Support,
+   by patch name, for the newest **WLS Patch Set Update (PSU)** and **Coherence** patch for the
+   release it detected, compares them with what is installed, and prints the numbers (or says you
+   are already current). It is deliberately narrow: PSU names follow a strict pattern
+   (`WLS PATCH SET UPDATE 12.2.1.4.260715`) so it cannot pick the wrong thing, and it always shows
+   you what it found before anything is downloaded.
+
+   What it cannot find: bundle patches for *other* products in the same Oracle home (ADF, OPSS,
+   OWSM, SOA...). Those are listed in the *CPU Patch Advisor for Oracle Fusion Middleware*
+   (My Oracle Support Doc ID 2806740.2); add them with `--patches`. If `latest` finds nothing at
+   all (Oracle changed the search page, or the account has no WebLogic entitlement) it says so and
+   you fall back to reading the numbers off that document.
 
 2. **Copy `wls-patch.sh` to the server**, run it as the user that owns WebLogic (usually `oracle`),
    never as root. Put your My Oracle Support login in `~/.netrc` (safest) or in `wls-patch.conf`
@@ -89,7 +123,8 @@ Everything it runs is logged under `~/wls-patch/runs/<timestamp>/wls-patch.log`
 
 ```
 inspect                 what is installed, nothing changed
-download <dir> <ids>    fetch missing patches from My Oracle Support
+latest                  newest PSU + Coherence patch numbers for this release (asks MOS)
+download <dir> <ids>    fetch missing patches from My Oracle Support (ids, or --patches latest)
 preflight <patch-dir>   check + plan, nothing changed
 heal                    fix the known stuck states listed above
 backup | restore        full tar of ORACLE_HOME + domains / put it back
@@ -102,8 +137,8 @@ run <patch-dir>         the whole thing with automatic rollback
 
 Useful flags: `--dry-run` (print what would be done), `--yes` (no questions, for cron/ssh),
 `--force` (kill servers that will not stop), `--json` (machine-readable `inspect`),
-`--patches 1,2,3` (download these first), `--release 12.2.1.4.0` (if a patch has several files and
-the script cannot tell which one you want).
+`--patches 1,2,3` (download these first), `--latest` (look the numbers up first), `--release 12.2.1.4.0`
+(if a patch has several files and the script cannot tell which one you want).
 
 ## JDK
 
@@ -124,8 +159,10 @@ but swapping the JDK is a separate job: install the new JDK, point `JAVA_HOME` a
   "wget script" button on the patch page. It needs a My Oracle Support account with a Support
   Identifier that covers WebLogic. If Oracle ever changes that service the script will say the
   login failed; download by hand and carry on from `preflight`.
-- Oracle does not publish "the patches for this quarter" as machine-readable data, so the patch
-  numbers themselves come from the Patch Availability Document (step 1).
+- `latest` uses the My Oracle Support patch *name* search, which has been stable for years but is a
+  web page, not an API. It was tested against a stand-in copy of that page, not the live site, so
+  the first real run is the proof: if it prints sensible numbers it works; if it prints nothing,
+  use `--patches` with the numbers from the CPU Patch Advisor document.
 - Patches that require database schema changes (some ADF/OPSS bundles say "run the Upgrade
   Assistant" in their README) are applied, but the schema step is not automated. The README
   says if it is needed.

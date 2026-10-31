@@ -37,7 +37,7 @@
 # Default patch numbers for `run --patches` / `download` when none are given on the command line.
 # Update this each quarter from the WebLogic Patch Availability Document on My Oracle Support.
 # The OPatch kit (28186730) is added automatically when the installed OPatch is too old.
-#PATCHES=35247514,35251219
+#PATCHES=latest            # or explicit numbers: 38111111,38555555
 
 # Behind a proxy? curl honours the usual variables:
 #HTTPS_PROXY=http://proxy.company.com:8080
