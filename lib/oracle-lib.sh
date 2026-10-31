@@ -288,7 +288,7 @@ redact() {
       -e 's/((password|passwd|secret|pwd)[A-Za-z0-9_.-]*[[:space:]]*[=:][[:space:]]*)[^[:space:]"]+/\1***REDACTED***/Ig' \
       -e 's/(password=")[^"]*(")/\1***REDACTED***\2/Ig' \
       -e 's#(//[^/:@[:space:]]+:)[^@[:space:]]+(@)#\1***REDACTED***\2#g' \
-      -e 's#(^|[[:space:]:=])([A-Za-z0-9_$#.-]+)/[^@/[:space:]]+@#\1\2/***REDACTED***@#g'
+      -e 's#(^|[[:space:]:="(\x27])([A-Za-z0-9_$#.-]+)/[^@/[:space:]"]+@#\1\2/***REDACTED***@#g'
   else cat; fi
 }
 

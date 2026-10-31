@@ -1,0 +1,25 @@
+# incident-pack.conf - copy next to the script (or ~/.incident-pack.conf). All optional; the shared ../oracle.conf
+# is read too (ORACLE_HOME/ORACLE_BASE, SQL_CONNECT, ORDS_*, OGG_HOME, GG_DEPLOY_DIRS and friends are honoured).
+
+# Where packs are built; the tarball lands next to the directory
+#PACK_OUT=/u01/backup/incident-pack
+
+# Default window (hours back from now) and the size kept of any one log/trace file (its last N MB)
+#PACK_HOURS=24
+#PACK_CAP_MB=100
+
+# OSWatcher archive when it is not under AHF (/u01/app/oracle.ahf/data/<host>/oswbb/archive) or a common path
+#OSW_ARCHIVE=/u01/app/oracle/oswbb/archive
+
+# tfactl diagcollect is used when AHF/TFA is installed; its time limit in seconds
+#TFA_TIMEOUT=1800
+
+# Extra files or directories to include (directories: files modified inside the window, 100 max)
+#EXTRA_FILES=/u01/app/oracle/scripts/logs,/etc/sysconfig/oracle
+
+# Extra timestamped logs to cut to the window: file=format, formats alert (ISO), listener (DD-MON-YYYY), wls (####<...>),
+# iso (YYYY-MM-DD HH:MM:SS at line start), syslog (Mon DD HH:MM:SS)
+#EXTRA_LOGS=/u01/app/oracle/diag/tnslsnr/dbhost01/listener_scan1/trace/listener_scan1.log=listener
+
+# ORDS log directory when it is not next to the config
+#ORDS_LOG_DIR=/var/log/ords
