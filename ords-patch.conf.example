@@ -25,3 +25,18 @@
 
 #RUN_BASE=/u01/backup/ords-patch/runs
 #START_TIMEOUT=300
+
+# --- ORDS deployed inside WebLogic (ords.war) -------------------------------
+# Detected automatically from the domain's config.xml (an app whose source is ords.war or apex.war).
+# The config dir is read from the war (ords --config X war) or from -Dconfig.url in the server's JVM options.
+#WLS_ORACLE_HOME=/u01/app/oracle/product/fmw      # found via oraInst.loc normally
+#WLS_DOMAIN_HOME=/u01/app/oracle/config/domains/apex_domain
+#WLS_ORDS_APP=ords                                 # deployment name, if there is more than one
+#WLS_ADMIN_URL=t3://localhost:7001
+# Admin credentials for weblogic.Deployer. Preferred: files made once with WLST
+#   connect('weblogic','pw','t3://localhost:7001'); storeUserConfig('/home/oracle/.wls.cfg','/home/oracle/.wls.key')
+#WLS_USERCONFIG=/home/oracle/.wls.cfg
+#WLS_USERKEY=/home/oracle/.wls.key
+# ... or plain (visible to 'ps' while the deployer runs):
+#WLS_ADMIN_USER=weblogic
+#WLS_ADMIN_PASSWORD=xxxx

@@ -30,3 +30,12 @@
 
 #RUN_BASE=/u01/backup/apex-patch/runs
 #START_TIMEOUT=300
+
+# --- ORDS deployed inside WebLogic ------------------------------------------
+# Detected from the domain's config.xml: the images directory is read from i.war's weblogic.xml and the
+# 'ords' app is stopped/started with weblogic.Deployer around the upgrade. Same keys as ords-patch.conf:
+#WLS_ORACLE_HOME=/u01/app/oracle/product/fmw
+#WLS_DOMAIN_HOME=/u01/app/oracle/config/domains/apex_domain
+#WLS_ADMIN_URL=t3://localhost:7001
+#WLS_USERCONFIG=/home/oracle/.wls.cfg
+#WLS_USERKEY=/home/oracle/.wls.key

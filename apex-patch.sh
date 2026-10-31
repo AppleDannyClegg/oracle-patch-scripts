@@ -35,7 +35,9 @@
 #   SQL_CMD ("sqlplus -S" or "sql -S"), SQL_CONNECT ("/ as sysdba" or "sys/pw@//host/svc as sysdba"),
 #   ORACLE_HOME, ORACLE_SID, PDB, APEX_BASE, APEX_IMAGES_DIR, APEX_TS, APEX_FILES_TS, APEX_TEMP_TS,
 #   APEX_INSTALL_TYPE (full|runtime), ORDS_HOME, ORDS_CONFIG, ORDS_SERVICE, ORDS_STOP_CMD,
-#   ORDS_START_CMD, ORDS_URL, RUN_BASE, START_TIMEOUT
+#   ORDS_START_CMD, ORDS_URL, RUN_BASE, START_TIMEOUT. ORDS inside WebLogic is detected from the domain
+#   (images dir read from i.war, app stopped/started with weblogic.Deployer): WLS_ORACLE_HOME,
+#   WLS_DOMAIN_HOME, WLS_ADMIN_URL, WLS_USERCONFIG+WLS_USERKEY or WLS_ADMIN_USER+WLS_ADMIN_PASSWORD
 
 set -o pipefail
 VERSION="1.0.0"
@@ -138,10 +140,75 @@ run_sql_script() {
      "${PDB:+alter session set container=$PDB;}" "$script" "$*" | $SQL_CMD "${SQL_CONNECT:-/ as sysdba}") >>"$LOG_FILE" 2>&1
 }
 
+
+# ---------------------------------------------------------------------------
+# ORDS deployed inside WebLogic (ords.war + i.war) - detected from the domain's config.xml
+# ---------------------------------------------------------------------------
+WLS_MODE=0; WLS_ORDS_APP=""; WLS_ORDS_WAR=""; WLS_I_WAR=""; WLS_DOMAIN_HOME=""; WLS_ORACLE_HOME=""; WLS_TARGET_PORT=""
+wls_discover() {
+  [ -n "${WLS_ORACLE_HOME:-}" ] || WLS_ORACLE_HOME="${MW_HOME:-}"
+  if [ -z "$WLS_ORACLE_HOME" ]; then
+    local inv h
+    for inv in /etc/oraInst.loc /var/opt/oracle/oraInst.loc; do
+      [ -f "$inv" ] || continue
+      inv="$(sed -n 's/^inventory_loc=//p' "$inv")/ContentsXML/inventory.xml"; [ -f "$inv" ] || continue
+      for h in $(sed -n 's/.*<HOME NAME="[^"]*" LOC="\([^"]*\)".*/\1/p' "$inv"); do [ -d "$h/wlserver" ] && { WLS_ORACLE_HOME="$h"; break; }; done
+    done
+  fi
+  [ -z "$WLS_ORACLE_HOME" ] && for h in /u01/app/oracle/product/*/fmw* /u01/app/oracle/middleware* /u01/oracle/* /opt/oracle/*; do [ -d "$h/wlserver" ] && { WLS_ORACLE_HOME="$h"; break; }; done
+  if [ -z "${WLS_DOMAIN_HOME:-}" ]; then
+    [ -f "$WLS_ORACLE_HOME/domain-registry.xml" ] && WLS_DOMAIN_HOME="$(sed -n 's/.*<domain location="\([^"]*\)".*/\1/p' "$WLS_ORACLE_HOME/domain-registry.xml" | head -1)"
+    [ -z "$WLS_DOMAIN_HOME" ] && for d in "$WLS_ORACLE_HOME"/user_projects/domains/*; do [ -f "$d/config/config.xml" ] && { WLS_DOMAIN_HOME="$d"; break; }; done
+  fi
+  local cfg="$WLS_DOMAIN_HOME/config/config.xml"; [ -f "$cfg" ] || return 1
+  # app-deployment blocks: name + source-path + target
+  local blocks; blocks="$(awk '/<app-deployment>/{b="";ina=1} ina{b=b $0} /<\/app-deployment>/{ina=0; print b}' "$cfg")"
+  local line name src tgt
+  while read -r line; do
+    name="$(printf '%s' "$line" | sed -n 's/.*<name>\([^<]*\)<\/name>.*/\1/p')"; src="$(printf '%s' "$line" | sed -n 's/.*<source-path>\([^<]*\)<\/source-path>.*/\1/p')"; tgt="$(printf '%s' "$line" | sed -n 's/.*<target>\([^<]*\)<\/target>.*/\1/p')"
+    [ "${src:0:1}" = / ] || src="$WLS_DOMAIN_HOME/$src"
+    case "$src" in *ords.war|*apex.war) [ -n "${WLS_ORDS_APP:-}" ] && [ "$WLS_ORDS_APP" != "$name" ] && continue; WLS_MODE=1; WLS_ORDS_APP="$name"; WLS_ORDS_WAR="$src"; WLS_TARGET="${tgt%%,*}";; esac
+    case "$src" in *i.war) WLS_I_WAR="$src";; esac
+  done <<<"$blocks"
+  [ "$WLS_MODE" = 1 ] || return 1
+  # config dir: embedded in the war (ords --config X war) or -Dconfig.url on the managed server
+  if [ -z "${ORDS_CONFIG:-}" ]; then
+    ORDS_CONFIG="$(unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null | tr -d '\n' | sed -n 's/.*config\.url<\/param-name>[^<]*<param-value>\([^<]*\)<.*/\1/p')"
+    [ -z "$ORDS_CONFIG" ] && ORDS_CONFIG="$(grep -rhoE 'config\.url=[^ "<]+' "$WLS_DOMAIN_HOME/bin" "$cfg" 2>/dev/null | head -1 | cut -d= -f2)"
+  fi
+  # images dir from i.war's weblogic.xml
+  if [ -z "${APEX_IMAGES_DIR:-}" ] && [ -f "$WLS_I_WAR" ]; then
+    APEX_IMAGES_DIR="$(unzip -p "$WLS_I_WAR" WEB-INF/weblogic.xml 2>/dev/null | sed -n 's/.*<local-path>\([^<]*\)<.*/\1/p' | head -1)"
+  fi
+  # admin url + the target's listen port, for defaults
+  local aport; aport="$(awk -v a="$(sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$cfg" | head -1)" '
+    /<server>/{inb=1;inssl=0;n="";p=""} inb&&/<ssl>/{inssl=1} inb&&/<\/ssl>/{inssl=0}
+    inb&&n==""&&match($0,/<name>[^<]*<\/name>/){n=substr($0,RSTART+6,RLENGTH-13)}
+    inb&&!inssl&&p==""&&match($0,/<listen-port>[^<]*<\/listen-port>/){p=substr($0,RSTART+13,RLENGTH-27)}
+    inb&&/<\/server>/{inb=0; if(n==a) print (p==""?"7001":p); if(n==T) print "T=" (p==""?"7001":p)}' T="${WLS_TARGET:-}" "$cfg")"
+  WLS_TARGET_PORT="$(printf '%s\n' "$aport" | sed -n 's/^T=//p')"; aport="$(printf '%s\n' "$aport" | grep -v '^T=' | head -1)"
+  [ -z "${WLS_ADMIN_URL:-}" ] && WLS_ADMIN_URL="t3://localhost:${aport:-7001}"
+  [ -z "${ORDS_URL:-}" ] && ORDS_URL="http://localhost:${WLS_TARGET_PORT:-${aport:-7001}}/${WLS_ORDS_APP}/"
+  return 0
+}
+# wls_deployer <args>: java weblogic.Deployer with the domain's environment and admin credentials
+wls_deployer() {
+  local creds=()
+  if [ -n "${WLS_USERCONFIG:-}" ] && [ -n "${WLS_USERKEY:-}" ]; then creds=(-userconfigfile "$WLS_USERCONFIG" -userkeyfile "$WLS_USERKEY")
+  elif [ -n "${WLS_ADMIN_USER:-}" ] && [ -n "${WLS_ADMIN_PASSWORD:-}" ]; then creds=(-username "$WLS_ADMIN_USER" -password "$WLS_ADMIN_PASSWORD")
+  else err "WebLogic admin credentials needed: set WLS_USERCONFIG+WLS_USERKEY (preferred) or WLS_ADMIN_USER+WLS_ADMIN_PASSWORD"; return 1; fi
+  log "CMD: java weblogic.Deployer -adminurl $WLS_ADMIN_URL $*"
+  [ "$DRY_RUN" = 1 ] && return 0
+  ( # shellcheck disable=SC1091
+    . "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" >/dev/null 2>&1
+    exec java weblogic.Deployer -adminurl "$WLS_ADMIN_URL" "${creds[@]}" -noexit "$@" ) >>"$LOG_FILE" 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # discovery
 # ---------------------------------------------------------------------------
 ords_detect() {
+  wls_discover || true
   if [ -z "${ORDS_HOME:-}" ]; then
     local c; c="$(command -v ords 2>/dev/null)"; [ -n "$c" ] && ORDS_HOME="$(cd "$(dirname "$(readlink -f "$c")")/.." && pwd)"
   fi
@@ -149,12 +216,14 @@ ords_detect() {
   [ -z "${ORDS_CONFIG:-}" ] && for d in /etc/ords/config /opt/oracle/ords/config "${ORDS_HOME:-/nonexistent}/config"; do [ -f "$d/global/settings.xml" ] && { ORDS_CONFIG="$d"; break; }; done
   if [ -n "${ORDS_HOME:-}" ] && [ -x "$ORDS_HOME/bin/ords" ]; then
     ORDS_VER="$("$ORDS_HOME/bin/ords" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  elif [ "$WLS_MODE" = 1 ]; then
+    ORDS_VER="$(unzip -p "$WLS_ORDS_WAR" META-INF/MANIFEST.MF 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   fi
   if [ -z "${APEX_IMAGES_DIR:-}" ] && [ -f "${ORDS_CONFIG:-/nonexistent}/global/settings.xml" ]; then
     APEX_IMAGES_DIR="$(sed -n 's/.*key="standalone.static.path">\([^<]*\)<.*/\1/p' "$ORDS_CONFIG/global/settings.xml" | head -1)"
   fi
   [ -z "${ORDS_URL:-}" ] && ORDS_URL="http://localhost:8080/ords/"
-  ORDS_RUNNING="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null | head -1)"
+  if [ "$WLS_MODE" = 1 ]; then ORDS_RUNNING="$(wait_for_url "$ORDS_URL" 1 && echo wls)"; else ORDS_RUNNING="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null | head -1)"; fi
   [ -n "${APEX_IMAGES_DIR:-}" ] && [ -f "$APEX_IMAGES_DIR/apex_version.txt" ] && IMAGES_VER="$(grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' "$APEX_IMAGES_DIR/apex_version.txt" | head -1)"
 }
 
@@ -205,7 +274,7 @@ APEX version     : ${APEX_VER:-not installed}  schema ${APEX_SCHEMA:-?}  registr
 APEX patches     :
 $(printf '%s\n' "${APEX_PATCHES:-  (none)}" | sed 's/^/  /')
 Releases on disk : $(ls -d "$APEX_BASE"/apex_*/apex 2>/dev/null | sed 's#.*/apex_\([^/]*\)/apex#\1#' | tr '\n' ' ')
-ORDS             : ${ORDS_HOME:-not found}  version ${ORDS_VER:-?}  config ${ORDS_CONFIG:-?}  $([ -n "$ORDS_RUNNING" ] && echo running || echo stopped)  $ORDS_URL
+ORDS             : $([ "$WLS_MODE" = 1 ] && echo "in WebLogic (app '$WLS_ORDS_APP', $WLS_ORDS_WAR)" || echo "${ORDS_HOME:-not found}")  version ${ORDS_VER:-?}  config ${ORDS_CONFIG:-?}  $([ -n "$ORDS_RUNNING" ] && echo running || echo stopped)  $ORDS_URL
 Images dir       : ${APEX_IMAGES_DIR:-unknown}  (images version ${IMAGES_VER:-unknown})
 Restore points   :
 $(printf '%s\n' "${RESTORE_POINTS:-  (none)}" | sed 's/^/  /')
@@ -337,6 +406,7 @@ ords_stop() {
   ords_detect
   [ -n "$ORDS_RUNNING" ] || { log "ORDS not running on this host"; return 0; }
   if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"
+  elif [ "$WLS_MODE" = 1 ]; then wls_deployer -stop -name "$WLS_ORDS_APP" && { ORDS_RUNNING=""; state_set app_stopped 1; log "app $WLS_ORDS_APP stopped"; }; return $?
   elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
   else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING"; fi
   local t=60; while [ "$DRY_RUN" = 0 ] && [ $t -gt 0 ] && kill -0 "$ORDS_RUNNING" 2>/dev/null; do sleep 5; t=$((t - 5)); done
@@ -347,6 +417,7 @@ ords_start() {
   ords_detect
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }
   if [ -n "${ORDS_START_CMD:-}" ]; then run_sh "$ORDS_START_CMD"
+  elif [ "$WLS_MODE" = 1 ]; then wls_deployer -start -name "$WLS_ORDS_APP" || return 1; state_set app_stopped 0
   elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service --all 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl start ${ORDS_SERVICE:-ords}"
   elif [ -n "${ORDS_HOME:-}" ] && [ -n "${ORDS_CONFIG:-}" ]; then run_sh "nohup '$ORDS_HOME/bin/ords' --config '$ORDS_CONFIG' serve >'$RUN_DIR/ords.out' 2>&1 &"
   else warn "Do not know how to start ORDS here (set ORDS_START_CMD or ORDS_SERVICE)"; return 0; fi
@@ -386,6 +457,7 @@ cmd_apply() {
   [ -n "$ver" ] || die "apply needs a version"
   local src; src="$(src_dir_for "$ver")"
   [ -f "$src/apexins.sql" ] || die "Source for $ver not found at $src (run download)"
+  [ "$WLS_MODE" = 1 ] && [ "$(state_get app_stopped || true)" = 1 ] && ORDS_RUNNING=""   # stopped via weblogic.Deployer in this run
   [ -z "$ORDS_RUNNING" ] || { [ "$DRY_RUN" = 1 ] || die "ORDS is still running - run 'stop' first (or use 'run')"; }
   local script="apexins.sql"; [ "$APEX_TYPE" = runtime ] && script="apxrtins.sql"
   state_set apply_started "$ver"
@@ -415,7 +487,7 @@ cmd_verify() {
   if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -n "$want" ]; then
     [ -f "$APEX_IMAGES_DIR/apex_version.txt" ] && ! grep -q "$want" "$APEX_IMAGES_DIR/apex_version.txt" && { err "images dir still holds $IMAGES_VER, not $want"; ok=0; }
   fi
-  if [ -n "${ORDS_HOME:-}" ] || [ -n "${ORDS_START_CMD:-}" ]; then
+  if [ -n "${ORDS_HOME:-}" ] || [ -n "${ORDS_START_CMD:-}" ] || [ "$WLS_MODE" = 1 ]; then
     wait_for_url "$ORDS_URL" 30 && log "ORDS answers at $ORDS_URL" || { err "ORDS not answering at $ORDS_URL"; ok=0; }
   fi
   [ $ok = 1 ] && { log "VERIFY PASSED"; state_set verified 1; } || { err "VERIFY FAILED"; state_set verified 0; }
@@ -518,7 +590,7 @@ cmd_run() {
   return 1
 }
 
-usage() { sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
 main() {
   local cmd="" args=()
   while [ $# -gt 0 ]; do
