@@ -339,6 +339,10 @@ nodemanager_pid() { ps_pid_args | awk '$2 ~ /java$/ && /weblogic\.NodeManager/ {
 # wls_datasources <domain>: "file jndi user url" per JDBC module (url with password redacted)
 wls_datasources() { local f; for f in "$1"/config/jdbc/*.xml; do [ -f "$f" ] || continue; printf '%s %s %s %s\n' "$(basename "$f")" "$(grep -oE '<jndi-name>[^<]*' "$f" | head -1 | sed 's/<[^>]*>//')" "$(grep -oE '<name>user</name>[[:space:]]*<value>[^<]*' "$f" | sed 's/.*<value>//' | head -1)" "$(grep -oE '<url>[^<]*' "$f" | sed 's/<[^>]*>//' | redact)"; done; }
 
+# ords_setting <key>: a standalone setting from global/standalone/standalone.properties (ORDS <= 21) or global/settings.xml (22+)
+ords_setting() { local v; v="$(sed -n "s/^$1=//p" "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; [ -z "$v" ] && v="$(sed -n "s/.*<entry key=\"$1\">\([^<]*\)<.*/\1/p" "${ORDS_CONFIG:-/nonexistent}/global/settings.xml" 2>/dev/null | head -1)"; printf '%s' "$v"; }
+# url_sni_rejected <url>: 0 when an https URL gets Jetty's "400 Invalid SNI" - the host in the URL is not in the certificate (ORDS 22+ standalone checks SNI)
+url_sni_rejected() { case "$1" in https://*) local b; b="$(curl -sk -m 15 "$1" 2>/dev/null)"; grep -qi 'Invalid SNI' <<<"$b";; *) return 1;; esac; }
 # ords_detect: sets ORDS_HOME ORDS_CONFIG ORDS_PID ORDS_VER ORDS_URL ORDS_POOLS (0 = found something)
 # shellcheck disable=SC2034
 ords_detect() {
@@ -348,12 +352,13 @@ ords_detect() {
   [ -z "${ORDS_CONFIG:-}" ] && [ -n "$ORDS_PID" ] && ORDS_CONFIG="$(tr '\0' ' ' <"/proc/$ORDS_PID/cmdline" 2>/dev/null | sed -n 's/.*--config \([^ ]*\).*/\1/p; s/.*-Dconfig.url=\([^ ]*\).*/\1/p' | head -1)"
   [ -z "${ORDS_CONFIG:-}" ] && for d in /etc/ords/config /opt/oracle/ords/config "${ORDS_HOME:-/nonexistent}/config" "$(dirname "$(readlink -f "${ORDS_HOME:-/nonexistent}" 2>/dev/null || echo /nonexistent)")/config"; do [ -f "$d/global/settings.xml" ] && { ORDS_CONFIG="$d"; break; }; done
   ORDS_VER=""; [ -x "${ORDS_HOME:-}/bin/ords" ] && ORDS_VER="$(to 60 "$ORDS_HOME/bin/ords" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-  if [ -z "${ORDS_URL:-}" ]; then local port; port="$(sed -n 's/^standalone.http.port=//p' "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; local sport; sport="$(sed -n 's/^standalone.https.port=//p' "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; if [ -n "$sport" ]; then ORDS_URL="https://localhost:$sport/ords/"; else ORDS_URL="http://localhost:${port:-8080}/ords/"; fi; fi
+  # https goes by hostname, not localhost: ORDS 22+ (Jetty) answers 400 "Invalid SNI" when the URL host is not in the certificate
+  if [ -z "${ORDS_URL:-}" ]; then local port sport; port="$(ords_setting standalone.http.port)"; sport="$(ords_setting standalone.https.port)"; if [ -n "$sport" ]; then ORDS_URL="https://$(hostname -f 2>/dev/null || echo "$HOST"):$sport/ords/"; else ORDS_URL="http://localhost:${port:-8080}/ords/"; fi; fi
   ORDS_POOLS="$(ls "${ORDS_CONFIG:-/nonexistent}/databases" 2>/dev/null | tr '\n' ' ')"
   [ -n "${ORDS_HOME:-}" ] || [ -n "$ORDS_PID" ]
 }
 ords_pool_user() { sed -n 's/.*<entry key="db.username">\([^<]*\)<.*/\1/p' "$ORDS_CONFIG/databases/$1/pool.xml" 2>/dev/null | head -1; }
-ords_images_dir() { local i; i="$(sed -n 's/^standalone.static.path=//p' "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; [ -z "$i" ] && i="${APEX_IMAGES_DIR:-}"; printf '%s' "$i"; }
+ords_images_dir() { local i; i="$(ords_setting standalone.static.path)"; [ -z "$i" ] && i="${APEX_IMAGES_DIR:-}"; printf '%s' "$i"; }
 ords_service() { systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -i ords | head -1; }
 
 # ogg_detect: sets OGG_HOME (classic) and OGG_MA=1 when Microservices processes exist

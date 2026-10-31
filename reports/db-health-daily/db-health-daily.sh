@@ -213,7 +213,9 @@ check_middleware() {
   if ords_detect; then
     local code; code="$(url_code "$ORDS_URL")"; kv "ORDS" "pid ${ORDS_PID:-NOT RUNNING}, $ORDS_URL -> HTTP ${code:-none}"
     [ -z "$ORDS_PID" ] && finding CRIT ords "ORDS not running"
-    case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS 503 at $ORDS_URL (pool down: locked user / DB / listener)";; *) [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP ${code:-none} at $ORDS_URL";; esac
+    case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS 503 at $ORDS_URL (pool down: locked user / DB / listener)";;
+      400) if url_sni_rejected "$ORDS_URL"; then finding WARN ords "ORDS rejects $ORDS_URL with 400 Invalid SNI: the host in the URL is not in its certificate - set ORDS_URL to the certificate's hostname (ORDS itself is up)"; else [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP 400 at $ORDS_URL"; fi;;
+      *) [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP ${code:-none} at $ORDS_URL";; esac
   fi
   local h d; for h in $(wls_homes); do for d in $(wls_domains "$h"); do
     local cfg="$d/config/config.xml" running; running="$(wls_running "$d")"

@@ -53,6 +53,10 @@ skipped() { case "$SKIP" in *" $1 "*) return 0;; esac; return 1; }
 
 # to <secs> <cmd...>: run with a timeout when 'timeout' exists; never lets a hung tool hang the report
 to() { local s="$1"; shift; if [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 5 "$s" "$@"; else "$@"; fi; }
+# ords_setting <key>: a standalone setting from global/standalone/standalone.properties (ORDS <= 21) or global/settings.xml (22+) - same as lib/oracle-lib.sh, this script stays self-contained
+ords_setting() { local v; v="$(sed -n "s/^$1=//p" "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; [ -z "$v" ] && v="$(sed -n "s/.*<entry key=\"$1\">\([^<]*\)<.*/\1/p" "${ORDS_CONFIG:-/nonexistent}/global/settings.xml" 2>/dev/null | head -1)"; printf '%s' "$v"; }
+# url_sni_rejected <url>: 0 when an https URL gets Jetty's "400 Invalid SNI" - the host in the URL is not in the certificate (ORDS 22+ standalone checks SNI); body read into a variable so grep -q cannot SIGPIPE curl under pipefail
+url_sni_rejected() { case "$1" in https://*) local b; b="$(curl -sk -m 15 "$1" 2>/dev/null)"; grep -qi 'Invalid SNI' <<<"$b";; *) return 1;; esac; }
 
 # finding <CRIT|WARN|INFO> <area> <text>
 # Findings go to $OUT/findings.txt, not only to a variable: most are raised inside "cmd | while read" loops,
@@ -623,10 +627,11 @@ diag_ords() {
   fi
   h2 "ORDS endpoint check"
   local url="${ORDS_URL:-}"
-  [ -z "$url" ] && { local port; port="$(sed -n 's/^standalone.http.port=//p' "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; url="http://localhost:${port:-8080}/ords/"; }
-  section_sh ords_curl "for u in '$url' '${url%/}/_/landing' '${url%/}/r/apex' '${url%/}/apex' '${url%/}/../i/apex_version.txt' '${url%/}/_/db-api/stable/metadata-catalog/'; do printf '%-70s ' \"\$u\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s %{redirect_url}\n' \"\$u\" 2>&1 || echo 'curl failed'; done; echo; echo 'TLS certificate (if https):'; echo | openssl s_client -connect \$(echo '$url' | sed -E 's#https?://([^/]+).*#\1#' | sed 's/$/:443/;s/:[0-9]*:443$/:443/') -servername localhost 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null"
+  [ -z "$url" ] && { local port sport; port="$(ords_setting standalone.http.port)"; sport="$(ords_setting standalone.https.port)"; if [ -n "$sport" ]; then url="https://$(hostname -f 2>/dev/null || echo "$HOST"):$sport/ords/"; else url="http://localhost:${port:-8080}/ords/"; fi; }
+  local uhost; uhost="$(printf '%s' "$url" | sed -E 's#https?://([^/:]+).*#\1#')"; local uhp; uhp="$(printf '%s' "$url" | sed -E 's#https?://([^/]+).*#\1#')"; case "$uhp" in *:*) ;; *) uhp="$uhp:443";; esac
+  section_sh ords_curl "for u in '$url' '${url%/}/_/landing' '${url%/}/r/apex' '${url%/}/apex' '${url%/}/../i/apex_version.txt' '${url%/}/_/db-api/stable/metadata-catalog/'; do printf '%-70s ' \"\$u\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s %{redirect_url}\n' \"\$u\" 2>&1 || echo 'curl failed'; done; echo; echo 'TLS certificate (if https):'; echo | openssl s_client -connect '$uhp' -servername '$uhost' 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null"
   local code; code="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$url" 2>/dev/null)"
-  case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS answers 503 at $url - usually the database pool is down (locked user, wrong password, DB/listener down)";; 404) finding WARN ords "ORDS answers 404 at $url - running but the pool/APEX path may be wrong";; 000|"") [ -n "$pid" ] && finding CRIT ords "ORDS process is running but $url does not answer";; *) finding WARN ords "ORDS answers HTTP $code at $url";; esac
+  case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS answers 503 at $url - usually the database pool is down (locked user, wrong password, DB/listener down)";; 404) finding WARN ords "ORDS answers 404 at $url - running but the pool/APEX path may be wrong";; 400) if url_sni_rejected "$url"; then finding WARN ords "ORDS rejects $url with 400 Invalid SNI - the host in the URL is not in its certificate; use the certificate's hostname in ORDS_URL (ORDS itself is up)"; else finding WARN ords "ORDS answers HTTP 400 at $url"; fi;; 000|"") [ -n "$pid" ] && finding CRIT ords "ORDS process is running but $url does not answer";; *) finding WARN ords "ORDS answers HTTP $code at $url";; esac
   [ "$THREADS" = 1 ] && [ -n "$pid" ] && jvm_threads "ords" "$pid"
 }
 
