@@ -364,7 +364,7 @@ ggsci() {
 java_version_of() { "$1/bin/java" -version 2>&1 | head -1 | sed -n 's/.*version "\([^"]*\)".*/\1/p'; }
 java_major_of() { local v; v="$(java_version_of "$1")"; local j="${v%%.*}"; [ "$j" = 1 ] && { j="${v#1.}"; j="${j%%.*}"; }; printf '%s' "$j"; }
 java_homes() { # every JDK referenced by something on the host, one per line
-  { local h; for h in $(wls_homes); do wls_java_home "$h"; done
+  { local h; for h in $(wls_homes); do wls_java_home "$h"; echo; done
     ps -eo pid,args 2>/dev/null | awk '$2 ~ /\/bin\/java$/ {print $2}' | sed 's#/bin/java$##' | while read -r j; do readlink -f "$j" 2>/dev/null || echo "$j"; done
     [ -n "${JAVA_HOME:-}" ] && echo "$JAVA_HOME"
     ls -d /usr/java/jdk* /usr/java/latest /usr/lib/jvm/* /opt/java/* /u01/app/oracle/jdk* /u01/jdk* 2>/dev/null

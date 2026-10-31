@@ -1,0 +1,50 @@
+# cert-renew.conf - copy next to the script (or ~/.cert-renew.conf), chmod 600: it holds keystore passwords.
+# All optional; the shared ../oracle.conf is read too. Command-line options win over this file.
+
+# Passwords tried, in order, on every existing keystore/cacerts found by inspect (the demo pass phrases and
+# 'changeit' are always tried). A JKS lists its certificates without a password; a PKCS12 does not.
+#KS_PASSWORDS=oldpass1,anotherpass
+
+# WebLogic: password and type of the NEW identity keystore apply builds, admin URL and credentials for WLST
+#WLS_KS_PASS=...
+#WLS_KS_TYPE=JKS                         # or PKCS12 (12.2.1.3+)
+#WLS_ADMIN_URL=t3://localhost:7001
+#WLS_USERCONFIG=/home/oracle/.wls/userconfig   # from storeUserConfig() in WLST (preferred: no password here)
+#WLS_USERKEY=/home/oracle/.wls/userkey
+#WLS_ADMIN_USER=weblogic                 # else: prompted for WLS_ADMIN_PASSWORD (or set it here, mode 600)
+#WLS_ADMIN_PASSWORD=...
+
+# Oracle wallets (listener / database TCPS, OHS): password of ewallet.p12 (inspect reads it with openssl; apply
+# creates the new wallet with it). orapki is found in ORACLE_HOME / the listener home / grid home, or set ORAPKI.
+#WALLET_PASSWORD=...
+#ORAPKI=/u01/app/oracle/product/19.0.0/dbhome_1/bin/orapki
+
+# Java cacerts password (default changeit); password of --key when it is encrypted
+#CACERTS_PASSWORD=changeit
+#KEY_PASSWORD=...
+
+# csr: where keys/CSRs are written, and the rest of the subject after the CN
+#CERT_DIR=/u01/app/oracle/certs
+#CSR_SUBJECT_SUFFIX="/O=Bank plc/L=Manchester/C=GB"
+
+# The name every server certificate must cover (CN or SAN); default: hostname -f
+#CHECK_HOST=dbhost01.bank.example
+
+# More ports to probe with openssl in inspect; where GoldenGate MA deployments and OKV endpoints live
+#EXTRA_PORTS=9443,7102
+#GG_DEPLOY_DIRS=/u01/app/oracle/gg_deployments
+#OKV_DIRS=/u01/app/oracle/okv
+
+# What restarts a target after apply (--restart; the listener is always reloaded). key=command, comma separated.
+# Keys: wls:<domain>:<server>, wls:<domain>, nm:<domain>, ords, listener, ohs:<instance>
+#RESTART_CMDS="ords=sudo -n systemctl restart ords,wls:base_domain:ms1=/u01/app/oracle/scripts/restart_ms1.sh"
+#ORDS_SERVICE=ords                       # used for ords when RESTART_CMDS has no ords= entry
+#ORDS_HTTPS_PORT=8443                    # added to standalone.properties when ORDS has no https port yet
+
+# Thresholds for inspect findings and the port scan cap
+#WARN_DAYS=30
+#INFO_DAYS=90
+#PORT_LIMIT=100
+
+#CERT_OUT=/u01/backup/cert-renew          # inspect --report output
+#RUN_BASE=/u01/backup/cert-renew/runs
