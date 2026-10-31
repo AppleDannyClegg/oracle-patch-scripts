@@ -28,19 +28,20 @@ recent one. The last line of `run` is either `SUCCESS ...` or an error naming th
 
 ## Running each script
 
-All four are single files: copy the script (and its `*.conf` if you made one) to the server, make
-it executable, run it as the Oracle software owner. Every command prints what it found or did, and
+Each script lives in its own folder with its `*.conf.example` and guide: copy the folder to the
+server, make the script executable, run it from inside that folder as the Oracle software owner. Every command prints what it found or did, and
 `run` asks before it changes anything unless you add `--yes`.
 
 ```bash
-scp wls-patch.sh apex-patch.sh ords-patch.sh oracle-diag.sh oracle@server:~/
+scp -r wls-patch apex-patch ords-patch oracle-diag oracle@server:~/
 ssh oracle@server
-chmod +x *.sh
+chmod +x ~/*/*.sh
 ```
 
 ### 1. WebLogic (`wls-patch.sh`) — on the WebLogic server
 
 ```bash
+cd ~/wls-patch
 cp wls-patch.conf.example wls-patch.conf     # first time: My Oracle Support login (or put it in ~/.netrc)
 ./wls-patch.sh inspect                       # version, PSU level, OPatch, JDK, domain, running servers
 ./wls-patch.sh plan --latest                 # which PSU / Coherence patch would be applied
@@ -55,6 +56,7 @@ and skip the `download` step. Extra bundle patches (ADF, OPSS, OWSM) go in by nu
 ### 2. APEX (`apex-patch.sh`) — on the database server, as `oracle`
 
 ```bash
+cd ~/apex-patch
 cp apex-patch.conf.example apex-patch.conf   # only if sqlplus / the PDB / images dir need a hint
 ./apex-patch.sh inspect                      # APEX version, schema, PDB, ORDS, images dir, newest release
 ./apex-patch.sh plan                         # from -> to, script, images dir, rollback path
@@ -67,6 +69,7 @@ cp apex-patch.conf.example apex-patch.conf   # only if sqlplus / the PDB / image
 ### 3. ORDS (`ords-patch.sh`) — on the host that runs ORDS
 
 ```bash
+cd ~/ords-patch
 cp ords-patch.conf.example ords-patch.conf   # ORDS_HOME/ORDS_CONFIG, SYS password, WebLogic creds if deployed there
 ./ords-patch.sh inspect                      # standalone or in WebLogic, version, Java, pools, running?
 ./ords-patch.sh plan                         # what 'run' would do (downloads the zip to learn the exact version)
@@ -77,6 +80,7 @@ cp ords-patch.conf.example ords-patch.conf   # ORDS_HOME/ORDS_CONFIG, SYS passwo
 ### 4. Health check (`oracle-diag.sh`) — any Oracle host, read-only
 
 ```bash
+cd ~/oracle-diag
 ./oracle-diag.sh                             # writes ~/oracle-diag/<host>_<timestamp>/REPORT.md and a .tar.gz
 ./oracle-diag.sh --days 7 --pdb APEXPDB      # longer look-back, include one PDB's queries
 ./oracle-diag.sh --skip wls --no-tar         # leave out a component, keep the folder only
