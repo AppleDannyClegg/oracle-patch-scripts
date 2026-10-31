@@ -18,8 +18,8 @@ Run these on the WebLogic server as the `oracle` user, from the folder with the 
 # 1. What have I got?                      (changes nothing)
 ./wls-patch.sh inspect
 
-# 2. What is Oracle offering for it?       (changes nothing, needs the MOS login)
-./wls-patch.sh latest
+# 2. What would be applied?                (changes nothing; needs the MOS login for --latest)
+./wls-patch.sh plan --latest              # or: ./wls-patch.sh plan /u01/patches/latest
 
 # 3. Would it work?                        (downloads only; checks everything; changes nothing on WebLogic)
 ./wls-patch.sh download /u01/patches/latest --patches latest
@@ -181,8 +181,8 @@ APEX lives inside the database, so this runs on the database server as `oracle` 
 SQL*Plus/SQLcl can connect as SYS). Downloads are public (no My Oracle Support login).
 
 ```bash
-./apex-patch.sh inspect        # APEX version/schema/type, DB, ORDS, images dir, restore points
-./apex-patch.sh latest         # newest release on download.oracle.com vs installed
+./apex-patch.sh inspect        # APEX version/schema/type, DB, ORDS, images dir, restore points, newest release
+./apex-patch.sh plan           # exactly what 'run' would do: from -> to, script, images dir, ORDS, rollback
 ./apex-patch.sh preflight 26.2 # checks + plan, changes nothing (after 'download 26.2' or let 'run' do it)
 ./apex-patch.sh run            # latest > download > preflight > backup > stop ORDS > apexins > images > start > verify
 ```
@@ -206,8 +206,8 @@ Not covered: fresh installs, APEX in `CDB$ROOT`, the "maximum uptime" three-phas
 Runs on the host where ORDS runs, as the ORDS owner. Download is public (`ords-latest.zip`).
 
 ```bash
-./ords-patch.sh inspect     # product dir, version, Java, config, pools, running?
-./ords-patch.sh latest      # downloads ords-latest.zip, unpacks it, tells you the version
+./ords-patch.sh inspect     # mode (standalone / in WebLogic), version, Java, config, pools, running?
+./ords-patch.sh plan        # exactly what 'run' would do; 'latest' downloads the zip to learn the exact version
 ./ords-patch.sh preflight   # Java pairing, config, pools, admin password, disk
 ./ords-patch.sh run         # latest > preflight > backup > stop > ords install --db-only per pool > switch > start > verify
 ```

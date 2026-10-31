@@ -7,7 +7,9 @@
 # Usage: apex-patch.sh <command> [args] [options]
 #
 # Commands
-#   inspect                 Installed APEX version/schema/type, DB, ORDS, images dir, restore points
+#   inspect                 Installed APEX version/schema/type, DB, ORDS, images dir, restore points,
+#                           and the newest release Oracle offers (if the download site is reachable)
+#   plan                    What WOULD be done: from -> to, scripts, images dir, ORDS handling, rollback path
 #   latest                  Probe Oracle's public download site for the newest APEX release
 #   download [version]      Fetch apex_<version>.zip (public, no login) and unpack it under APEX_BASE
 #   preflight [version]     Checks: SQL access, DB/ORDS versions, upgrade path, invalid objects,
@@ -280,7 +282,31 @@ Restore points   :
 $(printf '%s\n' "${RESTORE_POINTS:-  (none)}" | sed 's/^/  /')
 EOF
   [ "$DB_IS_CDB" = YES ] && [ "$DB_CON" = 'CDB$ROOT' ] && warn "Connected to CDB\$ROOT. APEX should be upgraded inside the PDB: set PDB=<name> (or SQL_CONNECT to the PDB service)."
+  if curl -sI --max-time 8 -A 'Mozilla/5.0' "$APEX_DL_BASE/" >/dev/null 2>&1; then
+    cmd_latest >/dev/null 2>&1 || true
+    if [ -n "$TARGET" ]; then echo "Newest release   : $TARGET available on download.oracle.com  ->  ./apex-patch.sh plan"
+    else echo "Newest release   : none newer than $APEX_VER on download.oracle.com"; fi
+  else echo "Newest release   : (download.oracle.com not reachable from here)"; fi
   return 0
+}
+
+cmd_plan() {
+  [ -n "$DB_VER$APEX_VER" ] || setup_env
+  reuse_or_init plan
+  local ver="${1:-}"
+  [ -n "$ver" ] || { cmd_latest >/dev/null 2>&1 || true; ver="$TARGET"; }
+  echo
+  echo "WOULD DO (nothing has been changed)"
+  echo "  Now        : APEX ${APEX_VER:-?} ($APEX_TYPE, $APEX_SCHEMA) in ${DB_CON:-?} on DB ${DB_VER:-?}, $DB_LOG_MODE"
+  if [ -z "$ver" ]; then echo "  Upgrade    : none - already on the newest release"; echo; return 0; fi
+  echo "  Upgrade to : APEX $ver (schema $(apex_schema_for "$ver"))  from $APEX_DL_BASE/apex_$ver.zip (~300 MB, public)"
+  echo "  Rollback   : apxdwngrd.sql from the ${APEX_VER%.*} source$([ -f "$(src_dir_for "${APEX_VER%.*}")/apxdwngrd.sql" ] && echo " (on disk)" || echo " (will be downloaded first)")$([ "$DB_LOG_MODE" = ARCHIVELOG ] && echo ", plus a guaranteed restore point" || echo "; NO restore point (NOARCHIVELOG)")"
+  echo "  ORDS       : $([ "$WLS_MODE" = 1 ] && echo "app '$WLS_ORDS_APP' in WebLogic stopped/started with weblogic.Deployer" || echo "${ORDS_HOME:-not found here}${ORDS_SERVICE:+ (systemd $ORDS_SERVICE)}") - version ${ORDS_VER:-?} $([ -n "$ORDS_VER" ] && { version_ge "$ORDS_VER" 23.3 && echo OK || echo "TOO OLD, needs 23.3+"; })"
+  echo "  Script     : $([ "$APEX_TYPE" = runtime ] && echo apxrtins.sql || echo apexins.sql) $APEX_TS $APEX_FILES_TS $APEX_TEMP_TS /i/   (APEX unavailable while it runs, typically 15-60 min)"
+  echo "  Images     : ${APEX_IMAGES_DIR:-UNKNOWN - set APEX_IMAGES_DIR} (now ${IMAGES_VER:-?}) -> $ver"
+  echo "  Afterwards : verify version/registry/invalid objects/ORDS URL; 'cleanup' later drops the restore point and $APEX_SCHEMA"
+  echo "  Next step  : ./apex-patch.sh preflight $ver   (after 'download $ver', or just 'run')"
+  echo
 }
 
 # ---------------------------------------------------------------------------
@@ -590,7 +616,7 @@ cmd_run() {
   return 1
 }
 
-usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
 main() {
   local cmd="" args=()
   while [ $# -gt 0 ]; do
@@ -609,7 +635,7 @@ main() {
   [ -n "${CLI_APEX_BASE:-}" ] && APEX_BASE="$CLI_APEX_BASE"; [ -n "${CLI_IMG:-}" ] && APEX_IMAGES_DIR="$CLI_IMG"
   [ -n "${CLI_PDB:-}" ] && PDB="$CLI_PDB"; [ -n "${CLI_TYPE:-}" ] && APEX_INSTALL_TYPE="$CLI_TYPE"
   case "$cmd" in
-    inspect) cmd_inspect;; latest) cmd_latest;; download) cmd_download "${args[0]:-}";; preflight) cmd_preflight "${args[0]:-}";;
+    inspect) cmd_inspect;; plan) cmd_plan "${args[0]:-}";; latest) cmd_latest;; download) cmd_download "${args[0]:-}";; preflight) cmd_preflight "${args[0]:-}";;
     backup) cmd_backup;; stop) cmd_stop;; start) cmd_start;; apply) cmd_apply "${args[0]:-}";; verify) cmd_verify;;
     rollback) cmd_rollback;; cleanup) cmd_cleanup;; heal) cmd_heal;; run) cmd_run "${args[0]:-}";;
     *) die "Unknown command: $cmd";;

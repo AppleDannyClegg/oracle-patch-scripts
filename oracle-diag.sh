@@ -492,3 +492,251 @@ diag_adr() { # ADR incidents and problems for the instance
   local inc; inc="$(grep -cE '^[0-9]+ +[0-9]+ +ORA-' "$RAW/adr_${sid}.txt" 2>/dev/null)"
   [ "${inc:-0}" -gt 0 ] && finding WARN db "$sid: $inc ADR incident(s) in the last $DIAG_DAYS days (adrci output in raw/adr_${sid}.txt) - 'adrci> ips pack' for an SR"
 }
+
+# ---------------------------------------------------------------------------
+# APEX (per container)
+# ---------------------------------------------------------------------------
+diag_apex_in() { # <sid> <container label>  (PDB_SET already exported by caller)
+  local sid="$1" con="$2" tag="${2//[^A-Za-z0-9]/_}"
+  local ver; ver="$(sqlval "$sid" "(select version_no from apex_release)" 2>/dev/null)"
+  [ -z "$ver" ] && { para "_APEX not installed in $con_"; return 0; }
+  say "apex $sid/$con"
+  h3 "APEX in $con (version $ver)"
+  sqlsec "$sid" "apex_${tag}" "APEX $con: release, schema, accounts, jobs" "select version_no, patch_applied_on, api_compatibility from apex_release;
+col comp_name for a30
+select comp_id, comp_name, version, status, schema from dba_registry where comp_id in ('APEX','ORDS');
+select 'APEX schema: '||schema||', status '||status from dba_registry where comp_id='APEX';
+select 'ORDS schema version in DB: '||(select installed_version from dba_objects o, ords_metadata.ords_version v where o.object_name='ORDS_VERSION' and rownum=1) from dual;
+select username, account_status, to_char(expiry_date,'YYYY-MM-DD') expires, profile from dba_users where username like 'APEX%' or username like 'ORDS%' or username in ('FLOWS_FILES') order by 1;
+select 'workspaces: '||count(*) from apex_workspaces;
+select 'applications: '||count(*)||', last changed '||max(last_updated_on) from apex_applications;
+select owner, job_name, state, failure_count, to_char(last_start_date,'YYYY-MM-DD HH24:MI') last_start, to_char(next_run_date,'YYYY-MM-DD HH24:MI') next_run from dba_scheduler_jobs where owner like 'APEX%' order by 2;
+select 'invalid objects in APEX schema: '||count(*) from dba_objects where owner=(select schema from dba_registry where comp_id='APEX') and status<>'VALID';
+select 'invalid objects in parsing schemas: '||count(*) from dba_objects where owner in (select distinct schema from apex_workspace_schemas) and status<>'VALID';
+col application_name for a40
+select application_id, substr(application_name,1,40) application_name, owner, to_char(last_updated_on,'YYYY-MM-DD') updated, availability_status from (select * from apex_applications where availability_status not like 'Available%' order by last_updated_on desc) where rownum<=20;
+select 'errors in last 24h (apex_workspace_activity_log): '||count(*) from apex_workspace_activity_log where view_date>sysdate-1 and error_message is not null;
+col error_message for a80
+select application_id, page_id, count(*) n, substr(min(error_message),1,80) error_message from apex_workspace_activity_log where view_date>sysdate-1 and error_message is not null group by application_id, page_id order by 3 desc fetch first 20 rows only;
+select 'page views last 24h: '||count(*)||', avg elapsed '||round(avg(elapsed_time),2)||'s, max '||round(max(elapsed_time),2)||'s' from apex_workspace_activity_log where view_date>sysdate-1;
+select application_id, page_id, count(*) views, round(avg(elapsed_time),2) avg_s, round(max(elapsed_time),2) max_s from apex_workspace_activity_log where view_date>sysdate-1 group by application_id, page_id order by 4 desc fetch first 15 rows only;
+select 'activity log rows: '||(select count(*) from apex_workspace_activity_log)||', sessions: '||(select count(*) from apex_workspace_sessions)||', debug rows: '||(select count(*) from apex_debug_messages) from dual;
+select name, value from apex_instance_parameters where name in ('IMAGE_PREFIX','WORKSPACE_PROVISION_DEMO_OBJECTS','SESSION_TIMEOUT_MAX_SESSION_LENGTH_SEC','SESSION_TIMEOUT_MAX_IDLE_TIME_SEC','SMTP_HOST_ADDRESS','SMTP_HOST_PORT','WALLET_PATH','PRINT_BIB_LICENSED','PLSQL_EDITING','EXPIRE_FND_USER_ACCOUNTS','RESTFUL_SERVICES_ENABLED','ALLOW_HOSTNAMES','MAX_SESSION_LENGTH_SEC','MAX_SESSION_IDLE_SEC','SERVICE_REQUESTS_ENABLED','ERROR_RATE','ACL_ENABLED','APPLICATION_ACTIVITY_LOGGING','HTTP_RESPONSE_HEADERS') order by 1;
+select 'mail queue: '||count(*)||' queued, '||sum(case when mail_send_error is not null then 1 else 0 end)||' with errors' from apex_mail_queue;
+select 'tablespace of APEX: '||default_tablespace from dba_users where username=(select schema from dba_registry where comp_id='APEX');
+select 'wallet for APEX web services: '||nvl((select value from apex_instance_parameters where name='WALLET_PATH'),'(none set)') from dual;"
+  sql_checks "$sid" "APEX $con" "select 'CHECK|WARN|APEX component is '||status from dba_registry where comp_id='APEX' and status<>'VALID';
+select 'CHECK|WARN|APEX job '||job_name||' is '||state||' with '||failure_count||' failures' from dba_scheduler_jobs where owner like 'APEX%' and (state in ('BROKEN','FAILED','DISABLED') or failure_count>0);
+select 'CHECK|WARN|'||count(*)||' APEX page errors in the last 24h (see apex_workspace_activity_log)' from apex_workspace_activity_log where view_date>sysdate-1 and error_message is not null having count(*)>50;
+select 'CHECK|WARN|'||count(*)||' invalid objects in the APEX schema - run apxrecom.sql / utlrp' from dba_objects where owner=(select schema from dba_registry where comp_id='APEX') and status<>'VALID' having count(*)>0;
+select 'CHECK|WARN|APEX mail queue has '||count(*)||' message(s) with send errors' from apex_mail_queue where mail_send_error is not null having count(*)>0;
+select 'CHECK|INFO|more than one APEX schema present ('||listagg(username,',') within group (order by username)||') - old releases can be dropped after upgrade' from dba_users where username like 'APEX\_______' escape '\' having count(*)>1;"
+  APEX_DB_VER="$ver"
+}
+
+diag_pdbs() { # per-container checks for a CDB
+  local sid="$1" pdbs p
+  local cdb; cdb="$(sqlval "$sid" "cdb" 2>/dev/null)"
+  if [ "$cdb" != YES ]; then
+    h3 "APEX / per-schema checks (non-CDB)"
+    diag_apex_in "$sid" "$sid"; return
+  fi
+  pdbs="$(sql "$sid" "set heading off\nselect name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//;s/ *$//' | head -12)"
+  [ -n "${PDB:-}" ] && pdbs="$(printf '%s\n%s\n' "$PDB" "$pdbs" | awk '!s[$0]++')"
+  for p in $pdbs; do
+    export PDB_SET="alter session set container=$p;"
+    h3 "Container $p"
+    sqlsec "$sid" "pdb_${p}_space" "$p: tablespaces, invalid objects, accounts" "col tablespace_name for a25
+select t.tablespace_name, round(u.used_mb) used_mb, round(f.max_mb) max_mb, round(u.used_mb*100/f.max_mb) pct_max from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY' order by 4 desc nulls last;
+select owner, object_type, count(*) invalid from dba_objects where status<>'VALID' group by owner, object_type order by 3 desc;
+select username, account_status, to_char(expiry_date,'YYYY-MM-DD') expires, profile from dba_users where oracle_maintained='N' and (account_status<>'OPEN' or expiry_date<sysdate+14) order by 1;
+select 'local undo: '||property_value from database_properties where property_name='LOCAL_UNDO_ENABLED';
+select name, value from v\$parameter where ispdb_modifiable='TRUE' and isdefault='FALSE' and name in ('open_cursors','sessions','resource_manager_plan','cpu_count','sga_target','pga_aggregate_target') order by 1;"
+    sql_checks "$sid" "$sid/$p" "select 'CHECK|'||case when pct>=97 then 'CRIT' else 'WARN' end||'|tablespace '||tablespace_name||' is '||pct||'% of max' from (select t.tablespace_name, round(u.used_mb*100/f.max_mb) pct from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY') where pct>=90;
+select 'CHECK|CRIT|'||username||' is '||account_status from dba_users where username in ('APEX_PUBLIC_USER','ORDS_PUBLIC_USER','APEX_LISTENER','APEX_REST_PUBLIC_USER','ORDS_METADATA') and account_status<>'OPEN';
+select 'CHECK|WARN|'||count(*)||' invalid objects in application schemas' from dba_objects where status<>'VALID' and owner not in ('SYS','SYSTEM','PUBLIC') and owner not like 'APEX%' having count(*)>0;"
+    diag_apex_in "$sid" "$p"
+  done
+  unset PDB_SET
+}
+
+# ---------------------------------------------------------------------------
+# ORDS
+# ---------------------------------------------------------------------------
+diag_ords() {
+  say "ords"
+  h1 "ORDS"
+  if [ -z "${ORDS_HOME:-}" ]; then local c; c="$(command -v ords 2>/dev/null)"; [ -n "$c" ] && ORDS_HOME="$(cd "$(dirname "$c")/.." && pwd)"; fi
+  [ -z "${ORDS_HOME:-}" ] && for d in /opt/oracle/ords /opt/ords /u01/ords /u01/app/oracle/ords "$HOME/ords"; do [ -x "$d/bin/ords" ] && { ORDS_HOME="$d"; break; }; done
+  local pid; pid="$(pgrep -f 'ords.war|ords serve|ords --config|ords\.standalone|oracle.dbtools' 2>/dev/null | head -1)"
+  if [ -z "${ORDS_HOME:-}" ] && [ -z "$pid" ]; then para "_ORDS not found on this host (no bin/ords, no ORDS java process)_"; return 0; fi
+  [ -z "${ORDS_CONFIG:-}" ] && [ -n "$pid" ] && ORDS_CONFIG="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 's/.*--config \([^ ]*\).*/\1/p; s/.*-Dconfig.url=\([^ ]*\).*/\1/p' | head -1)"
+  [ -z "${ORDS_CONFIG:-}" ] && for d in /etc/ords/config /opt/oracle/ords/config "${ORDS_HOME:-/nonexistent}/config" "$(dirname "$(readlink -f "${ORDS_HOME:-/nonexistent}")")/config"; do [ -f "$d/global/settings.xml" ] && { ORDS_CONFIG="$d"; break; }; done
+  local ver=""; [ -x "${ORDS_HOME:-}/bin/ords" ] && ver="$(to 60 "$ORDS_HOME/bin/ords" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  kv "ORDS_HOME" "${ORDS_HOME:-}"; kv "real path" "$(readlink -f "${ORDS_HOME:-}" 2>/dev/null)"; kv "version (bin/ords)" "$ver"; kv "config dir" "${ORDS_CONFIG:-}"
+  kv "running pid" "${pid:-NOT RUNNING}"; kv "service" "$(systemctl list-units --type=service --all --no-legend 2>/dev/null | grep -i ords | awk '{print $1, $3, $4}' | head -1)"
+  [ -n "$pid" ] && { kv "java" "$(readlink -f "/proc/$pid/exe" 2>/dev/null)"; kv "owner / started / rss" "$(ps -o user=,lstart=,rss= -p "$pid" 2>/dev/null)"; kv "open files" "$(ls "/proc/$pid/fd" 2>/dev/null | wc -l | tr -d ' ') of $(grep -s 'Max open files' "/proc/$pid/limits" | awk '{print $4}')"; kv "heap / jvm args" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -oE -- '-X[a-z]+[0-9a-zA-Z:=/]*|-D[a-zA-Z.]+=[^ ]*' | grep -v -i password | tr '\n' ' ')"; }
+  kv "java on PATH" "$(java -version 2>&1 | head -1)"; kv_end
+  [ -z "$pid" ] && finding CRIT ords "ORDS is not running on this host"
+  if [ -n "${ORDS_CONFIG:-}" ]; then
+    h2 "ORDS configuration (passwords redacted)"
+    section_sh ords_settings "cat '$ORDS_CONFIG/global/settings.xml' 2>/dev/null; for p in '$ORDS_CONFIG'/databases/*/; do echo; echo \"== pool \$(basename \$p)\"; cat \$p/pool.xml 2>/dev/null; ls -la \$p 2>/dev/null; done; echo; echo '== standalone'; cat '$ORDS_CONFIG/global/standalone/standalone.properties' 2>/dev/null; echo; ls -la '$ORDS_CONFIG/global' '$ORDS_CONFIG/global/standalone' 2>/dev/null; echo; echo 'doc_root / wallet / keystore:'; ls -la '$ORDS_CONFIG'/global/doc_root '$ORDS_CONFIG'/global/standalone/*.jks '$ORDS_CONFIG'/databases/*/wallet 2>/dev/null"
+    section_sh ords_perms "find '$ORDS_CONFIG' -maxdepth 3 -printf '%M %u:%g %6s %TY-%Tm-%Td %p\n' 2>/dev/null | head -60"
+    [ -n "$pid" ] && { local owner; owner="$(ps -o user= -p "$pid")"; find "$ORDS_CONFIG" ! -user "$owner" 2>/dev/null | grep -q . && finding WARN ords "Files under $ORDS_CONFIG are not owned by the ORDS user ($owner) - pool/wallet edits may be unreadable"; }
+    # pools vs images
+    local imgs; imgs="$(sed -n 's/.*<entry key="standalone.static.path">\([^<]*\)<.*/\1/p' "$ORDS_CONFIG/global/standalone/standalone.properties" "$ORDS_CONFIG/global/settings.xml" 2>/dev/null | head -1)"
+    [ -z "$imgs" ] && imgs="$(sed -n 's/^standalone.static.path=//p' "$ORDS_CONFIG/global/standalone/standalone.properties" 2>/dev/null | head -1)"
+    [ -z "$imgs" ] && imgs="${APEX_IMAGES_DIR:-}"
+    if [ -n "$imgs" ]; then
+      local iv; iv="$(cat "$imgs/apex_version.txt" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      kv "APEX images dir" "$imgs"; kv "images version (apex_version.txt)" "${iv:-unknown}"; kv "APEX in database" "${APEX_DB_VER:-unknown}"; kv_end
+      [ -d "$imgs" ] || finding CRIT ords "APEX images dir $imgs does not exist - pages will load without CSS/JS"
+      [ -n "$iv" ] && [ -n "${APEX_DB_VER:-}" ] && [ "${iv%.*}" != "${APEX_DB_VER%.*}" ] && finding CRIT apex "APEX images on disk are $iv but the database has ${APEX_DB_VER} - mismatch breaks the UI, repoint ORDS static path"
+    fi
+    h2 "ORDS logs"
+    local lf; for lf in $(ls -t "$ORDS_CONFIG"/global/standalone/logs/*.log "$ORDS_CONFIG"/global/logs/*.log "${ORDS_HOME:-/nonexistent}"/logs/*.log /var/log/ords/*.log "$HOME"/ords*.log 2>/dev/null | head -3); do
+      recent_errors "ords_$(basename "$lf" .log)" "$lf" 'SEVERE|WARNING|ERROR|ORA-[0-9]+|Exception|Unable to|503|Connection pool|not open|Pool' >/dev/null
+      tail_file "ords_$(basename "$lf" .log)_tail" "$lf"
+    done
+    local unit; unit="$(systemctl list-units --type=service --no-legend 2>/dev/null | grep -i ords | awk '{print $1}' | head -1)"
+    [ -n "$unit" ] && { h3 "journal for $unit"; section_sh ords_journal "$SUDO journalctl -u $unit --since '-${DIAG_DAYS}d' --no-pager -q 2>/dev/null | grep -aE 'SEVERE|WARNING|ERROR|ORA-|Exception|Started|Stopped|Stopping|Starting' | tail -150"; }
+    grep -lqE 'ORA-28000|ORA-28001|ORA-01017' "$RAW"/ords_*.errors 2>/dev/null && finding CRIT ords "ORDS log shows ORA-28000/28001/01017 - the pool's database user is locked, expired or has a wrong password"
+    grep -lqE 'ORA-12541|ORA-12514|ORA-12170|IO Error: The Network Adapter' "$RAW"/ords_*.errors 2>/dev/null && finding CRIT ords "ORDS log shows TNS connection failures (ORA-12541/12514/12170) - listener/service name/firewall between ORDS and the DB"
+    grep -lqE 'Connection pool .* exhausted|Timeout waiting for a connection|UCP-45' "$RAW"/ords_*.errors 2>/dev/null && finding WARN ords "ORDS connection pool exhaustion in the log - raise jdbc.MaxLimit or find the slow pages"
+    grep -lqE 'OutOfMemoryError' "$RAW"/ords_*.errors 2>/dev/null && finding CRIT ords "ORDS JVM OutOfMemoryError in the log - raise -Xmx"
+  fi
+  h2 "ORDS endpoint check"
+  local url="${ORDS_URL:-}"
+  [ -z "$url" ] && { local port; port="$(sed -n 's/^standalone.http.port=//p' "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; url="http://localhost:${port:-8080}/ords/"; }
+  section_sh ords_curl "for u in '$url' '${url%/}/_/landing' '${url%/}/r/apex' '${url%/}/apex' '${url%/}/../i/apex_version.txt' '${url%/}/_/db-api/stable/metadata-catalog/'; do printf '%-70s ' \"\$u\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s %{redirect_url}\n' \"\$u\" 2>&1 || echo 'curl failed'; done; echo; echo 'TLS certificate (if https):'; echo | openssl s_client -connect \$(echo '$url' | sed -E 's#https?://([^/]+).*#\1#' | sed 's/$/:443/;s/:[0-9]*:443$/:443/') -servername localhost 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null"
+  local code; code="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$url" 2>/dev/null)"
+  case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS answers 503 at $url - usually the database pool is down (locked user, wrong password, DB/listener down)";; 404) finding WARN ords "ORDS answers 404 at $url - running but the pool/APEX path may be wrong";; 000|"") [ -n "$pid" ] && finding CRIT ords "ORDS process is running but $url does not answer";; *) finding WARN ords "ORDS answers HTTP $code at $url";; esac
+  [ "$THREADS" = 1 ] && [ -n "$pid" ] && jvm_threads "ords" "$pid"
+}
+
+jvm_threads() { # <name> <pid>: thread dump with jcmd from the same JDK as the process
+  local name="$1" pid="$2" jbin; jbin="$(dirname "$(readlink -f "/proc/$pid/exe" 2>/dev/null)")"
+  local jcmd="$jbin/jcmd"; [ -x "$jcmd" ] || jcmd="$(command -v jcmd 2>/dev/null)"; [ -x "$jcmd" ] || return 0
+  to 60 "$jcmd" "$pid" Thread.print >"$RAW/threads_${name}_$pid.txt" 2>&1
+  to 60 "$jcmd" "$pid" GC.heap_info >"$RAW/heap_${name}_$pid.txt" 2>&1
+  h3 "Thread dump summary ($name pid $pid)"
+  fence_start
+  { grep -c '^"' "$RAW/threads_${name}_$pid.txt" | sed 's/^/threads: /'; grep -oE 'java.lang.Thread.State: [A-Z_]+' "$RAW/threads_${name}_$pid.txt" | sort | uniq -c; echo; echo 'heap:'; cat "$RAW/heap_${name}_$pid.txt"; echo; echo "full dump: raw/threads_${name}_$pid.txt"; } >>"$REPORT"
+  fence_end
+}
+
+# ---------------------------------------------------------------------------
+# WebLogic / Fusion Middleware
+# ---------------------------------------------------------------------------
+wls_homes() { # every FMW home we can find (inventory + guesses + running JVMs)
+  { for inv in /etc/oraInst.loc /var/opt/oracle/oraInst.loc; do
+      [ -f "$inv" ] || continue; local d; d="$(sed -n 's/^inventory_loc=//p' "$inv")"
+      sed -n 's/.*<HOME NAME="[^"]*" LOC="\([^"]*\)".*/\1/p' "$d/ContentsXML/inventory.xml" 2>/dev/null
+    done
+    ls -d /u01/app/oracle/product/*/fmw* /u01/app/oracle/middleware* /u01/oracle/* /opt/oracle/* /opt/oracle/product/* "$HOME"/Oracle/Middleware* 2>/dev/null
+    [ -n "${ORACLE_HOME:-}" ] && echo "$ORACLE_HOME"; [ -n "${MW_HOME:-}" ] && echo "$MW_HOME"
+    ps -eo args 2>/dev/null | grep -oE '[^ ]*/wlserver/' | sed 's#/wlserver/##'
+  } 2>/dev/null | while read -r h; do [ -d "$h/wlserver" ] && echo "$h"; done | sort -u
+}
+wls_domains() { # <home>
+  { sed -n 's/.*<domain location="\([^"]*\)".*/\1/p' "$1/domain-registry.xml" 2>/dev/null; ls -d "$1"/user_projects/domains/* 2>/dev/null; [ -n "${DOMAIN_HOME:-}" ] && echo "$DOMAIN_HOME"
+    ps -eo args 2>/dev/null | grep -oE -- '-Ddomain.home=[^ ]+|-Dweblogic.home=[^ ]+' | cut -d= -f2; } | while read -r d; do [ -f "$d/config/config.xml" ] && echo "$d"; done | sort -u
+}
+
+diag_wls() {
+  local homes; homes="$(wls_homes)"
+  [ -z "$homes" ] && { ps -eo args | grep -q '[w]eblogic.Server' || return 0; }
+  say "weblogic"
+  h1 "WebLogic / Fusion Middleware"
+  local h
+  for h in $homes; do
+    h2 "Oracle home $h"
+    local ver; ver="$(sed -n 's/.*name="WebLogic Server"[^>]*version="\([0-9.]*\)".*/\1/p' "$h/inventory/registry.xml" 2>/dev/null | head -1)"
+    [ -z "$ver" ] && ver="$(sed -n 's/^WLS_PRODUCT_VERSION=//p' "$h/wlserver/.product.properties" 2>/dev/null)"
+    kv "WebLogic version" "$ver"
+    kv "products in this home" "$(grep -oE 'name="[^"]*" version="[0-9.]+"' "$h/inventory/registry.xml" 2>/dev/null | grep -vE 'name="(WebLogic Server|Oracle Common|Oracle Installer)' | sed 's/name=//; s/ version=/ /; s/"//g' | tr '\n' ';' | cut -c1-300)"
+    kv "JDK (oui/.globalEnv)" "$(sed -n 's/^JAVA_HOME=//p' "$h/oui/.globalEnv.properties" 2>/dev/null | head -1)"
+    kv "OPatch" "$("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
+    kv "PSU level" "$(to 120 "$h/OPatch/opatch" lspatches 2>/dev/null | grep -i 'PATCH SET UPDATE' | sed -n 's/.*UPDATE *\([0-9.]*\).*/\1/p' | sort -V | tail -1)"
+    kv_end
+    section "wls_patches_$(basename "$h")" env ORACLE_HOME="$h" "$h/OPatch/opatch" lspatches
+    [ -f "$h/.patch_storage/patch_locked" ] && finding WARN wls "$h has a stale OPatch lock (.patch_storage/patch_locked)"
+    local psu; psu="$(grep -i 'PATCH SET UPDATE' "$RAW/wls_patches_$(basename "$h").txt" | sed -n 's/.*UPDATE *[0-9.]*\.\([0-9]\{6\}\).*/\1/p' | sort | tail -1)"
+    if [ -n "$psu" ]; then local age; age="$(( ( $(date +%s) - $(date -d "20${psu:0:2}-${psu:2:2}-${psu:4:2}" +%s 2>/dev/null || date +%s) ) / 86400 ))"; [ "$age" -gt 200 ] && finding WARN wls "$h: newest WLS PSU is dated 20${psu:0:2}-${psu:2:2}, $age days old - at least two CPUs behind"; fi
+    local d
+    for d in $(wls_domains "$h"); do diag_wls_domain "$h" "$d"; done
+  done
+}
+
+diag_wls_domain() {
+  local h="$1" d="$2" cfg="$2/config/config.xml"
+  h2 "Domain $(basename "$d")  ($d)"
+  kv "domain version" "$(sed -n 's/.*<domain-version>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"
+  kv "admin server" "$(sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"
+  kv "production mode" "$(sed -n 's/.*<production-mode-enabled>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"
+  kv "disk used by domain" "$(du -sh "$d" 2>/dev/null | cut -f1)"
+  kv "servers/*/tmp + data/store" "$(du -shc "$d"/servers/*/tmp "$d"/servers/*/data 2>/dev/null | tail -1 | cut -f1)"
+  kv_end
+  # servers: name, port, machine, cluster
+  h3 "Servers configured vs running"
+  fence_start
+  awk '/<server>/{inblk=1;inssl=0;name="";port="";machine="";cluster=""} inblk&&/<ssl>/{inssl=1} inblk&&/<\/ssl>/{inssl=0}
+       inblk&&name==""&&match($0,/<name>[^<]*<\/name>/){name=substr($0,RSTART+6,RLENGTH-13)}
+       inblk&&!inssl&&port==""&&match($0,/<listen-port>[^<]*<\/listen-port>/){port=substr($0,RSTART+13,RLENGTH-27)}
+       inblk&&match($0,/<machine>[^<]*<\/machine>/){machine=substr($0,RSTART+9,RLENGTH-19)}
+       inblk&&match($0,/<cluster>[^<]*<\/cluster>/){cluster=substr($0,RSTART+9,RLENGTH-19)}
+       inblk&&/<\/server>/{inblk=0; printf "%-30s port=%-6s machine=%-15s cluster=%s\n", name, (port==""?"7001":port), machine, cluster}' "$cfg" >"$RAW/wls_$(basename "$d")_servers.txt"
+  cat "$RAW/wls_$(basename "$d")_servers.txt" >>"$REPORT"
+  echo >>"$REPORT"; echo "running JVMs (weblogic.Name pid etime rss heap):" >>"$REPORT"
+  ps -eo pid,etime,rss,args 2>/dev/null | grep '[w]eblogic.Server' | grep -- "$d\|$(basename "$d")" | awk '{n=""; x=""; for(i=4;i<=NF;i++){ if($i ~ /^-Dweblogic.Name=/) n=substr($i,17); if($i ~ /^-Xmx|^-Xms/) x=x" "$i } printf "%-30s pid=%-7s up=%-12s rss=%dMB %s\n", n, $1, $2, $3/1024, x}' | tee -a "$REPORT" >"$RAW/wls_$(basename "$d")_running.txt"
+  echo >>"$REPORT"; echo "node manager:" >>"$REPORT"; ps -eo pid,etime,args | grep '[w]eblogic.NodeManager' | cut -c1-120 >>"$REPORT"
+  fence_end
+  # configured-but-not-running on this machine: only flag servers whose machine maps to this host or which have no machine
+  local names; names="$(awk '{print $1}' "$RAW/wls_$(basename "$d")_servers.txt")"
+  local running; running="$(awk '{print $1}' "$RAW/wls_$(basename "$d")_running.txt")"
+  local s; for s in $names; do printf '%s\n' "$running" | grep -qx "$s" || finding INFO wls "$(basename "$d"): server $s is configured but no JVM for it is running on this host (fine if it lives on another node)"; done
+  [ -z "$running" ] && finding CRIT wls "$(basename "$d"): no WebLogic server JVM is running on this host"
+  ps -eo args | grep -q '[w]eblogic.NodeManager' || finding WARN wls "Node Manager is not running - servers cannot be started from the console / auto-restarted"
+  # deployments: this is where FLEXCUBE / OBP / SOA / OSB / Forms / OBIEE etc. show up
+  h3 "Deployments, data sources, JMS, clusters"
+  section_sh "wls_$(basename "$d")_config" "echo 'app-deployments:'; sed -n 's/.*<app-deployment>.*//p' '$cfg' >/dev/null; awk '/<app-deployment>|<library>/{b=1;n=\"\";t=\"\";tg=\"\"} b&&match(\$0,/<name>[^<]*<\/name>/)&&n==\"\"{n=substr(\$0,RSTART+6,RLENGTH-13)} b&&match(\$0,/<target>[^<]*<\/target>/){tg=substr(\$0,RSTART+8,RLENGTH-17)} b&&match(\$0,/<source-path>[^<]*<\/source-path>/){t=substr(\$0,RSTART+13,RLENGTH-27)} b&&/<\/app-deployment>|<\/library>/{b=0; printf \"  %-45s -> %-25s %s\n\", n, tg, t}' '$cfg'; echo; echo 'clusters:'; sed -n 's/.*<cluster>.*//p' '$cfg' >/dev/null; grep -A3 '<cluster>' '$cfg' | grep -E '<name>|<cluster-address>|<multicast' | sed 's/^ *//' | head -20; echo; echo 'jdbc data sources (jndi, url, driver):'; for f in '$d'/config/jdbc/*.xml; do [ -f \"\$f\" ] || continue; printf '  %s: ' \"\$(basename \$f)\"; grep -oE '<jndi-name>[^<]*|<url>[^<]*|<driver-name>[^<]*|<max-capacity>[^<]*|<test-table-name>[^<]*' \"\$f\" | sed 's/<[a-z-]*>//' | tr '\n' ' '; echo; done; echo; echo 'jms modules:'; ls '$d'/config/jms 2>/dev/null; echo; echo 'security realm / providers:'; grep -oE '<sec:authentication-provider[^>]*>|<sec:name>[^<]*' '$cfg' | head -10; echo; echo 'machines / node manager:'; grep -A6 '<machine>' '$cfg' | grep -E '<name>|<listen-address>|<listen-port>|<nm-type>' | sed 's/^ *//' | head -30; echo; cat '$d'/nodemanager/nodemanager.properties 2>/dev/null | grep -vE '^#|^\$'"
+  grep -q 'FCUBS\|FLEXCUBE\|fcubs' "$cfg" 2>/dev/null && finding INFO wls "FLEXCUBE (FCUBS) is deployed in $(basename "$d")"
+  grep -qE 'soa-infra|service-bus|OBP|obp\.|OFSAA|ofsaa|oam_server|oim_server|FormsApp|analytics|bi_server' "$cfg" 2>/dev/null && finding INFO wls "$(basename "$d") hosts FMW products: $(grep -oE 'soa-infra|service-bus|OBP|OFSAA|oam_server|oim_server|FormsApp|analytics|bi_server' "$cfg" | sort -u | tr '\n' ' ')"
+  # keystores / certs expiry
+  h3 "Certificates"
+  section_sh "wls_$(basename "$d")_certs" "kt=\$(ls -d '$h'/../jdk*/bin/keytool '$h'/jdk/bin/keytool \$(sed -n 's/^JAVA_HOME=//p' '$h/oui/.globalEnv.properties' 2>/dev/null | head -1)/bin/keytool 2>/dev/null | head -1); [ -z \"\$kt\" ] && kt=\$(command -v keytool); for ks in \$(grep -ohE '<(custom-identity-keystore-file-name|custom-trust-keystore-file-name|key-store-file|keystore)>[^<]*' '$cfg' '$d'/config/fmwconfig/*.xml 2>/dev/null | sed 's/<[^>]*>//' | sort -u) '$d'/security/DemoIdentity.jks; do [ -f \"\$ks\" ] || continue; echo \"== \$ks\"; \$kt -list -v -keystore \"\$ks\" -storepass changeit 2>/dev/null | grep -E 'Alias|Valid|Owner' | head -12 || echo '(needs the keystore password; not tried)'; done; echo; echo 'listening TLS ports and their certs:'; for p in \$(grep -oE '<listen-port>[0-9]+' '$cfg' | sed 's/.*>//' | sort -u); do echo | timeout 5 openssl s_client -connect localhost:\$p 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null | sed \"s/^/  port \$p: /\"; done"
+  grep -E 'port [0-9]+: notAfter' "$RAW/wls_$(basename "$d")_certs.txt" 2>/dev/null | while read -r line; do
+    local exp; exp="$(printf '%s' "$line" | sed 's/.*notAfter=//')"; local es; es="$(date -d "$exp" +%s 2>/dev/null)"; [ -z "$es" ] && continue
+    local days=$(( (es - $(date +%s)) / 86400 )); [ "$days" -lt 0 ] && finding CRIT wls "TLS certificate EXPIRED on $(printf '%s' "$line" | grep -oE 'port [0-9]+') ($exp)"; [ "$days" -ge 0 ] && [ "$days" -lt 30 ] && finding WARN wls "TLS certificate expires in $days days on $(printf '%s' "$line" | grep -oE 'port [0-9]+')"
+  done
+  grep -q 'DemoIdentity' "$cfg" 2>/dev/null && ! grep -q 'custom-identity-keystore-file-name' "$cfg" && finding WARN wls "$(basename "$d") uses the Demo identity keystore - not acceptable in production"
+  # logs
+  h3 "Server logs"
+  local lg; for lg in "$d"/servers/*/logs; do
+    local sname; sname="$(basename "$(dirname "$lg")")"
+    local f; for f in "$lg/$sname.log" "$lg/$sname.out"; do
+      [ -f "$f" ] || continue
+      h3 "$sname: $(basename "$f")"
+      local n; n="$(recent_errors "wls_${sname}_$(basename "$f" | tr . _)" "$f" '<Error>|<Critical>|<Emergency>|<Alert>|BEA-[0-9]+.*(Error|Critical)|OutOfMemoryError|StuckThread|STUCK|Too many open files|Deadlock|java.lang.Exception|SQLException|ORA-[0-9]+|BEA-000337|BEA-002616|BEA-149500|Connection refused|unable to resolve|JTA transaction.*timed out|GC overhead|FORCE SHUTDOWN|BEA-310003' | tail -1)"
+      [ "${n:-0}" -gt 100 ] && finding WARN wls "$sname: $n error lines recently in $(basename "$f")"
+      grep -qE 'OutOfMemoryError|GC overhead' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: OutOfMemoryError in $(basename "$f") - heap exhausted (raise -Xmx or find the leak with a heap dump)"
+      grep -qE 'BEA-000337|StuckThread|STUCK' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding WARN wls "$sname: stuck threads (BEA-000337) - slow DB/backend calls; take thread dumps while it happens (--threads)"
+      grep -qE 'Too many open files' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: 'Too many open files' - raise nofile ulimit for the WebLogic user"
+      grep -qE 'BEA-310003' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding WARN wls "$sname: free memory below 5% of heap (BEA-310003)"
+      grep -qE 'BEA-149500|BEA-149205|Failed to deploy' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: deployment failures (BEA-149xxx) in the log"
+      grep -qE 'BEA-001112|BEA-001129|BEA-001153|Could not create pool connection|ORA-01017|ORA-28000|ORA-12541|ORA-12514' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: JDBC data source connection failures (BEA-0011xx / ORA-01017 / TNS) - DB user or listener"
+      grep -qE 'FORCE SHUTDOWN|Server state changed to FAILED|FAILED_NOT_RESTARTABLE' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: server went to FAILED / forced shutdown recently"
+    done
+    section_sh "wls_${sname}_logdir" "ls -la --sort=size '$lg' 2>/dev/null | head -20; echo; du -sh '$lg' 2>/dev/null; echo 'hs_err / heap dumps:'; ls -la '$d'/servers/$sname/*.hprof '$d'/servers/$sname/hs_err* '$d'/hs_err* '$d'/*.hprof 2>/dev/null"
+    ls "$d"/servers/"$sname"/*.hprof "$d"/*.hprof >/dev/null 2>&1 && finding WARN wls "$sname: heap dump (.hprof) present in the domain - a JVM ran out of memory; also eats disk"
+    ls "$d"/servers/"$sname"/hs_err* "$d"/hs_err* >/dev/null 2>&1 && finding CRIT wls "$sname: JVM crash file hs_err_pid*.log present"
+  done
+  [ -f "$d/nodemanager/nodemanager.log" ] && { h3 "nodemanager.log"; recent_errors wls_nodemanager "$d/nodemanager/nodemanager.log" '<SEVERE>|<WARNING>|Exception|failed' >/dev/null; tail_file wls_nodemanager_tail "$d/nodemanager/nodemanager.log"; }
+  # admin URL
+  local admin_port; admin_port="$(awk '$1=="'"$(sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"'"{print $2}' "$RAW/wls_$(basename "$d")_servers.txt" | sed 's/port=//')"
+  local url="${ADMIN_URL:-http://localhost:${admin_port:-7001}}"
+  section_sh "wls_$(basename "$d")_console" "for u in '$url/console' '$url/weblogic/ready'; do printf '%-50s ' \"\$u\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s\n' \"\$u\" || echo 'no answer'; done"
+  local code; code="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$url/weblogic/ready" 2>/dev/null)"
+  [ -n "$running" ] && [ "$code" != 200 ] && finding WARN wls "$(basename "$d"): admin server ready-check $url/weblogic/ready returned '$code'"
+  if [ "$THREADS" = 1 ]; then ps -eo pid,args | grep '[w]eblogic.Server' | grep -- "$d\|$(basename "$d")" | while read -r pid rest; do jvm_threads "$(printf '%s' "$rest" | grep -oE 'weblogic.Name=[^ ]+' | cut -d= -f2)" "$pid"; done; fi
+}

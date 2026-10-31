@@ -8,7 +8,10 @@
 # Usage: wls-patch.sh <command> [args] [options]
 #
 # Commands
-#   inspect                 Detect ORACLE_HOME, version, JDK, OPatch, patches, domains, servers (JSON)
+#   inspect [patch-dir]     Detect ORACLE_HOME, version, JDK, OPatch, patches, domains, servers (JSON);
+#                           with a patch dir or --latest/--patches it also shows what would be applied
+#   plan [patch-dir]        What WOULD be applied: each patch, its description, new/installed, OPatch kit,
+#                           JDK advice. Changes nothing (unzips the patch zips only)
 #   preflight <patch-dir>   Validate patch zips/dirs, OPatch minimum, conflicts, disk, running servers
 #   backup                  Tar ORACLE_HOME + domain homes to BACKUP_DIR
 #   stop                    Stop managed servers, admin server, node manager (records what was running)
@@ -396,6 +399,8 @@ $(printf '%s\n' "${INSTALLED_PATCHES:-  (none)}" | sed 's/^/  /')
 EOF
   fi
   [ "$WLS_FAMILY" = bsu ] && warn "This is a BSU-era WebLogic (10.3.x/12.1.1). This script only automates OPatch homes."
+  if [ -n "${1:-}" ] || [ "$USE_LATEST" = 1 ] || [ -n "$PATCHES" ]; then cmd_plan "${1:-}"
+  elif [ "$JSON_OUT" = 0 ]; then echo; echo "To see what would be applied:  ./wls-patch.sh plan <patch-dir>   or   ./wls-patch.sh plan --latest"; fi
   return 0
 }
 
@@ -1244,6 +1249,58 @@ cmd_download() {
 }
 
 # ---------------------------------------------------------------------------
+# plan : what would be applied, nothing changed
+# ---------------------------------------------------------------------------
+cmd_plan() {
+  local pdir="${1:-}"
+  [ -n "$ORACLE_HOME" ] && [ -n "$WLS_FAMILY" ] || setup_env
+  [ -n "$RUN_DIR" ] || init_run_dir plan
+  echo
+  echo "WOULD APPLY (nothing has been changed)"
+  echo "  Now        : WebLogic ${WLS_VERSION:-?}  PSU ${PSU_LEVEL:-none}  OPatch ${OPATCH_VERSION:-?}  JDK ${JDK_VERSION:-?}"
+  local any=0
+  if [ "$USE_LATEST" = 1 ]; then
+    if cmd_latest; then
+      [ "$(state_get latest)" = uptodate ] && echo "  MOS        : nothing newer than the installed PSU/Coherence level"
+    else echo "  MOS        : lookup failed (see messages above)"; fi
+  fi
+  if [ -n "$PATCHES" ]; then
+    local id
+    for id in $(printf '%s' "$PATCHES" | tr ',' ' '); do
+      any=1
+      if printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;"; then echo "  Patch $id : already installed - skip"
+      elif ls "${pdir:-/nonexistent}"/p"$id"_*.zip >/dev/null 2>&1; then echo "  Patch $id : in $pdir, will be applied"
+      else echo "  Patch $id : will be downloaded from MOS, then applied"; fi
+    done
+    if [ -n "$OPATCH_VERSION" ] && ! version_ge "$OPATCH_VERSION" "13.9.4.2.0"; then echo "  OPatch kit : $OPATCH_KIT_BUG will be downloaded and installed first (OPatch $OPATCH_VERSION is too old)"; fi
+  fi
+  if [ -n "$pdir" ] && [ -d "$pdir" ]; then
+    local list id path kind
+    list="$(prepare_patch_dir "$pdir")"
+    while IFS='|' read -r id path kind; do
+      [ -z "$id" ] && continue; any=1
+      if [ "$kind" = opatch-upgrade ]; then echo "  OPatch kit : present in $pdir - installed first"; continue; fi
+      local st="will be applied" min
+      printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" && st="already installed - skip"
+      min="$(patch_min_opatch "$path" || true)"
+      [ -n "$min" ] && [ -n "$OPATCH_VERSION" ] && ! version_ge "$OPATCH_VERSION" "$min" && st="$st (needs OPatch $min, have $OPATCH_VERSION)"
+      printf '  Patch %s : %-60s %s\n' "$id" "$(patch_description "$path" | cut -c1-60)" "$st"
+    done <<<"$list"
+    [ -z "$list" ] && echo "  Folder $pdir holds no patch zips"
+  fi
+  [ $any = 0 ] && echo "  No patch folder or numbers given. Use:  plan <patch-dir>   or   plan --latest   or   plan --patches N,N"
+  case "$WLS_VERSION" in
+    12.2.1.4*) echo "  JDK        : 12.2.1.4 runs on JDK 8; Oracle expects the CPU's JDK 8 update installed too (not done by this script)";;
+    14.1.1*)   echo "  JDK        : 14.1.1 runs on JDK 8 or 11; update the JDK to the CPU's release too (not done by this script)";;
+    14.1.2*)   echo "  JDK        : 14.1.2 runs on JDK 17 or 21; update the JDK to the CPU's release too (not done by this script)";;
+  esac
+  echo "  Then       : backup ORACLE_HOME + domain > stop $(printf '%s\n' "$MANAGED_SERVERS" | awk '{print $1}' | tr '\n' ' ')> opatch apply > start > verify; automatic rollback if anything fails"
+  echo "  Next step  : ./wls-patch.sh preflight ${pdir:-<patch-dir>}   (adds Oracle's conflict check, disk, JDK pairing)"
+  echo
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # run : the orchestrated flow with automatic rollback
 # ---------------------------------------------------------------------------
 cmd_run() {
@@ -1320,7 +1377,7 @@ cmd_run() {
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local cmd="" args=()
@@ -1358,7 +1415,8 @@ main() {
   [ "$PATCHES" = latest ] && { PATCHES=""; USE_LATEST=1; }
   export ORACLE_HOME DOMAIN_HOME JAVA_HOME ADMIN_URL
   case "$cmd" in
-    inspect)   cmd_inspect ;;
+    inspect)   cmd_inspect "${args[0]:-}" ;;
+    plan)      cmd_plan "${args[0]:-}" ;;
     preflight) cmd_preflight "${args[0]:-}" ;;
     backup)    cmd_backup ;;
     restore)   cmd_restore "${args[0]:-}" ;;

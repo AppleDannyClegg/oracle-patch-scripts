@@ -8,7 +8,9 @@
 # Usage: ords-patch.sh <command> [args] [options]
 #
 # Commands
-#   inspect                 ORDS product dir + version, Java, config dir, pools, running?, URL
+#   inspect                 ORDS product dir + version, Java, config dir, pools, running?, URL, and the
+#                           date of the newest ords-latest.zip on Oracle's site
+#   plan                    What WOULD be done: version now, newest known, steps, rollback path
 #   latest                  Download ords-latest.zip to ORDS_BASE/downloads and read its version
 #   download                Same as latest (kept for symmetry with the other scripts)
 #   preflight               Java/ORDS pairing, config dir sane, admin password available, disk, URL
@@ -234,7 +236,33 @@ Config dir       : ${ORDS_CONFIG:-not found}
 Pools            : ${POOLS:-none}
 Running          : $([ -n "$ORDS_RUNNING" ] && echo "yes (pid $ORDS_RUNNING)" || echo no)   URL $ORDS_URL
 Releases on disk : $(for d in "$ORDS_BASE"/ords-*/; do [ -d "$d" ] && basename "$d"; done | tr '\n' ' ')
+Newest on Oracle : $(zip_published)
 EOF
+  echo; echo "To see what would be done:  ./ords-patch.sh plan"
+}
+
+# date Oracle last published ords-latest.zip (cheap HEAD request); the version number is only inside the zip
+zip_published() {
+  local h; h="$(curl -sIL --max-time 8 -A 'Mozilla/5.0' "$ORDS_DL_URL" 2>/dev/null | tr -d '\r')" || true
+  local lm; lm="$(printf '%s\n' "$h" | sed -n 's/^[Ll]ast-[Mm]odified: *//p' | tail -1)"
+  [ -n "$lm" ] && printf 'ords-latest.zip published %s (exact version known after '"'"'latest'"'"' downloads it)' "$lm" || printf '(download.oracle.com not reachable from here)'
+}
+
+cmd_plan() {
+  setup_env
+  reuse_or_init plan
+  local nv nd; nv="$(state_get new_version || true)"; nd="$(state_get new_dir || true)"
+  [ -d "$nd" ] || { nv=""; nd=""; for d in "$ORDS_BASE"/ords-*/; do [ -d "$d" ] && [ -x "$d/bin/ords" ] && { local v; v="$(basename "$d")"; v="${v#ords-}"; { [ -z "$nv" ] || version_ge "$v" "$nv"; } && { nv="$v"; nd="${d%/}"; }; }; done; }
+  [ -n "$nv" ] && [ -n "$ORDS_VER" ] && version_ge "$ORDS_VER" "$nv" && nv=""
+  echo
+  echo "WOULD DO (nothing has been changed)"
+  echo "  Now        : ORDS ${ORDS_VER:-?} $([ "$WLS_MODE" = 1 ] && echo "deployed in WebLogic as '$WLS_ORDS_APP' ($WLS_ORDS_WAR)" || echo "standalone at ${ORDS_HOME:-?}"), schema in DB ${DB_SCHEMA_VER:-?}, Java ${JAVA_VER:-none}, pools: ${POOLS:-none}"
+  echo "  Newest     : $([ -n "$nv" ] && echo "$nv (already unpacked at $nd)" || zip_published)"
+  if [ -n "$nv" ] && [ -n "$JAVA_VER" ] && ! java_ok_for "$nv"; then echo "  Java       : $JAVA_VER is NOT supported by ORDS $nv (needs $(version_ge "$nv" 25.1 && echo '17 or 21' || echo '11, 17 or 21'))"; fi
+  echo "  Steps      : backup config$([ "$WLS_MODE" = 1 ] && echo "+war") + restore point (if SQL access and ARCHIVELOG) > stop $([ "$WLS_MODE" = 1 ] && echo "app '$WLS_ORDS_APP'" || echo ORDS) > for each pool: ords install --db-only (schema upgrade as $ORDS_ADMIN_USER) > $([ "$WLS_MODE" = 1 ] && echo "build new ords.war, replace, weblogic.Deployer -redeploy" || echo "point $ORDS_HOME at the new release") > start > verify (URL, pools, validate_apex)"
+  echo "  Rollback   : $([ "$WLS_MODE" = 1 ] && echo "previous ords.war back + redeploy" || echo "symlink back to the previous release + restart"); schema rewind only via 'rollback --allow-flashback'"
+  echo "  Next step  : ./ords-patch.sh latest   (downloads the zip and tells you the exact version), then preflight, then run"
+  echo
 }
 
 # ---------------------------------------------------------------------------
@@ -464,7 +492,7 @@ cmd_run() {
   return 1
 }
 
-usage() { sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; }
 main() {
   local cmd="" args=()
   while [ $# -gt 0 ]; do
@@ -481,7 +509,7 @@ main() {
   load_config
   [ -n "${CLI_BASE:-}" ] && ORDS_BASE="$CLI_BASE"; [ -n "${CLI_CFG:-}" ] && ORDS_CONFIG="$CLI_CFG"
   case "$cmd" in
-    inspect) cmd_inspect;; latest|download) cmd_latest;; preflight) cmd_preflight;; backup) cmd_backup;;
+    inspect) cmd_inspect;; plan) cmd_plan;; latest|download) cmd_latest;; preflight) cmd_preflight;; backup) cmd_backup;;
     stop) cmd_stop;; start) cmd_start;; apply) cmd_apply;; verify) cmd_verify;; rollback) cmd_rollback;;
     cleanup) cmd_cleanup;; heal) cmd_heal;; run) cmd_run;;
     *) die "Unknown command: $cmd";;
