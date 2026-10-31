@@ -1,0 +1,27 @@
+# ords-patch.conf - copy to ords-patch.conf next to the script. Run on the ORDS host as the ORDS owner.
+
+# The ORDS product directory (the one with bin/ords). Best as a symlink, e.g. /opt/oracle/ords -> /opt/oracle/ords-24.4.0;
+# if it is a real directory the script converts it to a symlink on the first upgrade (old files kept).
+#ORDS_HOME=/opt/oracle/ords
+#ORDS_BASE=/opt/oracle                     # new releases unpack here as ords-<version>
+#ORDS_CONFIG=/etc/ords/config
+#JAVA_HOME=/usr/lib/jvm/java-17            # ORDS 22-24: Java 11/17/21; ORDS 25+: Java 17/21
+
+# Database admin for the ORDS schema upgrade (ords install --db-only). Leave the password out to be prompted.
+#ORDS_ADMIN_USER=SYS
+#ORDS_ADMIN_PASSWORD=xxxx
+#ORDS_POOLS="default"                      # default: every pool under ORDS_CONFIG/databases
+
+# How ORDS is run here
+#ORDS_SERVICE=ords                         # systemd unit -> sudo systemctl stop/start
+#ORDS_STOP_CMD="..."
+#ORDS_START_CMD="..."
+#ORDS_URL=http://localhost:8080/ords/
+
+# Optional SQL access: enables a guaranteed restore point before the schema upgrade and validate_apex afterwards
+#SQL_CMD="sqlplus -S"
+#SQL_CONNECT="sys/password@//dbhost:1521/pdb1 as sysdba"
+#PDB=PDB1
+
+#RUN_BASE=/u01/backup/ords-patch/runs
+#START_TIMEOUT=300

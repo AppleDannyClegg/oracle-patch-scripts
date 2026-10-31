@@ -2,3 +2,5 @@ wls-patch.conf
 .netrc
 *.zip
 extracted/
+apex-patch.conf
+ords-patch.conf

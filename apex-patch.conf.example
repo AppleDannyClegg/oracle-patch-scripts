@@ -1,0 +1,32 @@
+# apex-patch.conf - copy to apex-patch.conf next to the script. All optional; detection covers most cases.
+# Run the script on the database server as the oracle user, or anywhere SQL*Plus/SQLcl can reach the DB.
+
+# How to connect as SYS. Default: "sqlplus -S" + "/ as sysdba" (OS authentication, needs ORACLE_HOME/ORACLE_SID).
+#ORACLE_HOME=/u01/app/oracle/product/19/dbhome_1
+#ORACLE_SID=ORCL
+#SQL_CMD="sqlplus -S"                      # or "sql -S" for SQLcl
+#SQL_CONNECT="sys/password@//dbhost:1521/pdb1 as sysdba"   # remote instead of OS auth
+#PDB=PDB1                                  # the pluggable database that holds APEX (needed on a CDB)
+
+# Where releases are downloaded and unpacked (needs ~2 GB). Previous release is kept here for rollback.
+#APEX_BASE=/opt/oracle/apex-releases
+
+# Tablespaces passed to apexins.sql (defaults SYSAUX SYSAUX TEMP)
+#APEX_TS=SYSAUX
+#APEX_FILES_TS=SYSAUX
+#APEX_TEMP_TS=TEMP
+#APEX_INSTALL_TYPE=full                    # or runtime; auto-detected normally
+
+# The folder ORDS serves as /i/ (auto-read from ORDS settings.xml 'standalone.static.path').
+#APEX_IMAGES_DIR=/opt/oracle/apex/images
+
+# ORDS on this host (so it can be stopped/started around the upgrade and checked afterwards)
+#ORDS_HOME=/opt/oracle/ords
+#ORDS_CONFIG=/etc/ords/config
+#ORDS_SERVICE=ords                         # systemd unit; the script runs 'sudo systemctl stop/start ords'
+#ORDS_STOP_CMD="..."                       # or your own commands
+#ORDS_START_CMD="..."
+#ORDS_URL=http://localhost:8080/ords/
+
+#RUN_BASE=/u01/backup/apex-patch/runs
+#START_TIMEOUT=300

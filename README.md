@@ -1,3 +1,8 @@
+# Oracle patching scripts: WebLogic, APEX, ORDS
+
+Three stand-alone bash scripts, same shape: `inspect` (look), `latest` (what is new), `preflight` (would it work),
+`run` (do it, with automatic rollback). WebLogic is first; APEX and ORDS are further down.
+
 # wls-patch.sh — WebLogic patching without needing to be a WebLogic expert
 
 One script, runs on the WebLogic server itself, no agent or internet access needed.
@@ -166,3 +171,53 @@ but swapping the JDK is a separate job: install the new JDK, point `JAVA_HOME` a
 - Patches that require database schema changes (some ADF/OPSS bundles say "run the Upgrade
   Assistant" in their README) are applied, but the schema step is not automated. The README
   says if it is needed.
+
+
+---
+
+# apex-patch.sh — upgrade Oracle APEX in the database
+
+APEX lives inside the database, so this runs on the database server as `oracle` (or anywhere
+SQL*Plus/SQLcl can connect as SYS). Downloads are public (no My Oracle Support login).
+
+```bash
+./apex-patch.sh inspect        # APEX version/schema/type, DB, ORDS, images dir, restore points
+./apex-patch.sh latest         # newest release on download.oracle.com vs installed
+./apex-patch.sh preflight 26.2 # checks + plan, changes nothing (after 'download 26.2' or let 'run' do it)
+./apex-patch.sh run            # latest > download > preflight > backup > stop ORDS > apexins > images > start > verify
+```
+
+What it does for you:
+- Detects the release (`apex_release`), schema (`dba_registry`), full vs runtime install, the PDB, ARCHIVELOG mode, ORDS version, and the images folder ORDS serves (`standalone.static.path`).
+- Finds the newest release by probing `download.oracle.com/otn_software/apex/apex_YY.N.zip` (public, verified).
+- Refuses what Oracle refuses: database older than 19c, APEX older than 18.1 (needs a hop), ORDS older than 23.3, connected to `CDB$ROOT` instead of the PDB.
+- **Backup = rollback readiness**: keeps (or downloads) the *previous* release's files because Oracle's documented revert is `apxdwngrd.sql` from the previous release; creates a guaranteed restore point if the database is in ARCHIVELOG mode; tars the images folder.
+- Runs `apexins.sql SYSAUX SYSAUX TEMP /i/` (or `apxrtins.sql` for runtime installs), swaps the images folder, restarts ORDS, verifies version, registry status, invalid objects (recompiles), and the ORDS URL.
+- **Rollback** (automatic if apply or verify fails): `apxdwngrd.sql` from the previous release, images back, ORDS up, and offers to drop the abandoned new schema (`DROP USER APEX_xxxxxx CASCADE`, as the docs say).
+- If even `apxdwngrd.sql` fails, the restore point is the last resort: `rollback --allow-flashback` flashes the PDB back. It never does that on its own, because it discards *everything* in that PDB since the restore point, including other applications' data.
+- `cleanup` (a week or two later, once happy): drops the restore point (it holds flashback logs) and the old APEX schema.
+
+Not covered: fresh installs, APEX in `CDB$ROOT`, the "maximum uptime" three-phase upgrade, APEX patch-set bundles from My Oracle Support (apply those by hand with `catpatch.sql`), and ORDS running on a different host (set `APEX_IMAGES_DIR` there by hand, or run `ords-patch.sh` on that host).
+
+---
+
+# ords-patch.sh — upgrade ORDS (standalone mode)
+
+Runs on the host where ORDS runs, as the ORDS owner. Download is public (`ords-latest.zip`).
+
+```bash
+./ords-patch.sh inspect     # product dir, version, Java, config, pools, running?
+./ords-patch.sh latest      # downloads ords-latest.zip, unpacks it, tells you the version
+./ords-patch.sh preflight   # Java pairing, config, pools, admin password, disk
+./ords-patch.sh run         # latest > preflight > backup > stop > ords install --db-only per pool > switch > start > verify
+```
+
+- Keeps every release in its own directory (`ords-24.4.0`, `ords-26.3.0`) and points the `ORDS_HOME` symlink at the current one, so rollback is a symlink switch. Start scripts/systemd units keep using the same path.
+- Upgrades the ORDS schema in every database pool with Oracle's documented command (`ords --config ... install --db-pool ... --admin-user SYS --db-only --password-stdin`).
+- Checks the Java pairing (ORDS 25+ needs Java 17 or 21; 22 to 24 accept 11 too), backs up the config directory, creates a restore point when SQL access and ARCHIVELOG allow, runs `sys.validate_apex` afterwards if APEX is present (Oracle requires that after every ORDS upgrade).
+- **Rollback**: symlink back and restart. The schema upgrade in the database stays unless you run `rollback --allow-flashback` (same warning as above: it rewinds the whole PDB).
+- Pre-22.1 ORDS (the `java -jar ords.war` era) needs its config migrated first; the script says so and stops.
+
+## Caveats for both
+
+Tested end to end against stand-ins (a fake `sqlplus` with a small in-memory database, a fake `ords`, local copies of the download zips) covering upgrade, failed upgrade, failed verify, rollback, flashback gating, already-current, dry-run and wrong-Java. Not yet run against a real database. The commands and script names are taken from the Oracle APEX 26.2 installation guide and the ORDS 24.4 installation guide. First real run: do `inspect` and `preflight` on a test database first, and keep the restore point until you are happy.
