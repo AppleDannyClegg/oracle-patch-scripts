@@ -1,0 +1,12 @@
+# sr-draft.conf - copy next to the script (or ~/.sr-draft.conf). All optional; the shared ../oracle.conf is read too.
+
+# Printed into the Environment / contact lines of every draft
+#SR_CONTACT="Jane Doe, +44 161 000 0000, 08:00-18:00 UK"
+#SR_CSI=12345678
+#SR_COMPANY="Bank plc - Manchester data centre"
+
+# prod|nonprod when the host/database name does not say (prod/prd/live in the name => prod)
+#SR_ENVIRONMENT=prod
+
+# Where drafts go when there is no pack (default ~/sr-draft/<ts>; with --pack: <pack>/sr)
+#SR_OUT=/u01/backup/sr-draft
