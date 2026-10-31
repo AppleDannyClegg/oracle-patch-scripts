@@ -1,0 +1,37 @@
+# account-ops.conf - copy next to the script (or ~/.account-ops.conf), chmod 600 if it holds anything secret.
+# All optional; the shared ../oracle.conf is read too. Command-line options win over this file.
+
+# Extra accounts to treat as service accounts (the built-in list: APEX_PUBLIC_USER ORDS_PUBLIC_USER ORDS_METADATA
+# APEX_LISTENER APEX_REST_PUBLIC_USER DBSNMP SYSMAN GGADMIN C##GGADMIN RMAN RCAT RCOWNER)
+#SERVICE_ACCOUNTS=APP_POOL_USER,REPORTING_RO
+
+# Database access (default "/ as sysdba" on every running instance; --sid / --pdb narrow it)
+#SQL_CONNECT="/ as sysdba"
+
+# ORDS (auto-detected from the running process / common paths; set when it is not found)
+#ORDS_HOME=/opt/oracle/ords
+#ORDS_CONFIG=/etc/ords/config
+#ORDS_URL=http://localhost:8080/ords/
+#ORDS_SERVICE=ords                 # systemd unit for the restart after a password change (sudo -n systemctl restart)
+#ORDS_STOP_CMD="/opt/oracle/ords/bin/stop.sh"   # or your own stop/start commands
+#ORDS_START_CMD="/opt/oracle/ords/bin/start.sh"
+
+# WebLogic data sources (only needed when a service account is used by a JDBC module)
+#WLS_ADMIN_URL=t3://localhost:7001
+#WLS_USERCONFIG=/home/oracle/.wls/userconfig    # from WLST storeUserConfig() - preferred
+#WLS_USERKEY=/home/oracle/.wls/userkey
+#WLS_ADMIN_USER=weblogic                         # or user + password (prompted if the password is missing)
+#WLS_ADMIN_PASSWORD=
+
+# GoldenGate: which credential store alias holds which database user (auto-read from 'info credentialstore' otherwise)
+#OGG_HOME=/u01/app/ogg
+#GG_ALIAS_MAP=GGADMIN=ggadmin_src,C##GGADMIN=ggadmin_cdb
+
+# Profile for service accounts ('profile' command): created if missing
+#SA_PROFILE=SERVICE_ACCOUNTS
+#SA_FAILED_LOGINS=10
+
+# Not recommended: a fixed new password. Use the prompt or --generate instead.
+#NEW_PASSWORD=
+
+#RUN_BASE=/u01/backup/account-ops/runs
