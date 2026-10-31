@@ -1,10 +1,14 @@
 # Oracle operations scripts: WebLogic, APEX, ORDS, Database
 
 Stand-alone bash scripts for running and patching an Oracle estate (WebLogic, APEX, ORDS, Database,
-Data Guard, RMAN) without being an expert in each product. One folder per script, with its
-`*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch` and
-`oracle-diag` shares `lib/oracle-lib.sh`, so copy the whole tree (or `get.sh` does it) rather than a
-single file.
+Data Guard, RMAN, GoldenGate) without being an expert in each product. Twenty scripts, one folder
+each, with its `*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`,
+`ords-patch` and `oracle-diag` sources `lib/oracle-lib.sh` from one level up, so copy the whole tree
+(`get.sh` does it) or a script folder together with `lib/`, never a single file.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
+```
 
 Every script that changes something has the same shape:
 
@@ -37,6 +41,8 @@ Report scripts have no commands: run them, read `REPORT.md`, or hand it to Claud
 | `dg-switchover/dg-switchover.sh` | Data Guard role changes through the broker: switchover, failover, reinstate, with preflight, verify, reverse switchover as rollback, `heal` for the usual ORA-168xx broker states | [README](dg-switchover/README.md) |
 | `rman-ops/rman-ops.sh` | Is the backup any good: RMAN configuration and history, restore validate, recovery window, ZDLRA link, a real small restore to scratch space, crosscheck and delete-obsolete | [README](rman-ops/README.md) |
 | `db-refresh/db-refresh.sh` | Refresh a TEST database from PROD (PDB hot clone over a link or RMAN duplicate) and make it safe again: services renamed, data masked, accounts locked, links to PROD removed, APEX repointed, jobs disabled | [README](db-refresh/README.md) |
+| `gg-ops/gg-ops.sh` | GoldenGate: every process with lag, checkpoints, stats, discards, the database side (capture/apply, apply errors, archivelogs the extract still needs vs on disk, long transactions, heartbeat), start/stop/restart, skip-transaction, resync, handlecollisions, trail cleanup, trandata, `heal` for the usual abends | [README](gg-ops/README.md) |
+| `apex-export/apex-export.sh` | APEX applications in git: split exports of every app, workspace and instance definitions, commit only on change with who changed what, nightly cron, diff reports, restore an application from any commit or date | [README](apex-export/README.md) |
 
 ## Reports (read-only)
 
@@ -47,6 +53,19 @@ Report scripts have no commands: run them, read `REPORT.md`, or hand it to Claud
 | `perf-snapshot/perf-snapshot.sh` | "It was slow between 09:00 and 10:30": top SQL, plan changes, waits, blocking, I/O, memory, OS stats for a window; AWR/ASH/ADDM with the Diagnostics Pack | [README](perf-snapshot/README.md) |
 | `space-forecast/space-forecast.sh` | Growth and days-to-full for tablespaces, FRA, ASM, filesystems and archivelog; keeps its own history so it needs no licensed views | [README](space-forecast/README.md) |
 | `security-posture/security-posture.sh` | Auditor-shaped scorecard (PASS/FAIL/INFO with evidence) for database, listener, host and WebLogic, following the CIS Oracle 19c benchmark | [README](security-posture/README.md) |
+
+## Support cases
+
+| Script | What it does | Guide |
+|---|---|---|
+| `incident-pack/incident-pack.sh` | One tarball for the SR: oracle-diag report, TFA or ADR incident packages, alert/listener/WebLogic/ORDS/GoldenGate log windows, the traces the alert log names, SQL snapshots, pfile, opatch, optional AWR/ASH, thread and heap dumps, hanganalyze/systemstate, host and Exadata evidence, `MANIFEST.md`, split at 2 GB | [README](incident-pack/README.md) |
+| `sr-draft/sr-draft.sh` | The SR text from a pack, an oracle-diag report or the error alone: product and patch level, error statistics with first/last occurrence, ADR problem keys, recent changes, attachments, severity wording, MOS search strings and Doc IDs, plus a prompt for Claude to review it | [README](sr-draft/README.md) |
+
+## Shared library
+
+`lib/oracle-lib.sh` (logging, run directories, config loading, SQL*Plus/SQLcl helpers, PDB
+iteration, report and FINDINGS helpers, redaction, WebLogic/ORDS/GoldenGate/Java discovery,
+TLS checks, MOS download). `bash lib/oracle-lib.sh selftest` checks it on a new host.
 
 Each script has a matching `*.conf.example`; copy it to `*.conf` next to the script only if
 auto-detection needs a hint or you want to store credentials. Settings shared by several scripts

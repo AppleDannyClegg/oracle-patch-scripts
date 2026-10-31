@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# get.sh - fetch the Oracle patching scripts onto this machine. No git needed, just curl or wget.
+# get.sh - fetch the Oracle operations scripts (all 20 folders plus the shared lib/) onto this machine. No git needed, just curl or wget.
 #
 #   curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
 #
 # Puts everything in ./oracle-patch-scripts (or the folder given as the first argument) and makes
-# the scripts executable. Run it again later to pick up the newest version; the previous copy is
+# every script executable. Keep lib/ next to the script folders: all scripts except wls-patch, apex-patch,
+# ords-patch and oracle-diag source ../lib/oracle-lib.sh. Run it again later to pick up the newest version; the previous copy is
 # kept as <folder>.old. Your own *.conf files are carried across.
 
 set -euo pipefail
@@ -32,6 +33,8 @@ if [ -d "$DEST" ]; then
 fi
 mv "$src" "$DEST"
 chmod +x "$DEST"/*/*.sh; [ -f "$DEST/get.sh" ] && chmod +x "$DEST/get.sh"
+[ -f "$DEST/lib/oracle-lib.sh" ] || { echo "lib/oracle-lib.sh missing from the download; the scripts will not run" >&2; exit 1; }
+bash "$DEST/lib/oracle-lib.sh" selftest >/dev/null 2>&1 && echo "lib/oracle-lib.sh selftest ok" || echo "warning: lib/oracle-lib.sh selftest failed on this machine (bash 4+, GNU coreutils?)"
 if [ -d "$DEST.old" ]; then
   for c in "$DEST.old"/*/*.conf; do
     [ -f "$c" ] || continue
@@ -42,7 +45,8 @@ fi
 
 echo
 echo "done: $(cd "$DEST" && pwd)"
-for d in "$DEST"/*/; do printf '  %s\n' "$(basename "$d")"; done
+for d in "$DEST"/*/; do n="$(basename "$d")"; [ "$n" = lib ] && continue; [ -f "$d/$n.sh" ] || continue; printf '  %-18s %s\n' "$n" "$(sed -n '2p' "$d/$n.sh" | sed 's/^# *[a-z-]*\.sh - //' | cut -c1-95)"; done
+echo "  lib/               shared library, needed by every script above (bash $DEST/lib/oracle-lib.sh selftest)"
 echo
-echo "next: read $DEST/README.md, then copy the folder you need to the server, e.g."
-echo "  scp -r $DEST/wls-patch oracle@server:~/"
+echo "next: read $DEST/README.md, then copy the whole tree to the server (the scripts need lib/ one level up), e.g."
+echo "  scp -r $DEST oracle@server:~/   # or just one folder plus lib/: scp -r $DEST/lib $DEST/gg-ops oracle@server:~/scripts/"
