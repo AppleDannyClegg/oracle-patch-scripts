@@ -391,6 +391,12 @@ cmd_relock() {
   state_set relock ok
 }
 
+# link_ddl <owner> <statement...>: DROP/CREATE DATABASE LINK cannot name a schema (a dotted name is read as the link's own
+# name, ORA-02024), so another user's private link is handled by running the statement as that user via dbms_sys_sql
+link_ddl() { local owner="$1"; shift; local stmt="$*"
+  case "$owner" in PUBLIC|SYS) printf '%s;' "$stmt";;
+    *) printf "declare c integer; u number; begin select user_id into u from dba_users where username = '%s'; c := sys.dbms_sys_sql.open_cursor; sys.dbms_sys_sql.parse_as_user(c, q'[%s]', dbms_sql.native, u); sys.dbms_sys_sql.close_cursor(c); end;\\n/" "$owner" "$stmt";;
+  esac; }
 cmd_fix_dblinks() {
   discover; reuse_or_init fix-dblinks; skipped fix-dblinks && return 0
   local rows; rows="$(plines "select owner||'|'||db_link||'|'||nvl(host,'') from dba_db_links;" 2>/dev/null)"
@@ -401,12 +407,12 @@ cmd_fix_dblinks() {
       log "link $owner.$link: $host -> $mapped"
       local user; user="$(plines "select username from dba_db_links where owner='$owner' and db_link='$link';" | head -1)"
       local pw_var; pw_var="DBLINK_PASSWORD_$(printf '%s' "$link" | tr -c 'A-Za-z0-9\n' '_' | uc)"; read_secret "$pw_var" "password of $user for link $link"
-      local pfx=""; [ "$owner" = PUBLIC ] && pfx="public "; local sch=""; [ "$owner" != PUBLIC ] && sch="\"$owner\"."
-      do_sql pdb "re-create $link" "drop ${pfx}database link ${sch}\"$link\";\ncreate ${pfx}database link ${sch}\"$link\" connect to \"$user\" identified by \"${!pw_var}\" using '$mapped';" || warn "could not re-create $link"
+      local pfx=""; [ "$owner" = PUBLIC ] && pfx="public "
+      do_sql pdb "re-create $link" "$(link_ddl "$owner" "drop ${pfx}database link \"$link\"")\n$(link_ddl "$owner" "create ${pfx}database link \"$link\" connect to \"$user\" identified by \"${!pw_var}\" using '$mapped'")" || warn "could not re-create $link (as $owner)"
     elif [ -n "$PROD_HOST_PATTERN" ] && printf '%s' "$host" | grep -qiE "$PROD_HOST_PATTERN"; then
       log "link $owner.$link points at production ($host): dropping"
-      local pfx=""; [ "$owner" = PUBLIC ] && pfx="public "; local sch=""; [ "$owner" != PUBLIC ] && sch="\"$owner\"."
-      do_sql pdb "drop $link" "drop ${pfx}database link ${sch}\"$link\";" || warn "drop of $owner.$link failed - a private link can only be dropped by its owner (ORA-02024): connect as $owner, or use the DBLINK_MAP to re-point it"
+      local pfx=""; [ "$owner" = PUBLIC ] && pfx="public "
+      do_sql pdb "drop $owner.$link" "$(link_ddl "$owner" "drop ${pfx}database link \"$link\"")" || warn "drop of $owner.$link failed (run as $owner through dbms_sys_sql) - drop it as $owner, or use DBLINK_MAP to re-point it"
     else log "link $owner.$link -> $host kept"; fi
   done <<<"$rows"
   state_set fix_dblinks ok
