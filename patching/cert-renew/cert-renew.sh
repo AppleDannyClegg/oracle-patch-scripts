@@ -220,8 +220,18 @@ inspect_wls() {
       ks="$(demo_identity "$d")"; [ -n "$ks" ] && add_keystore nm "nm:$(basename "$d")" "$ks" "$(ks_type_of "$ks")" demoidentity; fi
   done; done
 }
-ords_props() { printf '%s' "${ORDS_CONFIG:-}/global/standalone/standalone.properties"; }
-ords_prop() { sed -n "s/^$1=//p" "$(ords_props)" 2>/dev/null | head -1; }
+# ORDS 19-21 kept the standalone settings in global/standalone/standalone.properties (key=value); 22+ keeps them in
+# global/settings.xml (<entry key="standalone.https.cert">...</entry>), written with "ords config set"
+ords_props() { local p="${ORDS_CONFIG:-}/global/standalone/standalone.properties"; [ -f "$p" ] || { [ -f "${ORDS_CONFIG:-}/global/settings.xml" ] && p="$ORDS_CONFIG/global/settings.xml"; }; printf '%s' "$p"; }
+ords_prop() { local f; f="$(ords_props)"; case "$f" in *.xml) sed -n "s#.*<entry key=\"$1\">\(.*\)</entry>.*#\1#p" "$f" 2>/dev/null | head -1;; *) sed -n "s/^$1=//p" "$f" 2>/dev/null | head -1;; esac; }
+ords_set_prop() { # <key> <value>: "ords config set" when the CLI runs here, else edit the file
+  local f; f="$(ords_props)"
+  case "$f" in
+    *.xml) if [ -x "${ORDS_HOME:-/nonexistent}/bin/ords" ] && "$ORDS_HOME/bin/ords" --config "$ORDS_CONFIG" config set "$1" "$2" >>"$LOG_FILE" 2>&1; then return 0; fi
+           sed -i "\#<entry key=\"$1\">#d" "$f" && sed -i "s#</properties>#<entry key=\"$1\">$2</entry>\n</properties>#" "$f";;
+    *) { grep -vE "^$1=" "$f"; printf '%s=%s\n' "$1" "$2"; } >"$f.tmp" && cat "$f.tmp" >"$f" && rm -f "$f.tmp";;
+  esac
+}
 inspect_ords() {
   ords_detect >/dev/null 2>&1 || return 0
   local p c k port; p="$(ords_props)"; [ -f "$p" ] || { dbg "no $p"; return 0; }
@@ -604,7 +614,7 @@ ords_apply() {
   { cat "$CERT"; [ -n "$CHAIN" ] && cat "$CHAIN"; } >"$d/$base.pem"
   keypass_opt
   ( umask 077; openssl pkcs8 -topk8 -inform PEM -outform DER -nocrypt -in "$KEY" -out "$d/$base.der" "${KP[@]}" 2>>"$LOG_FILE" ) || die "openssl pkcs8 (key to DER) failed"; keypass_done
-  { grep -vE '^(standalone\.https\.cert|standalone\.https\.cert\.key|ssl\.cert|ssl\.cert\.key)=' "$T_PROPS"; printf 'standalone.https.cert=%s\nstandalone.https.cert.key=%s\n' "$d/$base.pem" "$d/$base.der"; [ -z "$T_PORT" ] && printf 'standalone.https.port=%s\n' "${ORDS_HTTPS_PORT:-8443}"; true; } >"$T_PROPS.cert-renew" && cat "$T_PROPS.cert-renew" >"$T_PROPS" && rm -f "$T_PROPS.cert-renew"
+  ords_set_prop standalone.https.cert "$d/$base.pem"; ords_set_prop standalone.https.cert.key "$d/$base.der"; [ -z "$T_PORT" ] && ords_set_prop standalone.https.port "${ORDS_HTTPS_PORT:-8443}"; true
   [ -z "$T_PORT" ] && T_PORT="${ORDS_HTTPS_PORT:-8443}"; state_set ords_files "$d/$base.pem $d/$base.der"
 }
 wallet_apply() {
@@ -629,7 +639,8 @@ cmd_apply() {
 }
 
 # last_change_run: the newest run dir that applied something (inspect runs also move RUN_BASE/latest)
-last_change_run() { [ -n "$RUN_DIR" ] && return 0; local d; while IFS= read -r d; do grep -q '^apply_' "$d/state" 2>/dev/null && { RUN_DIR="${d%/}"; return 0; }; done < <(printf '%s\n' "$RUN_BASE"/*/ | sort -r); return 1; }
+# (the latest symlink is skipped: it sorts after the dated dirs and picking it would make init_run_dir point latest at itself)
+last_change_run() { [ -n "$RUN_DIR" ] && return 0; local d; while IFS= read -r d; do [ -L "${d%/}" ] && continue; grep -q '^apply_' "$d/state" 2>/dev/null && { RUN_DIR="${d%/}"; return 0; }; done < <(printf '%s\n' "$RUN_BASE"/*/ | sort -r); return 1; }
 cmd_verify() {
   local t="${ARGS[0]:-}"; [ -n "$RUN_DIR" ] || { last_change_run; reuse_or_init verify; }; find_tools
   [ -n "$t" ] || { ARGS=(); cmd_inspect; return $?; }
@@ -685,7 +696,7 @@ print 'CERT_RENEW_OK'";; esac && log "WebLogic $T_SERVER: previous keystore sett
       [ -f "$b/$(basename "${trust:-/nonexistent}")" ] && { log "restoring trust store $trust"; [ "$DRY_RUN" = 1 ] || cp -p "$b/$(basename "$trust")" "$trust"; }
       log "new keystore $(state_get "new_ks_$T_SERVER" || echo '?') left in place (unused)";;
     nm) log "restoring $T_PROPS"; [ "$DRY_RUN" = 1 ] || cp -p "$b/nodemanager.properties" "$T_PROPS";;
-    ords) log "restoring $T_PROPS"; [ "$DRY_RUN" = 1 ] || cp -p "$b/standalone.properties" "$T_PROPS";;
+    ords) log "restoring $T_PROPS"; [ "$DRY_RUN" = 1 ] || cp -p "$b/$(basename "$T_PROPS")" "$T_PROPS";;
     listener|ohs) log "restoring cwallet.sso/ewallet.p12 into $T_WALLET"; [ "$DRY_RUN" = 1 ] || cp -p "$b"/cwallet.sso "$b"/ewallet.p12 "$T_WALLET/" 2>/dev/null || die "restore into $T_WALLET failed";;
     java) log "restoring $T_FILE"; [ "$DRY_RUN" = 1 ] || cp -p "$b/cacerts" "$T_FILE";;
   esac

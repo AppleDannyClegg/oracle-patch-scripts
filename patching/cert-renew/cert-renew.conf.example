@@ -39,7 +39,9 @@
 # Keys: wls:<domain>:<server>, wls:<domain>, nm:<domain>, ords, listener, ohs:<instance>
 #RESTART_CMDS="ords=sudo -n systemctl restart ords,wls:base_domain:ms1=/u01/app/oracle/scripts/restart_ms1.sh"
 #ORDS_SERVICE=ords                       # used for ords when RESTART_CMDS has no ords= entry
-#ORDS_HTTPS_PORT=8443                    # added to standalone.properties when ORDS has no https port yet
+#ORDS_HTTPS_PORT=8443                    # set (standalone.properties or settings.xml) when ORDS has no https port yet
+#ORDS_HOME=/opt/oracle/ords              # found via `ords` on PATH, the running process or the usual dirs when unset
+#ORDS_CONFIG=/etc/ords/config            # the --config dir of the running ORDS when unset
 
 # Thresholds for inspect findings and the port scan cap
 #WARN_DAYS=30

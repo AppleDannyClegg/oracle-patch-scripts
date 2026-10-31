@@ -111,7 +111,7 @@ init_run_dir() {
   [ -z "$RUN_DIR" ] && RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"
   mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR"
   LOG_FILE="$RUN_DIR/$TOOL.log"; STATE_FILE="$RUN_DIR/state"
-  ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
+  [ "$RUN_DIR" = "$RUN_BASE/latest" ] || [ "$RUN_DIR" = "$RUN_BASE/latest/" ] || ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
   log "$TOOL $VERSION (lib $ORACLE_LIB_VERSION)  run dir: $RUN_DIR  dry-run=$DRY_RUN"
 }
 latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }

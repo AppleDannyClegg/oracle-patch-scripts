@@ -24,7 +24,7 @@ cp cert-renew.conf.example cert-renew.conf && chmod 600 cert-renew.conf   # keys
 |---|---|---|
 | `wls` | every SSL-enabled server in every domain's `config.xml` | identity keystore (custom or demo) via `keytool`, plus the SSL port live |
 | `nm` | `nodemanager.properties` | custom identity keystore, plus the NodeManager port live |
-| `ords` | `standalone.properties` (`standalone.https.cert`, legacy `ssl.cert`) | the PEM, plus the HTTPS port live; no cert + https port = generated self-signed |
+| `ords` | `global/standalone/standalone.properties` (`standalone.https.cert`, legacy `ssl.cert`), or `global/settings.xml` where ORDS 22+ keeps them (apply writes it through `ords config set`) | the PEM, plus the HTTPS port live; no cert + https port = generated self-signed |
 | `listener` | `WALLET_LOCATION` in `listener.ora`/`sqlnet.ora` of every listener/DB/grid home | `ewallet.p12` with `WALLET_PASSWORD` (openssl), else `orapki wallet export`; every TCPS port live |
 | `ohs` | `ssl.conf` of each OHS instance (`SSLWallet`, `VirtualHost` port) | wallet as above, port live |
 | `cacerts` | every JDK on the host | one row per JDK: count, expired and soon-expiring CA aliases |
