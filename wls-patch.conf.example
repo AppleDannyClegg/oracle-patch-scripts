@@ -1,0 +1,43 @@
+# wls-patch.conf - copy to wls-patch.conf next to the script (or ~/.wls-patch.conf)
+# Everything here is optional. The script auto-detects what it can; set a value
+# only when detection picks the wrong thing or you have custom start/stop scripts.
+
+# Where WebLogic is installed (the directory that contains wlserver/ and OPatch/).
+#ORACLE_HOME=/u01/app/oracle/product/fmw12214
+
+# The domain to stop/start. Default: first domain listed in $ORACLE_HOME/domain-registry.xml
+#DOMAIN_HOME=/u01/app/oracle/config/domains/prod_domain
+
+# JDK that WebLogic runs on. Must match the release: 12.2.1.4 -> JDK 8, 14.1.1 -> 8 or 11, 14.1.2 -> 17 or 21.
+#JAVA_HOME=/usr/java/jdk1.8.0_411
+
+# Admin console URL used to decide the admin server is up. Default: http://localhost:<admin port>/console
+#ADMIN_URL=http://localhost:7001/console
+
+# If you normally stop/start WebLogic with your own scripts (or systemd), put the commands here and
+# the script will use them instead of the domain's stop*/start* scripts.
+#STOP_CMD="sudo systemctl stop weblogic-managed weblogic-admin weblogic-nodemanager"
+#START_CMD="sudo systemctl start weblogic-nodemanager weblogic-admin weblogic-managed"
+
+# How long to wait for servers to stop / start before deciding something is wrong (seconds).
+#STOP_TIMEOUT=180
+#START_TIMEOUT=600
+
+# Where full ORACLE_HOME/domain backups and per-run logs go. Needs space: about the size of ORACLE_HOME.
+#BACKUP_DIR=/u01/backup/wls-patch
+#RUN_BASE=/u01/backup/wls-patch/runs
+
+# --- Downloading from My Oracle Support ------------------------------------
+# Needed only for `download` and `run --patches`. The account must have a Support Identifier
+# with WebLogic entitlement. Safer alternative to putting the password here: a line in ~/.netrc
+#   machine updates.oracle.com login you@company.com password xxxx      (then: chmod 600 ~/.netrc)
+#MOS_USER=you@company.com
+#MOS_PASSWORD=xxxx
+
+# Default patch numbers for `run --patches` / `download` when none are given on the command line.
+# Update this each quarter from the WebLogic Patch Availability Document on My Oracle Support.
+# The OPatch kit (28186730) is added automatically when the installed OPatch is too old.
+#PATCHES=35247514,35251219
+
+# Behind a proxy? curl honours the usual variables:
+#HTTPS_PROXY=http://proxy.company.com:8080
