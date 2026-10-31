@@ -1,10 +1,11 @@
 # Oracle operations scripts: WebLogic, APEX, ORDS, Database
 
 Stand-alone bash scripts for running and patching an Oracle estate (WebLogic, APEX, ORDS, Database,
-Data Guard, RMAN, GoldenGate) without being an expert in each product. Twenty scripts, one folder
-each, with its `*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`,
-`ords-patch` and `oracle-diag` sources `lib/oracle-lib.sh` from one level up, so copy the whole tree
-(`get.sh` does it) or a script folder together with `lib/`, never a single file.
+Data Guard, RMAN, GoldenGate) without being an expert in each product. Twenty scripts in three
+folders, `patching/`, `operations/` and `reports/`, one sub-folder per script with its
+`*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch` and
+`oracle-diag` sources `lib/oracle-lib.sh` from the top of the tree (two levels up), so copy the whole
+tree (`get.sh` does it) or a script folder together with `lib/`, never a single file.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
@@ -21,45 +22,39 @@ Every script that changes something has the same shape:
 
 Report scripts have no commands: run them, read `REPORT.md`, or hand it to Claude.
 
-## Patching
+## patching/
 
 | Script | What it patches | Guide |
 |---|---|---|
-| `wls-patch/wls-patch.sh` | WebLogic Server 12.2.1.x / 14.1.x: quarterly PSU + Coherence via OPatch, downloads from My Oracle Support | [README](wls-patch/README.md) |
-| `apex-patch/apex-patch.sh` | APEX in the database: full release upgrades from Oracle's public download site, `apxdwngrd.sql` rollback | [README](apex-patch/README.md) |
-| `ords-patch/ords-patch.sh` | ORDS, standalone or deployed inside WebLogic: schema upgrade per pool, symlink or war switch | [README](ords-patch/README.md) |
-| `db-patch/db-patch.sh` | Oracle Database Release Updates: OPatch + datapatch, standby-first on Data Guard, out-of-place option, Grid with `--grid` | [README](db-patch/README.md) |
-| `java-patch/java-patch.sh` | The JDK under WebLogic and ORDS: finds every JDK and who uses it, checks the support matrix, carries cacerts across, flips the references, verifies the JVMs | [README](java-patch/README.md) |
-| `cert-renew/cert-renew.sh` | TLS certificates: every cert on the host by days left (WebLogic, NodeManager, ORDS, listener/OHS wallets, cacerts, OKV, GoldenGate), CSR, renewal of one target with rollback | [README](cert-renew/README.md) |
-| `patch-status/patch-status.sh` | Nothing: every Oracle home on the host against the current quarter (RU/PSU level, datapatch, ORDS/APEX versions, JDKs), how many CPUs behind | [README](patch-status/README.md) |
+| `patching/wls-patch/wls-patch.sh` | WebLogic Server 12.2.1.x / 14.1.x: quarterly PSU + Coherence via OPatch, downloads from My Oracle Support | [README](patching/wls-patch/README.md) |
+| `patching/apex-patch/apex-patch.sh` | APEX in the database: full release upgrades from Oracle's public download site, `apxdwngrd.sql` rollback | [README](patching/apex-patch/README.md) |
+| `patching/ords-patch/ords-patch.sh` | ORDS, standalone or deployed inside WebLogic: schema upgrade per pool, symlink or war switch | [README](patching/ords-patch/README.md) |
+| `patching/db-patch/db-patch.sh` | Oracle Database Release Updates: OPatch + datapatch, standby-first on Data Guard, out-of-place option, Grid with `--grid` | [README](patching/db-patch/README.md) |
+| `patching/java-patch/java-patch.sh` | The JDK under WebLogic and ORDS: finds every JDK and who uses it, checks the support matrix, carries cacerts across, flips the references, verifies the JVMs | [README](patching/java-patch/README.md) |
+| `patching/cert-renew/cert-renew.sh` | TLS certificates: every cert on the host by days left (WebLogic, NodeManager, ORDS, listener/OHS wallets, cacerts, OKV, GoldenGate), CSR, renewal of one target with rollback | [README](patching/cert-renew/README.md) |
+| `patching/patch-status/patch-status.sh` | Nothing: every Oracle home on the host against the current quarter (RU/PSU level, datapatch, ORDS/APEX versions, JDKs), how many CPUs behind | [README](patching/patch-status/README.md) |
 
-## Operations
+## operations/
 
 | Script | What it does | Guide |
 |---|---|---|
-| `account-ops/account-ops.sh` | Service accounts that take the stack down when they expire or lock (APEX_PUBLIC_USER, ORDS_PUBLIC_USER, DBSNMP, GGADMIN...): status, expiry, where each password lives, unlock, reset propagated to ORDS pools / WebLogic data sources / GoldenGate, `heal` for the ORDS 503 | [README](account-ops/README.md) |
-| `dg-switchover/dg-switchover.sh` | Data Guard role changes through the broker: switchover, failover, reinstate, with preflight, verify, reverse switchover as rollback, `heal` for the usual ORA-168xx broker states | [README](dg-switchover/README.md) |
-| `rman-ops/rman-ops.sh` | Is the backup any good: RMAN configuration and history, restore validate, recovery window, ZDLRA link, a real small restore to scratch space, crosscheck and delete-obsolete | [README](rman-ops/README.md) |
-| `db-refresh/db-refresh.sh` | Refresh a TEST database from PROD (PDB hot clone over a link or RMAN duplicate) and make it safe again: services renamed, data masked, accounts locked, links to PROD removed, APEX repointed, jobs disabled | [README](db-refresh/README.md) |
-| `gg-ops/gg-ops.sh` | GoldenGate: every process with lag, checkpoints, stats, discards, the database side (capture/apply, apply errors, archivelogs the extract still needs vs on disk, long transactions, heartbeat), start/stop/restart, skip-transaction, resync, handlecollisions, trail cleanup, trandata, `heal` for the usual abends | [README](gg-ops/README.md) |
-| `apex-export/apex-export.sh` | APEX applications in git: split exports of every app, workspace and instance definitions, commit only on change with who changed what, nightly cron, diff reports, restore an application from any commit or date | [README](apex-export/README.md) |
+| `operations/account-ops/account-ops.sh` | Service accounts that take the stack down when they expire or lock (APEX_PUBLIC_USER, ORDS_PUBLIC_USER, DBSNMP, GGADMIN...): status, expiry, where each password lives, unlock, reset propagated to ORDS pools / WebLogic data sources / GoldenGate, `heal` for the ORDS 503 | [README](operations/account-ops/README.md) |
+| `operations/dg-switchover/dg-switchover.sh` | Data Guard role changes through the broker: switchover, failover, reinstate, with preflight, verify, reverse switchover as rollback, `heal` for the usual ORA-168xx broker states | [README](operations/dg-switchover/README.md) |
+| `operations/rman-ops/rman-ops.sh` | Is the backup any good: RMAN configuration and history, restore validate, recovery window, ZDLRA link, a real small restore to scratch space, crosscheck and delete-obsolete | [README](operations/rman-ops/README.md) |
+| `operations/db-refresh/db-refresh.sh` | Refresh a TEST database from PROD (PDB hot clone over a link or RMAN duplicate) and make it safe again: services renamed, data masked, accounts locked, links to PROD removed, APEX repointed, jobs disabled | [README](operations/db-refresh/README.md) |
+| `operations/gg-ops/gg-ops.sh` | GoldenGate: every process with lag, checkpoints, stats, discards, the database side (capture/apply, apply errors, archivelogs the extract still needs vs on disk, long transactions, heartbeat), start/stop/restart, skip-transaction, resync, handlecollisions, trail cleanup, trandata, `heal` for the usual abends | [README](operations/gg-ops/README.md) |
+| `operations/apex-export/apex-export.sh` | APEX applications in git: split exports of every app, workspace and instance definitions, commit only on change with who changed what, nightly cron, diff reports, restore an application from any commit or date | [README](operations/apex-export/README.md) |
 
-## Reports (read-only)
+## reports/ (read-only)
 
 | Script | What it reports | Guide |
 |---|---|---|
-| `oracle-diag/oracle-diag.sh` | Full health check of the host: database, APEX, ORDS, WebLogic, Grid/RAC, Data Guard, GoldenGate, OEM, Exadata, ZDLRA, Key Vault and more, in one `REPORT.md` with FINDINGS first | [README](oracle-diag/README.md), [sending it to Claude](oracle-diag/ANALYSE.md) |
-| `db-health-daily/db-health-daily.sh` | The 60-second daily check for cron: `SUMMARY.md` plus `DELTA.md` against yesterday, exit 2 on CRIT, 1 on WARN, optional mail | [README](db-health-daily/README.md) |
-| `perf-snapshot/perf-snapshot.sh` | "It was slow between 09:00 and 10:30": top SQL, plan changes, waits, blocking, I/O, memory, OS stats for a window; AWR/ASH/ADDM with the Diagnostics Pack | [README](perf-snapshot/README.md) |
-| `space-forecast/space-forecast.sh` | Growth and days-to-full for tablespaces, FRA, ASM, filesystems and archivelog; keeps its own history so it needs no licensed views | [README](space-forecast/README.md) |
-| `security-posture/security-posture.sh` | Auditor-shaped scorecard (PASS/FAIL/INFO with evidence) for database, listener, host and WebLogic, following the CIS Oracle 19c benchmark | [README](security-posture/README.md) |
-
-## Support cases
-
-| Script | What it does | Guide |
-|---|---|---|
-| `incident-pack/incident-pack.sh` | One tarball for the SR: oracle-diag report, TFA or ADR incident packages, alert/listener/WebLogic/ORDS/GoldenGate log windows, the traces the alert log names, SQL snapshots, pfile, opatch, optional AWR/ASH, thread and heap dumps, hanganalyze/systemstate, host and Exadata evidence, `MANIFEST.md`, split at 2 GB | [README](incident-pack/README.md) |
-| `sr-draft/sr-draft.sh` | The SR text from a pack, an oracle-diag report or the error alone: product and patch level, error statistics with first/last occurrence, ADR problem keys, recent changes, attachments, severity wording, MOS search strings and Doc IDs, plus a prompt for Claude to review it | [README](sr-draft/README.md) |
+| `reports/oracle-diag/oracle-diag.sh` | Full health check of the host: database, APEX, ORDS, WebLogic, Grid/RAC, Data Guard, GoldenGate, OEM, Exadata, ZDLRA, Key Vault and more, in one `REPORT.md` with FINDINGS first | [README](reports/oracle-diag/README.md), [sending it to Claude](reports/oracle-diag/ANALYSE.md) |
+| `reports/db-health-daily/db-health-daily.sh` | The 60-second daily check for cron: `SUMMARY.md` plus `DELTA.md` against yesterday, exit 2 on CRIT, 1 on WARN, optional mail | [README](reports/db-health-daily/README.md) |
+| `reports/perf-snapshot/perf-snapshot.sh` | "It was slow between 09:00 and 10:30": top SQL, plan changes, waits, blocking, I/O, memory, OS stats for a window; AWR/ASH/ADDM with the Diagnostics Pack | [README](reports/perf-snapshot/README.md) |
+| `reports/space-forecast/space-forecast.sh` | Growth and days-to-full for tablespaces, FRA, ASM, filesystems and archivelog; keeps its own history so it needs no licensed views | [README](reports/space-forecast/README.md) |
+| `reports/security-posture/security-posture.sh` | Auditor-shaped scorecard (PASS/FAIL/INFO with evidence) for database, listener, host and WebLogic, following the CIS Oracle 19c benchmark | [README](reports/security-posture/README.md) || `reports/incident-pack/incident-pack.sh` | One tarball for the SR: oracle-diag report, TFA or ADR incident packages, alert/listener/WebLogic/ORDS/GoldenGate log windows, the traces the alert log names, SQL snapshots, pfile, opatch, optional AWR/ASH, thread and heap dumps, hanganalyze/systemstate, host and Exadata evidence, `MANIFEST.md`, split at 2 GB | [README](reports/incident-pack/README.md) |
+| `reports/sr-draft/sr-draft.sh` | The SR text from a pack, an oracle-diag report or the error alone: product and patch level, error statistics with first/last occurrence, ADR problem keys, recent changes, attachments, severity wording, MOS search strings and Doc IDs, plus a prompt for Claude to review it | [README](reports/sr-draft/README.md) |
 
 ## Shared library
 
@@ -108,7 +103,7 @@ cd ~/oracle-patch-scripts
 ### 1. WebLogic (`wls-patch.sh`) — on the WebLogic server
 
 ```bash
-cd wls-patch
+cd patching/wls-patch
 cp wls-patch.conf.example wls-patch.conf     # first time: My Oracle Support login (or put it in ~/.netrc)
 ./wls-patch.sh inspect                       # version, PSU level, OPatch, JDK, domain, running servers
 ./wls-patch.sh plan --latest                 # which PSU / Coherence patch would be applied
@@ -123,7 +118,7 @@ and skip the `download` step. Extra bundle patches (ADF, OPSS, OWSM) go in by nu
 ### 2. APEX (`apex-patch.sh`) — on the database server, as `oracle`
 
 ```bash
-cd apex-patch
+cd patching/apex-patch
 cp apex-patch.conf.example apex-patch.conf   # only if sqlplus / the PDB / images dir need a hint
 ./apex-patch.sh inspect                      # APEX version, schema, PDB, ORDS, images dir, newest release
 ./apex-patch.sh plan                         # from -> to, script, images dir, rollback path
@@ -136,7 +131,7 @@ cp apex-patch.conf.example apex-patch.conf   # only if sqlplus / the PDB / image
 ### 3. ORDS (`ords-patch.sh`) — on the host that runs ORDS
 
 ```bash
-cd ords-patch
+cd patching/ords-patch
 cp ords-patch.conf.example ords-patch.conf   # ORDS_HOME/ORDS_CONFIG, SYS password, WebLogic creds if deployed there
 ./ords-patch.sh inspect                      # standalone or in WebLogic, version, Java, pools, running?
 ./ords-patch.sh plan                         # what 'run' would do (downloads the zip to learn the exact version)
@@ -147,13 +142,13 @@ cp ords-patch.conf.example ords-patch.conf   # ORDS_HOME/ORDS_CONFIG, SYS passwo
 ### 4. Health check (`oracle-diag.sh`) — any Oracle host, read-only
 
 ```bash
-cd oracle-diag
+cd reports/oracle-diag
 ./oracle-diag.sh                             # writes ~/oracle-diag/<host>_<timestamp>/REPORT.md and a .tar.gz
 ./oracle-diag.sh --days 7 --pdb APEXPDB      # longer look-back, include one PDB's queries
 ./oracle-diag.sh --skip wls --no-tar         # leave out a component, keep the folder only
 ```
 
-Changes nothing (details in [oracle-diag/README.md](oracle-diag/README.md)). Copy `REPORT.md` (or the tarball) off the box and hand it to Claude with
+Changes nothing (details in [reports/oracle-diag/README.md](reports/oracle-diag/README.md)). Copy `REPORT.md` (or the tarball) off the box and hand it to Claude with
 "analyse this oracle-diag report". Passwords in copied config are redacted unless `--no-redact`.
 
 ### Order when patching the whole stack

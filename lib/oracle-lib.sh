@@ -4,8 +4,9 @@
 # Source it from a script that has already set TOOL (its name, e.g. db-health-daily) and VERSION:
 #     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #     TOOL="db-health-daily"; VERSION="1.0.0"
-#     . "$SCRIPT_DIR/../lib/oracle-lib.sh" || exit 1
-# Deploy a script together with lib/ (copy the two folders, or `tar` the repo) - see README.md.
+#     . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || exit 1
+# Layout: <type>/<script>/<script>.sh with lib/ at the top of the tree (patching/, operations/, reports/). Deploy a script
+# folder together with lib/ two levels up, or copy the whole tree - see README.md.
 #
 # Run `lib/oracle-lib.sh selftest` to check the library on a host.
 #
@@ -118,13 +119,13 @@ latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }
 reuse_or_init() { [ -n "$RUN_DIR" ] && { init_run_dir "$1"; return 0; }; RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ] && init_run_dir || { RUN_DIR=""; init_run_dir "$1"; }; }
 
 # ---------------------------------------------------------------------------
-# config: KEY=VALUE files. Order (later wins): ../oracle.conf, ~/.oracle.conf, <tool>.conf next to the
+# config: KEY=VALUE files. Order (later wins): ../../oracle.conf (top of the tree), ../oracle.conf, ~/.oracle.conf, <tool>.conf next to the
 # script, ./<tool>.conf, ~/.<tool>.conf, then any extra files given. Command-line options are parsed
 # after this in every script, so they win over the files.
 # ---------------------------------------------------------------------------
 load_config() {
   local f
-  for f in "$SCRIPT_DIR/../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/$TOOL.conf" "./$TOOL.conf" "$HOME/.$TOOL.conf" "$@"; do
+  for f in "$SCRIPT_DIR/../../oracle.conf" "$SCRIPT_DIR/../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/$TOOL.conf" "./$TOOL.conf" "$HOME/.$TOOL.conf" "$@"; do
     [ -f "$f" ] || continue
     dbg "loading config $f"
     if [ "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)" != "600" ] && grep -qiE '^[A-Z_]*(PASSWORD|SECRET|PASS)[A-Z_]*=' "$f"; then warn "$f holds a password and is not mode 600"; fi
