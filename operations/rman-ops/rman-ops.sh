@@ -139,7 +139,7 @@ sec_inspect() {
   grep -qiE 'no failures found' "$RAW/rman_${sid}_failure.txt" || { grep -qE '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_failure.txt" && finding CRIT backup "$sid: Data Recovery Advisor lists CRITICAL/HIGH failures: $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_failure.txt" | head -2 | tr -s ' ' | tr '\n' ';')"; }
   sqlsec "$sid" corruption "block corruption known to the database" "select 'v\$database_block_corruption' src, count(*) blocks from v\$database_block_corruption union all select 'v\$backup_corruption', count(*) from v\$backup_corruption union all select 'v\$copy_corruption', count(*) from v\$copy_corruption;"
   local corr; corr="$(sql_val "$sid" "(select count(*) from v\$database_block_corruption)")"; [ "${corr:-0}" != 0 ] && finding CRIT backup "$sid: $corr corrupt block(s) in v\$database_block_corruption - 'recover corruption list' / 'list failure'"
-  sqlsec "$sid" datafiles_last "days since each datafile was last backed up (worst 15)" "select d.file#, d.tablespace_name, round(d.bytes/1048576) mb, nvl(to_char(b.last,'YYYY-MM-DD HH24:MI'),'NEVER') last_backup, round(sysdate-b.last,1) days_ago from dba_data_files d left join (select file#, max(completion_time) last from v\$backup_datafile group by file#) b on b.file#=d.file# order by b.last nulls first fetch first 15 rows only;"
+  sqlsec "$sid" datafiles_last "days since each datafile was last backed up (worst 15)" "select d.file_id, d.tablespace_name, round(d.bytes/1048576) mb, nvl(to_char(b.last,'YYYY-MM-DD HH24:MI'),'NEVER') last_backup, round(sysdate-b.last,1) days_ago from dba_data_files d left join (select file#, max(completion_time) last from v\$backup_datafile group by file#) b on b.file#=d.file_id order by b.last nulls first fetch first 15 rows only;"
   local never; never="$(sql_val "$sid" "(select count(*) from v\$datafile d where not exists (select 1 from v\$backup_datafile b where b.file#=d.file#))")"; [ "${never:-0}" != 0 ] && finding CRIT backup "$sid: $never datafile(s) have never been backed up (new tablespace since the last full?)"
 }
 
@@ -304,6 +304,7 @@ report_cmd() { # <command> : one report over every database
     h1 "Database $s"
     if ! sql_ok "$s"; then finding CRIT db "$s: cannot connect as sysdba"; continue; fi
     db_basics "$s"; say "database $s ($DBUN, $ROLE, $LOG_MODE)"
+    [ -n "$(rman_bin "$s")" ] || finding CRIT backup "$s: no rman binary in $(db_home_of "$s")/bin (RMAN_CMD unset) - every RMAN command below is skipped; the SQL views still answer"
     printf '%s\n' "$SHOWALL" >"$RAW/rman_${s}_showall.txt"
     [ "$ROLE" != PRIMARY ] && para "_${ROLE}: backups may be taken here or on the primary; job history below is this database's own controlfile_"
     case "$cmd" in

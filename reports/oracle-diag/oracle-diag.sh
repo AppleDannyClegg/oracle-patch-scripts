@@ -248,7 +248,9 @@ sqlsec() {
   if [ "$n" -gt "$DIAG_LINES" ]; then head -n "$DIAG_LINES" "$f" >>"$REPORT"; printf '... (%s lines, full in raw/db_%s_%s.txt)\n' "$n" "$sid" "$name" >>"$REPORT"; else cat "$f" >>"$REPORT"; fi
   fence_end
 }
-sqlval() { sql "$1" "set heading off\nselect $2 from dual;" 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//;s/ *$//'; }
+# sqlval <sid> <expr>: one value, empty when the statement fails (sqlplus -S prints the failing statement on stdout,
+# so without "whenever sqlerror" a broken query came back as its own text and every "is X installed?" gate passed)
+sqlval() { local out; out="$(sql "$1" "set heading off\nwhenever sqlerror exit 1\nselect $2 from dual;" 2>/dev/null)" || return 1; printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//;s/ *$//'; }
 oratab_home() { grep -hE "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null | head -1 | cut -d: -f2; }
 
 ps_args() { ps -eo args 2>/dev/null || { local f; for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; } # ps missing (minimal containers): /proc

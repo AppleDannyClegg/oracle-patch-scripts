@@ -93,7 +93,9 @@ do_sql() {
 pdb_mode() { rval "(select nvl(max(open_mode),'ABSENT') from v\$pdbs where name=upper('$1'))"; }
 pdb_exists() { [ "$(pdb_mode "$1")" != ABSENT ]; }
 pdb_refresh_mode() { rval "(select nvl(max(refresh_mode),'-') from dba_pdbs where pdb_name=upper('$1'))"; }
-prod_val() { [ -n "$PROD_LINK" ] || return 1; rval "$1@$PROD_LINK" 2>/dev/null; }      # scalar via the link (root)
+# prod_val "(select x from t ...)": the scalar from PROD. "@link" goes on every table in the expression ("from t" -> "from t@link");
+# an expression cannot carry the link itself ("(select ...)@link" is not SQL)
+prod_val() { [ -n "$PROD_LINK" ] || return 1; local q; q="$(printf '%s' "$1" | sed -E "s/ from ([A-Za-z_][A-Za-z0-9_\$#.]*)/ from \1@$PROD_LINK/g")"; rval "$q" 2>/dev/null; }
 discover() {
   [ -z "$SID" ] && { local n; n="$(db_instances | grep -vE '^\+' | grep -c .)"; [ "$n" = 1 ] && SID="$(db_instances | grep -vE '^\+')"; }
   [ -n "$SID" ] || die "Which TEST instance? --sid SID / TEST_SID (running: $(db_instances | tr '\n' ' '))"
@@ -128,7 +130,7 @@ cmd_inspect() {
     pdb_exists "$GOLD_PDB" && echo "Golden copy     : $GOLD_PDB $(pdb_mode "$GOLD_PDB") refresh_mode=$(pdb_refresh_mode "$GOLD_PDB") last refresh scn $(rval "(select nvl(max(last_refresh_scn),0) from dba_pdbs where pdb_name='$GOLD_PDB')")"
     pdb_exists "${TEST_PDB}_OLD" && echo "Old copy        : ${TEST_PDB}_OLD $(pdb_mode "${TEST_PDB}_OLD") (from a --keep-old run; cleanup drops it)"
     echo "Link $PROD_LINK : $(rlines "select host||' as '||nvl(username,'(current user)') from dba_db_links where owner in ('SYS','PUBLIC') and db_link like upper('$PROD_LINK%');" | head -1)"
-    local pver; pver="$(prod_val "(select version_full from product_component_version where product like 'Oracle Database%')")" || pver="$(prod_val "(select version from v\$instance)")"
+    local pver; pver="$(prod_val "(select version_full from v\$instance)")"; [ -z "$pver" ] && pver="$(prod_val "(select version from v\$instance)")"
     if [ -n "$pver" ]; then
       echo "PROD (via link) : version $pver, $(prod_val "(select name||' '||log_mode from v\$database)"), local undo $(prod_val "(select property_value from database_properties where property_name='LOCAL_UNDO_ENABLED')"), charset $(prod_val "(select value from nls_database_parameters where parameter='NLS_CHARACTERSET')"), compatible $(prod_val "(select value from v\$parameter where name='compatible')")"
       echo "PROD PDB        : $PROD_PDB $(prod_val "(select nvl(max(open_mode),'ABSENT') from v\$pdbs where name='$PROD_PDB')") size $(prod_val "(select round(sum(bytes)/1073741824,1)||' GB' from cdb_data_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))") , encrypted tablespaces $(prod_val "(select count(*) from v\$encrypted_tablespaces where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"
@@ -176,10 +178,14 @@ cmd_preflight() {
     # link + privileges
     local lk; lk="$(rlines "select host from dba_db_links where owner in ('SYS','PUBLIC') and db_link like upper('$PROD_LINK%');" | head -1)"; [ -n "$lk" ] || { err "database link $PROD_LINK does not exist in $SID's root (SYS or PUBLIC)"; fail=1; }
     local pver; pver="$(prod_val "(select version from v\$instance)")"
-    if [ -z "$pver" ]; then err "cannot query PROD through $PROD_LINK: $(rlines "select 'x' from dual@$PROD_LINK;" 2>&1 | grep -E 'ORA-' | head -1)"; fail=1
+    if [ -z "$pver" ]; then
+      local lerr; lerr="$(rlines "select 'x' from dual@$PROD_LINK;" 2>&1 | grep -E 'ORA-' | head -1)"
+      if [ -n "$lerr" ]; then err "cannot query PROD through $PROD_LINK: $lerr"
+      else err "link $PROD_LINK connects, but v\$instance@$PROD_LINK is not readable: grant SELECT_CATALOG_ROLE (and CREATE PLUGGABLE DATABASE) to the link user on PROD; in a CDB also 'alter user <link user> set container_data=all container=current'"; fi
+      fail=1
     else
       log "PROD reachable: version $pver, TEST $(rval "(select version from v\$instance)")"
-      local tver; tver="$(rval "(select version_full from product_component_version where product like 'Oracle Database%')")"; local pverf; pverf="$(prod_val "(select version_full from product_component_version where product like 'Oracle Database%')")"
+      local tver; tver="$(rval "(select version_full from v\$instance)")"; local pverf; pverf="$(prod_val "(select version_full from v\$instance)")"
       [ -n "$pverf" ] && ! version_ge "$tver" "$pverf" && { err "TEST ($tver) is older than PROD ($pverf): a PDB cloned from a newer release cannot open here without upgrade"; fail=1; }
       local priv; priv="$(prod_val "(select count(*) from session_privs where privilege in ('CREATE PLUGGABLE DATABASE','SYSOPER'))")"; [ "${priv:-0}" = 0 ] && { err "the link user on PROD has no CREATE PLUGGABLE DATABASE privilege"; fail=1; }
       [ "$(prod_val "(select nvl(max(open_mode),'ABSENT') from v\$pdbs where name='$PROD_PDB')")" = "READ WRITE" ] || warn "PROD PDB $PROD_PDB is not READ WRITE on the source (hot clone needs it open; a closed/RO source still clones)"
@@ -193,6 +199,10 @@ cmd_preflight() {
       # space
       local need; need="$(prod_val "(select ceil(sum(bytes)/1048576) from cdb_data_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"; need="${need:-0}"; local tmp; tmp="$(prod_val "(select ceil(nvl(sum(bytes),0)/1048576) from cdb_temp_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"; need=$((need + ${tmp:-0}))
       local have; local dest; dest="$(rval "(select nvl(value,'') from v\$parameter where name='db_create_file_dest')")"
+      # without OMF, "create pluggable database ... from x@link" fails with ORA-65016 unless the statement names the file destination
+      if [ -z "$dest" ] && ! printf '%s' "$CLONE_OPTIONS" | grep -qiE 'file_name_convert|create_file_dest'; then
+        err "db_create_file_dest is not set in $SID and CLONE_OPTIONS has no FILE_NAME_CONVERT / CREATE_FILE_DEST: the clone would fail with ORA-65016. Set db_create_file_dest (OMF) or CLONE_OPTIONS=\"create_file_dest='/u02/oradata/$SID'\""; fail=1
+      fi
       if [ -n "$dest" ] && [ "${dest:0:1}" = + ]; then have="$("$GRID_HOME/bin/asmcmd" lsdg "${dest#+}" 2>/dev/null | awk 'NR==2{print $(NF-4)}')"; else local path="$dest"; [ -z "$path" ] && path="$(rval "(select substr(name,1,instr(name,'/',-1)) from v\$datafile where rownum=1)")"; have="$(df -Pm "$path" 2>/dev/null | awk 'NR==2{print $4}')"; fi
       local old=0; [ "$KEEP_OLD" = 1 ] || [ "$NO_DROP" = 1 ] || old="$(pval "(select ceil(sum(bytes)/1048576) from dba_data_files)" 2>/dev/null)"; old="${old:-0}"
       local reclaim=$old

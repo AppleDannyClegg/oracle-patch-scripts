@@ -218,7 +218,8 @@ cmd_reset() {
   local fail=0
   while IFS='|' read -r sid pdb u st cm; do [ -z "$u" ] && continue
     # save the old hash for rollback
-    local hash; hash="$(wp "$pdb" sql_lines "$sid" "select dbms_metadata.get_ddl('USER','$u') from dual;" 2>/dev/null | grep -oE "VALUES '[^']+'" | head -1)"
+    # sys.user$.spare4 holds the verifiers ("S:...;T:..."); dbms_metadata's CLOB is cut at "set long" and wrapped at linesize
+    local hash; hash="$(wp "$pdb" sql_lines "$sid" "set linesize 4000\nselect 'VALUES '''||spare4||'''' from sys.user\$ where name='$u' and spare4 is not null;" 2>/dev/null | head -1)"
     [ -n "$hash" ] && { printf '%s|%s|%s|%s\n' "$sid" "$pdb" "$u" "$hash" >>"$RUN_DIR/old_hashes.txt"; chmod 600 "$RUN_DIR/old_hashes.txt"; } || warn "$u: could not read the old password hash (rollback will not be able to restore it)"
     local cont=""; [ "$cm" = YES ] && [ "$pdb" = - ] && cont=" container=all"
     usql "$sid" "$pdb" "alter user $u identified by *** account unlock$cont" "alter user \"$u\" identified by \"$pw\" account unlock$cont;" || { fail=1; continue; }
