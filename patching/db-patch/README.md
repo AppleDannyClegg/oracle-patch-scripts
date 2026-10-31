@@ -72,3 +72,11 @@ state under `~/db-patch/runs/<ts>/`, `runs/latest` points at the last one.
 
 Tested against a mock home (fake `opatch`, `sqlplus`); not yet on a real database. Do `inspect`,
 `plan`, `preflight` on a test box first and read the log.
+
+## Without internet
+
+`latest` and `download` need My Oracle Support; the servers do not have it. Download the RU (and
+OJVM, and the OPatch kit `p6880880_*.zip` when OPatch is old) on a machine with MOS access, copy
+the zips into one directory on the server and run `db-patch.sh run <dir>`. `OFFLINE=1` in
+`oracle.conf` makes `latest`/`download` fail immediately with that instruction instead of timing
+out.

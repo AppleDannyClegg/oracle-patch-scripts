@@ -391,8 +391,13 @@ days_until() { local es; es="$(epoch_of "$1")"; [ -z "$es" ] && es="$( [ "$GNU_D
 # My Oracle Support: login (~/.netrc or MOS_USER/MOS_PASSWORD), name search, file pick, download
 # ---------------------------------------------------------------------------
 MOS_BASE="${MOS_BASE:-https://updates.oracle.com}"; MOS_NETRC=""; MOS_COOKIES=""; MOS_CURL=()
+# No internet on the servers: OFFLINE=1 in oracle.conf skips every probe and download; net_ok probes once (5 s) otherwise
+OFFLINE="${OFFLINE:-0}"; NET_OK=""
+net_ok() { [ "$OFFLINE" = 1 ] && return 1; [ -n "$NET_OK" ] || { NET_OK=0; command -v curl >/dev/null 2>&1 && curl -sI -m "${NET_PROBE_TIMEOUT:-5}" -o /dev/null https://download.oracle.com/ >/dev/null 2>&1 && NET_OK=1; }; [ "$NET_OK" = 1 ]; }
+offline_hint() { printf 'no internet from this host (OFFLINE=1, or download.oracle.com does not answer): download on a machine that has it and copy the file to %s - see README "Servers without internet access"' "${1:-the patch directory}"; }
 mos_cleanup() { [ -n "$MOS_NETRC" ] && rm -f "$MOS_NETRC"; [ -n "$MOS_COOKIES" ] && rm -f "$MOS_COOKIES"; return 0; }
 mos_login() {
+  [ "$OFFLINE" = 1 ] && die "My Oracle Support is not reachable: $(offline_hint "${1:-}")"
   require_cmd curl
   [ -n "$RUN_DIR" ] || init_run_dir mos
   MOS_COOKIES="$RUN_DIR/.mos-cookies"; trap mos_cleanup EXIT
@@ -407,7 +412,7 @@ mos_login() {
   fi
   MOS_CURL=(curl -sS -L --fail-with-body --retry 3 --retry-delay 5 "${netrc_opt[@]}" -b "$MOS_COOKIES" -c "$MOS_COOKIES")
   local code; code="$("${MOS_CURL[@]}" -o /dev/null -w '%{http_code}' "$MOS_BASE/Orion/Services/download" || true)"
-  case "$code" in 200|302) log "MOS login OK";; 401|403) die "MOS login rejected (HTTP $code)";; *) die "Cannot reach $MOS_BASE (HTTP ${code:-none}). Set HTTPS_PROXY if needed.";; esac
+  case "$code" in 200|302) log "MOS login OK";; 401|403) die "MOS login rejected (HTTP $code)";; *) die "Cannot reach $MOS_BASE (HTTP ${code:-none}). Set HTTPS_PROXY if there is a proxy; otherwise $(offline_hint "${1:-}")";; esac
 }
 # mos_name_search <text>: "number|description" rows from the legacy simple search
 mos_name_search() {

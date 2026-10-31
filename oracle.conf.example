@@ -1,0 +1,23 @@
+# oracle.conf - settings shared by every script, read before each script's own <name>.conf.
+# Copy to oracle.conf at the top of the tree (next to lib/) or to ~/.oracle.conf. chmod 600 if it holds passwords.
+
+# The servers have no internet: no probes of download.oracle.com, no My Oracle Support; patch files are
+# copied in by hand (README "Servers without internet access"). Without this each script probes once (5 s).
+OFFLINE=1
+# A proxy that does allow Oracle downloads (leave OFFLINE unset or 0 then)
+#HTTPS_PROXY=http://proxy.example.com:3128
+
+# SQL access when OS authentication (/ as sysdba) is not possible
+#SQL_CMD="sqlplus -S"                    # or "sql -S" for SQLcl
+#SQL_CONNECT="sys/password@//dbhost:1521/pdb1 as sysdba"
+
+# ORDS / WebLogic URLs the verify steps check
+#ORDS_URL=https://apex.example.com/ords/
+#WLS_ADMIN_URL=t3://localhost:7001
+
+# My Oracle Support (only used by latest/download on a machine that can reach it); or ~/.netrc
+#MOS_USER=someone@example.com
+#MOS_PASSWORD=
+
+# Where run logs go (default ~/<script>/runs)
+#RUN_BASE=/u01/backup/scripts/runs

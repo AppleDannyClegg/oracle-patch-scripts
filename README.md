@@ -65,7 +65,7 @@ TLS checks, MOS download). `bash lib/oracle-lib.sh selftest` checks it on a new 
 
 Each script has a matching `*.conf.example`; copy it to `*.conf` next to the script only if
 auto-detection needs a hint or you want to store credentials. Settings shared by several scripts
-(`SQL_CONNECT`, `ORDS_URL`, MOS login...) can go once in `oracle.conf` at the top of the tree or
+(`OFFLINE=1`, `SQL_CONNECT`, `ORDS_URL`, MOS login...) can go once in `oracle.conf` at the top of the tree (copy `oracle.conf.example`) or
 `~/.oracle.conf`. Real `*.conf` files are git-ignored.
 
 Requirements on the server: bash 4+, curl, unzip, tar. Database-side scripts need SQL*Plus or SQLcl
@@ -85,6 +85,33 @@ curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-script
 
 Run the same line again whenever you want the newest version; it keeps your `*.conf` files and
 leaves the old copy as `oracle-patch-scripts.old`.
+
+## Servers without internet access
+
+The database and application servers normally have no route to the internet. Nothing here needs
+one at run time: the scripts read, patch, restart and verify locally. Only three things ever
+reach out, and each has an offline path:
+
+| Need | Where it comes from | What to do on an air-gapped server |
+|---|---|---|
+| the scripts themselves | GitHub (`get.sh`) | run `get.sh` on your laptop, then `scp -r oracle-patch-scripts oracle@server:~/` |
+| patch files | My Oracle Support (login) or download.oracle.com (public) | download on the laptop, copy the file to the place in the table below, run the script without `latest`/`download`/`--latest`/`--patches` |
+| "is there a newer release" probes | download.oracle.com | put `OFFLINE=1` in `oracle.conf` (top of the tree) so no script waits on a blocked connection; without it each script probes once for 5 s and then carries on offline |
+
+Where to put the files:
+
+| Script | Download on the laptop | Put it at | Then |
+|---|---|---|---|
+| `patching/wls-patch` | the PSU / Coherence zips `p<ID>_<release>_Generic.zip` from MOS (patch numbers from the quarter's *Critical Patch Update Availability Document*, or `patch-status.sh` on a host with MOS) | any directory, e.g. `~/patches/wls-2026Q4/` | `wls-patch.sh run ~/patches/wls-2026Q4` |
+| `patching/db-patch` | the RU, OJVM and (if needed) the OPatch kit `p6880880_*.zip` from MOS | one directory | `db-patch.sh run <dir>` |
+| `patching/java-patch` | the JDK `jdk-<ver>_linux-x64_bin.tar.gz` from MOS (or java.oracle.com) | anywhere | `java-patch.sh run <tar.gz>` |
+| `patching/apex-patch` | `apex_<version>.zip` from download.oracle.com (public) | `APEX_BASE/downloads/` (default `/opt/oracle/apex-releases/downloads/`) | `apex-patch.sh run <version>` (or `run`, it picks the newest zip on disk) |
+| `patching/ords-patch` | `ords-latest.zip` from download.oracle.com (public) | `ORDS_BASE/downloads/` | `ords-patch.sh run` (it uses the newest `ords*.zip` on disk) |
+| `patching/patch-status` | nothing | - | works offline: the quarter comes from the CPU calendar; `--mos` and the newest ORDS/APEX versions need the internet |
+
+`inspect`, `plan` and `preflight` of every script, the operations scripts and every report work
+with no network at all. The MOS search strings and Doc IDs that `sr-draft` prints are for you to
+use on a machine that can reach support.oracle.com.
 
 ## Running each script
 

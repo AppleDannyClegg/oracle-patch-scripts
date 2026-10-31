@@ -166,3 +166,11 @@ but swapping the JDK is a separate job: install the new JDK, point `JAVA_HOME` a
 - Patches that require database schema changes (some ADF/OPSS bundles say "run the Upgrade
   Assistant" in their README) are applied, but the schema step is not automated. The README
   says if it is needed.
+
+## Without internet
+
+The servers have no internet, so `latest`, `download`, `--latest` and `--patches` are for a machine
+that has MOS access (set `OFFLINE=1` in `oracle.conf` on the servers and they refuse at once with
+the instruction). Download the `p<ID>_<release>_Generic.zip` files there, copy them into one
+directory on the server and run `wls-patch.sh run <that-dir>`; `inspect`, `plan` and `preflight`
+show what the directory holds before anything changes.

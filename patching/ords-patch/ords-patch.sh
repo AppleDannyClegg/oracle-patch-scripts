@@ -45,6 +45,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0; ASSUME_YES=0; FORCE=0; JSON_OUT=0; VERBOSE=0; NO_RP=0; ALLOW_FLASHBACK=0
 RUN_BASE="${RUN_BASE:-$HOME/ords-patch/runs}"
 ORDS_DL_URL="${ORDS_DL_URL:-https://download.oracle.com/otn_software/java/ords/ords-latest.zip}"
+OFFLINE="${OFFLINE:-0}"; NET_OK=""   # no internet: put ords-latest.zip (any ords*.zip) in $ORDS_BASE/downloads/ and run "latest" / "run"
+net_ok() { [ "$OFFLINE" = 1 ] && return 1; [ -n "$NET_OK" ] || { NET_OK=0; command -v curl >/dev/null 2>&1 && curl -sI -m 5 -A 'Mozilla/5.0' -o /dev/null "$ORDS_DL_URL" >/dev/null 2>&1 && NET_OK=1; }; [ "$NET_OK" = 1 ]; }
 ORDS_ADMIN_USER="${ORDS_ADMIN_USER:-SYS}"
 START_TIMEOUT="${START_TIMEOUT:-300}"
 RUN_DIR=""; LOG_FILE=""; STATE_FILE=""
@@ -93,7 +95,7 @@ latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }
 reuse_or_init() { [ -n "$RUN_DIR" ] && return 0; RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir "$1"; }
 load_config() {
   local f
-  for f in "$SCRIPT_DIR/ords-patch.conf" ./ords-patch.conf "$HOME/.ords-patch.conf"; do
+  for f in "$SCRIPT_DIR/../../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/ords-patch.conf" ./ords-patch.conf "$HOME/.ords-patch.conf"; do
     if [ -f "$f" ]; then set -a; # shellcheck disable=SC1090
       . "$f"; set +a; fi
   done
@@ -243,6 +245,7 @@ EOF
 
 # date Oracle last published ords-latest.zip (cheap HEAD request); the version number is only inside the zip
 zip_published() {
+  net_ok || { local z; z="$(ls -t "$ORDS_BASE"/downloads/ords*.zip 2>/dev/null | head -1)"; printf '(no internet from here; %s)' "${z:+newest zip on disk: $z}${z:-put ords-latest.zip in $ORDS_BASE/downloads/}"; return 0; }
   local h; h="$(curl -sIL --max-time 8 -A 'Mozilla/5.0' "$ORDS_DL_URL" 2>/dev/null | tr -d '\r')" || true
   local lm; lm="$(printf '%s\n' "$h" | sed -n 's/^[Ll]ast-[Mm]odified: *//p' | tail -1)"
   [ -n "$lm" ] && printf 'ords-latest.zip published %s (exact version known after '"'"'latest'"'"' downloads it)' "$lm" || printf '(download.oracle.com not reachable from here)'
@@ -268,10 +271,15 @@ cmd_plan() {
 # ---------------------------------------------------------------------------
 cmd_latest() {
   setup_env; reuse_or_init latest
-  command -v curl >/dev/null || die "curl required"; command -v unzip >/dev/null || die "unzip required"
+  command -v unzip >/dev/null || die "unzip required"
   mkdir -p "$ORDS_BASE/downloads" || die "Cannot write to $ORDS_BASE"
   local zip; zip="$ORDS_BASE/downloads/ords-latest-$(date +%Y%m%d).zip"
-  if [ ! -f "$zip" ]; then
+  if ! net_ok; then
+    zip="$(ls -t "$ORDS_BASE"/downloads/ords*.zip 2>/dev/null | head -1)"
+    [ -n "$zip" ] || die "No internet from this host and no ORDS zip on disk: download ords-latest.zip (public, no login) elsewhere and copy it to $ORDS_BASE/downloads/"
+    log "No internet: using $zip ($(date -r "$zip" '+%Y-%m-%d' 2>/dev/null || stat -c %y "$zip" | cut -c1-10))"
+  elif [ ! -f "$zip" ]; then
+    command -v curl >/dev/null || die "curl required"
     log "Downloading $ORDS_DL_URL (about 200 MB)"
     if [ "$DRY_RUN" = 1 ]; then NEW_VER="(dry-run)"; return 0; fi
     curl -sS -L --fail --retry 3 -A 'Mozilla/5.0' -o "$zip.part" "$ORDS_DL_URL" || { rm -f "$zip.part"; die "Download failed (offline? proxy? HTTPS_PROXY)"; }

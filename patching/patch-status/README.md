@@ -46,3 +46,10 @@ says which CPU the home should be at; the actual patch numbers come from MOS Doc
 Config keys: `PATCH_OUT`, `MOS_USER`, `MOS_PASSWORD`, `SQL_CONNECT`. Needs `lib/oracle-lib.sh`
 one folder up. The next step for each row is the matching script: `db-patch`, `wls-patch`,
 `ords-patch`, `apex-patch`, `java-patch`.
+
+## Without internet
+
+Works as is: the current quarter comes from the CPU calendar (third Tuesday of Jan/Apr/Jul/Oct),
+so "N behind" needs no network. Only `--mos` (exact newest patch numbers) and the newest public
+ORDS/APEX version need the internet; when the host has none (or `OFFLINE=1` is set) those columns
+say so and the rest of the table is unchanged.

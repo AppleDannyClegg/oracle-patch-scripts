@@ -127,12 +127,13 @@ cmd_download() {
   setup_env; [ -n "$RUN_DIR" ] || init_run_dir download
   local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "download needs a directory"; shift_args=1
   local ids="${ARGS[*]:1}"; [ -z "$ids" ] && ids="${PATCHES//,/ }"; [ -z "$ids" ] && die "no patch ids: run 'latest' first or give them"
-  mkdir -p "$dir"; mos_login
-  local id; for id in $ids; do
+  mkdir -p "$dir"; local id todo=""
+  for id in $ids; do
     printf '%s\n' "$INSTALLED" | grep -q "^$id;" && { log "$id already installed, skipping"; continue; }
     ls "$dir"/p"${id}"_*.zip >/dev/null 2>&1 && { log "$id already in $dir"; continue; }
-    mos_download "$id" "$dir" "${PICK_RELEASE:-$DB_VERSION}" || die "download of $id failed"
+    todo="$todo $id"
   done
+  [ -n "$todo" ] && { mos_login "$dir"; for id in $todo; do mos_download "$id" "$dir" "${PICK_RELEASE:-$DB_VERSION}" || die "download of $id failed"; done; }
   # OPatch kit when too old (12.2.0.1.x needs 12.2.0.1.40+ for recent RUs)
   if ! version_ge "$OPATCH_VERSION" "12.2.0.1.40"; then log "OPatch $OPATCH_VERSION is old - adding the OPatch kit (6880880)"; mos_download 6880880 "$dir" "${DB_VERSION%%.*}.0.0.0.0" || warn "could not download OPatch kit; get p6880880 by hand"; fi
   mos_cleanup; ls -la "$dir"

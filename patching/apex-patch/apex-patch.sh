@@ -48,6 +48,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0; ASSUME_YES=0; FORCE=0; JSON_OUT=0; VERBOSE=0; NO_RP=0; ALLOW_FLASHBACK=0
 RUN_BASE="${RUN_BASE:-$HOME/apex-patch/runs}"
 APEX_BASE="${APEX_BASE:-/opt/oracle/apex-releases}"
+OFFLINE="${OFFLINE:-0}"; NET_OK=""   # no internet: put apex_<ver>.zip in $APEX_BASE/downloads/ and run "run <ver>"
+net_ok() { [ "$OFFLINE" = 1 ] && return 1; [ -n "$NET_OK" ] || { NET_OK=0; command -v curl >/dev/null 2>&1 && curl -sI -m 5 -A 'Mozilla/5.0' -o /dev/null "$APEX_DL_BASE/" >/dev/null 2>&1 && NET_OK=1; }; [ "$NET_OK" = 1 ]; }
+# newest release on disk (zip in downloads/ or already unpacked)
+local_latest() { local best="" z v; for z in "$APEX_BASE"/downloads/apex_*.zip "$APEX_BASE"/apex_*/apex/apexins.sql; do [ -e "$z" ] || continue; v="$(printf '%s' "$z" | sed -E 's#.*/apex_([0-9.]+)(\.zip|/apex/apexins\.sql)$#\1#')"; [[ "$v" =~ ^[0-9]+\.[0-9]+ ]] || continue; { [ -z "$best" ] || version_ge "$v" "$best"; } && best="$v"; done; printf '%s' "$best"; }
 APEX_TS="${APEX_TS:-SYSAUX}"; APEX_FILES_TS="${APEX_FILES_TS:-SYSAUX}"; APEX_TEMP_TS="${APEX_TEMP_TS:-TEMP}"
 APEX_DL_BASE="${APEX_DL_BASE:-https://download.oracle.com/otn_software/apex}"
 START_TIMEOUT="${START_TIMEOUT:-300}"
@@ -102,7 +106,7 @@ latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }
 reuse_or_init() { [ -n "$RUN_DIR" ] && return 0; RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir "$1"; }
 load_config() {
   local f
-  for f in "$SCRIPT_DIR/apex-patch.conf" ./apex-patch.conf "$HOME/.apex-patch.conf"; do
+  for f in "$SCRIPT_DIR/../../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/apex-patch.conf" ./apex-patch.conf "$HOME/.apex-patch.conf"; do
     if [ -f "$f" ]; then set -a; # shellcheck disable=SC1090
       . "$f"; set +a; fi
   done
@@ -282,11 +286,11 @@ Restore points   :
 $(printf '%s\n' "${RESTORE_POINTS:-  (none)}" | sed 's/^/  /')
 EOF
   [ "$DB_IS_CDB" = YES ] && [ "$DB_CON" = 'CDB$ROOT' ] && warn "Connected to CDB\$ROOT. APEX should be upgraded inside the PDB: set PDB=<name> (or SQL_CONNECT to the PDB service)."
-  if curl -sI --max-time 8 -A 'Mozilla/5.0' "$APEX_DL_BASE/" >/dev/null 2>&1; then
+  if net_ok; then
     cmd_latest >/dev/null 2>&1 || true
     if [ -n "$TARGET" ]; then echo "Newest release   : $TARGET available on download.oracle.com  ->  ./apex-patch.sh plan"
     else echo "Newest release   : none newer than $APEX_VER on download.oracle.com"; fi
-  else echo "Newest release   : (download.oracle.com not reachable from here)"; fi
+  else echo "Newest release   : (no internet from here; newest on disk: $(local_latest | grep . || echo none) - put apex_<ver>.zip in $APEX_BASE/downloads/)"; fi
   return 0
 }
 
@@ -316,8 +320,14 @@ url_exists() { [ "$(curl -sIL -o /dev/null -w '%{http_code}' --max-time 20 -A 'M
 
 cmd_latest() {
   setup_env >/dev/null 2>&1 || true
-  command -v curl >/dev/null || die "curl is required"
   local from="${APEX_VER%%.*}" y m best=""
+  if ! net_ok; then
+    best="$(local_latest)"; [ -n "$best" ] || { err "No internet from this host and no release on disk: copy apex_<version>.zip (public download, no login) to $APEX_BASE/downloads/ and run again"; return 1; }
+    log "No internet: newest release on disk is $best"
+    if [ -n "$APEX_VER" ] && version_ge "$APEX_VER" "$best"; then log "Installed $APEX_VER is already at or above it."; TARGET=""; state_set latest uptodate; return 0; fi
+    TARGET="$best"; state_set latest "$best"; return 0
+  fi
+  command -v curl >/dev/null || die "curl is required"
   [ -z "$from" ] || [ "$from" -lt 18 ] 2>/dev/null && from=18
   local to; to=$(( $(date +%y) + 1 ))
   log "Probing $APEX_DL_BASE for releases $from.x .. $to.x"
@@ -343,6 +353,7 @@ cmd_download() {
   mkdir -p "$APEX_BASE/downloads" "$dest" || die "Cannot create $APEX_BASE (set APEX_BASE to a writable directory)"
   local zip="$APEX_BASE/downloads/apex_$ver.zip"
   if [ ! -f "$zip" ]; then
+    net_ok || die "apex_$ver.zip is not at $zip and this host has no internet: download it (public, no login) on a machine that has and copy it there"
     log "Downloading apex_$ver.zip (about 300 MB)"
     [ "$DRY_RUN" = 1 ] || curl -sS -L --fail --retry 3 -A 'Mozilla/5.0' -o "$zip.part" "$APEX_DL_BASE/apex_$ver.zip" || { rm -f "$zip.part"; die "Download failed"; }
     [ "$DRY_RUN" = 1 ] || mv "$zip.part" "$zip"
@@ -387,7 +398,7 @@ cmd_preflight() {
   # rollback readiness
   local prev_src; prev_src="$(src_dir_for "${APEX_VER%.*}")"
   if [ -f "$prev_src/apxdwngrd.sql" ]; then log "Rollback ready: previous release source at $prev_src"
-  elif url_exists "$APEX_DL_BASE/apex_${APEX_VER%.*}.zip"; then log "Previous release ${APEX_VER%.*} is downloadable; 'backup' fetches it so apxdwngrd.sql is on hand"
+  elif net_ok && url_exists "$APEX_DL_BASE/apex_${APEX_VER%.*}.zip"; then log "Previous release ${APEX_VER%.*} is downloadable; 'backup' fetches it so apxdwngrd.sql is on hand"
   else warn "Previous release ${APEX_VER%.*} source is not on disk or downloadable; rollback would rely on the restore point only"; fi
   if [ "$DB_LOG_MODE" = ARCHIVELOG ]; then log "ARCHIVELOG: a guaranteed restore point will be created (whole-database rollback possible)"
   else warn "NOARCHIVELOG: no restore point possible; rollback = apxdwngrd.sql only"; fi

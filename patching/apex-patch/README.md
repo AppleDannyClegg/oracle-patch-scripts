@@ -25,3 +25,11 @@ Not covered: fresh installs, APEX in `CDB$ROOT`, the "maximum uptime" three-phas
 ## Caveats
 
 Tested end to end against stand-ins (a fake `sqlplus` with a small in-memory database, a fake `ords`, local copies of the download zips) covering upgrade, failed upgrade, failed verify, rollback, flashback gating, already-current, dry-run and wrong-Java. Not yet run against a real database. The commands and script names are taken from the Oracle APEX 26.2 installation guide and the ORDS 24.4 installation guide. First real run: do `inspect` and `preflight` on a test database first, and keep the restore point until you are happy.
+
+## Without internet
+
+Download `apex_<version>.zip` (public, no login) on your laptop and copy it to
+`APEX_BASE/downloads/` on the server (default `/opt/oracle/apex-releases/downloads/`). `latest`
+then reports the newest release on disk, `download` only unpacks, and `run <version>` (or plain
+`run`) proceeds as usual. With `OFFLINE=1` in `oracle.conf` the script never probes
+download.oracle.com; without it, it probes once for 5 s and then falls back to the disk.

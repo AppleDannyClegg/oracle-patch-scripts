@@ -172,6 +172,7 @@ print_table() {
 main() {
   load_config; parse_args "$@"
   if [ "$DO_REPORT" = 1 ]; then report_init "$PATCH_OUT/${HOST}_$(date '+%Y%m%d_%H%M%S')"; else RAW="$(mktemp -d)"; FINDINGS_FILE="$RAW/f.txt"; fi
+  [ "$NO_NET" = 0 ] && ! net_ok && { NO_NET=1; USE_MOS=0; say "no internet from this host: newest ORDS/APEX not checked, MOS not asked (the CPU calendar still gives the quarter)"; }
   [ "$USE_MOS" = 1 ] && [ "$NO_NET" = 0 ] && { RUN_BASE="$RAW"; mos_login; }
   say "patch-status $VERSION (latest CPU $LATEST_CPU, mos=$USE_MOS)"
   db_homes; fmw_homes; other_products

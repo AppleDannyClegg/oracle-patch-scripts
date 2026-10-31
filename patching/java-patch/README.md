@@ -68,3 +68,9 @@ every later update is an atomic link flip with a one-command rollback.
 
 Tested against a fake JDK tree and WebLogic home (symlink flip, rollback, re-run, file-edit
 variant, same-build refusal); not yet on a real host. Run `inspect` and `preflight` first.
+
+## Without internet
+
+Download the JDK tarball on a machine with MOS access and give it to the script:
+`java-patch.sh run /path/jdk-17.0.13_linux-x64_bin.tar.gz`. `latest`/`download` are the only
+commands that need the internet; with `OFFLINE=1` in `oracle.conf` they refuse at once.

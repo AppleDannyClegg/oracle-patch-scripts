@@ -66,6 +66,7 @@ RUN_DIR=""
 LOG_FILE=""
 STATE_FILE=""
 MOS_BASE="${MOS_BASE:-https://updates.oracle.com}"
+OFFLINE="${OFFLINE:-0}"   # 1: this host has no internet - latest/download refuse at once; stage the zips in the patch dir instead
 OPATCH_KIT_BUG="28186730"
 PATCHES=""
 PICK_RELEASE=""
@@ -180,7 +181,7 @@ latest_run_dir() {
 # ---------------------------------------------------------------------------
 load_config() {
   local f
-  for f in "$SCRIPT_DIR/wls-patch.conf" "./wls-patch.conf" "$HOME/.wls-patch.conf"; do
+  for f in "$SCRIPT_DIR/../../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/wls-patch.conf" "./wls-patch.conf" "$HOME/.wls-patch.conf"; do
     if [ -f "$f" ]; then
       dbg "loading config $f"
       set -a
@@ -1027,6 +1028,7 @@ mos_cleanup() { [ -n "$MOS_NETRC" ] && rm -f "$MOS_NETRC"; [ -n "$MOS_COOKIES" ]
 
 # credentials: ~/.netrc entry > MOS_USER/MOS_PASSWORD > prompt. Password never goes on a command line.
 mos_login() {
+  [ "$OFFLINE" = 1 ] && die "My Oracle Support is not reachable from this host (OFFLINE=1): download the patch zips (p<ID>_*.zip) on a machine with MOS access and copy them into the patch directory, then run without --latest/--patches"
   command -v curl >/dev/null || die "curl is required for download"
   MOS_COOKIES="$RUN_DIR/.mos-cookies"
   trap mos_cleanup EXIT
