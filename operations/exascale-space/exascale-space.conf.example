@@ -1,0 +1,42 @@
+# exascale-space.conf - copy next to the script (or ~/.exascale-space.conf). All optional; the shared
+# ../../oracle.conf is read too. Command-line options win over this file.
+
+# escli. Default: the first of escli (PATH), /opt/oracle/cell/cellsrv/bin/escli, /opt/oracle/dbserver/dbms/bin/escli,
+# /usr/sbin/escli. Without a usable escli the script still reports the database side (V$EXA_VAULT, V$EXA_FILE).
+#ESCLI=/opt/oracle/dbserver/dbms/bin/escli
+
+# The Exascale user wallet. Leave unset and escli uses its own search path: $OSSCONF/eswallet,
+# $ORACLE_BASE/admin/eswallet, /etc/oracle/cell/network-config/eswallet (the one OEDA made for the oracle user).
+# The wallet's user needs to see the vaults/pools; a database-only user sees its own vault, a cluster admin sees all.
+#EXA_WALLET=/u01/app/oracle/admin/eswallet
+
+# Exascale control services (ERS) endpoint when the wallet does not carry it
+#EXA_CTRL=exa-ers-host:8080
+
+# Seconds before one escli call is killed (a vault with a million files takes a while to list)
+#EXA_TIMEOUT=120
+
+# Findings thresholds
+#EXA_WARN_PCT=85          # vault used/provisioned, FRA not-reclaimable
+#EXA_CRIT_PCT=95
+#EXA_POOL_FREE_PCT=12     # free space a pool needs to rebalance after a disk loss: 12 for 12-disk HC/XT cells, 20 for 6-disk HC
+#EXA_WARN_DAYS=30         # days-to-full from the script's own history
+#EXA_CRIT_DAYS=7
+#EXA_WINDOW=30            # days of history the slope is fitted over
+#EXA_ORPHAN_DAYS=7        # a file no database claims counts as a candidate only when older than this
+
+# purge-archivelogs: delete archivelogs completed before sysdate-EXA_ARCH_DAYS that RMAN has backed up
+# EXA_ARCH_BACKED_UP times to device type EXA_ARCH_DEVICE (sbt = ZDLRA/tape, disk = disk backups)
+#EXA_ARCH_DAYS=1
+#EXA_ARCH_BACKED_UP=1
+#EXA_ARCH_DEVICE=sbt
+#RMAN_CATALOG_CONNECT=/@zdlra-scan:1521/zdlra:dedicated
+#RMAN_TIMEOUT=1800
+
+# Where reports and history go; change-making commands (grow, purge-archivelogs, release) log under RUN_BASE
+#EXA_OUT=/u01/backup/exascale-space
+#EXA_HISTORY=/u01/backup/exascale-space/history
+#RUN_BASE=/u01/backup/exascale-space/runs
+
+# SQL access when "/ as sysdba" on the local instance is not possible
+#SQL_CONNECT="sys/password@//dbhost:1521/cdb1 as sysdba"
