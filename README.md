@@ -198,13 +198,24 @@ database back on their own; that needs an explicit `rollback --allow-flashback`.
 The change-making scripts are tested end to end against mocks (fake OPatch, fake My Oracle Support,
 fake `sqlplus`, fake `ords`, fake WebLogic deployer, local copies of the download zips) covering
 upgrade, failed apply, failed verify, rollback, flashback gating, already-current, dry-run and
-wrong-Java paths. Not yet run against real systems. Do `inspect`, `plan` and `preflight` on a test
-box first.
+wrong-Java paths. Do `inspect`, `plan` and `preflight` on a test box first.
 
-The read-only reports (db-health-daily, perf-snapshot, space-forecast, security-posture,
-patch-status, oracle-diag) have run against a real database: Oracle Database Free in a local
-container. `tests/oracle-free-container.sh` repeats that on any machine with docker (pulls
-`gvenzl/oracle-free:23-slim`, about 700 MB, runs the six scripts inside as `oracle`, copies the
+What has run against a real database (Oracle Database Free 26ai in a local container, with ORDS
+26.3 standalone on https in front of it):
+
+- the read-only reports: db-health-daily, perf-snapshot (with `--awr`), space-forecast,
+  security-posture, patch-status, oracle-diag, incident-pack and sr-draft
+- operations: account-ops inspect/expiring/unlock/reset/verify/rollback/heal (heal restarted a
+  killed ORDS and unlocked its pool user), db-refresh pdb-clone end to end (PDB cloned over a
+  database link), rman-ops (the SQL views; the slim image has no `rman` binary)
+- patching: ords-patch inspect/plan/run (already current), java-patch inspect, cert-renew
+  inspect/plan/apply/verify/rollback on the ORDS certificate (new certificate served after the
+  restart, rollback put the old one back)
+
+`tests/oracle-free-container.sh` repeats the six reports on any machine with docker (pulls
+`gvenzl/oracle-free:23-slim`, about 700 MB, runs the scripts inside as `oracle`, copies the
 reports to `tests/out/`). `--trace` records every SQL statement and answer so errors the scripts
-swallow still show up; `--keep` leaves the container running for the next run. No WebLogic, ORDS,
-APEX, Data Guard, RAC or Exadata there, so those code paths are still mock-tested only.
+swallow still show up; `--keep` leaves the container running for the next run. No WebLogic, APEX,
+Data Guard, RAC, Exadata, ZDLRA or OKV there, and no `rman`, OPatch or `orapki` in the slim image,
+so db-patch and java-patch apply, the listener wallet path and everything WebLogic are still
+mock-tested only.
