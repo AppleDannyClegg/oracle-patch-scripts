@@ -1,0 +1,28 @@
+# rman-ops.conf - copy next to the script (or ~/.rman-ops.conf). chmod 600 when it holds a password.
+# All optional; the shared ../oracle.conf is read too. Command-line options win over this file.
+
+# Connections. SQL is "/ as sysdba" on the local instance. RMAN connects "target /" and, when set, adds a
+# 'connect catalog' line on stdin (never on a command line): user/password@alias, or /@alias with a wallet.
+#SQL_CONNECT="/ as sysdba"
+#RMAN_CATALOG_CONNECT=rcowner/secret@RCAT
+#RMAN_CATALOG_CONNECT=/@zdlra-scan:1521/zdlra:dedicated
+
+# Recovery Appliance: the VPC user that may read ra_database, ra_incident_log, ra_disk_restore_range, ra_task
+#RA_CATALOG_CONNECT=ravpc_bank/secret@zdlra-scan:1521/zdlra:dedicated
+
+# The recovery window you promise the business, in days; the report compares what is actually restorable with it
+#RECOVERY_WINDOW_DAYS=7
+
+# Findings thresholds
+#RMAN_MAX_FULL_DAYS=8      # CRIT when the last completed database backup is older
+#RMAN_MAX_ARCH_HOURS=24    # CRIT when the last completed archivelog backup is older (also: ZDLRA unprotected window)
+
+# restore-test: where the datafile and controlfile copy are restored to (needs the datafile's size free)
+#RESTORE_SCRATCH_DIR=/u01/restore_test
+
+# Reports go to RMAN_OUT/<host>_<command>_<timestamp>/ ; change-making commands log under RUN_BASE
+#RMAN_OUT=/u01/backup/rman-ops
+#RUN_BASE=/u01/backup/rman-ops/runs
+
+# Seconds before a validate / restore RMAN command is killed (backup validate check logical gets 3x)
+#RMAN_TIMEOUT=3600
