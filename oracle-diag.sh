@@ -740,3 +740,247 @@ diag_wls_domain() {
   [ -n "$running" ] && [ "$code" != 200 ] && finding WARN wls "$(basename "$d"): admin server ready-check $url/weblogic/ready returned '$code'"
   if [ "$THREADS" = 1 ]; then ps -eo pid,args | grep '[w]eblogic.Server' | grep -- "$d\|$(basename "$d")" | while read -r pid rest; do jvm_threads "$(printf '%s' "$rest" | grep -oE 'weblogic.Name=[^ ]+' | cut -d= -f2)" "$pid"; done; fi
 }
+
+# ---------------------------------------------------------------------------
+# Other Oracle products found on bank estates: Grid Infrastructure / RAC / ASM, Data Guard broker,
+# GoldenGate, Enterprise Manager agent/OMS, AHF/TFA, Exadata, ZDLRA, Key Vault, AVDF, CMAN, OHS,
+# IDM (OUD/OID), Forms/Reports, OBIEE/OAS, Tuxedo, TimesTen, ODA, Secure Backup, EBS/PeopleSoft/
+# Siebel/Hyperion/ODI (presence only)
+# ---------------------------------------------------------------------------
+grid_home() {
+  local g; g="$(sed -n 's/^crs_home=//p' /etc/oracle/olr.loc 2>/dev/null)"
+  [ -z "$g" ] && g="$(ps -eo args 2>/dev/null | grep -oE '^[^ ]*/bin/(ocssd|crsd|ohasd)' | head -1 | sed 's#/bin/.*##')"
+  [ -z "$g" ] && g="$(grep -E '^\+ASM' /etc/oratab 2>/dev/null | head -1 | cut -d: -f2)"
+  [ -d "$g" ] && printf '%s' "$g"
+}
+
+diag_grid() {
+  local g; g="$(grid_home)"; [ -z "$g" ] && return 0
+  say "grid infrastructure"
+  h1 "Grid Infrastructure / Clusterware / ASM"
+  kv "GRID_HOME" "$g"; kv "version" "$("$g/bin/crsctl" query crs activeversion 2>/dev/null | grep -oE '\[[0-9.]+\]' | tr -d '[]')"
+  kv "type" "$([ -f /etc/oracle/ocr.loc ] && echo 'cluster (RAC)' || echo 'Oracle Restart (single node)')"
+  kv "nodes" "$("$g/bin/olsnodes" -n -s -i 2>/dev/null | tr '\n' ';')"; kv_end
+  section "grid_check" "$g/bin/crsctl" check crs
+  [ -f /etc/oracle/ocr.loc ] && section "grid_check_cluster" "$g/bin/crsctl" check cluster -all
+  section "grid_resources" "$g/bin/crsctl" stat res -t
+  section_sh grid_resources_offline "'$g/bin/crsctl' stat res -w 'STATE != ONLINE' -t 2>/dev/null; echo; echo 'TARGET=ONLINE but not ONLINE:'; '$g/bin/crsctl' stat res -w '(TARGET = ONLINE) and (STATE != ONLINE)' -v 2>/dev/null | grep -E '^NAME=|STATE=|LAST_SERVER=|FAILURE_COUNT=|STATE_DETAILS='"
+  grep -qE '^NAME=' "$RAW/grid_resources_offline.txt" && finding CRIT grid "Clusterware resources with TARGET=ONLINE are not ONLINE: $(sed -n 's/^NAME=//p' "$RAW/grid_resources_offline.txt" | tr '\n' ' ' | cut -c1-200)"
+  grep -q 'CRS-4639\|CRS-4535\|CRS-4530\|CRS-4534' "$RAW/grid_check.txt" "$RAW/grid_check_cluster.txt" 2>/dev/null && finding CRIT grid "Clusterware stack reports a component not online (crsctl check)"
+  section_sh grid_services "'$g/bin/srvctl' config database 2>/dev/null | while read db; do echo \"== \$db\"; '$g/bin/srvctl' status database -d \$db -v 2>&1; '$g/bin/srvctl' config database -d \$db 2>/dev/null | grep -E 'Services|Start options|Management policy|Database role|Instances|Database name|Oracle home'; done; echo; echo '== ASM'; '$g/bin/srvctl' status asm 2>&1; echo '== listeners'; '$g/bin/srvctl' status listener 2>&1; '$g/bin/srvctl' status scan_listener 2>&1; '$g/bin/srvctl' status scan 2>&1; '$g/bin/srvctl' config scan 2>&1 | head -5; echo '== nodeapps'; '$g/bin/srvctl' status nodeapps 2>&1 | head -20; echo '== interconnect'; '$g/bin/oifcfg' getif 2>&1; echo '== voting disks'; '$g/bin/crsctl' query css votedisk 2>&1; echo '== OCR'; $SUDO '$g/bin/ocrcheck' 2>&1 | head -25; echo '== patches'; timeout 120 '$g/OPatch/opatch' lspatches 2>&1 | head -30"
+  grep -qE 'is not running' "$RAW/grid_services.txt" && finding WARN grid "srvctl reports something not running: $(grep -E 'is not running' "$RAW/grid_services.txt" | head -3 | tr '\n' ';')"
+  local asmsid; asmsid="$(ps -eo args | sed -n 's/^asm_pmon_\(+ASM[0-9]*\).*/\1/p' | head -1)"
+  if [ -n "$asmsid" ]; then
+    h2 "ASM ($asmsid)"
+    section_sh asm_lsdg "ORACLE_HOME='$g' ORACLE_SID='$asmsid' '$g/bin/asmcmd' lsdg 2>&1; echo; ORACLE_HOME='$g' ORACLE_SID='$asmsid' '$g/bin/asmcmd' lsdsk -k 2>&1 | head -60; echo; echo 'rebalance / offline:'; ORACLE_HOME='$g' ORACLE_SID='$asmsid' '$g/bin/asmcmd' lsop 2>&1"
+    grep -qE 'REBAL' "$RAW/asm_lsdg.txt" && grep -qE '^Group.*Rebal' "$RAW/asm_lsdg.txt" && finding INFO grid "ASM rebalance in progress (asmcmd lsop)"
+    local asmalert; asmalert="$(ls "${ORACLE_BASE:-/u01/app/grid}"/diag/asm/+asm/"$asmsid"/trace/alert_"$asmsid".log /u01/app/*/diag/asm/+asm/"$asmsid"/trace/alert_"$asmsid".log 2>/dev/null | head -1)"
+    [ -n "$asmalert" ] && { h3 "ASM alert log"; recent_errors "asm_alert" "$asmalert" 'ORA-[0-9]+|WARNING|offline|OFFLINE|Errors in file|rebalance|diskgroup .* dismounted' >/dev/null; tail_file asm_alert_tail "$asmalert"; }
+  fi
+  local crsalert; crsalert="$(ls /u01/app/*/diag/crs/*/crs/trace/alert.log "${ORACLE_BASE:-/nonexistent}"/diag/crs/*/crs/trace/alert.log "$g"/log/*/alert*.log 2>/dev/null | head -1)"
+  [ -n "$crsalert" ] && { h2 "Clusterware alert log"; recent_errors crs_alert "$crsalert" 'CRS-[0-9]+|error|ERROR|evict|reboot|network|lost|offline|OFFLINE|failed' >/dev/null; grep -qE 'CRS-1608|CRS-1609|evict|CRS-1632|CRS-1610' "$RAW/crs_alert.errors" 2>/dev/null && finding CRIT grid "Node eviction / cluster reconfiguration messages in the CRS alert log"; tail_file crs_alert_tail "$crsalert"; }
+}
+
+diag_dgbroker() { # <sid>
+  local sid="$1" home; home="$(oratab_home "$sid")"; [ -z "$home" ] && home="${ORACLE_HOME:-}"
+  [ -x "$home/bin/dgmgrl" ] || return 0
+  local on; on="$(sqlval "$sid" "(select value from v\$parameter where name='dg_broker_start')" 2>/dev/null)"
+  [ "$on" = TRUE ] || return 0
+  h2 "Data Guard broker ($sid)"
+  local dbun; dbun="$(sqlval "$sid" "(select db_unique_name from v\$database)")"
+  section_sh "dg_${sid}" "ORACLE_HOME='$home' ORACLE_SID='$sid' PATH='$home/bin:\$PATH' timeout 120 '$home/bin/dgmgrl' -silent / 'show configuration verbose' 2>&1; echo; ORACLE_HOME='$home' ORACLE_SID='$sid' timeout 120 '$home/bin/dgmgrl' -silent / 'show database verbose $dbun' 2>&1 | head -80"
+  grep -qE 'Configuration Status:' "$RAW/dg_${sid}.txt" && ! grep -qE 'SUCCESS' "$RAW/dg_${sid}.txt" && finding CRIT db "$sid: Data Guard broker configuration status is not SUCCESS: $(grep -E 'ORA-|Error|Warning' "$RAW/dg_${sid}.txt" | head -2 | tr '\n' ' ')"
+  grep -qE 'ORA-16[0-9]{3}' "$RAW/dg_${sid}.txt" && finding WARN db "$sid: broker reports $(grep -oE 'ORA-16[0-9]{3}' "$RAW/dg_${sid}.txt" | sort -u | tr '\n' ' ')"
+}
+
+diag_rman() { # <sid>: configuration, failures, need-backup; read-only
+  local sid="$1" home; home="$(oratab_home "$sid")"; [ -z "$home" ] && home="${ORACLE_HOME:-}"
+  [ -x "$home/bin/rman" ] || return 0
+  h2 "RMAN ($sid): configuration, failures, ZDLRA / SBT"
+  section_sh "rman_${sid}" "ORACLE_HOME='$home' ORACLE_SID='$sid' PATH='$home/bin:\$PATH' timeout 180 '$home/bin/rman' target / <<'R' 2>&1 | grep -vE '^$|^RMAN>|^Recovery Manager|^Copyright|^connected|^Using target'
+set echo off;
+show all;
+list failure;
+report need backup;
+report unrecoverable;
+list backup summary;
+R
+true"
+  grep -qE 'Failure ID|CRITICAL|HIGH' "$RAW/rman_${sid}.txt" && finding CRIT db "$sid: RMAN 'list failure' reports a failure (Data Recovery Advisor): $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}.txt" | head -2 | cut -c1-120 | tr '\n' ';')"
+  grep -qE 'libra\.so|RA_WALLET|SBT_LIBRARY' "$RAW/rman_${sid}.txt" && {
+    kv "ZDLRA" "configured (SBT channel uses libra.so)"
+    local rahost; rahost="$(grep -oE "RA_WALLET=[^']*" "$RAW/rman_${sid}.txt" | head -1)"; kv "RA wallet" "$rahost"; kv_end
+    local lastsbt; lastsbt="$(sql "$sid" "set heading off\nselect to_char(max(start_time),'YYYY-MM-DD HH24:MI') from v\$rman_backup_job_details where output_device_type like '%SBT%' and status like 'COMPLETED%';" 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//')"
+    kv "last completed SBT (ZDLRA) backup" "${lastsbt:-none in controlfile}"; kv_end
+    [ -z "$lastsbt" ] && finding WARN db "$sid: ZDLRA SBT channel is configured but no completed SBT backup is recorded in the controlfile"
+    local ratns; ratns="$(grep -oE "RA_WALLET=[^']*" "$RAW/rman_${sid}.txt" | head -1)"; [ -n "$ratns" ] && section "rman_${sid}_ra_tnsping" env ORACLE_HOME="$home" "$home/bin/tnsping" "$(sqlval "$sid" "(select regexp_substr(max(handle),'[^/]+$') from v\$backup_piece where device_type='SBT_TAPE' and rownum=1)" 2>/dev/null | head -1)" 2>/dev/null
+  }
+  grep -qE 'report need backup' "$RAW/rman_${sid}.txt" && grep -qE '^[0-9]+ +[0-9]+ +(\+|/)' "$RAW/rman_${sid}.txt" && finding WARN db "$sid: 'report need backup' lists files outside the redundancy/recovery window"
+}
+
+diag_goldengate() {
+  local gg; gg="$( (ps -eo args 2>/dev/null | grep -oE '^[^ ]*/(mgr|ggsci|extract|replicat)( |$)' | sed 's#/[a-z]* *$##' | head -1); )"
+  [ -z "$gg" ] && for d in /u01/app/oracle/product/*/ogg* /u01/app/ogg* /u01/ogg* /opt/oracle/ogg* /u01/app/oracle/goldengate* "${OGG_HOME:-}"; do [ -x "$d/ggsci" ] && { gg="$d"; break; }; done
+  local ma; ma="$(ps -eo args 2>/dev/null | grep -E '[S]erviceManager|[o]ggca|/bin/(adminsrvr|distsrvr|recvsrvr|pmsrvr)' | head -1)"
+  [ -z "$gg" ] && [ -z "$ma" ] && return 0
+  say "goldengate"
+  h1 "GoldenGate"
+  if [ -n "$gg" ]; then
+    kv "OGG_HOME (classic)" "$gg"; kv "mgr running" "$(pgrep -f "$gg/mgr" >/dev/null && echo yes || echo NO)"; kv_end
+    section_sh ogg_info "cd '$gg' && ORACLE_HOME=\${ORACLE_HOME:-$(oratab_home "$(db_instances | head -1)")} LD_LIBRARY_PATH='$gg:'\${ORACLE_HOME:-}/lib printf 'info all\ninfo mgr\nversions\n' | timeout 60 ./ggsci 2>&1 | grep -vE '^$|^GGSCI'; echo; echo 'lag detail:'; cd '$gg' && printf 'lag er *\n' | timeout 60 ./ggsci 2>&1 | grep -E 'Lag|Sending|No' | head -20; echo; echo 'trail dirdat size:'; du -sh '$gg'/dirdat 2>/dev/null; ls -t '$gg'/dirdat 2>/dev/null | wc -l | sed 's/^/trail files: /'; echo 'dirrpt newest:'; ls -t '$gg'/dirrpt/*.rpt 2>/dev/null | head -5"
+    pgrep -f "$gg/mgr" >/dev/null || finding CRIT ogg "GoldenGate Manager is not running"
+    grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg_info.txt" | grep -qE 'ABENDED|STOPPED' && finding CRIT ogg "GoldenGate processes not running: $(grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg_info.txt" | grep -E 'ABENDED|STOPPED' | awk '{print $2, $3}' | tr '\n' ';')"
+    grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg_info.txt" | awk '$3=="RUNNING" && $4 ~ /^[0-9]+:[0-9]+:[0-9]+$/ { split($4,a,":"); if (a[1]*60+a[2] >= 15) print $2, $4 }' | while read -r n l; do finding WARN ogg "GoldenGate $n lag at checkpoint is $l"; done
+    [ -f "$gg/ggserr.log" ] && { h2 "ggserr.log"; recent_errors ogg_ggserr "$gg/ggserr.log" 'ERROR|WARNING|OGG-[0-9]+.*(ERROR|abend)|ORA-[0-9]+' >/dev/null; tail_file ogg_ggserr_tail "$gg/ggserr.log"; }
+  fi
+  if [ -n "$ma" ]; then
+    h2 "GoldenGate Microservices"
+    section_sh ogg_ma "ps -eo pid,etime,args | grep -E '[S]erviceManager|/bin/(adminsrvr|distsrvr|recvsrvr|pmsrvr)' | cut -c1-200; echo; systemctl list-units --no-legend 2>/dev/null | grep -i 'OracleGoldenGate\|ServiceManager'; echo; for d in \$(ps -eo args | grep -oE 'OGG_DEPLOYMENT_HOME=[^ ]+|--deploymentHome [^ ]+' | sed 's/.*[= ]//' | sort -u); do echo \"== deployment \$d\"; ls \$d 2>/dev/null; tail -50 \$d/var/log/ggserr.log 2>/dev/null; done; echo; echo 'service manager ports:'; ss -ltnp 2>/dev/null | grep -E 'ServiceMan|adminsrvr|distsrvr|recvsrvr|pmsrvr'"
+    for d in $(ps -eo args | grep -oE 'OGG_DEPLOYMENT_HOME=[^ ]+|--deploymentHome [^ ]+' | sed 's/.*[= ]//' | sort -u); do [ -f "$d/var/log/ggserr.log" ] && recent_errors "ogg_ma_$(basename "$d")" "$d/var/log/ggserr.log" 'ERROR|OGG-[0-9]+.*(ERROR|abend)|ORA-[0-9]+' >/dev/null; done
+  fi
+}
+
+diag_em() {
+  local agents; agents="$(ps -eo args 2>/dev/null | grep -oE '^[^ ]*/agent_[0-9.]+/[^ ]*java|^[^ ]*/agent_inst[^ ]*|emwd.pl.*' | head -1)"
+  local ah; for ah in $(ls -d /u01/app/oracle/agent*/agent_inst /u01/app/oracle/product/agent*/agent_inst /opt/oracle/agent*/agent_inst /u01/app/oracle/em*/agent_inst "${AGENT_HOME:-/nonexistent}" 2>/dev/null; ps -eo args | grep -oE -- '-Doracle.agent.inst.dir=[^ ]+|EMSTATE=[^ ]+' | cut -d= -f2); do
+    [ -x "$ah/bin/emctl" ] || continue
+    say "em agent"; h1 "Enterprise Manager agent ($ah)"
+    section "em_agent_status" "$ah/bin/emctl" status agent
+    grep -qE 'Agent is Running and Ready' "$RAW/em_agent_status.txt" || finding CRIT em "EM agent is not 'Running and Ready' - OEM is blind to this host"
+    local up; up="$(sed -n 's/^Last successful upload *: *//p' "$RAW/em_agent_status.txt")"; [ -n "$up" ] && { local us; us="$(date -d "$up" +%s 2>/dev/null)"; [ -n "$us" ] && [ $(( ($(date +%s) - us) / 60 )) -gt 60 ] && finding WARN em "EM agent last successful upload was $up - more than an hour ago (upload blocked? OMS down?)"; }
+    grep -qE 'Heartbeat Status *: *(Ok|OK)' "$RAW/em_agent_status.txt" || finding WARN em "EM agent heartbeat status is not Ok"
+    section_sh em_agent_log "tail -50 '$ah'/sysman/log/gcagent.log 2>/dev/null | grep -iE 'error|warn|fail' | tail -30; echo; echo 'targets:'; '$ah/bin/emctl' config agent listtargets 2>/dev/null | head -40"
+    break
+  done
+  local oms; oms="$(ls -d /u01/app/oracle/middleware*/oms/bin/emctl /u01/app/oracle/product/*/oms/bin/emctl /opt/oracle/*/oms/bin/emctl 2>/dev/null | head -1)"
+  [ -n "$oms" ] && { h1 "Enterprise Manager OMS"; section "em_oms_status" "$oms" status oms -details; grep -qE 'Oracle Management Server is Up' "$RAW/em_oms_status.txt" || finding CRIT em "OMS is not Up"; }
+}
+
+diag_ahf() {
+  local t; t="$(command -v tfactl 2>/dev/null)"; [ -z "$t" ] && t="$(ls /opt/oracle.ahf/bin/tfactl /u01/app/oracle.ahf/bin/tfactl /opt/oracle/tfa/tfa_home/bin/tfactl 2>/dev/null | head -1)"
+  [ -z "$t" ] && return 0
+  say "ahf/tfa"; h1 "AHF / Trace File Analyzer"
+  section_sh ahf_status "timeout 90 '$t' status 2>&1 | head -20; echo; timeout 60 '$t' print status 2>&1 | head -30; echo; timeout 60 '$t' print repository 2>&1 | head -20; echo; ahfctl=\$(dirname '$t')/ahfctl; [ -x \$ahfctl ] && timeout 60 \$ahfctl statusahf 2>&1 | head -20; echo; echo 'last orachk/exachk reports:'; ls -t /opt/oracle.ahf/data/*/orachk/*/*.html /opt/oracle.ahf/data/*/exachk/*/*.html 2>/dev/null | head -3; echo; echo 'TFA events last ${DIAG_DAYS}d:'; timeout 120 '$t' events -last ${DIAG_DAYS}d 2>&1 | head -60"
+  grep -qiE 'NOT RUNNING|not running' "$RAW/ahf_status.txt" && finding WARN ahf "TFA/AHF daemon is not running - no automatic diagnostic collection for incidents"
+  grep -qiE 'repository.*(full|exceed)' "$RAW/ahf_status.txt" && finding WARN ahf "TFA repository is full"
+  para "To package diagnostics for an Oracle SR: \`tfactl diagcollect -last ${DIAG_DAYS}d\` (and \`orachk\`/\`exachk\` for a best-practice scan)."
+}
+
+diag_exadata() {
+  [ -d /opt/oracle.cellos ] || command -v dbmcli >/dev/null 2>&1 || command -v cellcli >/dev/null 2>&1 || [ -f /opt/oracle.SupportTools/onecommand/config.dat ] || return 0
+  say "exadata"; h1 "Exadata"
+  section_sh exa_image "imageinfo 2>&1 | head -20; echo; imagehistory 2>&1 | tail -8; echo; cat /opt/oracle.cellos/exadata.img.hw 2>/dev/null"
+  if command -v cellcli >/dev/null 2>&1; then
+    section_sh exa_cell "cellcli -e 'list cell detail' 2>&1 | grep -E 'name|cellVersion|status|fanStatus|powerStatus|temperatureStatus|flashCacheMode|upTime|usbStatus'; echo; echo 'physical disks not normal:'; cellcli -e \"list physicaldisk where status != 'normal' detail\" 2>&1; echo 'grid disks not active:'; cellcli -e \"list griddisk where status != 'active'\" 2>&1; echo 'celldisks:'; cellcli -e 'list celldisk where status != normal' 2>&1; echo 'flashcache:'; cellcli -e 'list flashcache detail' 2>&1 | grep -E 'name|status|size|degradedCelldisks'; echo 'flashlog:'; cellcli -e 'list flashlog detail' 2>&1 | grep -E 'name|status'; echo; echo 'alerts last ${DIAG_DAYS}d:'; cellcli -e \"list alerthistory where beginTime > '\$(date -d \"-${DIAG_DAYS} days\" '+%Y-%m-%dT00:00:00%z')' detail\" 2>&1 | grep -E 'name|alertMessage|severity|beginTime|endTime' | head -80; echo; echo 'metric: cell CPU / disk utilisation (current):'; cellcli -e \"list metriccurrent where name like 'CL_CPUT' or name like 'CD_IO_UTIL' \" 2>&1 | head -30"
+    grep -qE 'severity: *critical' "$RAW/exa_cell.txt" && finding CRIT exadata "Critical cell alert(s) in the last $DIAG_DAYS days (cellcli list alerthistory)"
+    grep -qE 'status: *(predictive failure|critical|warning|not present|poor performance)' "$RAW/exa_cell.txt" && finding CRIT exadata "Cell disk(s) not normal: $(grep -E 'status:' "$RAW/exa_cell.txt" | grep -vE 'normal|active' | head -3 | tr '\n' ';')"
+  fi
+  if command -v dbmcli >/dev/null 2>&1; then
+    section_sh exa_dbserver "dbmcli -e 'list dbserver detail' 2>&1 | grep -E 'name|releaseVersion|status|fanStatus|powerStatus|temperatureStatus|upTime|makeModel'; echo; echo 'alerts last ${DIAG_DAYS}d:'; dbmcli -e \"list alerthistory where beginTime > '\$(date -d \"-${DIAG_DAYS} days\" '+%Y-%m-%dT00:00:00%z')' detail\" 2>&1 | grep -E 'name|alertMessage|severity|beginTime|endTime' | head -60; echo; echo 'physical disks not normal:'; dbmcli -e \"list physicaldisk where status != 'normal' detail\" 2>&1"
+    grep -qE 'severity: *critical' "$RAW/exa_dbserver.txt" && finding CRIT exadata "Critical DB server alert(s) in the last $DIAG_DAYS days (dbmcli list alerthistory)"
+  fi
+  section_sh exa_ms "ps -eo pid,etime,args | grep -E '[c]ellsrv|[M]S\b|[R]S\b|[c]ellrssrm|[m]sd' | cut -c1-120; echo; cat /opt/oracle.cellos/iso/lastGoodConfig/* 2>/dev/null | head -5; echo; echo 'RDS / infiniband / RoCE:'; ibstat 2>/dev/null | grep -E 'State|Rate' | head -8; ip -br link 2>/dev/null | grep -E 're[0-9]|ib[0-9]|stib|bondeth|clre'"
+  [ -x /opt/oracle.SupportTools/exachk ] && para "Run \`/opt/oracle.SupportTools/exachk\` or \`ahfctl\`/\`exachk\` from AHF for the full Exadata best-practice scan; the latest reports (if any) are listed under AHF."
+}
+
+diag_okv() {
+  local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora 2>/dev/null | head -5)"
+  [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
+  [ -z "$conf" ] && return 0
+  say "key vault"; h1 "Oracle Key Vault client"
+  local f; for f in $conf; do
+    h2 "$f"
+    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for s in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' ' | cut -d: -f1); do p=\$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' '\n' | grep \$s | cut -s -d: -f2); p=\${p:-5696}; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
+    local raw="$RAW/okv_$(printf '%s' "$f" | md5sum | cut -c1-8).txt"
+    grep -q 'UNREACHABLE' "$raw" && { grep -q ' OK' "$raw" || finding CRIT okv "No Oracle Key Vault server in $f is reachable on 5696 - TDE keystore cannot be opened after a restart"; grep -q ' OK' "$raw" && finding WARN okv "One or more Key Vault servers in $f unreachable (HA degraded)"; }
+    grep -qiE 'okvutil.*(error|fail|unable)|Cannot connect' "$raw" && finding WARN okv "okvutil list failed against Key Vault (wallet password needed, or endpoint not enrolled)"
+  done
+  local dbh; dbh="$(oratab_home "$(db_instances | head -1)")"; [ -f "$dbh/lib/liborapkcs.so" ] && kv "liborapkcs.so in ORACLE_HOME/lib" "$(ls -la "$dbh/lib/liborapkcs.so")" && kv_end
+  [ -f /opt/oracle/extapi/64/hsm/oracle/1.0.0/liborapkcs.so ] && { kv "PKCS#11 library" "$(ls -la /opt/oracle/extapi/64/hsm/oracle/1.0.0/liborapkcs.so)"; kv_end; }
+}
+
+diag_misc_products() {
+  say "other products"
+  h1 "Other Oracle products"
+  local found=""
+  # AVDF agent
+  local av; av="$(ps -eo args | grep -oE '[^ ]*av/agent[^ ]*|[^ ]*/avagent[^ ]*' | head -1 | sed 's#/bin/.*##; s#/lib/.*##')"
+  [ -z "$av" ] && av="$(ls -d /u01/app/oracle/avagent /opt/oracle/avagent /u01/app/avagent 2>/dev/null | head -1)"
+  if [ -n "$av" ]; then found="$found AVDF"; h2 "Audit Vault agent ($av)"; section_sh avdf_status "'$av/bin/agentctl' status 2>&1; echo; ls -la '$av'/av/log 2>/dev/null | tail -5; tail -30 '$av'/av/log/av.agent*.log 2>/dev/null | grep -iE 'error|fail|warn' | tail -15"; grep -qiE 'is running|RUNNING' "$RAW/avdf_status.txt" || finding CRIT avdf "Audit Vault agent is not running - audit records are not being collected"; fi
+  # CMAN
+  if ps -eo args | grep -q '[c]madmin\|[c]mgw'; then found="$found CMAN"; h2 "Connection Manager"; section_sh cman_status "for h in \$(ps -eo args | grep -oE '^[^ ]*/bin/cmadmin' | sed 's#/bin/cmadmin##' | sort -u); do ORACLE_HOME=\$h \$h/bin/cmctl show status 2>&1 | head -40; ORACLE_HOME=\$h \$h/bin/cmctl show services 2>&1 | head -30; ORACLE_HOME=\$h \$h/bin/cmctl show connections 2>&1 | head -5; echo; grep -vE '^\s*#|^\s*$' \$h/network/admin/cman.ora 2>/dev/null | head -40; done"; fi
+  # OHS
+  local ohs; ohs="$(ls -d /u01/app/oracle/*/user_projects/domains/*/config/fmwconfig/components/OHS/instances/* "${DOMAIN_HOME:-/nonexistent}"/config/fmwconfig/components/OHS/instances/* 2>/dev/null | head -3)"
+  local opmn; opmn="$(ps -eo args | grep -oE '^[^ ]*/opmn/bin/opmn' | head -1)"
+  if [ -n "$ohs" ] || [ -n "$opmn" ] || ps -eo args | grep -qE '[h]ttpd(\.worker)? .*(ohs|OHS)'; then
+    found="$found OHS"; h2 "Oracle HTTP Server"
+    section_sh ohs_status "ps -eo pid,etime,rss,args | grep -E '[h]ttpd' | head -10 | cut -c1-160; echo; [ -n '$opmn' ] && \$(dirname '$opmn')/opmnctl status -l 2>&1; for i in $ohs; do echo \"== \$i\"; grep -E '^Listen|^ServerName|SSLEngine|WebLogicCluster|WebLogicHost|WebLogicPort|MatchExpression|WLProxySSL|ErrorLog|LogLevel' \$i/httpd.conf \$i/ssl.conf \$i/mod_wl_ohs.conf \$i/moduleconf/*.conf 2>/dev/null | head -40; d=\$(echo \$i | sed 's#/config/fmwconfig.*##'); n=\$(basename \$i); echo; echo 'errors:'; ls -t \$d/servers/\$n/logs/*.log 2>/dev/null | head -3; done"
+    for i in $ohs; do local d n; d="$(printf '%s' "$i" | sed 's#/config/fmwconfig.*##')"; n="$(basename "$i")"; for lf in $(ls -t "$d/servers/$n/logs/"*.log 2>/dev/null | head -2); do recent_errors "ohs_${n}_$(basename "$lf" .log)" "$lf" '\[error\]|\[crit\]|\[alert\]|\[emerg\]|OHS-[0-9]+|failure of server APACHE bridge|NO_PROCESS|ssl_error' >/dev/null; grep -qE 'failure of server APACHE bridge|NO_PROCESS' "$RAW/ohs_${n}_$(basename "$lf" .log).errors" 2>/dev/null && finding CRIT ohs "$n: mod_wl_ohs cannot reach WebLogic (failure of server APACHE bridge) - back-end down or wrong WebLogicCluster"; done; done
+    ps -eo args | grep -qE '[h]ttpd' || finding CRIT ohs "OHS is configured but no httpd process is running"
+  fi
+  # OUD / OID / IDM
+  if ps -eo args | grep -qE '[o]rg.opends.server.core.DirectoryServer|[o]idldapd|[o]idmon|[o]racle.oud'; then
+    found="$found IDM"; h2 "Directory services (OUD / OID)"
+    section_sh idm_status "ps -eo pid,etime,rss,args | grep -E '[o]rg.opends.server.core.DirectoryServer|[o]idldapd|[o]idmon|[o]racle.oud' | cut -c1-160; echo; for d in \$(ps -eo args | grep -oE -- '-Dorg.opends.server.scriptName=[^ ]+|INSTANCE_ROOT=[^ ]+|[^ ]*asinst_[^ ]*|[^ ]*oud_instance[^ ]*|[^ ]*OUD/[^ ]*' | sed 's/.*=//' | sort -u | head -3); do [ -x \$d/bin/status ] && { echo \"== \$d\"; timeout 60 \$d/bin/status --offline 2>&1 | head -40; tail -30 \$d/logs/errors 2>/dev/null | grep -E 'SEVERE|ERROR' | tail -10; }; done; echo; echo 'anonymous rootDSE on listening LDAP ports:'; for p in \$(ss -ltnp 2>/dev/null | grep -E 'java|oidldapd' | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u); do printf '  port %s: ' \$p; timeout 5 ldapsearch -x -H ldap://localhost:\$p -s base -b '' vendorVersion 2>&1 | grep -E 'vendorVersion|result|error' | head -1; done"
+  fi
+  # Forms / Reports
+  if ps -eo args | grep -qE '[f]rmweb|[r]wserver|WLS_FORMS|WLS_REPORTS'; then
+    found="$found Forms/Reports"; h2 "Forms / Reports"
+    section_sh forms_status "echo \"frmweb runtime processes: \$(pgrep -c frmweb)\"; ps -eo pid,etime,rss,args | grep '[f]rmweb' | sort -k2 -r | head -5 | cut -c1-120; echo; echo 'oldest frmweb (possible orphans):'; ps -eo pid,etime,args | grep '[f]rmweb' | awk '\$2 ~ /-/' | head -10; echo; ps -eo pid,etime,rss,args | grep -E '[r]wserver|WLS_REPORTS' | cut -c1-120; echo; echo 'reports server engines:'; ps -eo args | grep -c '[r]wEng'"
+    local orph; orph="$(ps -eo etime,args | grep '[f]rmweb' | awk '$1 ~ /-/' | wc -l | tr -d ' ')"; [ "${orph:-0}" -gt 20 ] && finding WARN forms "$orph frmweb processes older than a day - orphaned Forms sessions eating memory"
+  fi
+  # OBIEE / OAS
+  if ps -eo args | grep -qE '[o]bis1|[o]bips1|[n]qsserver|[s]awserver|bi_server1'; then
+    found="$found OBIEE/OAS"; h2 "Oracle Analytics / OBIEE"
+    section_sh obi_status "ps -eo pid,etime,rss,args | grep -E '[o]bis[0-9]|[o]bips[0-9]|[o]bijh|[o]bisch|[o]biccs|[n]qsserver|[s]awserver|bi_server[0-9]' | cut -c1-140; echo; for d in \$(ps -eo args | grep -oE -- '-Ddomain.home=[^ ]+' | cut -d= -f2 | sort -u); do [ -x \$d/bitools/bin/status.sh ] && { echo \"== \$d\"; timeout 120 \$d/bitools/bin/status.sh 2>&1 | tail -15; echo 'nqserver / obis errors:'; ls -t \$d/servers/obis1/logs/*.log 2>/dev/null | head -2; }; done"
+    for d in $(ps -eo args | grep -oE -- '-Ddomain.home=[^ ]+' | cut -d= -f2 | sort -u); do for lf in $(ls -t "$d"/servers/obis1/logs/nqserver.log "$d"/servers/obis1/logs/obis1-diagnostic.log 2>/dev/null | head -2); do recent_errors "obi_$(basename "$lf" .log)" "$lf" '\[ERROR|nQSError|\[CRITICAL|\[FATAL' >/dev/null; done; done
+  fi
+  # Tuxedo
+  if ps -eo args | grep -qE '[B]BL |[t]mboot|[t]listen'; then
+    found="$found Tuxedo"; h2 "Tuxedo"
+    section_sh tux_status "ps -eo pid,etime,args | grep -E '[B]BL |[t]listen|[W]SL|[G]WT|[D]BBL' | cut -c1-120; echo; echo \"TUXCONFIG=\${TUXCONFIG:-(not set for this user; set it to get psr/pq)}\"; [ -n \"\${TUXCONFIG:-}\" ] && printf 'psr\npq\npclt\n' | timeout 60 tmadmin -r 2>&1 | head -80; echo; echo 'ULOG errors:'; ls -t \${APPDIR:-.}/ULOG.* 2>/dev/null | head -1 | xargs -r grep -E 'ERROR|FATAL|LIBTUX_CAT' | tail -20"
+  fi
+  # TimesTen
+  if ps -eo args | grep -qE '[t]imestend|[t]tcserver|[t]tdaemon'; then
+    found="$found TimesTen"; h2 "TimesTen"
+    section_sh tt_status "for h in \$(ps -eo args | grep -oE '^[^ ]*/bin/(timestend|ttdaemon)' | sed 's#/bin/.*##' | sort -u); do echo \"== \$h\"; timeout 60 \$h/bin/ttstatus 2>&1 | head -60; echo; grep -E 'Error|Warn' \$h/info/tterrors.log 2>/dev/null | tail -20; done"
+  fi
+  # ODA
+  if [ -d /opt/oracle/dcs ] || command -v odacli >/dev/null 2>&1; then
+    found="$found ODA"; h2 "Oracle Database Appliance"
+    section_sh oda_status "$SUDO odacli describe-system 2>&1 | head -40; echo; $SUDO odacli list-databases 2>&1 | head -20; echo; $SUDO odacli describe-component 2>&1 | head -40; echo; $SUDO odacli list-jobs 2>&1 | grep -viE 'Success' | tail -10; echo; $SUDO odaadmcli show diskgroup 2>&1; $SUDO odaadmcli show disk 2>&1 | grep -v GOOD | head"
+    grep -qE 'Failure|FAILED' "$RAW/oda_status.txt" && finding WARN oda "odacli lists failed jobs or components (see raw/oda_status.txt)"
+  fi
+  # Oracle Secure Backup
+  if command -v obtool >/dev/null 2>&1 || ps -eo args | grep -q '[o]bserviced'; then
+    found="$found OSB"; h2 "Oracle Secure Backup"
+    section_sh osb_status "ps -eo pid,etime,args | grep -E '[o]bserviced|[o]bscheduled|[o]bixd' | cut -c1-100; echo; timeout 60 obtool lsjob -A -c 2>&1 | head -20; echo; timeout 60 obtool lsdev 2>&1 | head -20; echo; timeout 60 obtool lshost 2>&1 | head -20"
+    grep -qiE 'failed|error' "$RAW/osb_status.txt" && finding WARN osb "Oracle Secure Backup reports failed jobs or devices"
+  fi
+  # presence only (apps that have their own health tools)
+  h2 "Presence check (not diagnosed in depth)"
+  fence_start
+  { pres() { local n="$1"; shift; if "$@" >/dev/null 2>&1; then printf '  %-32s present\n' "$n"; found="$found $n"; fi; }
+    pres "E-Business Suite (FNDLIBR/adopmon)" bash -c "ps -eo args | grep -qE '[F]NDLIBR|[a]dopmon|[F]NDSM' || [ -n \"\${APPL_TOP:-}\" ]"
+    pres "PeopleSoft (psappsrv/psprcsrv)" bash -c "ps -eo args | grep -qE '[P]SAPPSRV|[p]sappsrv|[P]SPRCSRV|[p]sprcsrv' || [ -n \"\${PS_HOME:-}\" ]"
+    pres "Siebel (siebmtshmw/siebsvc)" bash -c "ps -eo args | grep -qE '[s]iebmtshmw|[s]iebsvc'"
+    pres "Hyperion / EPM (HyS9*)" bash -c "ps -eo args | grep -qE '[H]yS9|[e]ssbase|ESSBASE'"
+    pres "Data Integrator agent (ODI)" bash -c "ps -eo args | grep -qE '[o]racle.odi.Agent|odi_server|ODI_AGENT'"
+    pres "SOA Suite / OSB (soa_server/osb_server)" bash -c "ps -eo args | grep -qE 'weblogic.Name=(soa|osb)_server'"
+    pres "OAM / OIM (oam_server/oim_server)" bash -c "ps -eo args | grep -qE 'weblogic.Name=(oam|oim)_server'"
+    pres "WebCenter (WC_)" bash -c "ps -eo args | grep -qE 'weblogic.Name=WC_'"
+    pres "Coherence standalone (DefaultCacheServer)" bash -c "ps -eo args | grep -qE '[D]efaultCacheServer|[c]oherence.*CacheServer'"
+    pres "FLEXCUBE (FCUBS)" bash -c "ps -eo args | grep -qiE 'fcubs|flexcube' || ls /*/FCUBS* /*/*/FCUBS* 2>/dev/null | grep -q ."
+    pres "Oracle Banking Platform (OBP)" bash -c "ps -eo args | grep -qE 'weblogic.Name=obp' || ls -d /*/obp* /*/*/obp* 2>/dev/null | grep -q ."
+    pres "OFSAA" bash -c "ps -eo args | grep -qiE 'ofsaa' || [ -n \"\${FIC_HOME:-}\" ]"
+    pres "Oracle NoSQL (kvstore)" bash -c "ps -eo args | grep -qE '[o]racle.kv'"
+    pres "Oracle VM / OLVM agent" bash -c "ps -eo args | grep -qE '[o]vs-agent|[v]dsm'"
+    pres "OSWatcher" bash -c "ps -eo args | grep -qE '[O]SWatcher'"
+    pres "SQLcl" bash -c "command -v sql >/dev/null"
+    pres "Instant Client" bash -c "ls -d /usr/lib/oracle/*/client* /opt/oracle/instantclient* 2>/dev/null | grep -q ."
+    pres "Docker/Podman containers" bash -c "(docker ps -q 2>/dev/null || podman ps -q 2>/dev/null) | grep -q ."
+  } >>"$REPORT"
+  fence_end
+  kv "products found" "${found:-none beyond the main sections}"; kv_end
+  ps -eo args | grep -qE '[O]SWatcher' || { [ -n "$(db_instances)" ] && finding INFO host "OSWatcher is not running - Oracle Support will ask for OS stats on performance SRs (AHF starts it)"; }
+}
