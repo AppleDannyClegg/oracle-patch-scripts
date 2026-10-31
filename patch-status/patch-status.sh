@@ -116,7 +116,7 @@ java_row() { # <java_home> <used by>
   local v d; v="$(java_version_of "$j")"; [ -z "$v" ] && return 0
   d="$("$j/bin/java" -version 2>&1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)"
   [ -z "$d" ] && d="$(sed -n 's/^JAVA_VERSION_DATE="\([^"]*\)".*/\1/p' "$j/release" 2>/dev/null)"
-  [ -z "$d" ] && { local bd; bd="$(stat -c %y "$j/bin/java" 2>/dev/null | cut -c1-10)"; d="$bd"; }
+  [ -z "$d" ] && { local bd; bd="$(file_mtime "$j/bin/java" | cut -c1-10)"; d="$bd"; }
   local major; major="$(java_major_of "$j")"; local note="used by $by"
   case "$major" in 6|7) note="$note; EOL"; [ "$DO_REPORT" = 1 ] && finding CRIT patch "JDK $v ($j) used by $by is end-of-life";; 8) note="$note; JDK 8 - extended support only";; esac
   local vendor; vendor="$(sed -n 's/^IMPLEMENTOR="\([^"]*\)".*/\1/p' "$j/release" 2>/dev/null)"

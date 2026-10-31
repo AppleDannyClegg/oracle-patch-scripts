@@ -1,0 +1,24 @@
+# db-patch.conf - copy next to the script (or ~/.db-patch.conf). All optional; the shared ../oracle.conf is read too.
+
+# The home to patch and the databases in it (defaults: the only DB home in /etc/oratab; every running SID from it)
+#ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+#ORACLE_SID=PRODDB
+#SQL_CONNECT="/ as sysdba"
+
+# Backups of the home (needs about the size of ORACLE_HOME) and run logs
+#BACKUP_DIR=/u01/backup/db-patch
+#RUN_BASE=/u01/backup/db-patch/runs
+#KEEP_BACKUPS=2
+
+# Data Guard: refuse to patch a primary before its standby (Oracle's standby-first rule). --force overrides.
+#DG_STANDBY_FIRST=yes
+
+# Patch numbers for 'run --patches' (or use --latest to look them up on MOS)
+#PATCHES=36582781,36414915
+
+# My Oracle Support login for latest/download (or a ~/.netrc line for updates.oracle.com, chmod 600)
+#MOS_USER=you@bank.example
+#MOS_PASSWORD=...
+
+#STOP_TIMEOUT=300
+#START_TIMEOUT=600

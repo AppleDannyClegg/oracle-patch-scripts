@@ -132,9 +132,9 @@ network_controls() {
     grep -qiE 'PROTOCOL\s*=\s*TCPS' "$lo" 2>/dev/null && control "net/$lsn" "2.1.x" "TCPS endpoint configured" PASS "listener.ora has TCPS" || control "net/$lsn" "2.1.x" "TCPS endpoint configured" INFO "no TCPS endpoint (native encryption may cover it)"
     grep -qiE 'HOST\s*=\s*0\.0\.0\.0' "$lo" 2>/dev/null && control "net/$lsn" "" "listener bound to 0.0.0.0" INFO "all interfaces"
     local wl; wl="$(grep -iE 'WALLET_LOCATION' -A3 "$sq" 2>/dev/null | grep -oE 'DIRECTORY\s*=\s*[^)]+' | sed 's/.*=\s*//')"
-    [ -n "$wl" ] && { local wp; wp="$(stat -c %a "$wl" 2>/dev/null)"; control "net/$lsn" "" "wallet directory $wl not world-readable" "$([ -n "$wp" ] && [ "${wp: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${wp:-unknown}"; }
-    local pw; pw="$(ls "$h"/dbs/orapw* 2>/dev/null | head -1)"; [ -n "$pw" ] && { local pm; pm="$(stat -c %a "$pw" 2>/dev/null)"; control "net/$lsn" "1.x" "password file $(basename "$pw") mode 640 or stricter" "$([ -n "$pm" ] && [ "${pm: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${pm:-unknown}"; }
-    local ob; ob="$(stat -c %a "$h/bin/oracle" 2>/dev/null)"; [ -n "$ob" ] && control "net/$lsn" "1.x" "\$ORACLE_HOME/bin/oracle is 6751 (setuid oracle, no world execute beyond the binary's design)" "$([ "$ob" = 6751 ] || [ "$ob" = 751 ] && echo PASS || echo INFO)" "mode $ob"
+    [ -n "$wl" ] && { local wp; wp="$(file_mode "$wl")"; control "net/$lsn" "" "wallet directory $wl not world-readable" "$([ -n "$wp" ] && [ "${wp: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${wp:-unknown}"; }
+    local pw; pw="$(ls "$h"/dbs/orapw* 2>/dev/null | head -1)"; [ -n "$pw" ] && { local pm; pm="$(file_mode "$pw")"; control "net/$lsn" "1.x" "password file $(basename "$pw") mode 640 or stricter" "$([ -n "$pm" ] && [ "${pm: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${pm:-unknown}"; }
+    local ob; ob="$(file_mode "$h/bin/oracle")"; [ -n "$ob" ] && control "net/$lsn" "1.x" "\$ORACLE_HOME/bin/oracle is 6751 (setuid oracle, no world execute beyond the binary's design)" "$([ "$ob" = 6751 ] || [ "$ob" = 751 ] && echo PASS || echo INFO)" "mode $ob"
     local ww; ww="$(find "$h" -xdev -perm -o+w ! -type l 2>/dev/null | head -5 | tr '\n' ' ')"; control "net/$lsn" "1.x" "no world-writable files under ORACLE_HOME" "$([ -z "$ww" ] && echo PASS || echo FAIL)" "${ww:-none}"
   done
   grep -qE '^[^#].*:Y' /etc/oratab 2>/dev/null && true
@@ -147,7 +147,7 @@ host_controls() {
   local pa; pa="$(grep -E '^PasswordAuthentication' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')"; [ -n "$pa" ] && control host "" "sshd PasswordAuthentication no (keys only)" "$([ "$pa" = no ] && echo PASS || echo INFO)" "value $pa"
   local se; se="$(getenforce 2>/dev/null)"; [ -n "$se" ] && control host "" "SELinux enforcing" "$([ "$se" = Enforcing ] && echo PASS || echo INFO)" "$se"
   local fw; fw="$(systemctl is-active firewalld 2>/dev/null)"; [ -n "$fw" ] && control host "" "host firewall active" "$([ "$fw" = active ] && echo PASS || echo INFO)" "firewalld $fw"
-  [ -f /etc/oratab ] && control host "" "/etc/oratab not world-writable" "$([ -w /etc/oratab ] && [ "$(stat -c %a /etc/oratab 2>/dev/null | cut -c3)" -ge 2 ] 2>/dev/null && echo FAIL || echo PASS)" "mode $(stat -c %a /etc/oratab 2>/dev/null)"
+  [ -f /etc/oratab ] && control host "" "/etc/oratab not world-writable" "$([ -w /etc/oratab ] && [ "$(file_mode /etc/oratab | cut -c3)" -ge 2 ] 2>/dev/null && echo FAIL || echo PASS)" "mode $(file_mode /etc/oratab)"
   local ks; ks="$(uptrack-uname -r 2>/dev/null)"; control host "" "kernel patched (Ksplice effective kernel)" "$([ -n "$ks" ] && echo PASS || echo INFO)" "${ks:-no ksplice; running $(uname -r)}"
   [ -n "$SUDO" ] || control host "" "sudo -n available to this script" INFO "no: sudoers rules and iptables were not read"
   local sr; sr="$($SUDO grep -hE '^oracle.*NOPASSWD.*ALL' /etc/sudoers /etc/sudoers.d/* 2>/dev/null | head -1)"; [ -n "$sr" ] && control host "" "oracle has NOPASSWD: ALL sudo" FAIL "CRIT:$sr"

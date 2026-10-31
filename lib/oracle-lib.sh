@@ -90,6 +90,9 @@ epoch_of() {
   else date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null; fi
 }
 days_ago() { if [ "$GNU_DATE" = 1 ]; then date -d "-$1 days" '+%Y-%m-%d'; else date -v-"$1"d '+%Y-%m-%d'; fi; }
+file_owner() { stat -c %U "$1" 2>/dev/null || stat -f %Su "$1" 2>/dev/null; }
+file_mode()  { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
+file_size()  { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
 file_mtime() { if [ "$GNU_DATE" = 1 ]; then date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null; else stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$1" 2>/dev/null; fi; }
 
 # ---------------------------------------------------------------------------

@@ -92,7 +92,7 @@ check_alert_log() {
   alert="$(sql_lines "$sid" "select value||'/alert_${sid}.log' from v\$diag_info where name='Diag Trace';" 2>/dev/null | head -1)"
   [ -f "$alert" ] || alert="$(find /u01/app/oracle/diag/rdbms /opt/oracle/diag/rdbms -name "alert_${sid}.log" 2>/dev/null | head -1)"
   [ -f "$alert" ] || { kv "alert log" "not found"; return; }
-  local size; size="$(stat -c %s "$alert" 2>/dev/null || stat -f %z "$alert")"
+  local size; size="$(file_size "$alert")"
   [ -n "$PREV" ] && [ -f "$PREV/alert_${sid}.offset" ] && off="$(cat "$PREV/alert_${sid}.offset")"
   [ "$off" -gt "$size" ] && off=0   # rotated
   printf '%s' "$size" >"$OUT/alert_${sid}.offset"
@@ -194,7 +194,7 @@ check_middleware() {
     local admin port url; admin="$(wls_admin_name "$d")"; port="$(wls_servers "$d" | awk -v a="$admin" '$1==a{print $2}')"; url="${ADMIN_URL:-http://localhost:${port:-7001}}"
     [ -n "$running" ] && [ "$(url_code "$url/weblogic/ready")" != 200 ] && finding WARN wls "$(basename "$d"): $url/weblogic/ready not 200"
     local s; for s in "$d"/servers/*/logs/*.log; do [ -f "$s" ] || continue; local sn; sn="$(basename "$(dirname "$(dirname "$s")")")"
-      local size off=0; size="$(stat -c %s "$s" 2>/dev/null || stat -f %z "$s")"; [ -n "$PREV" ] && [ -f "$PREV/wls_${sn}.offset" ] && off="$(cat "$PREV/wls_${sn}.offset")"; [ "$off" -gt "$size" ] && off=0; printf '%s' "$size" >"$OUT/wls_${sn}.offset"
+      local size off=0; size="$(file_size "$s")"; [ -n "$PREV" ] && [ -f "$PREV/wls_${sn}.offset" ] && off="$(cat "$PREV/wls_${sn}.offset")"; [ "$off" -gt "$size" ] && off=0; printf '%s' "$size" >"$OUT/wls_${sn}.offset"
       tail -c +"$((off+1))" "$s" 2>/dev/null | grep -aE '<Error>|<Critical>|OutOfMemoryError|STUCK|Too many open files' >"$RAW/wls_${sn}.errors"
       local n; n="$(wc -l <"$RAW/wls_${sn}.errors" | tr -d ' ')"
       grep -qE 'OutOfMemoryError' "$RAW/wls_${sn}.errors" && finding CRIT wls "$sn: OutOfMemoryError since last run"
