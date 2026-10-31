@@ -36,7 +36,7 @@ DIAG_DAYS="${DIAG_DAYS:-3}"
 DIAG_LINES="${DIAG_LINES:-200}"
 ONLY_SID=""; SKIP=" "; THREADS=0; REDACT=1; MAKE_TAR=1; QUIET=0
 SQL_TIMEOUT="${SQL_TIMEOUT:-90}"; CMD_TIMEOUT="${CMD_TIMEOUT:-60}"
-HOST="$(hostname -s 2>/dev/null || hostname)"
+HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || cat /etc/hostname 2>/dev/null || echo "${HOSTNAME:-unknown}")"; HOST="${HOST%%.*}"
 STAMP="$(date '+%Y%m%d_%H%M%S')"
 OUT=""; RAW=""; REPORT=""; FINDINGS=""; NCRIT=0; NWARN=0; NINFO=0
 HAVE_TIMEOUT=0; command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
@@ -55,9 +55,20 @@ skipped() { case "$SKIP" in *" $1 "*) return 0;; esac; return 1; }
 to() { local s="$1"; shift; if [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 5 "$s" "$@"; else "$@"; fi; }
 
 # finding <CRIT|WARN|INFO> <area> <text>
+# Findings go to $OUT/findings.txt, not only to a variable: most are raised inside "cmd | while read" loops,
+# which run in a subshell, so a variable set there never reaches the report. findings_sync rebuilds the variable.
 finding() {
+  if [ -n "$OUT" ] && [ -d "$OUT" ]; then printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$OUT/findings.txt"; return 0; fi
   case "$1" in CRIT) NCRIT=$((NCRIT+1));; WARN) NWARN=$((NWARN+1));; *) NINFO=$((NINFO+1));; esac
   FINDINGS="${FINDINGS}- **$1** [$2] $3"$'\n'
+}
+findings_sync() { # FINDINGS and the counters from the file, duplicates removed, order kept
+  [ -n "$OUT" ] && [ -f "$OUT/findings.txt" ] || return 0
+  local sev area txt; FINDINGS=""; NCRIT=0; NWARN=0; NINFO=0
+  while IFS='|' read -r sev area txt; do
+    case "$sev" in CRIT) NCRIT=$((NCRIT+1));; WARN) NWARN=$((NWARN+1));; *) NINFO=$((NINFO+1));; esac
+    FINDINGS="${FINDINGS}- **$sev** [$area] $txt"$'\n'
+  done < <(awk '!s[$0]++' "$OUT/findings.txt")
 }
 
 # report plumbing: everything goes to REPORT.md; big things also to raw/<name>
@@ -147,7 +158,7 @@ load_config() {
 diag_host() {
   say "host"
   h1 "Host"
-  kv "hostname" "$(hostname -f 2>/dev/null || hostname)"
+  kv "hostname" "$(hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || echo "$HOST")"
   kv "os" "$( (. /etc/os-release 2>/dev/null && printf '%s' "$PRETTY_NAME") || uname -sr)"
   kv "kernel" "$(uname -r)"; kv "arch" "$(uname -m)"
   kv "uptime" "$(uptime 2>/dev/null | sed 's/^ *//')"
@@ -238,10 +249,13 @@ sqlsec() {
   fence_end
 }
 sqlval() { sql "$1" "set heading off\nselect $2 from dual;" 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//;s/ *$//'; }
-oratab_home() { grep -E "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null | head -1 | cut -d: -f2; }
+oratab_home() { grep -hE "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null | head -1 | cut -d: -f2; }
 
-db_instances() { # SIDs with a pmon
-  ps -eo args 2>/dev/null | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u
+ps_args() { ps -eo args 2>/dev/null || { local f; for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; } # ps missing (minimal containers): /proc
+db_instances() { # SIDs with a pmon; oratab spelling when the process name differs in case (26ai: ora_pmon_free for FREE)
+  local p s
+  ps_args | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u |
+    while IFS= read -r p; do s="$(grep -hvE '^\s*#|^\s*$' /etc/oratab /var/opt/oracle/oratab 2>/dev/null | cut -d: -f1 | grep -ixF -- "$p" | head -1)"; printf '%s\n' "${s:-$p}"; done
 }
 
 diag_db_env() {
@@ -263,7 +277,7 @@ diag_db_env() {
 diag_listener() {
   h2 "Listener"
   local homes h lsn
-  homes="$(ps -eo args 2>/dev/null | grep -E '^[^ ]*/bin/tnslsnr ' | awk '{print $1, $2}' | sort -u)"
+  homes="$(ps_args | grep -E '^[^ ]*/bin/tnslsnr ' | awk '{print $1, $2}' | sort -u)"
   if [ -z "$homes" ]; then para "_no tnslsnr process_"; [ -n "$(db_instances)" ] && finding CRIT db "No tnslsnr process running - nothing can connect to the database over the network"; return; fi
   printf '%s\n' "$homes" | while read -r bin lsn; do
     h="${bin%/bin/tnslsnr}"
@@ -286,8 +300,7 @@ diag_listener() {
 # ADR alert log for an instance: resolve via v$diag_info, fall back to a find
 diag_alert_log() {
   local sid="$1" alert
-  alert="$(sqlval "$sid" "value || '/alert_${sid}.log'" 2>/dev/null)"
-  [ -n "$alert" ] && alert="$(sql "$sid" "set heading off\nselect value||'/alert_${sid}.log' from v\$diag_info where name='Diag Trace';" 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//')"
+  alert="$(sql "$sid" "set heading off\nselect value||'/alert_${sid}.log' from v\$diag_info where name='Diag Trace';" 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//')"
   [ -f "$alert" ] || alert="$(find /u01/app/oracle/diag/rdbms /opt/oracle/diag/rdbms "${ORACLE_BASE:-/nonexistent}/diag/rdbms" -name "alert_${sid}.log" 2>/dev/null | head -1)"
   h3 "Alert log ($sid)"
   if [ ! -f "$alert" ]; then para "_alert log for $sid not found_"; return; fi
@@ -351,7 +364,7 @@ col value for a70
 select name, value, isdefault from v\$parameter where name in ('processes','sessions','open_cursors','cpu_count','sga_target','sga_max_size','pga_aggregate_target','pga_aggregate_limit','memory_target','memory_max_target','db_recovery_file_dest','db_recovery_file_dest_size','log_archive_dest_1','log_archive_dest_2','undo_retention','undo_tablespace','compatible','db_files','local_listener','remote_listener','dispatchers','shared_servers','use_large_pages','filesystemio_options','db_block_size','audit_trail','wallet_root','tde_configuration','encrypt_new_tablespaces','enable_ddl_logging','job_queue_processes','aq_tm_processes','parallel_max_servers','resource_manager_plan','cluster_database','instance_number','diagnostic_dest','max_string_size','sec_case_sensitive_logon','inmemory_size') order by name;
 select 'non-default: '||name||' = '||substr(value,1,80) from v\$parameter where isdefault='FALSE' and name not in ('processes','sessions','sga_target','pga_aggregate_target','db_name','db_unique_name','control_files','db_recovery_file_dest','db_recovery_file_dest_size','diagnostic_dest','audit_file_dest','open_cursors','compatible','undo_tablespace','nls_language','nls_territory','local_listener','remote_listener','dispatchers','db_block_size','db_domain','log_archive_format','instance_number','thread','cluster_database','spfile','audit_trail','memory_target','sga_max_size','enable_pluggable_database','db_create_file_dest','pga_aggregate_limit','cpu_count') order by 1;"
 
-  sqlsec "$sid" memory "Memory (SGA / PGA / hugepages fit)" "select name, round(bytes/1024/1024) mb from v\$sga;
+  sqlsec "$sid" memory "Memory (SGA / PGA / hugepages fit)" "select name, round(value/1024/1024) mb from v\$sga;
 select component, round(current_size/1024/1024) cur_mb, round(min_size/1024/1024) min_mb, round(max_size/1024/1024) max_mb, oper_count from v\$sga_dynamic_components where current_size>0;
 select name, round(value/1024/1024) mb from v\$pgastat where name in ('aggregate PGA target parameter','aggregate PGA auto target','maximum PGA allocated','total PGA allocated','total PGA inuse','cache hit percentage','over allocation count');
 select pool, name, round(bytes/1024/1024) free_mb from v\$sgastat where name='free memory';"
@@ -380,13 +393,13 @@ left join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments 
 where t.contents<>'TEMPORARY' order by pct_max desc nulls last;
 select tablespace_name, round(tablespace_size*8/1024) size_mb_blk8, round(allocated_space*8/1024) alloc_mb, round(free_space*8/1024) free_mb from dba_temp_free_space;
 select 'undo: '||tablespace_name||' size '||round(sum(bytes)/1048576)||' MB, used '||(select round(sum(bytes)/1048576) from dba_undo_extents where status in ('ACTIVE','UNEXPIRED')) ||' MB active/unexpired' from dba_data_files where tablespace_name=(select value from v\$parameter where name='undo_tablespace') group by tablespace_name;
-select 'datafiles: '||count(*)||' of db_files='||(select value from v\$parameter where name='db_files') from dba_data_files;
+select 'datafiles: '||c.n||' of db_files='||p.value from (select count(*) n from dba_data_files) c, (select value from v\$parameter where name='db_files') p;
 select name fra, round(space_limit/1073741824,1) limit_gb, round(space_used/1073741824,1) used_gb, round(space_reclaimable/1073741824,1) reclaimable_gb, round((space_used-space_reclaimable)*100/space_limit) pct_net, number_of_files from v\$recovery_file_dest;
 select file_type, percent_space_used, percent_space_reclaimable, number_of_files from v\$recovery_area_usage where percent_space_used>0;
 select name, state, type, round(total_mb/1024) total_gb, round(free_mb/1024) free_gb, round((total_mb-free_mb)*100/total_mb) pct_used, round(usable_file_mb/1024) usable_gb, offline_disks from v\$asm_diskgroup;
 select 'redo: '||count(*)||' groups, '||round(max(bytes)/1048576)||' MB each, threads '||count(distinct thread#) from v\$log;
 select to_char(first_time,'YYYY-MM-DD HH24') hour, count(*) switches, round(sum(blocks*block_size)/1048576) redo_mb from v\$archived_log where first_time>sysdate-1 and dest_id=1 group by to_char(first_time,'YYYY-MM-DD HH24') order by 1;
-select dest_id, status, target, archiver, error from v\$archive_dest_status where status<>'INACTIVE';
+select dest_id, status, type, database_mode, recovery_mode, gap_status, error from v\$archive_dest_status where status<>'INACTIVE';
 select 'files in hot backup mode: '||count(*) from v\$backup where status='ACTIVE';
 select status, enabled, count(*) files from v\$datafile group by status, enabled;
 select file#, name, status, error, recover from v\$datafile_header where error is not null or recover='YES';"
@@ -402,7 +415,7 @@ select 'CHECK|WARN|'||count(*)||' datafile(s) in hot backup mode' from v\$backup
 select 'CHECK|CRIT|datafile '||file#||' '||name||' needs recovery / error '||error from v\$datafile_header where error is not null or recover='YES';
 select 'CHECK|WARN|redo switching '||max(c)||' times in an hour in the last day (aim for 4-6)' from (select count(*) c from v\$archived_log where first_time>sysdate-1 and dest_id=1 group by to_char(first_time,'YYYY-MM-DD HH24')) having max(c)>12;
 select 'CHECK|WARN|PGA over-allocation count '||value||' - pga_aggregate_target too small' from v\$pgastat where name='over allocation count' and value>0;
-select 'CHECK|WARN|'||name||' has '||status||' PDB open_mode '||open_mode from v\$pdbs where open_mode not in ('READ WRITE') and name<>'PDB\$SEED';
+select 'CHECK|WARN|PDB '||name||' is '||open_mode from v\$pdbs where open_mode not in ('READ WRITE') and name<>'PDB\$SEED';
 select 'CHECK|WARN|database is in NOARCHIVELOG mode - no point-in-time recovery' from v\$database where log_mode='NOARCHIVELOG';
 select 'CHECK|WARN|registry component '||comp_name||' is '||status from dba_registry where status not in ('VALID','OPTION OFF','REMOVED');"
 
@@ -413,7 +426,7 @@ select 'last successful DB backup: '||max(start_time) from v\$rman_backup_job_de
 select 'last successful archivelog backup: '||max(start_time) from v\$rman_backup_job_details where status like 'COMPLETED%' and input_type in ('ARCHIVELOG','DB INCR','DB FULL');
 select 'archivelogs not backed up: '||count(*)||' ('||round(nvl(sum(blocks*block_size),0)/1073741824,1)||' GB)' from v\$archived_log where backup_count=0 and deleted='NO' and dest_id=1 and standby_dest='NO';
 col output for a120
-select to_char(start_time,'YYYY-MM-DD HH24:MI') t, substr(output,1,120) output from (select * from v\$rman_output where output like '%RMAN-%' or output like '%ORA-%' order by recid desc) where rownum<=20;
+select * from (select to_char(s.start_time,'YYYY-MM-DD HH24:MI') t, substr(o.output,1,120) output from v\$rman_output o left join v\$rman_status s on s.recid=o.rman_status_recid and s.stamp=o.rman_status_stamp where o.output like '%RMAN-%' or o.output like '%ORA-%' order by o.recid desc) where rownum<=20;
 select 'controlfile autobackup: '||(select nvl(max(to_char(completion_time,'YYYY-MM-DD HH24:MI')),'never') from v\$backup_set where controlfile_included='BACKUP') from dual;
 select name, guarantee_flashback_database guaranteed, to_char(time,'YYYY-MM-DD HH24:MI') created, round(storage_size/1073741824,1) gb, scn from v\$restore_point;
 select 'flashback retention target (min): '||value from v\$parameter where name='db_flashback_retention_target';
@@ -466,14 +479,14 @@ select object_type, substr(object_name,1,20) obj, substr(reason,1,90) reason, to
 select window_name, enabled, active, to_char(last_start_date,'YYYY-MM-DD HH24:MI') last_start from dba_scheduler_windows;
 select client_name, status, consumer_group from dba_autotask_client;
 select client_name, job_status, to_char(job_start_time,'YYYY-MM-DD HH24:MI') started, substr(job_info,1,60) info from (select * from dba_autotask_job_history where job_start_time>sysdate-$DIAG_DAYS and job_status<>'SUCCEEDED' order by job_start_time desc) where rownum<=10;
-select 'AWR: interval '||extract(hour from snap_interval)*60+extract(minute from snap_interval)||' min, retention '||extract(day from retention)||' days' from dba_hist_wr_control where dbid=(select dbid from v\$database);
+select 'AWR: interval '||(extract(hour from snap_interval)*60+extract(minute from snap_interval))||' min, retention '||extract(day from retention)||' days' from dba_hist_wr_control where dbid=(select dbid from v\$database);
 select 'AWR last snapshot: '||max(end_interval_time) from dba_hist_snapshot where dbid=(select dbid from v\$database);
 select 'stale stats (tables): '||count(*) from dba_tab_statistics where stale_stats='YES' and owner not in ('SYS','SYSTEM');
 select 'tables never analysed: '||count(*) from dba_tab_statistics where last_analyzed is null and owner not in ('SYS','SYSTEM') and object_type='TABLE' and (owner not like 'APEX%');
 select owner, object_type, count(*) invalid from cdb_objects where status<>'VALID' group by owner, object_type order by 3 desc;
 select 'recyclebin objects: '||count(*)||', '||round(nvl(sum(space),0)*8/1024)||' MB (8K blocks)' from dba_recyclebin;
 select 'db links: '||count(*) from dba_db_links;
-select name, network_name, con_name, enabled from (select s.name, s.network_name, (select name from v\$containers c where c.con_id=s.con_id) con_name, s.enabled from v\$services s) order by 1;"
+select name, network_name, con_name, pdb from (select s.name, s.network_name, (select name from v\$containers c where c.con_id=s.con_id) con_name, s.pdb from v\$services s) order by 1;"
   sql_checks "$sid" "$sid" "select 'CHECK|WARN|'||count(*)||' scheduler job run(s) failed in the last $DIAG_DAYS days' from dba_scheduler_job_run_details where status<>'SUCCEEDED' and log_date>sysdate-$DIAG_DAYS having count(*)>0;
 select 'CHECK|WARN|'||count(*)||' invalid objects (excluding SYS/SYSTEM/APEX internal)' from cdb_objects where status<>'VALID' and owner not in ('SYS','SYSTEM','PUBLIC') having count(*)>0;
 select 'CHECK|CRIT|outstanding alert: '||substr(reason,1,120) from dba_outstanding_alerts where creation_time>sysdate-$DIAG_DAYS and rownum<=10;
@@ -537,7 +550,7 @@ select 'CHECK|INFO|more than one APEX schema present ('||listagg(username,',') w
 
 diag_pdbs() { # per-container checks for a CDB
   local sid="$1" pdbs p
-  local cdb; cdb="$(sqlval "$sid" "cdb" 2>/dev/null)"
+  local cdb; cdb="$(sqlval "$sid" "(select cdb from v\$database)" 2>/dev/null)"
   if [ "$cdb" != YES ]; then
     h3 "APEX / per-schema checks (non-CDB)"
     diag_apex_in "$sid" "$sid"; return
@@ -1041,6 +1054,7 @@ parse_args() {
 
 write_header() { # final REPORT.md = header + findings + body
   local body="$1" final="$2" secs="$3"
+  findings_sync
   {
     printf '# Oracle server diagnosis: %s\n\n' "$HOST"
     printf -- '- generated: `%s` by oracle-diag.sh %s in %ss, as `%s`\n' "$(ts)" "$VERSION" "$secs" "$(id -un)"

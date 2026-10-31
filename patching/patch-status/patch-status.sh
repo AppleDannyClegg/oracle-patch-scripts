@@ -50,7 +50,7 @@ date_from_desc() { local d; d="$(printf '%s' "$1" | grep -oE '\.[0-9]{6}\b' | ta
 # ---------------------------------------------------------------------------
 db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
   local h; for h in $(grep -hvE '^\s*#|^\s*$' /etc/oratab /var/opt/oracle/oratab 2>/dev/null | cut -d: -f2 | sort -u); do
-    [ -x "$h/OPatch/opatch" ] || continue
+    [ -x "$h/OPatch/opatch" ] || { row "Database home" "$h" "?" "" "" "no OPatch in this home - patch level unknown"; continue; }
     local lsp; lsp="$(to 180 "$h/OPatch/opatch" lspatches 2>/dev/null)"
     local isgrid=0; [ -x "$h/bin/crsctl" ] && isgrid=1
     local ru ruline; ruline="$(printf '%s\n' "$lsp" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE|Grid Infrastructure Release Update|OCW RELEASE UPDATE|DATABASE BUNDLE PATCH|DATABASE PATCH SET UPDATE' | grep -viE 'OJVM|MONTHLY' | sort -t';' -k2 | tail -1)"
@@ -70,13 +70,13 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     local rows; rows="$(sql_lines "$sid" "select con||'|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from (select (select name from v\$containers c where c.con_id=p.con_id) con, p.* from cdb_registry_sqlpatch p where p.action='APPLY' and p.description not like '%OJVM%') group by con order by con;" 2>/dev/null)"
     [ -z "$rows" ] && rows="$(sql_lines "$sid" "select '$sid|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from dba_registry_sqlpatch where action='APPLY' and description not like '%OJVM%';" 2>/dev/null)"
     local home; home="$(db_home_of "$sid")"; local homeru; homeru="$(to 120 "$home/OPatch/opatch" lspatches 2>/dev/null | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE' | grep -viE 'OJVM|MONTHLY' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
-    printf '%s\n' "$rows" | while IFS='|' read -r con desc when bad; do
+    while IFS='|' read -r con desc when bad; do   # no pipe: row() must run in this shell
       [ -z "$con" ] && continue
       local note="" d; d="$(date_from_desc "$desc")"
       if [ -n "$homeru" ] && [ "$desc" != "$homeru" ]; then note="DATAPATCH PENDING: home has '$homeru'"; [ "$DO_REPORT" = 1 ] && finding CRIT patch "$sid/$con: binary RU is '$homeru' but datapatch level is '$desc' - run datapatch -verbose"; fi
       [ "${bad:-0}" != 0 ] && note="${note:+$note; }$bad failed/partial datapatch entries"
       row "datapatch $sid/$con" "$home" "$desc" "$d" "" "$note"
-    done
+    done <<<"$rows"
     local v; v="$(sql_val "$sid" "(select version_full from v\$instance)" 2>/dev/null)"; [ -z "$v" ] && v="$(sql_val "$sid" "(select version from v\$instance)" 2>/dev/null)"
     [ -n "$v" ] && [ "$DO_REPORT" = 1 ] && kv "$sid version_full" "$v" && kv_end
     # premier-support reminder for old releases

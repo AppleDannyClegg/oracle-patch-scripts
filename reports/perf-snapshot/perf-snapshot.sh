@@ -105,7 +105,7 @@ live_samples() { # sample v$session N times: who is active, on what, waiting for
 db_live() { # v$ only - always available
   local sid="$1"
   sqlsec "$sid" overview "$sid: instance, memory, resource limits" "select instance_name, host_name, version_full, to_char(startup_time,'YYYY-MM-DD HH24:MI') started, (select value from v\$parameter where name='cpu_count') cpu_count, (select value from v\$parameter where name='control_management_pack_access') pack from v\$instance;
-select name, round(bytes/1048576) mb from v\$sga;
+select name, round(value/1048576) mb from v\$sga;
 select name, round(value/1048576) mb from v\$pgastat where name in ('aggregate PGA target parameter','total PGA allocated','total PGA inuse','maximum PGA allocated','over allocation count','cache hit percentage');
 select resource_name, current_utilization, max_utilization, limit_value from v\$resource_limit where resource_name in ('processes','sessions','parallel_max_servers');
 select 'temp in use MB: '||round(nvl(sum(blocks),0)*8/1024) from v\$sort_usage;

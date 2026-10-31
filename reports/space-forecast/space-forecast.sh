@@ -29,7 +29,8 @@ TOOL="space-forecast"; VERSION="1.0.0"
 SPACE_OUT="${SPACE_OUT:-$HOME/space-forecast}"; SPACE_HISTORY="${SPACE_HISTORY:-$HOME/space-forecast/history}"
 SPACE_WINDOW="${SPACE_WINDOW:-30}"; SPACE_WARN_DAYS="${SPACE_WARN_DAYS:-30}"; SPACE_CRIT_DAYS="${SPACE_CRIT_DAYS:-7}"
 ONLY_SID=""; CSV=0; NO_PACK=0; MAKE_TAR=1; TODAY="$(date +%Y-%m-%d)"
-FORECAST=""   # rows: kind|db|name|used|max|pct|per_day_mb|days_to_90|days_to_100|points
+# forecast rows (kind|db|name|used|max|pct|per_day_mb|days_to_90|days_to_100|points|since) go to $RAW/forecast.rows:
+# add_forecast runs inside "| while" subshells, so a shell variable would lose them
 
 usage() { usage_from_header "$0"; }
 parse_args() {
@@ -64,7 +65,7 @@ add_forecast() { # <kind> <db> <name> <used_mb> <max_mb>
   hist_append "$kind" "$db" "$name" "$used" "$max"
   local slope pts first; read -r slope pts first <<<"$(fit "$kind" "$db" "$name")"
   local pct d90 d100; pct="$(pct_of "$used" "$max")"; d90="$(days_to "$used" "$max" "$slope" 90)"; d100="$(days_to "$used" "$max" "$slope" 100)"
-  FORECAST="${FORECAST}$kind|$db|$name|$used|$max|$pct|$slope|$d90|$d100|$pts|$first"$'\n'
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$kind" "$db" "$name" "$used" "$max" "$pct" "$slope" "$d90" "$d100" "$pts" "$first" >>"$RAW/forecast.rows"
   local lbl="$kind $db $name"
   case "$d100" in never|-) ;; *) [ "$d100" -le "$SPACE_CRIT_DAYS" ] && finding CRIT space "$lbl: full in ~$d100 days at +$(human_mb "${slope%.*}")/day (${pct}% now)" ;;
     esac
@@ -90,7 +91,7 @@ collect_db() {
       | while IFS='|' read -r ts used max; do [ -n "$ts" ] && add_forecast tablespace "$label" "$ts" "$used" "$max"; done
     # seed history from dba_hist_tbspc_space_usage when licensed and our own history is short
     if [ "$pack" = 1 ]; then
-      with_pdb "$p" sql_lines "$sid" "select to_char(s.end_interval_time,'YYYY-MM-DD')||'|'||t.tsname||'|'||round(max(u.tablespace_usedsize)*(select value from v\$parameter where name='db_block_size')/1048576)||'|'||round(max(u.tablespace_maxsize)*(select value from v\$parameter where name='db_block_size')/1048576) from dba_hist_tbspc_space_usage u join dba_hist_snapshot s on s.snap_id=u.snap_id and s.dbid=u.dbid join v\$tablespace t on t.ts#=u.tablespace_id where s.end_interval_time>sysdate-$SPACE_WINDOW and u.dbid=(select dbid from v\$database) group by to_char(s.end_interval_time,'YYYY-MM-DD'), t.tsname;" 2>/dev/null \
+      with_pdb "$p" sql_lines "$sid" "select to_char(s.end_interval_time,'YYYY-MM-DD')||'|'||t.name||'|'||round(max(u.tablespace_usedsize)*(select value from v\$parameter where name='db_block_size')/1048576)||'|'||round(max(u.tablespace_maxsize)*(select value from v\$parameter where name='db_block_size')/1048576) from dba_hist_tbspc_space_usage u join dba_hist_snapshot s on s.snap_id=u.snap_id and s.dbid=u.dbid join v\$tablespace t on t.ts#=u.tablespace_id where s.end_interval_time>sysdate-$SPACE_WINDOW and u.dbid=(select dbid from v\$database) group by to_char(s.end_interval_time,'YYYY-MM-DD'), t.name;" 2>/dev/null \
         | while IFS='|' read -r d ts used max; do [ -n "$ts" ] || continue; local f; f="$(hist_file tablespace)"; grep -q "^$d,$label,$ts," "$f" 2>/dev/null || printf '%s,%s,%s,%s,%s\n' "$d" "$label" "$ts" "$used" "$max" >>"$f"; done
     fi
   done
@@ -100,7 +101,7 @@ collect_db() {
   # archivelog generation per day
   h2 "$sid: archivelog generation per day (last $SPACE_WINDOW days)"
   sqlsec "$sid" arch "$sid: redo/archive per day" "select to_char(first_time,'YYYY-MM-DD') day, count(*) logs, round(sum(blocks*block_size)/1048576) mb from v\$archived_log where first_time>sysdate-$SPACE_WINDOW and dest_id=1 group by to_char(first_time,'YYYY-MM-DD') order by 1;
-select 'avg MB/day: '||round(avg(mb))||'  max: '||round(max(mb))||'  last 24h: '||(select round(nvl(sum(blocks*block_size),0)/1048576) from v\$archived_log where first_time>sysdate-1 and dest_id=1) from (select sum(blocks*block_size)/1048576 mb from v\$archived_log where first_time>sysdate-$SPACE_WINDOW and dest_id=1 group by to_char(first_time,'YYYY-MM-DD'));"
+select 'avg MB/day: '||round(d.a)||'  max: '||round(d.m)||'  last 24h: '||l.mb from (select avg(mb) a, max(mb) m from (select sum(blocks*block_size)/1048576 mb from v\$archived_log where first_time>sysdate-$SPACE_WINDOW and dest_id=1 group by to_char(first_time,'YYYY-MM-DD'))) d, (select round(nvl(sum(blocks*block_size),0)/1048576) mb from v\$archived_log where first_time>sysdate-1 and dest_id=1) l;"
   local avg last; avg="$(grep -oE 'avg MB/day: [0-9]+' "$RAW/db_${sid}_arch.txt" | grep -oE '[0-9]+$')"; last="$(grep -oE 'last 24h: [0-9]+' "$RAW/db_${sid}_arch.txt" | grep -oE '[0-9]+$')"
   [ -n "$avg" ] && [ "$avg" -gt 0 ] && [ "${last:-0}" -gt "$((avg*2))" ] && finding WARN space "$sid: archivelog generation last 24h (${last} MB) is more than twice the $SPACE_WINDOW-day average (${avg} MB)"
   # fastest growing segments
@@ -114,13 +115,13 @@ select 'avg MB/day: '||round(avg(mb))||'  max: '||round(max(mb))||'  last 24h: '
 select 'audit: aud\$ '||(select round(sum(bytes)/1048576) from dba_segments where segment_name in ('AUD\$','FGA_LOG\$'))||' MB, unified audit '||(select round(nvl(sum(bytes),0)/1048576) from dba_segments where owner='AUDSYS')||' MB' from dual;
 select 'APEX logs: '||round(nvl(sum(bytes),0)/1048576)||' MB' from cdb_segments where owner like 'APEX_%' and (segment_name like 'WWV_FLOW_ACTIVITY_LOG%' or segment_name like 'WWV_FLOW_DEBUG_MESSAGES%' or segment_name like 'WWV_FLOW_SESSIONS%' or segment_name like 'WWV_FLOW_WORKSHEET_NOTIFY%');
 select 'recyclebin: '||round(nvl(sum(space),0)*8/1024)||' MB' from dba_recyclebin;
-select 'temp used now: '||round(nvl(sum(blocks),0)*8/1024)||' MB; temp max: '||(select round(sum(decode(autoextensible,'YES',maxbytes,bytes))/1048576) from dba_temp_files) from v\$sort_usage;
-select 'undo: '||round(sum(bytes)/1048576)||' MB total, '||(select round(nvl(sum(bytes),0)/1048576) from dba_undo_extents where status in ('ACTIVE','UNEXPIRED'))||' MB active/unexpired, retention '||(select value from v\$parameter where name='undo_retention')||' s' from dba_data_files where tablespace_name=(select value from v\$parameter where name='undo_tablespace');"
+select 'temp used now: '||u.mb||' MB; temp max: '||m.mb from (select round(nvl(sum(blocks),0)*8/1024) mb from v\$sort_usage) u, (select round(sum(decode(autoextensible,'YES',maxbytes,bytes))/1048576) mb from dba_temp_files) m;
+select 'undo: '||t.mb||' MB total, '||a.mb||' MB active/unexpired, retention '||p.value||' s' from (select round(sum(bytes)/1048576) mb from dba_data_files where tablespace_name=(select value from v\$parameter where name='undo_tablespace')) t, (select round(nvl(sum(bytes),0)/1048576) mb from dba_undo_extents where status in ('ACTIVE','UNEXPIRED')) a, (select value from v\$parameter where name='undo_retention') p;"
   # top segments into history for a pack-free growth view
   sql_lines "$sid" "select owner||'.'||segment_name||'|'||round(sum(bytes)/1048576) from (select * from cdb_segments order by bytes desc) where rownum<=50 group by owner, segment_name;" 2>/dev/null | while IFS='|' read -r n mb; do [ -n "$n" ] && hist_append segment "$sid" "$n" "$mb" 0; done
   sql_checks "$sid" "$sid" "select 'CHECK|WARN|'||count(*)||' datafile(s) at their autoextend maximum (cannot grow)' from dba_data_files where autoextensible='YES' and bytes>=maxbytes*0.99 having count(*)>0;
 select 'CHECK|WARN|'||count(*)||' datafile(s) with autoextend OFF in '||listagg(distinct tablespace_name, ',') within group (order by tablespace_name) from dba_data_files where autoextensible='NO' having count(*)>0;
-select 'CHECK|WARN|datafiles '||count(*)||' of db_files='||(select value from v\$parameter where name='db_files') from dba_data_files having count(*)>(select to_number(value)*0.9 from v\$parameter where name='db_files');
+select 'CHECK|WARN|datafiles '||c.n||' of db_files='||p.value from (select count(*) n from dba_data_files) c, (select value from v\$parameter where name='db_files') p where c.n>to_number(p.value)*0.9;
 select 'CHECK|INFO|recyclebin holds '||round(sum(space)*8/1024)||' MB' from dba_recyclebin having sum(space)*8/1024>5000;
 select 'CHECK|WARN|aud\$ is '||round(sum(bytes)/1048576)||' MB - purge with DBMS_AUDIT_MGMT' from dba_segments where segment_name='AUD\$' having sum(bytes)/1048576>5000;
 select 'CHECK|WARN|APEX activity/debug logs are '||round(sum(bytes)/1048576)||' MB - check the APEX purge jobs' from cdb_segments where owner like 'APEX_%' and (segment_name like 'WWV_FLOW_ACTIVITY_LOG%' or segment_name like 'WWV_FLOW_DEBUG_MESSAGES%') having sum(bytes)/1048576>5000;"
@@ -130,11 +131,11 @@ write_tables() {
   h1 "Forecast (window $SPACE_WINDOW days, history points per object in the last column)"
   para "Sorted by days to 100 %. Growth is a least-squares slope over the history; fewer than 3 points means the slope is a guess. Run daily (\`--install-cron\`) and it gets better."
   table_head "kind" "database" "object" "used" "max" "% now" "MB/day" "days to 90%" "days to 100%" "points" "since"
-  printf '%s' "$FORECAST" | sort -t'|' -k9,9n | while IFS='|' read -r kind db name used max pct slope d90 d100 pts first; do
+  sort -t'|' -k9,9n "$RAW/forecast.rows" 2>/dev/null | while IFS='|' read -r kind db name used max pct slope d90 d100 pts first; do
     [ -n "$kind" ] && table_row "$kind" "$db" "$name" "$(human_mb "$used")" "$(human_mb "$max")" "$pct" "$slope" "$d90" "$d100" "$pts" "$first"
   done
   echo >>"$REPORT"
-  { echo "kind,database,object,used_mb,max_mb,pct_now,mb_per_day,days_to_90,days_to_100,points,since"; printf '%s' "$FORECAST" | tr '|' ','; } >"$RAW/forecast.csv"
+  { echo "kind,database,object,used_mb,max_mb,pct_now,mb_per_day,days_to_90,days_to_100,points,since"; tr '|' ',' <"$RAW/forecast.rows" 2>/dev/null; } >"$RAW/forecast.csv"
   cp "$(hist_file segment)" "$RAW/segments.csv" 2>/dev/null
   h2 "Segment growth from the script's own history"
   local f; f="$(hist_file segment)"

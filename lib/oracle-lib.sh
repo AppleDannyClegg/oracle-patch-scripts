@@ -30,7 +30,7 @@ DRY_RUN="${DRY_RUN:-0}"; ASSUME_YES="${ASSUME_YES:-0}"; FORCE="${FORCE:-0}"; JSO
 RUN_BASE="${RUN_BASE:-$HOME/$TOOL/runs}"
 RUN_DIR="${RUN_DIR:-}"; LOG_FILE="${LOG_FILE:-}"; STATE_FILE="${STATE_FILE:-}"
 CMD_TIMEOUT="${CMD_TIMEOUT:-60}"; SQL_TIMEOUT="${SQL_TIMEOUT:-90}"
-HOST="$(hostname -s 2>/dev/null || hostname)"
+HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || cat /etc/hostname 2>/dev/null || echo "${HOSTNAME:-unknown}")"; HOST="${HOST%%.*}"
 HAVE_TIMEOUT=0; command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
 SUDO=""; command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && SUDO="sudo -n"
 GNU_DATE=0; date -d yesterday >/dev/null 2>&1 && GNU_DATE=1
@@ -141,13 +141,21 @@ load_config() {
 # connection from SQL_CONNECT (default "/ as sysdba"). PDB_SET="alter session set container=X;"
 # when exported makes every statement run in that PDB.
 # ---------------------------------------------------------------------------
-oratab_home() { grep -E "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null | head -1 | cut -d: -f2; }
+oratab_home() { grep -hE "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null | head -1 | cut -d: -f2; }
 oratab_sids() { grep -hvE '^\s*#|^\s*$' /etc/oratab /var/opt/oracle/oratab 2>/dev/null | cut -d: -f1 | grep -vE '^\+ASM|^-MGMTDB'; }
-db_instances() { ps -eo args 2>/dev/null | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u; }
-db_home_of() { local h; h="$(oratab_home "$1")"; [ -z "$h" ] && h="${ORACLE_HOME:-}"; [ -z "$h" ] && h="$(ps -eo args 2>/dev/null | grep -oE "^[^ ]*/bin/tnslsnr" | head -1 | sed 's#/bin/tnslsnr##')"; printf '%s' "$h"; }
+# the process name can differ in case from the SID (26ai shows ora_pmon_free for SID FREE): prefer the oratab spelling
+# ps -eo args / pid,args with a /proc fallback for minimal containers without procps
+ps_args() { ps -eo args 2>/dev/null || { local f; for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; }
+ps_pid_args() { ps -eo pid,args 2>/dev/null || { local f p; for f in /proc/[0-9]*/cmdline; do p="${f#/proc/}"; printf '%s ' "${p%/cmdline}"; tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; }
+db_instances() {
+  local p s
+  ps_args | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u |
+    while IFS= read -r p; do s="$(oratab_sids | grep -ixF -- "$p" | head -1)"; printf '%s\n' "${s:-$p}"; done
+}
+db_home_of() { local h; h="$(oratab_home "$1")"; [ -z "$h" ] && h="${ORACLE_HOME:-}"; [ -z "$h" ] && h="$(ps_args | grep -oE "^[^ ]*/bin/tnslsnr" | head -1 | sed 's#/bin/tnslsnr##')"; printf '%s' "$h"; }
 grid_home() {
   local g; g="$(sed -n 's/^crs_home=//p' /etc/oracle/olr.loc 2>/dev/null)"
-  [ -z "$g" ] && g="$(ps -eo args 2>/dev/null | grep -oE '^[^ ]*/bin/(ocssd|crsd|ohasd)' | head -1 | sed 's#/bin/.*##')"
+  [ -z "$g" ] && g="$(ps_args | grep -oE '^[^ ]*/bin/(ocssd|crsd|ohasd)' | head -1 | sed 's#/bin/.*##')"
   [ -z "$g" ] && g="$(grep -E '^\+ASM' /etc/oratab 2>/dev/null | head -1 | cut -d: -f2)"
   [ -d "$g" ] && printf '%s' "$g"
 }
@@ -177,7 +185,7 @@ sql_script() {
   log "SQL: cd $dir && @$script $*  (output: $LOG_FILE)"; [ "$DRY_RUN" = 1 ] && return 0
   (cd "$dir" && ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" printf '%s\nset echo off\n@%s %s\nexit\n' "${PDB_SET:-}" "$script" "$*" | $cmd "${SQL_CONNECT:-/ as sysdba}") >>"$LOG_FILE" 2>&1
 }
-db_is_cdb() { [ "$(sql_val "$1" "cdb" 2>/dev/null)" = YES ]; }
+db_is_cdb() { [ "$(sql_val "$1" "(select cdb from v\$database)" 2>/dev/null)" = YES ]; }
 db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null; }
 # with_pdb <pdb> <function> [args]: run a function with PDB_SET exported (empty pdb = root)
 with_pdb() { local p="$1"; shift; if [ -n "$p" ] && [ "$p" != CDB\$ROOT ]; then PDB_SET="alter session set container=$p;" "$@"; else PDB_SET="" "$@"; fi; }
@@ -305,7 +313,7 @@ wls_homes() {
     done
     ls -d /u01/app/oracle/product/*/fmw* /u01/app/oracle/middleware* /u01/oracle/* /opt/oracle/* /opt/oracle/product/* "$HOME"/Oracle/Middleware* 2>/dev/null
     [ -n "${ORACLE_HOME:-}" ] && echo "$ORACLE_HOME"; [ -n "${MW_HOME:-}" ] && echo "$MW_HOME"
-    ps -eo args 2>/dev/null | grep -oE '[^ ]*/wlserve[r]/' | sed 's#/wlserver/##'
+    ps_args | grep -oE '[^ ]*/wlserve[r]/' | sed 's#/wlserver/##'
   } 2>/dev/null | while read -r h; do [ -d "$h/wlserver" ] && echo "$h"; done | sort -u
 }
 wls_version() { local v; v="$(sed -n 's/.*name="WebLogic Server"[^>]*version="\([0-9.]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null | head -1)"; [ -z "$v" ] && v="$(sed -n 's/^WLS_PRODUCT_VERSION=//p' "$1/wlserver/.product.properties" 2>/dev/null)"; printf '%s' "$v"; }
@@ -313,7 +321,7 @@ wls_java_home() { local j; j="$(sed -n 's/^JAVA_HOME=//p' "$1/oui/.globalEnv.pro
 # wls_domains <home>: domain dirs with a config.xml
 wls_domains() {
   { sed -n 's/.*<domain location="\([^"]*\)".*/\1/p' "$1/domain-registry.xml" 2>/dev/null; ls -d "$1"/user_projects/domains/* 2>/dev/null; [ -n "${DOMAIN_HOME:-}" ] && echo "$DOMAIN_HOME"
-    ps -eo args 2>/dev/null | grep -oE -- '-Ddomain.hom[e]=[^ ]+' | cut -d= -f2; } | while read -r d; do [ -f "$d/config/config.xml" ] && echo "$d"; done | sort -u
+    ps_args | grep -oE -- '-Ddomain.hom[e]=[^ ]+' | cut -d= -f2; } | while read -r d; do [ -f "$d/config/config.xml" ] && echo "$d"; done | sort -u
 }
 # wls_servers <domain>: "name port machine cluster" per configured server
 wls_servers() {
@@ -326,8 +334,8 @@ wls_servers() {
 }
 wls_admin_name() { sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$1/config/config.xml" 2>/dev/null | head -1 | grep . || echo AdminServer; }
 # wls_running [domain]: "name pid" for running server JVMs (only real JVMs, not shells mentioning the words)
-wls_running() { ps -eo pid,args 2>/dev/null | awk -v d="${1:-}" '$2 ~ /java$/ && /weblogic\.Server/ && (d=="" || index($0,d)) { n=""; for(i=3;i<=NF;i++) if ($i ~ /^-Dweblogic\.Name=/) n=substr($i,17); if (n!="") print n, $1 }'; }
-nodemanager_pid() { ps -eo pid,args 2>/dev/null | awk '$2 ~ /java$/ && /weblogic\.NodeManager/ {print $1; exit}'; }
+wls_running() { ps_pid_args | awk -v d="${1:-}" '$2 ~ /java$/ && /weblogic\.Server/ && (d=="" || index($0,d)) { n=""; for(i=3;i<=NF;i++) if ($i ~ /^-Dweblogic\.Name=/) n=substr($i,17); if (n!="") print n, $1 }'; }
+nodemanager_pid() { ps_pid_args | awk '$2 ~ /java$/ && /weblogic\.NodeManager/ {print $1; exit}'; }
 # wls_datasources <domain>: "file jndi user url" per JDBC module (url with password redacted)
 wls_datasources() { local f; for f in "$1"/config/jdbc/*.xml; do [ -f "$f" ] || continue; printf '%s %s %s %s\n' "$(basename "$f")" "$(grep -oE '<jndi-name>[^<]*' "$f" | head -1 | sed 's/<[^>]*>//')" "$(grep -oE '<name>user</name>[[:space:]]*<value>[^<]*' "$f" | sed 's/.*<value>//' | head -1)" "$(grep -oE '<url>[^<]*' "$f" | sed 's/<[^>]*>//' | redact)"; done; }
 
@@ -351,9 +359,9 @@ ords_service() { systemctl list-units --type=service --all --no-legend 2>/dev/nu
 # ogg_detect: sets OGG_HOME (classic) and OGG_MA=1 when Microservices processes exist
 ogg_detect() {
   OGG_HOME="${OGG_HOME:-}"; OGG_MA=0
-  [ -z "$OGG_HOME" ] && OGG_HOME="$(ps -eo args 2>/dev/null | grep -oE '^[^ ]*/(mgr|ggsci|extract|replicat)( |$)' | sed -E 's#/(mgr|ggsci|extract|replicat) *$##' | head -1)"
+  [ -z "$OGG_HOME" ] && OGG_HOME="$(ps_args | grep -oE '^[^ ]*/(mgr|ggsci|extract|replicat)( |$)' | sed -E 's#/(mgr|ggsci|extract|replicat) *$##' | head -1)"
   [ -z "$OGG_HOME" ] && for d in /u01/app/oracle/product/*/ogg* /u01/app/ogg* /u01/ogg* /opt/oracle/ogg* /u01/app/oracle/goldengate*; do [ -x "$d/ggsci" ] && { OGG_HOME="$d"; break; }; done
-  ps -eo args 2>/dev/null | grep -qE '[S]erviceManager|/bin/(adminsrv[r]|distsrv[r]|recvsrv[r]|pmsrv[r])' && OGG_MA=1
+  ps_args | grep -qE '[S]erviceManager|/bin/(adminsrv[r]|distsrv[r]|recvsrv[r]|pmsrv[r])' && OGG_MA=1
   [ -x "${OGG_HOME:-/nonexistent}/ggsci" ] || [ "$OGG_MA" = 1 ]
 }
 # ggsci <commands...>: run in OGG_HOME with the DB home's libs; "\n"-separated commands
@@ -366,14 +374,14 @@ java_version_of() { "$1/bin/java" -version 2>&1 | head -1 | sed -n 's/.*version 
 java_major_of() { local v; v="$(java_version_of "$1")"; local j="${v%%.*}"; [ "$j" = 1 ] && { j="${v#1.}"; j="${j%%.*}"; }; printf '%s' "$j"; }
 java_homes() { # every JDK referenced by something on the host, one per line
   { local h; for h in $(wls_homes); do wls_java_home "$h"; echo; done
-    ps -eo pid,args 2>/dev/null | awk '$2 ~ /\/bin\/java$/ {print $2}' | sed 's#/bin/java$##' | while read -r j; do readlink -f "$j" 2>/dev/null || echo "$j"; done
+    ps_pid_args | awk '$2 ~ /\/bin\/java$/ {print $2}' | sed 's#/bin/java$##' | while read -r j; do readlink -f "$j" 2>/dev/null || echo "$j"; done
     [ -n "${JAVA_HOME:-}" ] && echo "$JAVA_HOME"
     ls -d /usr/java/jdk* /usr/java/latest /usr/lib/jvm/* /opt/java/* /u01/app/oracle/jdk* /u01/jdk* 2>/dev/null
     local c; c="$(command -v java 2>/dev/null)"; [ -n "$c" ] && dirname "$(dirname "$(readlink -f "$c")")"
   } 2>/dev/null | while read -r j; do [ -x "$j/bin/java" ] && (readlink -f "$j" 2>/dev/null || echo "$j"); done | sort -u
 }
 
-listener_homes() { ps -eo args 2>/dev/null | grep -E '^[^ ]*/bin/tnslsn[r] ' | awk '{print $1, $2}' | sed 's#/bin/tnslsnr##' | sort -u; } # "home name"
+listener_homes() { ps_args | grep -E '^[^ ]*/bin/tnslsn[r] ' | awk '{print $1, $2}' | sed 's#/bin/tnslsnr##' | sort -u; } # "home name"
 
 # ---------------------------------------------------------------------------
 # HTTP / ports
