@@ -122,7 +122,10 @@ init_run_dir() {
   [ -z "$RUN_DIR" ] && RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"
   mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR"
   LOG_FILE="$RUN_DIR/$TOOL.log"; STATE_FILE="$RUN_DIR/state"
-  [ "$RUN_DIR" = "$RUN_BASE/latest" ] || [ "$RUN_DIR" = "$RUN_BASE/latest/" ] || ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
+  # 'latest' is how the next command (verify, rollback, cleanup) finds this run: a link that could not be moved would send
+  # it to the PREVIOUS run's state and material, so the failure is said out loud and the --run-dir to pass is named
+  [ "$RUN_DIR" = "$RUN_BASE/latest" ] || [ "$RUN_DIR" = "$RUN_BASE/latest/" ] || { ln -sfn "$RUN_DIR" "$RUN_BASE/latest" 2>/dev/null && [ "$(readlink "$RUN_BASE/latest" 2>/dev/null)" = "$RUN_DIR" ]; } \
+    || warn "could not point $RUN_BASE/latest at this run (it points at '$(readlink "$RUN_BASE/latest" 2>/dev/null || echo nothing)'): later commands must be given --run-dir $RUN_DIR or they will act on that other run"
   log "$TOOL $VERSION (lib $ORACLE_LIB_VERSION)  run dir: $RUN_DIR  dry-run=$DRY_RUN"
 }
 latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }
@@ -700,6 +703,7 @@ lib_selftest() {
   t "expire_run_material under DRY_RUN=1 shreds nothing" 'b=$(mktemp -d); mkdir -p $b/old; echo h >$b/old/m; echo k >$b/old/x.bak; touch -t 202001010000 $b/old/m; (RUN_BASE=$b; LOG_FILE=/dev/null; DRY_RUN=1; expire_run_material 72 m gone m "*.bak" >/dev/null); r=0; [ -e $b/old/m ] && [ -e $b/old/x.bak ] && [ ! -e $b/old/state ] || r=1; rm -rf "$b"; [ $r = 0 ]'
   t "load_config does not export secrets" 'd=$(mktemp -d); printf "MY_PASSWORD=s3cret\nSQL_CONNECT=u/p@t\nMY_HOME=/x\n" >"$d/t.conf"; (TOOL=t; SCRIPT_DIR=$d; HOME=$d; load_config "$d/t.conf"; e="$(env)"; printf "%s" "$e" | grep -q "^MY_HOME=/x$" && ! printf "%s" "$e" | grep -q "s3cret" && ! printf "%s" "$e" | grep -q "^SQL_CONNECT=" && [ "$MY_PASSWORD" = s3cret ]); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
   t "state_set round trip, overwrite and unwritable dir" 'b=$(mktemp -d); (STATE_FILE=$b/s; state_set a 1; state_set b 2; state_set a 3; [ "$(state_get a)" = 3 ] && [ "$(state_get b)" = 2 ] && [ "$(wc -l <"$STATE_FILE" | tr -d " ")" = 2 ]); r1=$?; mkdir $b/d; chmod 500 $b/d; (STATE_FILE=$b/d/s; LOG_FILE=/dev/null; state_set a 1 2>/dev/null); r2=$?; chmod 700 $b/d; rm -rf "$b"; [ $r1 = 0 ] && [ $r2 = 1 ]'
+  t "init_run_dir warns when latest cannot be relinked" 'b=$(mktemp -d); mkdir -p $b/old $b/new; ln -s $b/old $b/latest; chmod 555 $b; o=$( (RUN_BASE=$b; RUN_DIR=$b/new; TOOL=t; VERSION=0; init_run_dir x 2>&1) ); chmod 755 $b; r=0; printf "%s" "$o" | grep -q "could not point $b/latest" && [ "$(readlink $b/latest)" = "$b/old" ] || r=1; rm -rf "$b"; [ $r = 0 ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
