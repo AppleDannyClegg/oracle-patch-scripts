@@ -62,7 +62,9 @@ cp account-ops.conf.example account-ops.conf     # ORDS paths, WebLogic credenti
   verifiers, a credential by another name), the ORDS wallet backups and the GoldenGate `dircrd`
   backup. Nothing removes them otherwise, and `verify` passing does not make a reset final (a
   nightly job only logs in tomorrow), so run `cleanup` yourself once the new password is confirmed
-  everywhere; `rollback` refuses after it. Until then the file sits in the run dir, mode 600.
+  everywhere; `rollback` refuses after it. Until then the file sits in the run dir, mode 600,
+  for at most `HASHES_KEEP_HOURS` (default 72): past that `rollback` refuses and the next run of
+  any command shreds the expired hashes and wallet backups of every old run.
 - **heal** (= `run`): the ORDS-503 case end to end: HTTP code, every service account's state;
   LOCKED → shows the lock time, where the account is used (the thing with the old password that
   keeps locking it) and offers unlock; EXPIRED(GRACE) → offers the profile move; EXPIRED →

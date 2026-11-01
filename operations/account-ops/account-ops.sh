@@ -295,6 +295,20 @@ shred_path() {
 }
 # file_age <path>: "3h 12m" from the mtime (GNU and BSD stat)
 file_age() { local m s; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"; s=$(( $(date +%s) - m )); printf '%dd %dh %dm' $((s/86400)) $((s%86400/3600)) $((s%3600/60)); }
+# expire_rollback_material: the verifiers and credential backups a reset keeps for rollback live HASHES_KEEP_HOURS
+# (default 72) - every command sweeps older runs and shreds them, so a run nobody cleaned up does not keep a credential
+# on disk for ever; rollback refuses past the same limit (the applications have used the new password for days)
+HASHES_KEEP_HOURS="${HASHES_KEEP_HOURS:-72}"
+expire_rollback_material() {
+  local d f now; now="$(date +%s)"
+  for d in "$RUN_BASE"/*/; do
+    [ -d "$d" ] || continue; f="$d/old_hashes.txt"; [ -f "$f" ] || continue
+    [ $(( now - $(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") )) -ge $(( HASHES_KEEP_HOURS * 3600 )) ] || continue
+    local p; for p in "$f" "$d"/cwallet.sso.*.bak "$d/dircrd.bak"; do [ -e "$p" ] && shred_path "$p"; done
+    printf 'hashes_removed=%s (expired after %sh)\n' "$(ts)" "$HASHES_KEEP_HOURS" >>"$d/state" 2>/dev/null   # the lib's STATE_FILE of that run
+    log "removed expired rollback material from ${d%/} (older than HASHES_KEEP_HOURS=$HASHES_KEEP_HOURS h)"
+  done
+}
 cmd_cleanup() {
   reuse_or_init cleanup
   local removed; removed="$(state_get hashes_removed || true)"; [ -n "$removed" ] && { log "nothing to do: cleaned up at $removed"; return 0; }
@@ -311,6 +325,7 @@ cmd_rollback() {
   reuse_or_init rollback
   local removed; removed="$(state_get hashes_removed || true)"; [ -n "$removed" ] && die "cleanup shredded the previous password verifiers of this run at $removed: nothing to roll back to"
   [ -f "$RUN_DIR/old_hashes.txt" ] || die "no old_hashes.txt in $RUN_DIR (nothing from a reset to roll back)"
+  [ $(( $(date +%s) - $(stat -c %Y "$RUN_DIR/old_hashes.txt" 2>/dev/null || stat -f %m "$RUN_DIR/old_hashes.txt") )) -lt $(( HASHES_KEEP_HOURS * 3600 )) ] || die "old_hashes.txt is $(file_age "$RUN_DIR/old_hashes.txt") old, past HASHES_KEEP_HOURS=$HASHES_KEEP_HOURS h: the applications have run on the new password for that long - restore from your own records if you really must"
   log "old_hashes.txt is $(file_age "$RUN_DIR/old_hashes.txt") old (reset $(state_get reset_done 2>/dev/null | wc -w | tr -d ' ') account(s)); the applications have used the NEW password since then"
   confirm "Restore the previous password hashes of $(wc -l <"$RUN_DIR/old_hashes.txt" | tr -d ' ') account(s) and the backed-up ORDS/WebLogic/GoldenGate files?" || die "aborted"
   local nfail=0 nok=0
@@ -358,6 +373,7 @@ cmd_heal() {
 main() {
   load_config; refuse_root
   local cmd="${1:-}"; shift || true; parse_opts "$@"
+  case "$cmd" in ""|-h|--help|help) ;; *) expire_rollback_material;; esac
   case "$cmd" in
     inspect) cmd_inspect;; expiring) cmd_expiring;; unlock) cmd_unlock;; reset) cmd_reset;; profile) cmd_profile;; verify) cmd_verify;;
     rollback) cmd_rollback;; cleanup) cmd_cleanup;; heal|run) cmd_heal;; ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;

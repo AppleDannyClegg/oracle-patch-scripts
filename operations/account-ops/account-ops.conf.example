@@ -35,3 +35,6 @@
 #NEW_PASSWORD=
 
 #RUN_BASE=/u01/backup/account-ops/runs
+# How long a reset keeps the previous password verifiers and credential backups for rollback (hours). Older material
+# is shredded by the next run of any command, and rollback refuses past it. cleanup removes it earlier by hand.
+#HASHES_KEEP_HOURS=72

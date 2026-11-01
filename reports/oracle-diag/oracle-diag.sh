@@ -152,7 +152,8 @@ load_config() {
     while IFS='=' read -r k v; do
       case "$k" in ''|\#*) continue;; esac
       k="$(printf '%s' "$k" | tr -d '[:space:]')"; v="${v%\"}"; v="${v#\"}"
-      [ -z "${!k:-}" ] && export "$k=$v"
+      # secret-looking keys stay shell variables: exported, they would sit in every child's environment for the whole run
+      case "$k" in *PASSWORD*|*PASSWD*|*SECRET*|*_PASS|*_PASS_*|*TOKEN*|*PWD*|*_CONNECT) [ -z "${!k:-}" ] && printf -v "$k" '%s' "$v";; *) [ -z "${!k:-}" ] && export "$k=$v";; esac
     done <"$f"
   done
 }
