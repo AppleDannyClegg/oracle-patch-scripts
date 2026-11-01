@@ -194,7 +194,7 @@ sql_script() {
   local home cmd; home="$(db_home_of "$sid")"; cmd="$(sqlplus_for "$sid")"
   log "SQL: cd $dir && @$script $*  (output: $LOG_FILE)"; [ "$DRY_RUN" = 1 ] && return 0
   # shellcheck disable=SC2086  # connect on stdin (/nolog): SQL_CONNECT may carry a password and must not reach argv
-  (cd "$dir" && ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" printf 'connect %s\n%s\nset echo off\n@%s %s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$script" "$*" | $cmd -L /nolog) >>"$LOG_FILE" 2>&1
+  (cd "$dir" && ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" printf 'whenever sqlerror exit 1\nconnect %s\nwhenever sqlerror continue\n%s\nset echo off\n@%s %s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$script" "$*" | $cmd -L /nolog) >>"$LOG_FILE" 2>&1   # a failed login exits 1 (without the whenever, sqlplus carries on 'Not connected' and exits 0)
 }
 db_is_cdb() { [ "$(sql_val "$1" "(select cdb from v\$database)" 2>/dev/null)" = YES ]; }
 db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null; }
