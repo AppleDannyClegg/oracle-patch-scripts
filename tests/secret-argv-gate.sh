@@ -87,7 +87,9 @@ hits="$(grep -nE '(sqlplus|\$cmd|\$SQL_CMD|\$SQLCL|\$SQLPLUS)([^|#]*) +"?\$\{?[A
 if [ -z "$hits" ]; then pass=$((pass+1)); else echo "FAIL static: connect string on a sqlplus command line:"; echo "$hits"; fail=$((fail+1)); fi
 # ---- static: no keytool/orapki/openssl command line carries a password word (only :file / file: forms). A line that must
 # (one documented, gated exception) carries the marker '# secret-on-argv: accepted' and is listed, not failed ---------------
-hits="$(grep -rnE --include='*.sh' -e '-(storepass|keypass|srcstorepass|deststorepass|pwd|pkcs12pwd|password)[[:space:]]+"?\$|-pass(in|out)[[:space:]]+"?(env|pass):' "$ROOT/lib" "$ROOT/operations" "$ROOT/patching" "$ROOT/reports" | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' || true)"
+# any value at all ('changeit', "MyPass1", "$VAR", env:, pass:) minus the file forms (-storepass:file F, -passin file:F) - Pi's cases
+pwopt='-(storepass|keypass|srcstorepass|deststorepass|passin|passout|pwd|pkcs12pwd|password)'
+hits="$(grep -rnE --include='*.sh' -e "${pwopt}[[:space:]=]+[^[:space:]]" "$ROOT/lib" "$ROOT/operations" "$ROOT/patching" "$ROOT/reports" | grep -vE "${pwopt}[[:space:]=]+\"?(file:|:file)" | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' || true)"
 accepted="$(printf '%s\n' "$hits" | grep 'secret-on-argv: accepted' || true)"; hits="$(printf '%s\n' "$hits" | grep -v 'secret-on-argv: accepted' || true)"
 [ -n "$accepted" ] && echo "accepted (documented, gated): $(printf '%s\n' "$accepted" | cut -d: -f1,2 | sed "s#$ROOT/##" | tr '\n' ' ')"
 if [ -z "$hits" ]; then pass=$((pass+1)); else echo "FAIL static: a password word on a keytool/orapki/openssl command line:"; printf '%s\n' "$hits" | sed "s#$ROOT/##" | cut -c1-160; fail=$((fail+1)); fi

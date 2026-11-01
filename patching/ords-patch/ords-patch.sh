@@ -104,7 +104,7 @@ load_config() {
       . "$f"; set +a; fi
   done
   # 'set -a' exported every conf variable: the passwords must not sit in the environment of every child (java, curl, tar, tee)
-  local v; for v in $(compgen -A variable | grep -E 'PASSWORD|PASSWD|SECRET|_PASS($|_)|TOKEN|PWD|_CONNECT$' || true); do [ "$v" = PWD ] || export -n "${v?}" 2>/dev/null || true; done   # same pattern as lib unexport_secrets (keep in sync); the shell's own PWD stays
+  local v; for v in $(compgen -A variable | grep -E 'PASSWORD|PASSWD|SECRET|_PASS($|_)|TOKEN|PWD|_CONNECT$' || true); do case "$v" in PWD|OLDPWD) ;; *) export -n "${v?}" 2>/dev/null || true;; esac; done   # same pattern as lib unexport_secrets (keep in sync); the shell's own PWD/OLDPWD stay
 }
 wait_for_url() {
   local url="$1" t="$2" code; command -v curl >/dev/null || { warn "no curl: cannot check $url"; return 1; }
