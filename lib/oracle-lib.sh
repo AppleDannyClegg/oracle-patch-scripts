@@ -57,11 +57,11 @@ optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$
 to() { local s="$1"; shift; if [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 5 "$s" "$@"; else "$@"; fi; }
 # run_cmd: execute (or print under --dry-run), tee output to the log, return its exit code
 run_cmd() {
-  log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0
+  log "CMD: $(printf '%s' "$*" | redact)"; [ "$DRY_RUN" = 1 ] && return 0
   "$@" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"; return "${PIPESTATUS[0]}"
 }
 # run_sh: a shell snippet detached from our stdin/stdout (start/stop scripts that background things)
-run_sh() { log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0; bash -c "$*" </dev/null >>"${LOG_FILE:-/dev/null}" 2>&1; }
+run_sh() { log "CMD: $(printf '%s' "$*" | redact)"; [ "$DRY_RUN" = 1 ] && return 0; bash -c "$*" </dev/null >>"${LOG_FILE:-/dev/null}" 2>&1; }
 confirm() {
   local prompt="$1"
   if [ "$ASSUME_YES" = 1 ] || [ "$DRY_RUN" = 1 ]; then return 0; fi
@@ -131,6 +131,9 @@ load_config() {
   local f
   for f in "$SCRIPT_DIR/../../oracle.conf" "$SCRIPT_DIR/../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/$TOOL.conf" "./$TOOL.conf" "$HOME/.$TOOL.conf" "$@"; do
     [ -f "$f" ] || continue
+    if [ "$f" = "./$TOOL.conf" ]; then   # the current directory could be anyone's: a config is sourced as code
+      { [ -O "$f" ] && [ -z "$(find "$f" -perm /022 2>/dev/null)" ]; } || { warn "ignoring ./$TOOL.conf: not owned by $(id -un) or writable by group/others"; continue; }
+    fi
     dbg "loading config $f"
     if [ "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)" != "600" ] && grep -qiE '^[A-Z_]*(PASSWORD|SECRET|PASS)[A-Z_]*=' "$f"; then warn "$f holds a password and is not mode 600"; fi
     set -a
@@ -163,7 +166,7 @@ grid_home() {
   [ -z "$g" ] && g="$(grep -E '^\+ASM' /etc/oratab 2>/dev/null | head -1 | cut -d: -f2)"
   [ -d "$g" ] && printf '%s' "$g"
 }
-is_rac() { [ -f /etc/oracle/ocr.loc ]; }
+is_rac() { [ -f /etc/oracle/ocr.loc ] && ! grep -qi 'local_only=true' /etc/oracle/ocr.loc; }   # Oracle Restart also has ocr.loc, with local_only=TRUE
 sqlplus_for() { local h; h="$(db_home_of "$1")"; if [ -n "${SQL_CMD:-}" ]; then printf '%s' "$SQL_CMD"; elif [ -x "$h/bin/sqlplus" ]; then printf '%s/bin/sqlplus -S' "$h"; elif have sqlplus; then printf 'sqlplus -S'; elif have sql; then printf 'sql -S'; fi; }
 # sql_run <sid> <sql...>: formatted output (headings on). "\n" in the text becomes a newline.
 sql_run() {
@@ -371,7 +374,7 @@ wls_admin_name() { sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$1/config/
 wls_running() { ps_pid_args | awk -v d="${1:-}" '$2 ~ /java$/ && /weblogic\.Server/ && (d=="" || index($0,d)) { n=""; for(i=3;i<=NF;i++) if ($i ~ /^-Dweblogic\.Name=/) n=substr($i,17); if (n!="") print n, $1 }'; }
 nodemanager_pid() { ps_pid_args | awk '$2 ~ /java$/ && /weblogic\.NodeManager/ {print $1; exit}'; }
 # wls_datasources <domain>: "file jndi user url" per JDBC module (url with password redacted)
-wls_datasources() { local f; for f in "$1"/config/jdbc/*.xml; do [ -f "$f" ] || continue; printf '%s %s %s %s\n' "$(basename "$f")" "$(grep -oE '<jndi-name>[^<]*' "$f" | head -1 | sed 's/<[^>]*>//')" "$(grep -oE '<name>user</name>[[:space:]]*<value>[^<]*' "$f" | sed 's/.*<value>//' | head -1)" "$(grep -oE '<url>[^<]*' "$f" | sed 's/<[^>]*>//' | redact)"; done; }
+wls_datasources() { local f; for f in "$1"/config/jdbc/*.xml; do [ -f "$f" ] || continue; printf '%s %s %s %s\n' "$(basename "$f")" "$(grep -oE '<jndi-name>[^<]*' "$f" | head -1 | sed 's/<[^>]*>//')" "$(tr -d '\n' <"$f" | grep -oE '<name>[[:space:]]*user[[:space:]]*</name>[[:space:]]*<value>[^<]*' | sed 's/.*<value>//; s/^[[:space:]]*//' | head -1)" "$(grep -oE '<url>[^<]*' "$f" | sed 's/<[^>]*>//' | redact)"; done; }
 
 # ords_setting <key>: a standalone setting from global/standalone/standalone.properties (ORDS <= 21) or global/settings.xml (22+)
 ords_setting() { local v; v="$(sed -n "s/^$1=//p" "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; [ -z "$v" ] && v="$(sed -n "s/.*<entry key=\"$1\">\([^<]*\)<.*/\1/p" "${ORDS_CONFIG:-/nonexistent}/global/settings.xml" 2>/dev/null | head -1)"; printf '%s' "$v"; }
@@ -406,7 +409,7 @@ ogg_detect() {
 # ggsci <commands...>: run in OGG_HOME with the DB home's libs; "\n"-separated commands
 ggsci() {
   local nl q h; nl=$'\n'; q="${*//\\n/$nl}"; h="${ORACLE_HOME:-$(db_home_of "$(db_instances | head -1)")}"
-  (cd "$OGG_HOME" && export ORACLE_HOME="$h" LD_LIBRARY_PATH="$OGG_HOME:$h/lib:${LD_LIBRARY_PATH:-}" && printf '%s\n' "$q" | to "${CMD_TIMEOUT}" ./ggsci 2>&1 | grep -vE '^GGSCI|^$')
+  (cd "$OGG_HOME" && export ORACLE_HOME="$h" LD_LIBRARY_PATH="$OGG_HOME:$h/lib:${LD_LIBRARY_PATH:-}" && printf '%s\n' "$q" | to "${CMD_TIMEOUT}" ./ggsci 2>&1 | grep -vE '^GGSCI|^$' || [ "${PIPESTATUS[1]}" = 0 ])
 }
 
 java_version_of() { "$1/bin/java" -version 2>&1 | head -1 | sed -n 's/.*version "\([^"]*\)".*/\1/p'; }
@@ -453,7 +456,8 @@ mos_login() {
   [ "$OFFLINE" = 1 ] && die "My Oracle Support is not reachable: $(offline_hint "${1:-}")"
   require_cmd curl
   [ -n "$RUN_DIR" ] || init_run_dir mos
-  trap mos_cleanup EXIT
+  # chain, do not replace, an EXIT trap the calling script already installed (its own cleanup would be lost)
+  if [ -z "${MOS_TRAP_SET:-}" ]; then local prev=""; eval "set -- $(trap -p EXIT)"; prev="${3:-}"; MOS_PREV_EXIT_TRAP="$prev"; trap 'mos_cleanup; [ -n "${MOS_PREV_EXIT_TRAP:-}" ] && eval "$MOS_PREV_EXIT_TRAP"' EXIT; MOS_TRAP_SET=1; fi
   local tok="${MOS_TOKEN:-}"
   [ -z "$tok" ] && [ -f "$MOS_TOKEN_FILE" ] && tok="$(grep -vE '^[[:space:]]*(#|$)' "$MOS_TOKEN_FILE" | head -1 | tr -d '[:space:]')"
   [ -z "$tok" ] && [ -t 0 ] && { read -r -s -p "My Oracle Support access token: " tok; echo; }
@@ -628,6 +632,7 @@ lib_selftest() {
   t "redact identified by values" '[ "$(echo "alter user A identified by values S:ABC;" | redact)" = "alter user A identified by ***REDACTED*** S:ABC;" ]'
   t "redact connect u/pw@t" '[ "$(echo "connect app/\"s3cret\"@PRD" | redact)" = "connect app/***REDACTED***@PRD" ]'
   t "sql_run: SQL and connect string on stdin, not argv" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "echo \"ARGV:\$*\"; cat" >"$d/sqlplus"; chmod +x "$d/sqlplus"; o=$(SQL_CMD="$d/sqlplus -S" SQL_CONNECT="u/CANARYpw@t" sql_run X "alter user a identified by CANARYsql;"); rm -f "$d/sqlplus"; rmdir "$d"; printf "%s" "$o" | grep -q "^ARGV:-S -L /nolog$" && printf "%s" "$o" | grep -q "^connect u/CANARYpw@t$" && printf "%s" "$o" | grep -q "identified by CANARYsql"'
+  t "mos_login keeps the caller EXIT trap" 'o=$(bash -c "source $0 2>/dev/null; trap \"echo CALLER-TRAP\" EXIT; RUN_DIR=\$(mktemp -d); OFFLINE=0; mos_cleanup(){ echo MOS-CLEANUP; }; MOS_TRAP_SET=\"\"; eval \"set -- \$(trap -p EXIT)\"; MOS_PREV_EXIT_TRAP=\"\${3:-}\"; trap \"mos_cleanup; eval \\\"\\\$MOS_PREV_EXIT_TRAP\\\"\" EXIT; rm -rf \"\$RUN_DIR\"" 2>/dev/null | tr "\n" " "); [ "$o" = "MOS-CLEANUP CALLER-TRAP " ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
