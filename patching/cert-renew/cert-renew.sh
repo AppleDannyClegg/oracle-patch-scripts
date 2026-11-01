@@ -713,7 +713,10 @@ print 'CERT_RENEW_OK'";; esac && log "WebLogic $T_SERVER: previous keystore sett
     listener|ohs) log "restoring cwallet.sso/ewallet.p12 into $T_WALLET"; [ "$DRY_RUN" = 1 ] || cp -p "$b"/cwallet.sso "$b"/ewallet.p12 "$T_WALLET/" 2>/dev/null || die "restore into $T_WALLET failed";;
     java) log "restoring $T_FILE"; [ "$DRY_RUN" = 1 ] || cp -p "$b/cacerts" "$T_FILE";;
   esac
-  state_set new_serial ""; restart_target || true; state_set rollback ok; log "rollback done"
+  state_set new_serial ""
+  # the previous files are back; the rollback is only "ok" once the target has been restarted onto them
+  if restart_target; then state_set rollback ok; log "rollback done"
+  else state_set rollback failed; err "rollback incomplete: the previous files are back in place but the restart of $T_NAME FAILED - it may still serve the new certificate or be down (see $LOG_FILE)"; return 1; fi
 }
 
 cmd_run() {

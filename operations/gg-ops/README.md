@@ -69,7 +69,10 @@ down.
 `skip-transaction` and `resync` need the group name typed (non-interactive: `--force`), after the
 transaction/position is printed and saved in the run dir. `stop` waits 3 s and refuses to kill
 unless `--force`. `trail-cleanup` only deletes with `--apply`, only files below the oldest
-checkpoint minus `GG_TRAIL_KEEP`, and says that `PURGEOLDEXTRACTS` is the right fix. Every
+checkpoint minus `GG_TRAIL_KEEP`, and says that `PURGEOLDEXTRACTS` is the right fix. It refuses
+`--group` and refuses to run when any extract or replicat's `info detail` shows no checkpoint
+line, naming the group: the oldest position must come from every reader, read successfully, or a
+file a pump still needs is "unneeded". Every
 ggsci/adminclient change is logged (`RUN_BASE/<ts>-<cmd>/gg-ops.log`); `--dry-run` prints them.
 The MA password goes to adminclient on stdin, never on the command line.
 

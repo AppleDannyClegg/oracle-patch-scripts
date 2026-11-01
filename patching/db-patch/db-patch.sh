@@ -383,19 +383,23 @@ cmd_rollback() {
   setup_env; reuse_or_init rollback
   local ids="${ARGS[*]}"; [ -z "$ids" ] && ids="$(state_get applied | tr ' ' '\n' | sed '1!G;h;$!d' | tr '\n' ' ')"
   [ -z "$ids" ] && die "nothing to roll back (no ids given and none recorded)"
-  local oop; oop="$(state_get oop_home || true)"
+  local oop rfail=0; oop="$(state_get oop_home || true)"   # rfail: any step below that did not do what it says
   if [ -n "$oop" ]; then
-    log "out-of-place run: rollback = point the databases back at $(sed -n "s/^[^:]*:\([^:]*\):.*/\1/p" "$RUN_DIR/oratab.bak" 2>/dev/null | head -1)"
+    local oldhome; oldhome="$(sed -n "s/^[^:]*:\([^:]*\):.*/\1/p" "$RUN_DIR/oratab.bak" 2>/dev/null | head -1)"
+    [ -n "$oldhome" ] || die "cannot read the previous home from $RUN_DIR/oratab.bak: nothing to point the databases back at"
+    log "out-of-place run: rollback = point the databases back at $oldhome"
     confirm "Restore /etc/oratab from the run dir and srvctl homes?" || die "aborted"
-    [ "$DRY_RUN" = 1 ] || { cp "$RUN_DIR/oratab.bak" /etc/oratab 2>/dev/null || warn "cannot write /etc/oratab"; local dbn; for dbn in $(srvctl_db_name); do "$GRID_HOME/bin/srvctl" modify database -d "$dbn" -oraclehome "$(sed -n "s/^[^:]*:\([^:]*\):.*/\1/p" "$RUN_DIR/oratab.bak" | head -1)"; done; }
+    # a database started from the new home after a failed oratab/srvctl restore is NOT rolled back: count every failure
+    [ "$DRY_RUN" = 1 ] || { cp "$RUN_DIR/oratab.bak" /etc/oratab 2>>"$LOG_FILE" || { err "cannot write /etc/oratab (restore $RUN_DIR/oratab.bak by hand)"; rfail=1; }; local dbn; for dbn in $(srvctl_db_name); do "$GRID_HOME/bin/srvctl" modify database -d "$dbn" -oraclehome "$oldhome" >>"$LOG_FILE" 2>&1 || { err "srvctl modify database -d $dbn -oraclehome $oldhome failed (see $LOG_FILE)"; rfail=1; }; done; }
   else
-    cmd_stop; local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || warn "rollback of $id reported errors (see log)"; done
+    cmd_stop; local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
   fi
-  cmd_start
-  local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" && { log "$s: datapatch after rollback (reverts the SQL side)"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || warn "$s: datapatch rollback had errors"; }; done
+  cmd_start || rfail=1
+  local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" && { log "$s: datapatch after rollback (reverts the SQL side)"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch after the rollback had errors (see $LOG_FILE)"; rfail=1; }; }; done
   local rps; rps="$(state_get restore_points || true)"
   [ -n "$rps" ] && { echo; echo "Restore points from this run: $rps"; echo "If datapatch left a database in a bad state, flashback is the clean undo (this discards everything since the restore point):"; echo "  shutdown immediate; startup mount; flashback database to restore point <RP>; alter database open resetlogs;"; echo "  (RAC: on one instance with the others down; standby: flashback the standby too or rebuild it)"; }
-  state_set rollback ok
+  if [ "$rfail" = 0 ]; then state_set rollback ok
+  else state_set rollback failed; err "rollback INCOMPLETE: at least one step above failed - the home, the databases or the SQL side may still be on the patch (opatch lsinventory, datapatch -verbose, $LOG_FILE)"; return 1; fi
 }
 
 cmd_restore() {

@@ -144,7 +144,8 @@ mos_search() {
   [ -n "$HEAD_ARG" ] && case "$HEAD_CODE" in ORA-00600|ORA-0600|ORA-600) printf 'ORA-600 [%s]\nORA-600 [%s] %s\n' "$HEAD_ARG" "$HEAD_ARG" "$ver";; ORA-07445|ORA-7445) printf 'ORA-7445 [%s]\nORA-7445 [%s] %s\n' "$HEAD_ARG" "$HEAD_ARG" "$ver";; esac
   [ -n "$PROBLEM_KEYS" ] && printf '%s\n' "$PROBLEM_KEYS"
   printf '%s\n' "$STATS" | head -6 | cut -d'|' -f1 | while IFS= read -r c; do [ -n "$c" ] || continue; case "$c" in BEA-*|java.*|*OutOfMemory*|*StackOverflow*) printf '%s WebLogic %s\n' "$c" "$(fact WLS_VERSION | grep -oE '^[0-9.]+' | cut -d. -f1-3)";; ORDS-*) printf '%s ORDS %s\n' "$c" "$(fact ORDS_VERSION | grep -oE '^[0-9.]+' | cut -d. -f1-2)";; OGG-*) printf '%s GoldenGate\n' "$c";; *) printf '%s %s %s\n' "$c" "$(product_name "$p")" "$ver";; esac; done
-  [ -n "$PACK" ] && { cat "$PACK"/db/*/traces/*.trc "$PACK"/db/*/hang/*.trc 2>/dev/null | grep -oE '[Bb]ug [0-9]{7,9}' | sort -u | head -5 | sed 's/^/Bug /; s/[Bb]ug //'; }
+  # bug numbers the traces name, as "Bug NNNNNNN" whatever the case in the trace (normalise before sort -u, or "bug N" and "Bug N" both survive)
+  [ -n "$PACK" ] && { cat "$PACK"/db/*/traces/*.trc "$PACK"/db/*/hang/*.trc 2>/dev/null | grep -oiE 'bug [0-9]{7,9}' | sed 's/^[Bb][Uu][Gg] /Bug /' | sort -u | head -5; }
   true
 }
 mos_docs() {
@@ -167,14 +168,20 @@ mos_docs() {
 
 # ---------------------------------------------------------------------------
 write_sr() {
-  local p pn pv sev env impact title hostline
-  p="$(product_of)"; pn="$(product_name "$p")"; pv="$(product_version "$p")"; env="${ENVTYPE:-}"; [ -z "$env" ] && { printf '%s' "$(facts_like DB_NAME | head -1)$HOST" | lower | grep -qE 'prod|prd|live' && env=prod || env=nonprod; }
+  local p pn pv sev env envnote="" impact title hostline
+  p="$(product_of)"; pn="$(product_name "$p")"; pv="$(product_version "$p")"; env="${ENVTYPE:-}"
+  # not told: guess from the database and host names, prod/prd/live as a word start not followed by a letter (orclprod01, dbprd, prod-ora yes;
+  # PRODUCTDATA, liverpool no), and say so in the draft because the severity follows from it
+  [ -z "$env" ] && { local names; names="$(printf '%s %s' "$(facts_like DB_NAME | head -1 | cut -d= -f2)" "$HOST" | sed 's/^ *//; s/  */ /g')"; printf '%s' "$names" | lower | grep -qE '(prod|prd|live)([^a-z]|$)' && env=prod || env=nonprod
+    envnote="environment GUESSED as $env from the names '$names' - --prod / --nonprod or SR_ENVIRONMENT to state it"; }
   sev="${SEVERITY:-$([ "$env" = prod ] && echo 2 || echo 3)}"
   title="${TITLE:-$pn ${pv:+$pv }- ${HEAD_CODE:-incident}${HEAD_ARG:+ [$HEAD_ARG]} on $(fact HOST 2>/dev/null || echo "$HOST")${FIRST_SEEN:+ since $FIRST_SEEN}}"
   impact="${IMPACT:-TODO: who/what is affected (users, batch, interfaces), since when, workaround in place or none, deadline (e.g. month-end run)}"
   { printf '# SR draft - %s\n\n' "$title"
     printf -- '- drafted: `%s` by %s %s from %s\n' "$(ts)" "$TOOL" "$VERSION" "$([ -n "$PACK" ] && echo "incident pack $(basename "$PACK")" || { [ -n "$REPORT_DIR" ] && echo "oracle-diag report $REPORT_DIR" || echo "the error text only (no pack: facts are a template)"; })"
-    printf -- '- fill every TODO; paste each section into the matching MOS field. Lines starting with > are notes for you, not for the SR.\n\n'
+    printf -- '- fill every TODO; paste each section into the matching MOS field. Lines starting with > are notes for you, not for the SR.\n'
+    [ -n "$envnote" ] && printf '> %s (severity %s follows from it)\n' "$envnote" "$sev"
+    printf '\n'
     printf '## Problem Summary\n\n%s\n\n' "$title"
     printf '## Problem Description\n\n'
     printf 'On %s (%s%s) %s reported:\n\n```\n%s\n```\n\n' "$(fact HOST || echo "$HOST")" "$pn" "${pv:+ $pv}" "$([ "$p" = db ] && echo "the database $(facts_like DB_NAME | head -1 | cut -d= -f2 | awk '{print $1}' | grep . || echo '(TODO name)')" || echo "the $pn instance")" "${HEADLINE:-TODO: the exact error text}"

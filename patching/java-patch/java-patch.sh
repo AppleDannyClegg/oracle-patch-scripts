@@ -73,6 +73,13 @@ ref_files() {
 refs_to() { local p="$1" f; for f in $(ref_files); do grep -nF -- "$p" "$f" 2>/dev/null | grep -vE '^\s*[0-9]+:\s*#' | sed "s#^#$f:#"; done; }
 jdk_version() { java_version_of "$1"; }
 jdk_vendor() { "$1/bin/java" -version 2>&1 | sed -n '2s/ (build.*//p' | head -1; }
+# cacerts_pw_file: CACERTS_PASSWORD in a 600-mode file for keytool -storepass:file - never on keytool's command line (ps); the caller removes it
+cacerts_pw_file() { local f; f="$(mktemp "${TMPDIR:-/tmp}/javapatch.XXXXXX")" || return 1; chmod 600 "$f"; printf '%s' "$CACERTS_PASSWORD" >"$f"; printf '%s' "$f"; }
+# cacerts_aliases <keytool> <keystore> <pwfile>: the trustedCertEntry aliases, sorted; returns 1 (keytool's last line on stderr) when the store cannot be opened
+cacerts_aliases() {
+  local out; out="$(to 60 "$1" -list -keystore "$2" -storepass:file "$3" 2>&1)" || { printf '%s\n' "$out" | tail -1 >&2; return 1; }
+  printf '%s\n' "$out" | grep trustedCertEntry | cut -d, -f1 | sort
+}
 running_on() { # <jdk real path>: "pid name" of JVMs whose exe lives under it
   ps -eo pid,args 2>/dev/null | awk '$2 ~ /\/bin\/java$/ {print $1}' | while read -r p; do local exe; exe="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -z "$exe" ] && exe="$(readlink -f "$(ps -o args= -p "$p" | awk '{print $1}')" 2>/dev/null)"
     case "$exe" in "$1"/*) printf '%s %s\n' "$p" "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -oE 'weblogic\.Name=[^ ]+|ords\.war|ords serve|oracle\.dbtools[^ ]*|NodeManager|ServiceManager|adminsrvr|distsrvr|recvsrvr|pmsrvr|emagent' | head -1 | sed 's/weblogic.Name=//')";; esac; done
@@ -161,7 +168,7 @@ cmd_preflight() {
   [ "$LINKED" = 1 ] && { [ -w "$(dirname "$OLD_JH")" ] || { err "cannot replace the symlink $OLD_JH (parent not writable)"; fail=1; }; }
   local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do [ -w "$f" ] || { err "$f is not writable (reference must be edited)"; fail=1; }; done
   local run; run="$(running_on "$OLD_REAL")"; [ -n "$run" ] && { log "running on the old JDK (restart needed): $(printf '%s\n' "$run" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; [ "$DO_RESTART" = 1 ] && [ -z "$RESTART_CMDS" ] && [ -z "$(ords_service)" ] && warn "--restart but no RESTART_CMDS and no ORDS service: restarts will have to be done by hand"; }
-  [ "$NO_CACERTS" = 0 ] && { to 60 "$OLD_JH/bin/keytool" -list -keystore "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" -storepass "$CACERTS_PASSWORD" >/dev/null 2>&1 || { warn "cannot open the old cacerts with CACERTS_PASSWORD; extra CA aliases will not be carried over (--no-cacerts to silence)"; }; }
+  [ "$NO_CACERTS" = 0 ] && { local pf; pf="$(cacerts_pw_file)" && { cacerts_aliases "$OLD_JH/bin/keytool" "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" "$pf" >/dev/null 2>&1 || { err "cannot open the old cacerts with CACERTS_PASSWORD: apply will refuse to continue without the CA carry-over (fix the password, or --no-cacerts)"; fail=1; }; rm -f "$pf"; }; }
   [ -f "$OLD_JH/jre/lib/security/local_policy.jar" ] && [ "$NEW_MAJOR" = 8 ] && log "JDK 8: unlimited crypto policy files - JDK 8u161+ has them unlimited by default (crypto.policy=unlimited)"
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"; state_set tarball "$TARBALL"; state_set old_jh "$OLD_JH"; state_set old_real "$OLD_REAL"; state_set new_jh "$NEW_JH"
   [ "$fail" = 0 ] && { log "Preflight OK"; return 0; } || { err "Preflight FAILED - see $LOG_FILE"; return 1; }
@@ -198,9 +205,18 @@ cmd_apply() {
   [ "$DRY_RUN" = 1 ] || log "new JDK: $(jdk_version "$NEW_JH") ($(jdk_vendor "$NEW_JH"))"
   if [ "$NO_CACERTS" = 0 ] && [ "$DRY_RUN" = 0 ]; then
     local oc nc; oc="$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"; nc="$NEW_JH/$([ -f "$NEW_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"
-    local extra; extra="$(comm -23 <(to 60 "$OLD_JH/bin/keytool" -list -keystore "$oc" -storepass "$CACERTS_PASSWORD" 2>/dev/null | grep trustedCertEntry | cut -d, -f1 | sort) <(to 60 "$NEW_JH/bin/keytool" -list -keystore "$nc" -storepass "$CACERTS_PASSWORD" 2>/dev/null | grep trustedCertEntry | cut -d, -f1 | sort))"
-    local n=0 a; for a in $extra; do "$OLD_JH/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass "$CACERTS_PASSWORD" 2>/dev/null >"$RUN_DIR/ca_$a.pem" && "$NEW_JH/bin/keytool" -importcert -noprompt -alias "$a" -file "$RUN_DIR/ca_$a.pem" -keystore "$nc" -storepass "$CACERTS_PASSWORD" >>"$LOG_FILE" 2>&1 && n=$((n+1)); done
+    local pf olda newa; pf="$(cacerts_pw_file)" || die "cannot create the keytool password file under ${TMPDIR:-/tmp}"
+    # both lists must really have been read: a wrong CACERTS_PASSWORD used to give an empty list, "0 CA alias(es) carried over"
+    # and a new JDK without the corporate CAs - loudly refused now
+    olda="$(cacerts_aliases "$OLD_JH/bin/keytool" "$oc" "$pf")" || { rm -f "$pf"; die "cannot list $oc (CACERTS_PASSWORD?): the CA aliases cannot be carried over - fix the password, or --no-cacerts if the new cacerts is already complete"; }
+    newa="$(cacerts_aliases "$NEW_JH/bin/keytool" "$nc" "$pf")" || { rm -f "$pf"; die "cannot list $nc (CACERTS_PASSWORD?): fix the password, or --no-cacerts"; }
+    local extra; extra="$(comm -23 <(printf '%s\n' "$olda") <(printf '%s\n' "$newa") | grep .)"
+    local n=0 nf=0 a; for a in $extra; do
+      if "$OLD_JH/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$RUN_DIR/ca_$a.pem" && "$NEW_JH/bin/keytool" -importcert -noprompt -alias "$a" -file "$RUN_DIR/ca_$a.pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then n=$((n+1)); else nf=$((nf+1)); err "cacerts: alias $a NOT carried over (see $LOG_FILE)"; fi
+    done
+    rm -f "$pf"
     log "cacerts: $n CA alias(es) carried over ($(printf '%s' "$extra" | tr '\n' ' '))"; state_set cacerts_imported "$n"
+    [ "$nf" = 0 ] || die "cacerts: $nf alias(es) failed to import into $nc - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"
   fi
   if [ "$LINKED" = 1 ]; then
     log "flipping symlink $OLD_JH -> $NEW_JH"; confirm "ln -sfn $NEW_JH $OLD_JH ?" || die "aborted"
@@ -216,13 +232,14 @@ cmd_apply() {
 }
 
 cmd_restart() {
-  discover; reuse_or_init restart
-  if [ -n "$RESTART_CMDS" ]; then local m; for m in ${RESTART_CMDS//,/ }; do log "restart ${m%%=*}: ${m#*=}"; run_sh "${m#*=}" || warn "${m%%=*}: restart command returned an error"; done
-  elif [ -n "$(ords_service)" ]; then run_sh "$SUDO systemctl restart $(ords_service)"
+  discover; reuse_or_init restart; local fail=0
+  if [ -n "$RESTART_CMDS" ]; then local m; for m in ${RESTART_CMDS//,/ }; do log "restart ${m%%=*}: ${m#*=}"; run_sh "${m#*=}" || { err "${m%%=*}: restart command returned an error (see $LOG_FILE)"; fail=1; }; done
+  elif [ -n "$(ords_service)" ]; then run_sh "$SUDO systemctl restart $(ords_service)" || { err "systemctl restart $(ords_service) failed (see $LOG_FILE)"; fail=1; }
   else warn "no RESTART_CMDS and no ORDS service: restart WebLogic servers / node manager / ORDS yourself"; fi
   [ "$DRY_RUN" = 1 ] && return 0; sleep 10
-  local u; for u in ${CHECK_URLS//,/ } ${USER_ORDS_URL:-}; do wait_for_url "$u" 300 && log "$u answers" || warn "$u does not answer after 300 s"; done
-  state_set restart ok
+  local u; for u in ${CHECK_URLS//,/ } ${USER_ORDS_URL:-}; do wait_for_url "$u" 300 && log "$u answers" || { err "$u does not answer after 300 s"; fail=1; }; done
+  # "ok" only when every restart command succeeded and every URL answers: run and rollback act on this status
+  state_set restart "$([ "$fail" = 0 ] && echo ok || echo failed)"; return "$fail"
 }
 
 cmd_verify() {
@@ -245,7 +262,10 @@ cmd_rollback() {
   if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; log "symlink restored -> $tgt"; fi
   local f b; for f in $(state_get backed_files || true); do b="$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"; [ -f "$b" ] && { log "restoring $f"; [ "$DRY_RUN" = 1 ] || cp -p "$b" "$f"; }; done
   [ -L /usr/java/latest ] && [ -n "$tgt" ] && [ -w /usr/java ] && { [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" /usr/java/latest; }
-  log "the new JDK stays unpacked at $(state_get new_jh || echo '?') (harmless); restarting"; cmd_restart; state_set rollback ok
+  log "the new JDK stays unpacked at $(state_get new_jh || echo '?') (harmless); restarting"
+  # the files are back; the rollback is only "ok" when the services came back up on the old JDK as well
+  if cmd_restart; then state_set rollback ok; log "rolled back"
+  else state_set rollback failed; err "rollback incomplete: the old JDK is referenced again but the restart FAILED - check the services by hand (see $LOG_FILE)"; return 1; fi
 }
 
 cmd_run() {

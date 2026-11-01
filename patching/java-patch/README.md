@@ -55,6 +55,11 @@ cp java-patch.conf.example java-patch.conf      # JAVA_HOME if auto-detection is
 
 `rollback` flips the symlink back / restores the files from the run dir and restarts; the new
 JDK directory stays (harmless). `run` rolls back when apply fails and offers it when verify fails.
+`restart` and `rollback` record `failed` and exit 1 when a restart command fails or a `CHECK_URLS`
+URL does not answer within 300 s; the state says `ok` only when the services are back. The
+cacerts carry-over refuses to continue when either keystore cannot be listed (wrong
+`CACERTS_PASSWORD`) or an alias fails to import, instead of logging "0 aliases carried over";
+the password reaches keytool through a 600-mode file (`-storepass:file`), never its command line.
 
 ## Options and config
 

@@ -130,11 +130,12 @@ inspect_processes() {
     local dsc="$GG_RPT_DIR/$g.dsc"; [ -f "$dsc" ] && [ "$(file_size "$dsc")" -gt 0 ] && { para "discard file $dsc: $(du -h "$dsc" | cut -f1), modified $(file_mtime "$dsc")"; [ -n "$(find "$dsc" -newer "$RUN_DIR/.err_since" 2>/dev/null)" ] && finding WARN gg "$prog $g discard file grew in the last $GG_ERR_HOURS h ($dsc, $(du -h "$dsc" | cut -f1)): rows are being rejected"; }
   done < <(proc_rows)
 }
-trail_readers() { # group|trailfile|seq for every reader (pump reads a local trail, replicat reads its trail)
-  local prog st g lag since; while IFS='|' read -r prog st g lag since; do
+trail_readers() { # <dir holding info_<group>_detail.txt>: group|trailfile|seq for EVERY reader (pump reads a local trail, replicat reads its trail)
+  # from PROCS, never from proc_rows: --group must not narrow the reader set, a one-group view is how trail-cleanup deletes a file another reader still needs
+  local dir="$1" prog st g lag since; while IFS='|' read -r prog st g lag since; do
     [ "$prog" = REPLICAT ] || [ "$prog" = EXTRACT ] || continue
-    awk -v g="$g" '/Log Read Checkpoint +File/{f=$NF; s=f; sub(/.*[^0-9]/,"",s); print g"|"f"|"(s+0)}' "$RAW/info_${g}_detail.txt" 2>/dev/null
-  done < <(proc_rows) | grep -E '\|.*dirdat'
+    awk -v g="$g" '/Log Read Checkpoint +File/{f=$NF; s=f; sub(/.*[^0-9]/,"",s); print g"|"f"|"(s+0)}' "$dir/info_${g}_detail.txt" 2>/dev/null
+  done < <(printf '%s\n' "$PROCS" | grep .) | grep -E '\|.*dirdat'
 }
 inspect_trails() {
   h2 "Trail directories"
@@ -143,7 +144,7 @@ inspect_trails() {
     kv "$d" "$(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -type f | wc -l | tr -d ' ') files, filesystem ${use}% used, oldest $(find "$d" -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | tail -1 | sed 's#.*/##')"
     [ "${use:-0}" -ge 95 ] && finding CRIT gg "trail filesystem of $d is ${use}% full: extracts abend when it fills" || { [ "${use:-0}" -ge 85 ] && finding WARN gg "trail filesystem of $d is ${use}% full"; }
   done; kv_end
-  para "readers (checkpoint positions): $(trail_readers | tr '\n' ' ' | cut -c1-400)"
+  para "readers (checkpoint positions): $(trail_readers "$RAW" | tr '\n' ' ' | cut -c1-400)"
   grep -iE '^ *PURGEOLDEXTRACTS' "$GG_PRM_DIR/mgr.prm" 2>/dev/null | head -3 | sed 's/^/mgr.prm: /' | while IFS= read -r l; do para "$l"; done
   grep -qiE '^ *PURGEOLDEXTRACTS' "$GG_PRM_DIR/mgr.prm" 2>/dev/null || finding WARN gg "mgr.prm has no PURGEOLDEXTRACTS: trail files are never purged (trail-cleanup shows what can go)"
   grep -qiE '^ *AUTORESTART' "$GG_PRM_DIR/mgr.prm" 2>/dev/null || finding INFO gg "mgr.prm has no AUTORESTART: abended processes stay down until someone starts them"
@@ -263,8 +264,19 @@ cmd_handlecollisions() {
   gg_change hc "send replicat $g, $([ "$onoff" = on ] && echo handlecollisions || echo nohandlecollisions)"
 }
 cmd_trail_cleanup() {
-  init_run_dir trail-cleanup; gg_detect; load_procs; local g; for g in $(printf '%s\n' "$PROCS" | awk -F'|' '$1=="EXTRACT"||$1=="REPLICAT"{print $3}'); do gg "info $g, detail" >"$RUN_DIR/info_${g}_detail.txt"; done
-  RAW="$RUN_DIR"; local readers; readers="$(trail_readers)"; echo "readers: "; printf '%s\n' "$readers" | sed 's/^/  /'
+  init_run_dir trail-cleanup; gg_detect
+  # the removable set is "below the oldest position any reader still needs": that needs every reader's checkpoint, read successfully.
+  # --group would hide the other readers, and a group whose 'info detail' failed would be absent and count as not needing anything -
+  # both refused, because the delete is irreversible (board review, 1 Nov 2026)
+  [ -z "$GROUP" ] || die "trail-cleanup does not take --group: the oldest read position must come from every extract and replicat, a one-group view deletes files the others still need"
+  load_procs; local g missing=""
+  for g in $(printf '%s\n' "$PROCS" | awk -F'|' '$1=="EXTRACT"||$1=="REPLICAT"{print $3}'); do
+    gg "info $g, detail" >"$RUN_DIR/info_${g}_detail.txt"
+    # a primary extract shows 'Log Read Checkpoint  Oracle Integrated Redo Logs', pumps and replicats '... File ./dirdat/aa000000012'; no line at all = the read failed
+    grep -q 'Log Read Checkpoint' "$RUN_DIR/info_${g}_detail.txt" || missing="$missing $g"
+  done
+  [ -z "$missing" ] || die "no 'Log Read Checkpoint' in 'info detail' of:${missing} (output in $RUN_DIR/info_*_detail.txt) - cannot tell what they still read, so no trail file can be called unneeded; fix the read and run again"
+  local readers; readers="$(trail_readers "$RUN_DIR")"; echo "readers: "; printf '%s\n' "$readers" | sed 's/^/  /'
   grep -iE '^ *PURGEOLDEXTRACTS' "$GG_PRM_DIR/mgr.prm" 2>/dev/null | sed 's/^/mgr.prm: /' || echo "mgr.prm: no PURGEOLDEXTRACTS (suggest: PURGEOLDEXTRACTS ./dirdat/*, USECHECKPOINTS, MINKEEPHOURS 48)"
   local n=0 total=0 f prefix minseq
   for prefix in $(printf '%s\n' "$readers" | cut -d'|' -f2 | sed -E 's/[0-9]+$//' | sort -u); do
