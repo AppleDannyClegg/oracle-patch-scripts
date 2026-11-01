@@ -444,10 +444,12 @@ cmd_rollback() {
   else
     cmd_stop || { state_set rollback failed; err "rollback NOT started: the databases of $HOME_DIR did not all stop and opatch rollback needs the home idle - fix the stop, then 'rollback' again"; return 1; }
     local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
-    # the inventory, not opatch's exit status, says whether a patch is gone (apply re-reads it the same way, :331; wls-patch 5f8a038)
+    # the inventory, not opatch's exit status, says whether a patch is gone (apply re-reads it the same way, :331; wls-patch 5f8a038);
+    # and an inventory that could not be read says nothing - empty is 'gone' only when lspatches itself succeeded (Multivac, 1 Nov 23:01)
     if [ "$DRY_RUN" != 1 ]; then
-      local inv; inv="$(to 180 opatch lspatches 2>/dev/null || true)"
-      for id in $ids; do printf '%s\n' "$inv" | grep -q "^$id;" && { err "$id is still in the inventory after opatch rollback (opatch lspatches) - not rolled back"; rfail=1; }; done
+      local inv rci=0; inv="$(to 180 opatch lspatches 2>/dev/null)" || rci=$?
+      if [ "$rci" != 0 ]; then err "could not read the inventory after the rollback (opatch lspatches rc $rci): cannot confirm $ids are gone - not recorded as rolled back"; rfail=1
+      else for id in $ids; do printf '%s\n' "$inv" | grep -q "^$id;" && { err "$id is still in the inventory after opatch rollback (opatch lspatches) - not rolled back"; rfail=1; }; done; fi
     fi
   fi
   cmd_start || rfail=1
