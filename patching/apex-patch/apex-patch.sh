@@ -133,8 +133,9 @@ sql_detect() {
 # run_sql <statements>: prints result rows, no headers. Fails on ORA- errors.
 run_sql() {
   local out
-  out="$(printf 'set heading off feedback off pagesize 0 linesize 32767 trimspool on verify off echo off\nwhenever sqlerror exit 1\n%s\n%s\nexit\n' \
-          "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD "${SQL_CONNECT:-/ as sysdba}" 2>&1)" || { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
+  # connect on stdin (/nolog): SQL_CONNECT may be user/pw@tns and must never sit on sqlplus's command line
+  out="$(printf 'connect %s\nset heading off feedback off pagesize 0 linesize 32767 trimspool on verify off echo off\nwhenever sqlerror exit 1\n%s\n%s\nexit\n' \
+          "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD -L /nolog 2>&1)" || { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 sql_val() { run_sql "select $1 from dual;" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//'; }
@@ -143,8 +144,8 @@ run_sql_script() {
   local dir="$1" script="$2"; shift 2
   log "SQL: cd $dir && @$script $*  (this can take a long time; tail -f $LOG_FILE in another window)"
   [ "$DRY_RUN" = 1 ] && return 0
-  (cd "$dir" && printf '%s\nalter session set "_ORACLE_SCRIPT"=true;\nset echo off\n@%s %s\nexit\n' \
-     "${PDB:+alter session set container=$PDB;}" "$script" "$*" | $SQL_CMD "${SQL_CONNECT:-/ as sysdba}") >>"$LOG_FILE" 2>&1
+  (cd "$dir" && printf 'connect %s\n%s\nalter session set "_ORACLE_SCRIPT"=true;\nset echo off\n@%s %s\nexit\n' \
+     "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$script" "$*" | $SQL_CMD -L /nolog) >>"$LOG_FILE" 2>&1
 }
 
 

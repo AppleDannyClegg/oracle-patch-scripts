@@ -230,3 +230,16 @@ the slim image but fail for want of `$ORACLE_HOME/jlib/oraclepki.jar`; the jar f
 (`com.oracle.database.security:oraclepki`, same version as the database) makes them work.
 None of the scripts takes a lock on its run directory, so two change runs started at the same
 time do not stop each other.
+
+Three gates need no database and run anywhere with bash: `tests/check-parse.sh` (every value
+option's `case` arm calls `optchk`), `tests/optchk-gate.sh` (every documented value option run as
+the last argument and followed by `--dry-run`: none may hang or swallow the flag) and
+`tests/secret-argv-gate.sh` (every function that hands a credential to sqlplus, SQLcl, expdp/impdp
+or ggsci, run against a stub that records its argv, environment and stdin with a canary password:
+the canary must be absent from argv and environ and present on the route the function claims, plus
+the `--verbose` log and the run directory must not hold it, and the java APEX export must refuse).
+`lib/oracle-lib.sh selftest` covers the library's own helpers. Secrets never go on a command line:
+sqlplus and SQLcl are started with `/nolog` and get `connect` on stdin, Data Pump reads `userid=`
+from a 600-mode parfile under `$TMPDIR` that is removed when the tool exits, ggsci reads its
+commands on stdin, `read_secret` no longer exports what it read, and `dbg`/`redact` mask
+`identified by` and `connect user/password`.

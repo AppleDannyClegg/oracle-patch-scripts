@@ -190,7 +190,8 @@ sql_script() {
   local sid="$1" dir="$2" script="$3"; shift 3
   local home cmd; home="$(db_home_of "$sid")"; cmd="$(sqlplus_for "$sid")"
   log "SQL: cd $dir && @$script $*  (output: $LOG_FILE)"; [ "$DRY_RUN" = 1 ] && return 0
-  (cd "$dir" && ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" printf '%s\nset echo off\n@%s %s\nexit\n' "${PDB_SET:-}" "$script" "$*" | $cmd "${SQL_CONNECT:-/ as sysdba}") >>"$LOG_FILE" 2>&1
+  # shellcheck disable=SC2086  # connect on stdin (/nolog): SQL_CONNECT may carry a password and must not reach argv
+  (cd "$dir" && ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" printf 'connect %s\n%s\nset echo off\n@%s %s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$script" "$*" | $cmd -L /nolog) >>"$LOG_FILE" 2>&1
 }
 db_is_cdb() { [ "$(sql_val "$1" "(select cdb from v\$database)" 2>/dev/null)" = YES ]; }
 db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null; }

@@ -116,7 +116,8 @@ sql_available() {
 run_sql() {
   sql_available || return 1
   local out
-  out="$(printf 'set heading off feedback off pagesize 0 linesize 32767 trimspool on verify off\nwhenever sqlerror exit 1\n%s\n%s\nexit\n' "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD "${SQL_CONNECT:-/ as sysdba}" 2>&1)" || { printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
+  # connect on stdin (/nolog): SQL_CONNECT may be user/pw@tns and must never sit on sqlplus's command line
+  out="$(printf 'connect %s\nset heading off feedback off pagesize 0 linesize 32767 trimspool on verify off\nwhenever sqlerror exit 1\n%s\n%s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD -L /nolog 2>&1)" || { printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 sql_val() { run_sql "select $1 from dual;" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//'; }
