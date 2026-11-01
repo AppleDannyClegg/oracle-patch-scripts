@@ -444,6 +444,11 @@ cmd_rollback() {
   else
     cmd_stop || { state_set rollback failed; err "rollback NOT started: the databases of $HOME_DIR did not all stop and opatch rollback needs the home idle - fix the stop, then 'rollback' again"; return 1; }
     local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
+    # the inventory, not opatch's exit status, says whether a patch is gone (apply re-reads it the same way, :331; wls-patch 5f8a038)
+    if [ "$DRY_RUN" != 1 ]; then
+      local inv; inv="$(to 180 opatch lspatches 2>/dev/null || true)"
+      for id in $ids; do printf '%s\n' "$inv" | grep -q "^$id;" && { err "$id is still in the inventory after opatch rollback (opatch lspatches) - not rolled back"; rfail=1; }; done
+    fi
   fi
   cmd_start || rfail=1
   local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" && { log "$s: datapatch after rollback (reverts the SQL side)"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch after the rollback had errors (see $LOG_FILE)"; rfail=1; }; }; done

@@ -57,7 +57,7 @@ after `download` is the same.
 
 On failure: apply → `opatch rollback` in reverse, restart, `datapatch` again (reverts the SQL
 side), and `restore` from the tar if the home is broken. `rollback` records `failed` and exits 1
-when any of its steps did not do what it says (an `opatch rollback` with errors, a database that
+when any of its steps did not do what it says (an `opatch rollback` with errors or a patch still listed by `opatch lspatches` afterwards, a database that
 did not start, datapatch errors, an out-of-place run whose `/etc/oratab` or `srvctl modify` could
 not be restored); `ok` means every step succeeded. A failed apply with no patch recorded as
 applied has nothing to roll back: `run` starts the databases on the home as it is and exits 1
