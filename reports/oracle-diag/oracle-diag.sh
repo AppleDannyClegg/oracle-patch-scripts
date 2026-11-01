@@ -967,7 +967,11 @@ okv_endpoint_cert() {
   kv "endpoint wallet (SSL_WALLET_LOC)" "$loc$(case "$loc" in */ssl|*/ssl/) echo '  (not rotated: still the original ssl/ wallet)';; *) echo '  (rotated: a subfolder of ssl/)';; esac)"
   kv "OKV_HOSTNAME (node last talked to)" "${host:-?}"; kv "UPDATE_TIMESTAMP" "${upd:-?}"
   [ -f "$wal" ] || { finding CRIT okv "SSL_WALLET_LOC in $f points at $loc but $wal does not exist - the endpoint cannot present a certificate to Key Vault"; kv_end; return 0; }
-  age="$(( ( $(date +%s) - $(stat -c %Y "$wal" 2>/dev/null || stat -f %m "$wal") ) / 86400 ))"; kv "ewallet.p12 age" "$age days"
+  # the mtime is read on its own: a failed stat inside the arithmetic left age empty, both -ge tests errored false and the
+  # age heuristic printed nothing - an unreadable wallet looked clean (Pi, 1 Nov 22:10)
+  local m; m="$(stat -c %Y "$wal" 2>/dev/null || stat -f %m "$wal" 2>/dev/null)" || true
+  [ -n "$m" ] || { finding WARN okv "cannot stat $wal - endpoint certificate age and expiry unknown (not assumed fine)"; kv_end; return 0; }
+  age=$(( ( $(date +%s) - m ) / 86400 )); kv "ewallet.p12 age" "$age days"
   # expiry needs the endpoint wallet password: OKV_WALLET_PASSWORD (env) when given; otherwise, and whenever the
   # wallet or the date cannot be read, the file age stands in - an unreadable read is a WARN plus the age, never silence
   if [ -n "${OKV_WALLET_PASSWORD:-}" ] && command -v openssl >/dev/null 2>&1; then
