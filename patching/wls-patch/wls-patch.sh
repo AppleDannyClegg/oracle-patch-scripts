@@ -1288,7 +1288,10 @@ cmd_download() {
       fi
       log "  SHA-256 OK"
     fi
-    mv "$pdir/$name.part" "$pdir/$name"
+    # the rename was unchecked and downloaded=<id> recorded whatever it did (DeepSeek, 1 Nov 22:17): a failed mv is a failed download
+    if ! mv "$pdir/$name.part" "$pdir/$name" || [ ! -s "$pdir/$name" ]; then
+      err "could not move $name.part into place as $name - download not recorded"; rm -f "$pdir/$name.part"; fail=$((fail + 1)); continue
+    fi
     state_append downloaded "$id"
   done
   mos_cleanup
