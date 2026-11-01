@@ -274,10 +274,14 @@ cmd_profile() {
 }
 
 cmd_verify() {
-  reuse_or_init verify; local fail=0
-  while IFS='|' read -r sid pdb u st cm; do [ -z "$u" ] && continue
+  reuse_or_init verify; local fail=0 n=0
+  while IFS='|' read -r sid pdb u st cm; do [ -z "$u" ] && continue; n=$((n+1))
     case "$st" in OPEN) log "$sid$(cs "$pdb") $u: OPEN";; *) err "$sid$(cs "$pdb") $u: $st"; fail=1;; esac
   done < <(targets)
+  # targets() skips an instance sqlplus cannot reach and a dba_users query that fails returns no rows: zero rows is 'unread',
+  # never 'every account OPEN' (the loop above would pass with nothing checked)
+  local s; for s in $(sids); do sql_ok "$s" || { err "$s: sqlplus cannot connect - its accounts were not verified"; fail=1; }; done
+  [ "$n" = 0 ] && { err "no service account could be read in any instance (sqlplus or the dba_users query failed) - nothing was verified"; fail=1; }
   if ords_detect >/dev/null 2>&1; then local code; code="$(url_code "${ORDS_URL:-http://localhost:8080/ords/}" 15)"; local p; for p in $ORDS_POOLS; do local pc; pc="$(url_code "${ORDS_URL%/}/$([ "$p" = default ] && echo '' || echo "$p/")" 15)"; log "ORDS pool $p (user $(ords_pool_user "$p")): HTTP ${pc:-none}"; [[ "$pc" =~ ^(200|30[0-9]|404)$ ]] || { [ "$pc" = 503 ] && { err "ORDS pool $p: 503 - pool cannot connect (locked/expired/wrong password)"; fail=1; }; }; done; log "ORDS root: HTTP ${code:-none}"; [ "$code" = 400 ] && url_sni_rejected "${ORDS_URL:-http://localhost:8080/ords/}" && warn "400 is Jetty's 'Invalid SNI': the host in ORDS_URL is not in the ORDS certificate - use the certificate's hostname"
     [ -x "${ORDS_HOME:-}/bin/ords" ] && for p in $ORDS_POOLS; do to 90 "$ORDS_HOME/bin/ords" --config "$ORDS_CONFIG" config --db-pool "$p" verify >>"$LOG_FILE" 2>&1 && log "ords config verify $p: ok" || warn "ords config verify $p: not ok / unsupported (see log)"; done; fi
   local dom f jndi; while IFS='|' read -r dom f jndi; do [ -n "$f" ] || continue; local ds; ds="$(grep -oE '<name>[^<]*</name>' "$f" | head -1 | sed 's/<[^>]*>//g')"
@@ -341,7 +345,8 @@ cmd_heal() {
   init_run_dir heal
   ords_detect >/dev/null 2>&1 || { log "no ORDS on this host; checking accounts only"; }
   local code; code="$(url_code "${ORDS_URL:-http://localhost:8080/ords/}" 15)"; log "ORDS ${ORDS_URL:-?}: HTTP ${code:-none}"
-  local bad=""; while IFS='|' read -r sid pdb u st cm; do [ -z "$u" ] && continue; case "$st" in OPEN) ;; *) bad="$bad $sid|$pdb|$u|$st";; esac; done < <(targets)
+  local bad="" n=0; while IFS='|' read -r sid pdb u st cm; do [ -z "$u" ] && continue; n=$((n+1)); case "$st" in OPEN) ;; *) bad="$bad $sid|$pdb|$u|$st";; esac; done < <(targets)
+  [ "$n" = 0 ] && { err "no service account could be read in any instance (sqlplus or the dba_users query failed) - nothing to heal from, nothing healed"; state_set heal failed; return 1; }
   if [ -z "$bad" ]; then
     log "every service account is OPEN"
     [ "$code" = 503 ] && { warn "ORDS still 503 with open accounts: wrong password in the pool, or the database/listener is down. Pool users: $(for p in $ORDS_POOLS; do printf '%s=%s ' "$p" "$(ords_pool_user "$p")"; done). Try: ords --config $ORDS_CONFIG config --db-pool default verify ; tail $ORDS_CONFIG/../logs or journalctl -u ords"; grep -hE 'ORA-01017|ORA-28000|ORA-28001|ORA-28002|ORA-12514|ORA-12541' "${ORDS_HOME:-/nonexistent}"/logs/*.log /var/log/ords/*.log 2>/dev/null | tail -5 | sed 's/^/  log: /' >&2; }
