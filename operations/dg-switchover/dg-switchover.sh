@@ -35,7 +35,9 @@
 #
 # Config: dg-switchover.conf, ~/.dg-switchover.conf or the shared oracle.conf: ORACLE_SID, DG_TARGET, DG_CONNECT,
 # DG_PASSWORD (600-mode file only), APP_TNS, APP_TEST_CONNECT (user/pw@alias for the post-switch test),
-# PRIMARY_SERVICES (names that must be up on the primary afterwards), DG_MAX_LAG_SEC, DG_VERIFY_WAIT, DG_SWITCH_TIMEOUT.
+# PRIMARY_SERVICES (names that must be up on the primary afterwards), KEEP_CLOSED_PDBS (PDBs that are meant to stay
+# closed or read only on a primary; every other PDB must be READ WRITE after a role change), DG_MAX_LAG_SEC,
+# DG_VERIFY_WAIT, DG_SWITCH_TIMEOUT.
 
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,7 +47,7 @@ TOOL="dg-switchover"; VERSION="1.0.0"
 
 SID="${ORACLE_SID:-}"; TARGET="${DG_TARGET:-}"; APP_TNS="${APP_TNS:-}"; DG_CONNECT="${DG_CONNECT:-}"
 DG_MAX_LAG_SEC="${DG_MAX_LAG_SEC:-60}"; DG_VERIFY_WAIT="${DG_VERIFY_WAIT:-300}"; DG_SWITCH_TIMEOUT="${DG_SWITCH_TIMEOUT:-1800}"
-PRIMARY_SERVICES="${PRIMARY_SERVICES:-}"; WANT_RP=0; IMMEDIATE=0
+PRIMARY_SERVICES="${PRIMARY_SERVICES:-}"; KEEP_CLOSED_PDBS="${KEEP_CLOSED_PDBS:-}"; WANT_RP=0; IMMEDIATE=0
 # detected
 LOCAL_DBUN=""; LOCAL_ROLE=""; LOCAL_OPEN=""; LOCAL_NAME=""; DB_HOME=""; GRID_HOME=""; BROKER_ON=""
 CFG=""; CFG_NAME=""; CFG_STATUS=""; MEMBERS=""; PRIMARY=""; STANDBYS=""; PROT_MODE=""; FSFO=""; FSFO_TARGET=""
@@ -322,10 +324,25 @@ finish_restarts() {
   done
 }
 # after_role_change <new primary>: open PDBs and start services where this host is the new primary
+# closed_pdbs: PDBs of the local instance that are not READ WRITE, less PDB$SEED and KEEP_CLOSED_PDBS; prints '?' when
+# v$pdbs could not be read, so a caller can tell 'none' from 'unknown'
+closed_pdbs() {
+  local rows keep="," n m; rows="$(sql_lines "$SID" "select name||'|'||open_mode from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED' order by 1;" 2>/dev/null)" || { echo "?"; return 0; }
+  for n in ${KEEP_CLOSED_PDBS//,/ }; do keep="$keep$(printf '%s' "$n" | uc),"; done
+  while IFS='|' read -r n m; do [ -n "$n" ] || continue; case "$keep" in *",$n,"*) ;; *) printf '%s(%s) ' "$n" "$m";; esac; done <<<"$rows"
+}
 after_role_change() {
   local newp="$1"
   if is_local "$newp"; then
-    [ "$DRY_RUN" = 1 ] || sql_run "$SID" "alter pluggable database all open;" >>"$LOG_FILE" 2>&1
+    if [ "$DRY_RUN" != 1 ]; then
+      # the open is checked and the result read back: a PDB left closed on the new primary means the applications on it are
+      # down while the broker says SUCCESS (DeepSeek 1 Nov 22:19). KEEP_CLOSED_PDBS names the ones that are meant to stay so
+      local out closed; out="$(sql_run "$SID" "alter pluggable database all open;" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
+      printf '%s' "$out" | grep -qE 'ORA-[0-9]+' && warn "alter pluggable database all open: $(printf '%s' "$out" | grep -E 'ORA-' | head -2 | tr '\n' ' ')"
+      closed="$(closed_pdbs)"
+      if [ "$closed" = "?" ]; then err "$newp: could not read v\$pdbs after the role change - PDB state unknown, not assumed open"; return 1
+      elif [ -n "$closed" ]; then err "$newp is primary but these PDBs are not READ WRITE: $closed- open them (alter pluggable database <name> open) or list them in KEEP_CLOSED_PDBS, then 'verify'"; return 1; fi
+    fi
     if [ -n "$GRID_HOME" ]; then run_cmd "$GRID_HOME/bin/srvctl" start service -d "$newp" || warn "srvctl start service reported errors (role-based services may already be up)"; fi
     local s; for s in ${PRIMARY_SERVICES//,/ }; do [ "$DRY_RUN" = 1 ] && continue; sql_lines "$SID" "select name from v\$active_services where upper(name)=upper('$s');" 2>/dev/null | grep -q . || { log "starting service $s"; sql_run "$SID" "exec dbms_service.start_service('$s')" >>"$LOG_FILE" 2>&1 || true; }; done
   else
@@ -353,7 +370,7 @@ cmd_switchover() {
   else err "switchover did not report success (see $LOG_FILE)"; state_set switchover failed; return 1; fi
   if wait_roles "$TARGET" 300; then log "roles: $TARGET is primary, $(printf '%s\n' "$MEMBERS" | awk -F'|' -v n="$(printf '%s' "$PRIMARY" | lc)" 'tolower($1)!=n{printf "%s=%s ", $1, $2}')"
   else err "after the switchover the broker still reports $PRIMARY as primary"; state_set switchover failed; return 1; fi
-  after_role_change "$TARGET"
+  after_role_change "$TARGET" || { state_set switchover pdbs-closed; err "roles changed, but PDBs on $TARGET are not open: the switchover is not complete for the applications (state switchover=pdbs-closed; do not roll back, open them)"; return 1; }
   state_set switchover ok
 }
 
@@ -376,7 +393,7 @@ cmd_failover() {
   printf '%s\n' "$out" | redact | grep -vE '^[[:space:]]*$' | tail -15 | sed 's/^/  dgmgrl: /' >&2
   printf '%s' "$out" | grep -q 'Failover succeeded' || { err "failover did not report success (see $LOG_FILE)"; state_set failover failed; return 1; }
   wait_roles "$TARGET" 180 || warn "the broker does not yet show $TARGET as primary"
-  after_role_change "$TARGET"
+  after_role_change "$TARGET" || { state_set failover pdbs-closed; err "roles changed, but PDBs on $TARGET are not open: the failover is not complete for the applications (state failover=pdbs-closed; open them)"; return 1; }
   state_set failover ok
   echo; echo "FAILOVER done: $TARGET is primary. $oldp is now a disabled, failed primary. When its host is back:"
   echo "  1. start it mounted there:  srvctl start database -d $oldp -o mount   (or sqlplus: startup mount)"
@@ -437,7 +454,9 @@ cmd_verify() {
   CFG=""; discover
   if [ "$LOCAL_ROLE" = PRIMARY ]; then
     [ "$LOCAL_OPEN" = "READ WRITE" ] || { err "$LOCAL_DBUN is primary but $LOCAL_OPEN"; fail=1; }
-    local closed; closed="$(sql_val "$SID" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ -z "$closed" ] && warn "$LOCAL_DBUN: could not read v\$pdbs (query failed)"; [ "${closed:-0}" != 0 ] && warn "$LOCAL_DBUN: $closed PDB(s) not READ WRITE"
+    local closed; closed="$(closed_pdbs)"
+    if [ "$closed" = "?" ]; then err "$LOCAL_DBUN: could not read v\$pdbs (query failed) - PDB state unknown"; fail=1
+    elif [ -n "$closed" ]; then err "$LOCAL_DBUN is primary but these PDBs are not READ WRITE: $closed(KEEP_CLOSED_PDBS lists the ones meant to stay so)"; fail=1; fi
     local active; active="$(sql_lines "$SID" "select listagg(name,',') within group (order by name) from v\$active_services where name not like 'SYS%' and name not like '%XDB';" | head -1)"; log "$LOCAL_DBUN: active services: ${active:-none}"
     local s; for s in ${PRIMARY_SERVICES//,/ }; do printf ',%s,' "$active" | grep -qiF ",$s," || { err "service $s is not running on the primary"; fail=1; }; done
   else

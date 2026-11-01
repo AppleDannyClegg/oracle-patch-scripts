@@ -41,7 +41,10 @@ The target standby comes from `--target`, `DG_TARGET`, or is the only physical s
    `switchover to <target>`. If the broker reports that it could not restart a database, the
    local one is started mounted and you are told about remote ones; then the script waits until
    `show configuration` shows the new primary, opens the PDBs, runs `srvctl start service` and
-   starts any `PRIMARY_SERVICES` still missing on the new primary when it is on this host.
+   starts any `PRIMARY_SERVICES` still missing on the new primary when it is on this host. A PDB
+   that is still not `READ WRITE` afterwards (other than those listed in `KEEP_CLOSED_PDBS`), or a
+   `v$pdbs` that cannot be read, ends the command with `switchover=pdbs-closed` (`failover=` for a
+   failover) and exit 1: the roles have changed, so do not roll back - open the PDB and run `verify`.
 4. **verify**: new primary as intended, configuration `SUCCESS`, the old primary a physical
    standby with `APPLY-ON` and both lags back to 0 (waits up to `DG_VERIFY_WAIT`), MRP running on
    a local standby, `PRIMARY_SERVICES` up on the primary and not on the standby, each client TNS

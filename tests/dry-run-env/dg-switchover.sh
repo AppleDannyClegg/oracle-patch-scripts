@@ -19,6 +19,7 @@ instance_name|FREE
 v\\\$archive_gap|0
 status='RUNNING'|0
 status='ACTIVE'|0
+from v\\\$pdbs where open_mode|
 count\\(\\*\\)|0
 A
 cat >"$STUB/dgmgrl" <<'D'

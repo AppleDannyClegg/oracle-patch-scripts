@@ -22,6 +22,9 @@
 
 # Services that must be running on the primary after the switch (comma separated; also started if missing)
 #PRIMARY_SERVICES=APP_SVC,REPORTING
+# PDBs that are meant to be closed or read only on the primary. Every other PDB must be READ WRITE after a role change,
+# otherwise switchover/failover end with <cmd>=pdbs-closed and exit 1, and verify fails
+#KEEP_CLOSED_PDBS=ARCHIVE_PDB
 
 # Thresholds and timeouts (seconds)
 #DG_MAX_LAG_SEC=60        # preflight fails when the target's apply lag is above this (transport lag must be 0)
