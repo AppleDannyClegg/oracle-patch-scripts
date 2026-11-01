@@ -18,7 +18,12 @@ cd operations/incident-pack
 
 Output: `~/incident-pack/<SR>_<host>_<ts>/` and `<SR>_<host>_<ts>.tar.gz` (+ `.partNN` above 2 GB
 or with `--split`), `.sha256` next to it. `MANIFEST.md` lists the facts and every file;
-`FACTS.txt` is the machine-readable summary `sr-draft.sh` reads.
+`FACTS.txt` is the machine-readable summary `sr-draft.sh` reads. A file is counted as collected
+only when its write succeeded and it is in the pack; anything that could not be written (disk
+full, permissions) is listed under `## Not collected` in `MANIFEST.md`, the final line says
+`N file(s) collected, M not collected`, and the script exits 1 so an incomplete pack is never
+uploaded as a complete one. A command that exits non-zero is not a failure - its exit status
+is appended to its file as evidence - but a command that printed nothing is a WARN.
 
 ## What goes in
 

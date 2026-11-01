@@ -39,7 +39,7 @@ TOOL="incident-pack"; VERSION="1.0.0"
 
 SR=""; SINCE=""; UNTIL=""; HOURS="${PACK_HOURS:-24}"; ONLY_SID=""; COMPONENTS=""; DO_AWR=0; DO_THREADS=0; DO_HEAP=0; DO_HANG=0; NO_DIAG=0; NO_TFA=0; DO_SPLIT=0
 PACK_OUT="${PACK_OUT:-$HOME/incident-pack}"; CAP_MB="${PACK_CAP_MB:-100}"; OSW_ARCHIVE="${OSW_ARCHIVE:-}"; EXTRA_FILES="${EXTRA_FILES:-}"; EXTRA_LOGS="${EXTRA_LOGS:-}"; TFA_TIMEOUT="${TFA_TIMEOUT:-1800}"
-PACK=""; SINCE_EP=""; UNTIL_EP=""; SINCE_ISO=""; UNTIL_ISO=""; TFA_DONE=0; FACTS=""; NFILES=0
+PACK=""; SINCE_EP=""; UNTIL_EP=""; SINCE_ISO=""; UNTIL_ISO=""; TFA_DONE=0; FACTS=""; NFILES=0; NFAIL=0; FAILED=""
 
 usage() { usage_from_header "$0"; }
 parse_opts() {
@@ -64,14 +64,26 @@ set_window() {
 }
 iso_of() { if [ "$GNU_DATE" = 1 ]; then date -d "@$1" '+%Y-%m-%d %H:%M:%S'; else date -r "$1" '+%Y-%m-%d %H:%M:%S'; fi; }
 fact() { FACTS="${FACTS}$1=$2"$'\n'; }
+# got <rel> <write-status> [what]: a collector counts a file only when its write succeeded and the file is there; anything else
+# is 'could not collect', listed in MANIFEST.md under 'Not collected' and makes the pack INCOMPLETE (exit 1). Before this every
+# collector counted what it TRIED to write - a cp that failed on a full disk (the usual reason an incident pack is being made)
+# was one of the "N file(s) collected" and the SR went out without it (DeepSeek, 1 Nov 22:20)
+got() {
+  local rel="$1" st="$2" what="${3:-}"
+  if [ "$st" = 0 ] && [ -f "$PACK/$rel" ]; then NFILES=$((NFILES+1)); return 0; fi
+  NFAIL=$((NFAIL+1)); FAILED="${FAILED}- $rel${what:+ ($what)}: write status $st$([ -f "$PACK/$rel" ] || echo ', file absent')"$'\n'
+  err "could not collect $rel${what:+ ($what)}: write status $st (disk full? $(df -h "$PACK" 2>/dev/null | awk 'NR==2{print $4" free"}'))"; return 1
+}
 # keep <dest-rel> <file> [redact]: copy a file into the pack, keeping only the last CAP_MB when larger; counts it
 keep() {
   local rel="$1" f="$2" red="${3:-0}" d="$PACK/$1"; [ -f "$f" ] && [ -r "$f" ] || { dbg "skip $f (missing/unreadable)"; return 1; }
-  mkdir -p "$d"; local out sz; out="$d/$(basename "$f")"; sz="$(file_size "$f")"
+  local out sz st; out="$d/$(basename "$f")"; sz="$(file_size "$f" || echo 0)"
   [ "$DRY_RUN" = 1 ] && { log "would copy $f ($((sz/1048576)) MB) -> $rel/"; return 0; }
-  if [ "$sz" -gt $((CAP_MB*1048576)) ]; then { printf '### incident-pack: file was %s MB; only the last %s MB are kept ###\n' "$((sz/1048576))" "$CAP_MB"; tail -c $((CAP_MB*1048576)) "$f"; } | { [ "$red" = 1 ] && redact || cat; } >"$out"
-  else { [ "$red" = 1 ] && redact <"$f" >"$out" || cp -p "$f" "$out"; }; fi
-  NFILES=$((NFILES+1)); return 0
+  mkdir -p "$d" || { got "$rel/$(basename "$f")" 1 "mkdir $d"; return 1; }
+  if [ "$sz" -gt $((CAP_MB*1048576)) ]; then { printf '### incident-pack: file was %s MB; only the last %s MB are kept ###\n' "$((sz/1048576))" "$CAP_MB"; tail -c $((CAP_MB*1048576)) "$f"; } | { [ "$red" = 1 ] && redact || cat; } >"$out"; st=$?
+  elif [ "$red" = 1 ]; then redact <"$f" >"$out"; st=$?
+  else cp -p "$f" "$out"; st=$?; fi
+  got "$rel/$(basename "$f")" "$st" "$f"
 }
 # keep_newer <dest-rel> <dir> <glob> [redact] [max files]: files under dir matching glob modified inside the window
 keep_newer() {
@@ -79,12 +91,20 @@ keep_newer() {
   while IFS= read -r f; do n=$((n+1)); [ "$n" -gt "$max" ] && { warn "$dir: more than $max matching files, the rest skipped"; break; }; keep "$rel" "$f" "$red"; done < <(find "$dir" -maxdepth 3 -type f -name "$glob" -newer "$PACK/.since" 2>/dev/null | sort)
 }
 # out <dest-rel/name> <cmd...>: command output into a file of the pack (redacted, timed out)
-out() { local rel="$1"; shift; local f="$PACK/$rel"; mkdir -p "$(dirname "$f")"; [ "$DRY_RUN" = 1 ] && { log "would run: $*"; return 0; }; { printf '$ %s\n' "$*"; to "$CMD_TIMEOUT" "$@" 2>&1; } | redact >"$f"; NFILES=$((NFILES+1)); }
+# the command's own exit status is evidence, not a collection failure (lsnrctl status on a dead listener is exactly what the SR
+# wants) - it is appended to the file; a write that failed is; an empty answer is a WARN, since a silent tool is a finding too
+out() { local rel="$1"; shift; local f="$PACK/$rel" st rc; [ "$DRY_RUN" = 1 ] && { log "would run: $*"; return 0; }
+  mkdir -p "$(dirname "$f")" || { got "$rel" 1 "mkdir"; return 1; }
+  { printf '$ %s\n' "$*"; to "$CMD_TIMEOUT" "$@" 2>&1; printf '(exit %s)\n' "$?"; } | redact >"$f"; st=$?
+  got "$rel" "$st" "$1" || return 1
+  rc="$(tail -n 1 "$f" | sed -n 's/^(exit \([0-9]*\))$/\1/p')"
+  [ "$(wc -l <"$f" | tr -d ' ')" -gt 2 ] || warn "$rel: '$*' produced no output (exit ${rc:-?})"; return 0; }
 outsh() { local rel="$1"; shift; out "$rel" bash -c "$*"; }
 # window_log <dest-rel> <file> <fmt>: the lines of a timestamped log inside the window (fmt alert|listener|wls|iso|syslog)
 window_log() {
-  local rel="$1" f="$2" fmt="$3"; [ -f "$f" ] && [ -r "$f" ] || return 1; local d="$PACK/$rel"; mkdir -p "$d"; local o; o="$d/$(basename "$f").window"
+  local rel="$1" f="$2" fmt="$3"; [ -f "$f" ] && [ -r "$f" ] || return 1; local d="$PACK/$rel"; local o st; o="$d/$(basename "$f").window"
   [ "$DRY_RUN" = 1 ] && { log "would window $f ($fmt)"; return 0; }
+  mkdir -p "$d" || { got "$rel/$(basename "$f").window" 1 "mkdir $d"; return 1; }
   tail -c $((CAP_MB*4*1048576)) "$f" | awk -v since="$SINCE_ISO" -v until="$UNTIL_ISO" -v fmt="$fmt" '
     BEGIN{split("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC",m," "); for(i=1;i<=12;i++) mon[m[i]]=sprintf("%02d",i); p=0}
     function norm(s,   a,h,hh) { return s }
@@ -94,9 +114,10 @@ window_log() {
       else if (fmt=="wls") { if (match($0,/^####<[A-Z][a-z][a-z] [0-9]+, [0-9][0-9][0-9][0-9],? [0-9]+:[0-9][0-9]:[0-9][0-9]/)) { s=substr($0,6,RLENGTH-5); split(s,a,/[ ,:]+/); mo=mon[toupper(substr(a[1],1,3))]; hh=a[4]+0; rest=substr($0,RLENGTH+1,12); if (rest ~ /PM/ && hh<12) hh+=12; if (rest ~ /AM/ && hh==12) hh=0; ts=sprintf("%s-%s-%02d %02d:%s:%s",a[3],mo,a[2],hh,a[5],a[6]) } }
       else if (fmt=="syslog") { if (match($0,/^[A-Z][a-z][a-z] +[0-9]+ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) { split(substr($0,1,RLENGTH),a,/ +/); ts=substr(since,1,4)"-"mon[toupper(a[1])]"-"sprintf("%02d",a[2])" "a[3] } }
       if (ts!="") p = (ts>=since && ts<=until)
-      if (p) print }' | redact >"$o"
-  local n; n="$(wc -l <"$o" | tr -d ' ')"; [ "$n" = 0 ] && { printf '(no lines between %s and %s in %s; the file holds %s lines)\n' "$SINCE_ISO" "$UNTIL_ISO" "$f" "$(wc -l <"$f" | tr -d ' ')" >"$o"; }
-  NFILES=$((NFILES+1)); log "$(basename "$f"): $n lines in the window"; return 0
+      if (p) print }' | redact >"$o"; st=$?
+  got "$rel/$(basename "$f").window" "$st" "$f" || return 1
+  local n; n="$(wc -l <"$o" | tr -d ' ')"; [ "$n" = 0 ] && { printf '(no lines between %s and %s in %s; the file holds %s lines)\n' "$SINCE_ISO" "$UNTIL_ISO" "$f" "$(wc -l <"$f" | tr -d ' ')" >"$o" || got "$rel/$(basename "$f").window" "$?" "rewrite"; }
+  log "$(basename "$f"): $n lines in the window"; return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -179,7 +200,8 @@ select inst_id, event, count(*) from gv\$session where wait_class<>'Idle' and ev
   fact "ERRORS_$sid" "$(cat "$PACK/$d/sql/errors_window.txt" "$PACK/$d/alert/alert_${sid}.log.window" 2>/dev/null | grep -oE '(ORA|TNS)-[0-9]+' | sort | uniq -c | sort -rn | head -8 | awk '{printf "%s x%s ",$2,$1}')"
 }
 # sqlf <sid> <name> <sql>: SQL output into db/<sid>/sql/<name>.txt
-sqlf() { local sid="$1" name="$2" q="$3" f="$PACK/db/$1/sql/$2.txt"; mkdir -p "$(dirname "$f")"; [ "$DRY_RUN" = 1 ] && return 0; { printf -- '-- %s  (%s)\n%s\n\n' "$name" "$(ts)" "$q"; sql_run "$sid" "$q"; } 2>&1 | redact >"$f"; NFILES=$((NFILES+1)); }
+sqlf() { local sid="$1" name="$2" q="$3" f="$PACK/db/$1/sql/$2.txt" st; [ "$DRY_RUN" = 1 ] && return 0; mkdir -p "$(dirname "$f")" || { got "db/$1/sql/$2.txt" 1 mkdir; return 1; }
+  { printf -- '-- %s  (%s)\n%s\n\n' "$name" "$(ts)" "$q"; sql_run "$sid" "$q"; } 2>&1 | redact >"$f"; st=$?; got "db/$1/sql/$2.txt" "$st" "$sid $name"; }
 collect_adr() {
   local sid="$1" home d="db/$1/adr"; home="$(db_home_of "$sid")"; [ -x "$home/bin/adrci" ] || { warn "$sid: no adrci in $home"; return 0; }
   local ah; ah="$(adr_home_of "$sid")"; [ -n "$ah" ] || { warn "$sid: ADR home not found"; return 0; }
@@ -202,10 +224,10 @@ collect_awr() {
   local snaps; snaps="$(sql_lines "$sid" "select min(snap_id)||' '||max(snap_id)||' '||dbid||' '||instance_number from dba_hist_snapshot where end_interval_time >= timestamp '$SINCE_ISO' - interval '1' hour and begin_interval_time <= timestamp '$UNTIL_ISO' and dbid=(select dbid from v\$database) and instance_number=(select instance_number from v\$instance) group by dbid, instance_number;" 2>/dev/null | head -1)"
   local b e dbid inst; read -r b e dbid inst <<<"$snaps"
   if [ -n "$b" ] && [ "$b" != "$e" ]; then
-    sql_run "$sid" "set pagesize 0 linesize 1500 long 20000000 longchunksize 20000000 trimspool on\nselect output from table(dbms_workload_repository.awr_report_text($dbid,$inst,$b,$e));" >"$PACK/$d/awrrpt_${sid}_${b}_${e}.txt" 2>&1; NFILES=$((NFILES+1))
+    sql_run "$sid" "set pagesize 0 linesize 1500 long 20000000 longchunksize 20000000 trimspool on\nselect output from table(dbms_workload_repository.awr_report_text($dbid,$inst,$b,$e));" >"$PACK/$d/awrrpt_${sid}_${b}_${e}.txt" 2>&1; got "$d/awrrpt_${sid}_${b}_${e}.txt" "$?" "$sid AWR"
     log "$sid: AWR snapshots $b..$e"
   else warn "$sid: fewer than two AWR snapshots in the window (AWR interval / retention)"; fi
-  sql_run "$sid" "set pagesize 0 linesize 1500 long 20000000 longchunksize 20000000 trimspool on\nselect output from table(dbms_workload_repository.ash_report_text((select dbid from v\$database),(select instance_number from v\$instance),to_date('$SINCE_ISO','YYYY-MM-DD HH24:MI:SS'),to_date('$UNTIL_ISO','YYYY-MM-DD HH24:MI:SS')));" >"$PACK/$d/ashrpt_${sid}.txt" 2>&1; NFILES=$((NFILES+1))
+  sql_run "$sid" "set pagesize 0 linesize 1500 long 20000000 longchunksize 20000000 trimspool on\nselect output from table(dbms_workload_repository.ash_report_text((select dbid from v\$database),(select instance_number from v\$instance),to_date('$SINCE_ISO','YYYY-MM-DD HH24:MI:SS'),to_date('$UNTIL_ISO','YYYY-MM-DD HH24:MI:SS')));" >"$PACK/$d/ashrpt_${sid}.txt" 2>&1; got "$d/ashrpt_${sid}.txt" "$?" "$sid ASH"
 }
 collect_hang() {
   local sid="$1" d="db/$1/hang"; mkdir -p "$PACK/$d"
@@ -275,7 +297,7 @@ collect_apex() { local sid p; for sid in $(db_sids); do if db_is_cdb "$sid"; the
 collect_gg() {
   ogg_detect >/dev/null 2>&1 || [ -n "${GG_DEPLOY_DIRS:-}" ] || return 0; log "GoldenGate (${OGG_HOME:-MA only})"
   if [ -x "${OGG_HOME:-/nonexistent}/ggsci" ]; then
-    fact GG_HOME "$OGG_HOME"; mkdir -p "$PACK/gg"; [ "$DRY_RUN" = 1 ] || { { ggsci "info all\ninfo *, detail\nsend * status\nview ggsevt" 2>&1 | tail -n 3000; } | redact >"$PACK/gg/ggsci_info.txt"; NFILES=$((NFILES+1)); }
+    fact GG_HOME "$OGG_HOME"; mkdir -p "$PACK/gg"; [ "$DRY_RUN" = 1 ] || { { ggsci "info all\ninfo *, detail\nsend * status\nview ggsevt" 2>&1 | tail -n 3000; } | redact >"$PACK/gg/ggsci_info.txt"; got gg/ggsci_info.txt "$?" ggsci; }
     [ -f "$OGG_HOME/ggserr.log" ] && window_log "gg" "$OGG_HOME/ggserr.log" iso; keep_newer "gg/dirrpt" "$OGG_HOME/dirrpt" "*.rpt" 1 30; keep_newer "gg/dirrpt" "$OGG_HOME/dirrpt" "*.dsc" 1 10
     local f; for f in "$OGG_HOME"/dirprm/*.prm "$OGG_HOME"/GLOBALS; do keep "gg/dirprm" "$f" 1; done
     outsh "gg/dirdat_sizes.txt" "du -sh '$OGG_HOME'/dirdat* 2>/dev/null; ls -lt '$OGG_HOME'/dirdat 2>/dev/null | head -20"
@@ -324,6 +346,7 @@ write_manifest() {
     printf '## Facts (FACTS.txt)\n\n```\n'; printf '%s' "$FACTS"; printf '```\n\n'
     printf '## Layout\n\n- `00_oracle-diag/` health report with FINDINGS (start here)\n- `db/<sid>/` sql snapshots, alert window + full alert log, traces named by it, ADR ips packages, pfile, opatch%s%s\n- `db/listener/` listener log window, status, *.ora\n- `wls/<domain>/` config (redacted), per-server log windows, .out, JVM facts%s\n- `ords/` config (redacted), logs, journal, JVM facts\n- `gg/` ggsci info, ggserr window, reports, params\n- `exadata/` image, alert history\n- `host/` system, limits, disk, ps, net, sysctl, packages, dmesg, journal, messages window, sar, OSWatcher window\n- `tfa/` tfactl diagcollect output when AHF/TFA is installed\n- `%s.log` what this script did; `FACTS.txt` for sr-draft\n\n' "$([ "$DO_AWR" = 1 ] && echo ', AWR/ASH')" "$([ "$DO_HANG" = 1 ] && echo ', hang/systemstate dumps')" "$([ "$DO_THREADS" = 1 ] && echo ', thread dumps x3 + class histogram')" "$TOOL"
     printf '## Files\n\n```\n'; (cd "$PACK" && find . -type f -not -name MANIFEST.md | sort | while IFS= read -r f; do printf '%10s  %s\n' "$(du -k "$f" | cut -f1)K" "${f#./}"; done); printf '```\n'
+    [ "$NFAIL" = 0 ] || { printf '\n## Not collected (%s) - the pack is INCOMPLETE\n\n%s' "$NFAIL" "$FAILED"; }
   } >"$m"
   printf '%s' "$FACTS" >"$PACK/FACTS.txt"
 }
@@ -355,7 +378,8 @@ main() {
   local sid; if want db; then for sid in $(db_sids); do collect_db "$sid"; done; collect_listener; fi
   want wls && collect_wls; want ords && collect_ords; want apex && collect_apex; want gg && collect_gg; want exa && collect_exa; want host && collect_host
   [ "$DRY_RUN" = 1 ] && { log "dry-run: nothing written beyond the log"; return 0; }
-  write_manifest; log "$NFILES file(s) collected, $(du -sh "$PACK" | cut -f1); MANIFEST.md written"
+  write_manifest; log "$NFILES file(s) collected, $NFAIL not collected, $(du -sh "$PACK" | cut -f1); MANIFEST.md written"
   finish_tar
+  [ "$NFAIL" = 0 ] || { err "pack INCOMPLETE: $NFAIL file(s) could not be written (MANIFEST.md 'Not collected' names them) - do not upload it as complete"; return 1; }
 }
 main "$@"
