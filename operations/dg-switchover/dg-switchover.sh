@@ -503,19 +503,22 @@ cmd_cleanup() {
 # ---------------------------------------------------------------------------
 # heal
 # ---------------------------------------------------------------------------
-dg_edit() { # <database> <state>: with confirmation
+dg_edit() { # <database> <state>: with confirmation; 1 when dgmgrl failed or answered with an ORA-/Error (dgmgrl exits 0 on many)
   confirm "dgmgrl> edit database $1 set state='$2' ?" || return 1
-  [ "$DRY_RUN" = 1 ] && return 0; dgm "edit database $1 set state='$2'" | tee -a "$LOG_FILE" | sed 's/^/  dgmgrl: /' >&2
+  [ "$DRY_RUN" = 1 ] && { log "dry-run: would run dgmgrl> edit database $1 set state='$2'"; return 0; }
+  local out rc=0; out="$(dgm "edit database $1 set state='$2'" 2>&1)" || rc=1; printf '%s\n' "$out" >>"$LOG_FILE"; printf '%s\n' "$out" | grep -vE '^[[:space:]]*$' | sed 's/^/  dgmgrl: /' >&2
+  printf '%s' "$out" | grep -qE 'ORA-[0-9]+|^Error' && rc=1
+  [ "$rc" = 0 ] || { err "edit database $1 set state='$2' failed (see $LOG_FILE)"; HEAL_FAIL=$((HEAL_FAIL+1)); return 1; }
 }
 cmd_heal() {
-  discover; reuse_or_init heal; local did=0 m all
+  discover; reuse_or_init heal; local did=0 m all; HEAL_FAIL=0
   all="$(printf '%s\n' "$CFG"; for m in $(members); do printf '\n== %s ==\n' "$m"; showdb "$m"; done)"; printf '%s\n' "$all" >"$RUN_DIR/heal_status.txt"
   local codes; codes="$(printf '%s\n' "$all" | grep -oE 'ORA-[0-9]+' | sort -u | tr '\n' ' ')"
   [ -z "$codes" ] && [ "$CFG_STATUS" = SUCCESS ] && { log "configuration SUCCESS, no errors or warnings: nothing to heal"; return 0; }
   log "status $CFG_STATUS; codes: ${codes:-none}"
   for m in $(members); do printf '%s\n' "$all" | awk -v m="== $m ==" '$0==m{f=1} f' | grep -E 'ORA-' | sed "s/^ */  $m: /" | head -5 >&2; done
   # disabled members
-  for m in $(members); do printf '%s\n' "$all" | awk -v m="== $m ==" '$0==m{f=1} f' | grep -qE '^DISABLED' && { warn "$m is DISABLED in the broker"; confirm "dgmgrl> enable database $m ?" && { [ "$DRY_RUN" = 1 ] || dgm "enable database $m" >>"$LOG_FILE"; did=1; }; }; done
+  for m in $(members); do printf '%s\n' "$all" | awk -v m="== $m ==" '$0==m{f=1} f' | grep -qE '^DISABLED' && { warn "$m is DISABLED in the broker"; confirm "dgmgrl> enable database $m ?" && { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run dgmgrl> enable database $m"; else local o; o="$(dgm "enable database $m" 2>&1)" || o="$o${o:+ }Error: dgmgrl failed"; printf '%s\n' "$o" >>"$LOG_FILE"; if printf '%s' "$o" | grep -qE 'ORA-[0-9]+|Error'; then err "enable database $m failed: $(printf '%s' "$o" | grep -E 'ORA-|Error' | head -1)"; HEAL_FAIL=$((HEAL_FAIL+1)); else did=1; fi; fi; }; }; done
   local c; for c in $codes; do case "$c" in
     ORA-16810|ORA-16809) log "$c: summary code, the real ones are listed per database above";;
     ORA-16820) warn "$c: Fast-Start Failover enabled but no observer is observing. Start it on the observer host:  dgmgrl sys@$PRIMARY \"start observer\"  (or 'start observer in background'); if FSFO is not wanted: dgmgrl> disable fast_start failover"
@@ -523,7 +526,7 @@ cmd_heal() {
     ORA-16853|ORA-16855) warn "$c: apply lag over the ApplyLagThreshold"
       for m in $STANDBYS; do local sd; sd="$(showdb "$m")"; local is; is="$(dbfield "$sd" 'Intended State')"
         if [ "$is" != APPLY-ON ]; then log "  $m intended state is $is"; dg_edit "$m" APPLY-ON && did=1
-        elif is_local "$m" && [ "$(sql_val "$SID" "(select count(*) from v\$managed_standby where process like 'MRP%')" 2>/dev/null)" = 0 ]; then warn "  $m: APPLY-ON but no MRP process; look at the alert log for the ORA- that stopped it (often a missing archivelog/ORA-01111 datafile or a stuck recovery), then:"; log "    dgmgrl> edit database $m set state='APPLY-OFF'; edit database $m set state='APPLY-ON'"; confirm "  toggle apply off/on for $m now?" && { dg_edit "$m" APPLY-OFF; dg_edit "$m" APPLY-ON; did=1; }
+        elif is_local "$m" && [ "$(sql_val "$SID" "(select count(*) from v\$managed_standby where process like 'MRP%')" 2>/dev/null)" = 0 ]; then warn "  $m: APPLY-ON but no MRP process; look at the alert log for the ORA- that stopped it (often a missing archivelog/ORA-01111 datafile or a stuck recovery), then:"; log "    dgmgrl> edit database $m set state='APPLY-OFF'; edit database $m set state='APPLY-ON'"; confirm "  toggle apply off/on for $m now?" && { dg_edit "$m" APPLY-OFF && dg_edit "$m" APPLY-ON && did=1; }
         else log "  $m: apply running, lag $(dbfield "$sd" 'Apply Lag') (apply rate $(dbfield "$sd" 'Average Apply Rate')); if it keeps growing: more apply parallelism (recovery parallelism), faster standby storage, check 'Insufficient SRLs' in validate database"; fi; done;;
     ORA-16857|ORA-16854) warn "$c: transport lag over the TransportLagThreshold (redo not reaching the standby fast enough)"
       dgm "show database $PRIMARY LogXptStatus" | grep -vE '^[[:space:]]*$' | sed 's/^/    /' >&2
@@ -543,7 +546,7 @@ cmd_heal() {
       log "  if the archivelogs still exist on the primary (or in a backup), register them / let FAL fetch them; if they are gone: roll the standby forward:  rman target sys@$PRIMARY auxiliary sys@<standby>  'recover database from service <primary_service> noredo using compressed backupset'  (Doc 2850185.1 style), then restart apply";;
     ORA-16625|ORA-16662|ORA-16501|ORA-16525|ORA-16532) warn "$c: the broker cannot reach a member or is not running"
       log "  check: dg_broker_start=TRUE on every member ($LOCAL_DBUN: $BROKER_ON), DMON process alive, listeners up, StaticConnectIdentifier of each member reachable (see inspect), the broker config files shared/readable on RAC"
-      [ "$BROKER_ON" != TRUE ] && confirm "alter system set dg_broker_start=true on $SID ?" && { [ "$DRY_RUN" = 1 ] || sql_run "$SID" "alter system set dg_broker_start=true scope=both;" >>"$LOG_FILE"; did=1; };;
+      [ "$BROKER_ON" != TRUE ] && confirm "alter system set dg_broker_start=true on $SID ?" && { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would set dg_broker_start=true"; else local o; o="$(sql_run "$SID" "alter system set dg_broker_start=true scope=both;" 2>&1)"; printf '%s\n' "$o" >>"$LOG_FILE"; if printf '%s' "$o" | grep -qE 'ORA-[0-9]+'; then err "dg_broker_start: $(printf '%s' "$o" | grep -E 'ORA-' | head -1)"; HEAL_FAIL=$((HEAL_FAIL+1)); else did=1; fi; fi; };;
     ORA-16629|ORA-16627|ORA-16653) warn "$c: protection mode/level mismatch or operation disallowed in this mode"
       log "  with MaxAvailability/MaxProtection the standby must have SRLs and SYNC transport; see: dgmgrl> show database $TARGET LogXptMode; fix the mode or the LogXptMode, or downgrade: edit configuration set protection mode as maxperformance";;
     ORA-16789|ORA-16714|ORA-16715|ORA-16792) warn "$c: standby redo logs / property inconsistency between the broker and the database"
@@ -551,7 +554,15 @@ cmd_heal() {
       for m in $(members); do dgm "show database $m InconsistentProperties" | grep -vE '^[[:space:]]*$' | sed "s/^/    $m: /" >&2; done;;
     *) warn "$c: $(printf '%s\n' "$all" | grep -m1 "$c" | tr -s ' ')  (dgmgrl> show database <name> for detail; MOS 'Data Guard Broker error $c')";;
   esac; done
-  [ "$did" = 1 ] && { sleep 5; CFG=""; discover; log "after healing: configuration status $CFG_STATUS"; } || log "nothing changed (diagnosis only)"; return 0
+  # the outcome, not the attempt: a failed action is heal=failed exit 1; an action that ran is re-checked against the broker
+  if [ "$HEAL_FAIL" -gt 0 ]; then state_set heal failed; err "heal: $HEAL_FAIL action(s) failed - the configuration is as the broker shows it above, not healed"; return 1; fi
+  if [ "$did" = 1 ]; then
+    [ "$DRY_RUN" = 1 ] && { log "dry-run: would re-read the configuration after the change"; return 0; }
+    sleep 5; CFG=""; discover
+    if [ "$CFG_STATUS" = SUCCESS ]; then state_set heal ok; log "after healing: configuration status SUCCESS"
+    else state_set heal incomplete; err "after healing the configuration status is still ${CFG_STATUS:-?}: $(printf '%s\n' "$CFG" | grep -E 'ORA-' | head -3 | tr -s ' ' | tr '\n' ';') - run heal again or look at the member's alert log"; return 1; fi
+  else log "nothing changed (diagnosis only)"; fi
+  return 0
 }
 
 cmd_run() {
