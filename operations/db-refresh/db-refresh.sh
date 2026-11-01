@@ -173,6 +173,17 @@ cmd_preflight() {
   # mask
   if [ "$REQUIRE_MASK" = yes ]; then [ -n "$MASK_SCRIPT" ] && [ -f "$MASK_SCRIPT" ] || { err "masking is required but MASK_SCRIPT is unset or missing ($MASK_SCRIPT)"; fail=1; }; [ -n "$MASK_VERIFY_SQL" ] || warn "REQUIRE_MASK=yes but no MASK_VERIFY_SQL: verify cannot prove the masking ran"; fi
   [ -n "$MASK_SCRIPT" ] && [ ! -f "$MASK_SCRIPT" ] && { err "MASK_SCRIPT $MASK_SCRIPT not found"; fail=1; }
+  if [ -n "$PRESERVE_SCHEMAS" ]; then
+    if [ -z "$EXP_CONNECT" ]; then err "PRESERVE_SCHEMAS=$PRESERVE_SCHEMAS but no EXP_CONNECT (user/pw@TESTPDB with DATAPUMP_EXP/IMP_FULL_DATABASE)"; fail=1
+    else local dp; dp="$(printf 'connect %s\nset heading off feedback off pagesize 0\nselect (select count(*) from session_roles where role in (%s))||q[|]||(select count(*) from session_privs where privilege in (%s))||q[|]||(select count(*) from user_ts_quotas q join user_users u on u.default_tablespace=q.tablespace_name where q.max_bytes<>0)||q[|]||nvl((select directory_path from all_directories where directory_name=upper(%s)),q[none]) from dual;\nexit\n' "$EXP_CONNECT" "'DATAPUMP_EXP_FULL_DATABASE','DATAPUMP_IMP_FULL_DATABASE','DBA'" "'UNLIMITED TABLESPACE','CREATE TABLE'" "'$DATA_PUMP_DIR'" | sed "s/q\[/'/g; s/\]/'/g" | ORACLE_HOME="$DB_HOME" to 60 "$DB_HOME/bin/sqlplus" -S -L /nolog 2>&1 | grep -E '^[0-9]+\|' | tail -1)"
+      if [ -z "$dp" ]; then err "EXP_CONNECT cannot log in to run expdp/impdp"; fail=1
+      else local r pv qv dpath; IFS='|' read -r r pv qv dpath <<<"$dp"
+        [ "${r:-0}" -ge 1 ] || { err "the EXP_CONNECT user has none of DATAPUMP_EXP_FULL_DATABASE / DATAPUMP_IMP_FULL_DATABASE / DBA"; fail=1; }
+        [ "${pv:-0}" -ge 1 ] || [ "${qv:-0}" -ge 1 ] || { err "the EXP_CONNECT user has no quota on its default tablespace (Data Pump's master table needs one: grant unlimited tablespace or a quota)"; fail=1; }
+        [ "$dpath" = none ] && { err "directory $DATA_PUMP_DIR is not visible to the EXP_CONNECT user"; fail=1; }; [ -n "$dpath" ] && [ "$dpath" != none ] && [ ! -w "$dpath" ] && { err "$DATA_PUMP_DIR = $dpath is not writable by $(id -un) on this host"; fail=1; }
+      fi
+    fi
+  fi
   [ -z "$PROD_HOST_PATTERN" ] && warn "PROD_HOST_PATTERN is empty: fix-dblinks cannot recognise links to production"
   if [ "$METHOD" = pdb-clone ]; then
     # link + privileges
@@ -216,7 +227,15 @@ cmd_preflight() {
     [ "$KEEP_OLD" = 1 ] && pdb_exists "${TEST_PDB}_OLD" && { err "${TEST_PDB}_OLD already exists: run cleanup first"; fail=1; }
     [ "$SNAPSHOT" = 1 ] && [ "$(rval "(select value from v\$parameter where name='clonedb')")" != TRUE ] && [ -z "$(rval "(select value from v\$parameter where name='db_create_file_dest')" | grep -E '^\+|acfs|/zfs|/nfs')" ] && warn "--snapshot: clonedb=FALSE and the file dest does not look like ACFS/ZFS/NFS - snapshot copy may fail (ORA-65169)"
   else
+    [ -x "$DB_HOME/bin/rman" ] || { err "no rman binary in $DB_HOME/bin"; fail=1; }
     [ -f "$DB_HOME/dbs/orapw$SID" ] || { err "no password file $DB_HOME/dbs/orapw$SID (active duplicate needs one with PROD's SYS password)"; fail=1; }
+    if [ -n "$PROD_TNS" ] && [ -z "$FROM_BACKUP" ]; then read_secret PROD_SYS_PASSWORD "SYS password of PROD ($PROD_TNS)"
+      local pid tid; pid="$(printf 'connect sys/"%s"@%s as sysdba\nset heading off feedback off pagesize 0\nselect dbid||q[|]||db_unique_name from v$database;\nexit\n' "$PROD_SYS_PASSWORD" "$PROD_TNS" | sed "s/q\[/'/g; s/\]/'/g" | ORACLE_HOME="$DB_HOME" to 60 "$DB_HOME/bin/sqlplus" -S -L /nolog 2>&1 | grep -E '^[0-9]+\|' | tail -1)"
+      tid="$(rval "(select dbid||'|'||db_unique_name from v\$database)")"
+      if [ -z "$pid" ]; then err "cannot connect to PROD as SYS through $PROD_TNS (password? sysdba over the network needs the password file)"; fail=1
+      elif [ "$pid" = "$tid" ]; then err "$PROD_TNS is THIS database ($tid): duplicating a database onto itself would destroy it"; fail=1
+      else log "PROD $PROD_TNS: dbid/db_unique_name $pid (TEST: $tid)"; fi
+    fi
     [ -n "$PROD_TNS" ] && { ORACLE_HOME="$DB_HOME" to 20 "$DB_HOME/bin/tnsping" "$PROD_TNS" >/dev/null 2>&1 || { err "tnsping $PROD_TNS fails"; fail=1; }; }
     [ -n "$TEST_TNS" ] && { ORACLE_HOME="$DB_HOME" to 20 "$DB_HOME/bin/tnsping" "$TEST_TNS" >/dev/null 2>&1 || { err "tnsping $TEST_TNS fails (PROD must reach the auxiliary through this; add a static SID_LIST entry)"; fail=1; }; }
     [ -n "$FROM_BACKUP" ] && { [ -d "$FROM_BACKUP" ] || { err "backup location $FROM_BACKUP not found"; fail=1; }; }
@@ -250,11 +269,14 @@ cmd_backup() {
   psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/services.txt\nselect name||'|'||network_name from dba_services;\nspool off" >>"$LOG_FILE" 2>&1
   psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/jobs.txt\nselect owner||'.'||job_name||'|'||enabled from dba_scheduler_jobs where owner not in (select username from dba_users where oracle_maintained='Y');\nspool off" >>"$LOG_FILE" 2>&1
   psql "set pagesize 0 linesize 4000 feedback off heading off\nspool $d/apex_params.txt\nselect name||'='||value from apex_instance_parameters where name in ('SMTP_HOST_ADDRESS','SMTP_HOST_PORT','SMTP_USERNAME','SMTP_TLS_MODE','SMTP_FROM','WALLET_PATH','PRINT_BIB_LICENSED','PRINT_SVR_HOST','PRINT_SVR_PORT','PRINT_SVR_PROTOCOL','PRINT_SVR_SCRIPT','ALLOW_PUBLIC_FILE_UPLOAD','RESTRICT_IP_RANGE','EMAIL_INSTANCE_URL','EMAIL_IMAGES_URL','IMAGE_PREFIX','DISABLE_WORKSPACE_LOGIN','DISABLE_ADMIN_LOGIN','APEX_BUILDER_AUTHENTICATION') order by 1;\nspool off" >>"$LOG_FILE" 2>&1
-  local f; for f in "$d"/*.sql "$d"/*.txt; do [ -f "$f" ] && grep -qE '^ORA-|^SP2-' "$f" && warn "$(basename "$f") contains errors: $(grep -E '^ORA-|^SP2-' "$f" | head -1)"; done
+  # dbms_metadata emits "BEGIN NULL; END;" placeholders without a terminating "/": sqlplus then stays in PL/SQL mode and silently
+  # swallows every statement after it (the role grants never ran). Drop them and terminate any real block with "/".
+  local f; for f in "$d"/*.sql; do [ -f "$f" ] && sed -i -e '/^[[:space:]]*BEGIN NULL; END;[[:space:]]*$/d' -e 's#^\(.*END;\)[[:space:]]*$#\1\n/#' "$f"; done
+  for f in "$d"/*.sql "$d"/*.txt; do [ -f "$f" ] && grep -qE '^ORA-|^SP2-' "$f" && warn "$(basename "$f") contains errors: $(grep -E '^ORA-|^SP2-' "$f" | head -1)"; done
   log "preserved: $(for f in "$d"/*; do [ -f "$f" ] || continue; printf '%s(%s) ' "$(basename "$f")" "$(wc -l <"$f" | tr -d ' ')"; done)"
   if [ -n "$PRESERVE_SCHEMAS" ]; then
     if [ -n "$EXP_CONNECT" ]; then
-      local dump; dump="refresh_preserve_$(date +%Y%m%d%H%M%S).dmp"; log "expdp schemas=$PRESERVE_SCHEMAS to $DATA_PUMP_DIR/$dump"
+      local dump; dump="refresh_preserve_$(date +%Y%m%d%H%M%S).dmp"; local dpath; dpath="$(plines "select directory_path from dba_directories where directory_name=upper('$DATA_PUMP_DIR');" | head -1)"; state_set preserve_dir_path "$dpath"; state_set preserve_objects "$(plines "select count(*) from dba_objects where owner in ($(printf '%s' "$PRESERVE_SCHEMAS" | uc | sed "s/[^,]*/'&'/g"));" | head -1)"; log "expdp schemas=$PRESERVE_SCHEMAS ($(state_get preserve_objects) objects) to $DATA_PUMP_DIR ($dpath)/$dump"
       [ "$DRY_RUN" = 1 ] || { ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 7200 "$DB_HOME/bin/expdp" "$EXP_CONNECT" schemas="$PRESERVE_SCHEMAS" directory="$DATA_PUMP_DIR" dumpfile="$dump" logfile="${dump%.dmp}.log" reuse_dumpfiles=y >>"$LOG_FILE" 2>&1 && state_set preserve_dump "$dump" || { err "expdp failed (see $LOG_FILE)"; return 1; }; }
     else err "PRESERVE_SCHEMAS set but no EXP_CONNECT (user/pw@TESTPDB with DATAPUMP_EXP_FULL_DATABASE): cannot export"; return 1; fi
   fi
@@ -466,8 +488,16 @@ cmd_reimport() {
   local dump; dump="$(state_get preserve_dump || true)"
   if [ -n "$dump" ]; then
     [ -n "$EXP_CONNECT" ] || { err "preserved dump $dump but no EXP_CONNECT for impdp"; return 1; }
-    log "impdp schemas=$PRESERVE_SCHEMAS from $dump (table_exists_action=replace)"
-    [ "$DRY_RUN" = 1 ] || ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 7200 "$DB_HOME/bin/impdp" "$EXP_CONNECT" schemas="$PRESERVE_SCHEMAS" directory="$DATA_PUMP_DIR" dumpfile="$dump" logfile="imp_${dump%.dmp}.log" table_exists_action=replace >>"$LOG_FILE" 2>&1 || warn "impdp ended with errors/warnings (see $LOG_FILE and the Data Pump log)"
+    # the clone's $DATA_PUMP_DIR is PROD's directory object (another path, maybe not even on this host) and, being a common
+    # object, cannot be re-pointed inside the PDB (ORA-65040): import through a directory of our own that names the export path
+    local dpath expuser idir="$DATA_PUMP_DIR"; dpath="$(state_get preserve_dir_path || true)"; expuser="${EXP_CONNECT%%/*}"; expuser="${expuser%%@*}"
+    if [ -n "$dpath" ]; then idir=DB_REFRESH_DPDIR; do_sql pdb "directory $idir -> $dpath for $expuser" "create or replace directory $idir as '$dpath';\ngrant read, write on directory $idir to \"$(printf '%s' "$expuser" | uc)\";" || { err "cannot create $idir in the clone"; return 1; }; fi
+    log "impdp schemas=$PRESERVE_SCHEMAS from $idir/$dump (table_exists_action=replace)"
+    local irc=0; [ "$DRY_RUN" = 1 ] || ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 7200 "$DB_HOME/bin/impdp" "$EXP_CONNECT" schemas="$PRESERVE_SCHEMAS" directory="$idir" dumpfile="$dump" logfile="imp_${dump%.dmp}.log" table_exists_action=replace >>"$LOG_FILE" 2>&1 || irc=$?
+    if [ "$DRY_RUN" != 1 ]; then local before after; before="$(state_get preserve_objects || echo 0)"; after="$(plines "select count(*) from dba_objects where owner in ($(printf '%s' "$PRESERVE_SCHEMAS" | uc | sed "s/[^,]*/'&'/g"));" | head -1)"
+      log "preserved schemas: $after object(s) now, $before before the refresh"
+      [ "${after:-0}" -lt "${before:-0}" ] && { err "impdp brought back only $after of $before objects of $PRESERVE_SCHEMAS (rc $irc) - see $LOG_FILE and the Data Pump log; the old TEST is $([ "$KEEP_OLD" = 1 ] && echo "${TEST_PDB}_OLD (rollback restores it)" || echo 'gone: restore the schemas from the dump by hand')"; return 1; }
+      [ "$irc" != 0 ] && warn "impdp finished with warnings (rc $irc): check imp_${dump%.dmp}.log"; fi
   fi
   [ "$DRY_RUN" = 1 ] || psql "@?/rdbms/admin/utlrp.sql" >>"$LOG_FILE" 2>&1
   state_set reimport ok
@@ -508,7 +538,7 @@ cmd_rollback() {
 
 cmd_cleanup() {
   discover; reuse_or_init cleanup
-  local old="${TEST_PDB}_OLD"; pdb_exists "$old" && confirm "Drop $old including datafiles?" && { do_sql root "close $old" "alter pluggable database $old close immediate instances=all;" || true; do_sql root "drop $old" "drop pluggable database $old including datafiles;"; }
+  local old="${TEST_PDB}_OLD"; pdb_exists "$old" && confirm "Drop $old including datafiles?" && { [ "$(rval "(select open_mode from v\$pdbs where name=upper('$old'))")" = MOUNTED ] || do_sql root "close $old" "alter pluggable database $old close immediate instances=all;" || true; do_sql root "drop $old" "drop pluggable database $old including datafiles;"; }
   [ "${ALL:-0}" = 1 ] && pdb_exists "$GOLD_PDB" && confirm "Drop the golden copy $GOLD_PDB (next --refreshable run does a full copy again)?" && { do_sql root "close $GOLD_PDB" "alter pluggable database $GOLD_PDB close immediate instances=all;" || true; do_sql root "drop $GOLD_PDB" "drop pluggable database $GOLD_PDB including datafiles;"; }
   return 0
 }

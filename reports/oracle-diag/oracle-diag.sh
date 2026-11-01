@@ -395,7 +395,7 @@ select * from (select event, total_waits, round(time_waited_micro/1e6) secs, rou
 select t.tablespace_name, t.contents, round(u.used_mb) used_mb, round(f.cur_mb) cur_mb, round(f.max_mb) max_mb, round(u.used_mb*100/f.cur_mb) pct_cur, round(u.used_mb*100/f.max_mb) pct_max, f.files
 from dba_tablespaces t
 join (select tablespace_name, sum(bytes)/1048576 cur_mb, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb, count(*) files from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name
-left join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name
+left join (select d.tablespace_name, d.cur_mb - nvl(s.free_mb,0) used_mb from (select tablespace_name, sum(bytes)/1048576 cur_mb from dba_data_files group by tablespace_name) d left join (select tablespace_name, sum(bytes)/1048576 free_mb from dba_free_space group by tablespace_name) s on s.tablespace_name=d.tablespace_name) u on u.tablespace_name=t.tablespace_name
 where t.contents<>'TEMPORARY' order by pct_max desc nulls last;
 select tablespace_name, round(tablespace_size*8/1024) size_mb_blk8, round(allocated_space*8/1024) alloc_mb, round(free_space*8/1024) free_mb from dba_temp_free_space;
 select 'undo: '||tablespace_name||' size '||round(sum(bytes)/1048576)||' MB, used '||(select round(sum(bytes)/1048576) from dba_undo_extents where status in ('ACTIVE','UNEXPIRED')) ||' MB active/unexpired' from dba_data_files where tablespace_name=(select value from v\$parameter where name='undo_tablespace') group by tablespace_name;
@@ -526,7 +526,7 @@ diag_apex_in() { # <sid> <container label>  (PDB_SET already exported by caller)
 col comp_name for a30
 select comp_id, comp_name, version, status, schema from dba_registry where comp_id in ('APEX','ORDS');
 select 'APEX schema: '||schema||', status '||status from dba_registry where comp_id='APEX';
-select 'ORDS schema version in DB: '||(select installed_version from dba_objects o, ords_metadata.ords_version v where o.object_name='ORDS_VERSION' and rownum=1) from dual;
+select 'ORDS schema version in DB: '||(select version from ords_metadata.ords_version where rownum=1) from dual;
 select username, account_status, to_char(expiry_date,'YYYY-MM-DD') expires, profile from dba_users where username like 'APEX%' or username like 'ORDS%' or username in ('FLOWS_FILES') order by 1;
 select 'workspaces: '||count(*) from apex_workspaces;
 select 'applications: '||count(*)||', last changed '||max(last_updated_on) from apex_applications;
@@ -567,7 +567,7 @@ diag_pdbs() { # per-container checks for a CDB
     export PDB_SET="alter session set container=$p;"
     h3 "Container $p"
     sqlsec "$sid" "pdb_${p}_space" "$p: tablespaces, invalid objects, accounts" "col tablespace_name for a25
-select t.tablespace_name, round(u.used_mb) used_mb, round(f.max_mb) max_mb, round(u.used_mb*100/f.max_mb) pct_max from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY' order by 4 desc nulls last;
+select t.tablespace_name, round(u.used_mb) used_mb, round(f.max_mb) max_mb, round(u.used_mb*100/f.max_mb) pct_max from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select d.tablespace_name, d.cur_mb - nvl(s.free_mb,0) used_mb from (select tablespace_name, sum(bytes)/1048576 cur_mb from dba_data_files group by tablespace_name) d left join (select tablespace_name, sum(bytes)/1048576 free_mb from dba_free_space group by tablespace_name) s on s.tablespace_name=d.tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY' order by 4 desc nulls last;
 select owner, object_type, count(*) invalid from dba_objects where status<>'VALID' group by owner, object_type order by 3 desc;
 select username, account_status, to_char(expiry_date,'YYYY-MM-DD') expires, profile from dba_users where oracle_maintained='N' and (account_status<>'OPEN' or expiry_date<sysdate+14) order by 1;
 select 'local undo: '||property_value from database_properties where property_name='LOCAL_UNDO_ENABLED';

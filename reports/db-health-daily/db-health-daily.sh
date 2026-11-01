@@ -161,15 +161,15 @@ union all select 'last ARCH backup', nvl(to_char(max(start_time),'YYYY-MM-DD HH2
 union all select 'failed RMAN jobs 24h', to_char(count(*)) from v\$rman_backup_job_details where start_time>sysdate-1 and status not like 'COMPLETED%' and status<>'RUNNING'
 union all select 'blocked sessions', to_char(count(*)) from v\$session where blocking_session is not null
 union all select 'active user sessions', to_char(count(*)) from v\$session where status='ACTIVE' and type='USER'
-union all select 'invalid objects', to_char(count(*)) from dba_objects where status<>'VALID'
-union all select 'failed scheduler runs 24h', to_char(count(*)) from dba_scheduler_job_run_details where status<>'SUCCEEDED' and log_date>sysdate-1
-union all select 'outstanding alerts', to_char(count(*)) from dba_outstanding_alerts
+union all select 'invalid objects', to_char(count(*)) from cdb_objects where status<>'VALID'
+union all select 'failed scheduler runs 24h', to_char(count(*)) from cdb_scheduler_job_run_details where status<>'SUCCEEDED' and log_date>sysdate-1
+union all select 'outstanding alerts', to_char(count(*)) from cdb_outstanding_alerts
 union all select 'DG apply lag', nvl((select value from v\$dataguard_stats where name='apply lag'),'n/a') from dual
 union all select 'DG transport lag', nvl((select value from v\$dataguard_stats where name='transport lag'),'n/a') from dual
 union all select 'archive dest errors', to_char(count(*)) from v\$archive_dest_status where status='ERROR'
 union all select 'guaranteed restore points', to_char(count(*)) from v\$restore_point where guarantee_flashback_database='YES'
 union all select 'PDBs not READ WRITE', to_char(count(*)) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED';
-select tablespace_name, pct_max from (select t.tablespace_name, round(u.used_mb*100/f.max_mb) pct_max from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY') where pct_max>=$TS_WARN order by 2 desc;
+select tablespace_name, pct_max from (select t.tablespace_name, round(u.used_mb*100/f.max_mb) pct_max from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select d.tablespace_name, d.cur_mb - nvl(s.free_mb,0) used_mb from (select tablespace_name, sum(bytes)/1048576 cur_mb from dba_data_files group by tablespace_name) d left join (select tablespace_name, sum(bytes)/1048576 free_mb from dba_free_space group by tablespace_name) s on s.tablespace_name=d.tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY') where pct_max>=$TS_WARN order by 2 desc;
 select name, state, round((total_mb-free_mb)*100/total_mb) pct_used, offline_disks from v\$asm_diskgroup where total_mb>0;"
   sql_checks "$sid" "$sid" "select 'CHECK|'||case when pct>=$TS_CRIT then 'CRIT' else 'WARN' end||'|tablespace '||tablespace_name||' '||pct||'% of max' from (select t.tablespace_name, round(u.used_mb*100/f.max_mb) pct from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY') where pct>=$TS_WARN;
 select 'CHECK|'||case when p>=$FRA_CRIT then 'CRIT' else 'WARN' end||'|FRA '||p||'% full' from (select round((space_used-space_reclaimable)*100/space_limit) p from v\$recovery_file_dest where space_limit>0) where p>=$FRA_WARN;
@@ -186,13 +186,13 @@ select 'CHECK|CRIT|standby without MRP' from v\$database where database_role='PH
 select 'CHECK|CRIT|TDE keystore '||status||' (con '||con_id||')' from v\$encryption_wallet where wallet_type<>'UNKNOWN' and status not in ('OPEN','OPEN_NO_MASTER_KEY','NOT_AVAILABLE') and con_id<>2;
 select 'CHECK|CRIT|'||username||' is '||account_status from dba_users where username in ('APEX_PUBLIC_USER','ORDS_PUBLIC_USER','APEX_LISTENER','APEX_REST_PUBLIC_USER','ORDS_METADATA') and account_status<>'OPEN';
 select 'CHECK|WARN|'||username||' expires '||to_char(expiry_date,'YYYY-MM-DD') from dba_users where expiry_date between sysdate and sysdate+7 and (oracle_maintained='N' or username like 'APEX%' or username like 'ORDS%' or username='DBSNMP');
-select 'CHECK|WARN|'||count(*)||' failed scheduler run(s) last 24h' from dba_scheduler_job_run_details where status<>'SUCCEEDED' and log_date>sysdate-1 having count(*)>0;
+select 'CHECK|WARN|'||count(*)||' failed scheduler run(s) last 24h' from cdb_scheduler_job_run_details where status<>'SUCCEEDED' and log_date>sysdate-1 having count(*)>0;
 select 'CHECK|WARN|'||count(*)||' PDB(s) not READ WRITE' from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED' having count(*)>0;
-select 'CHECK|CRIT|alert: '||substr(reason,1,100) from dba_outstanding_alerts where creation_time>sysdate-1 and rownum<=5;
+select 'CHECK|CRIT|alert: '||substr(reason,1,100) from cdb_outstanding_alerts where creation_time>sysdate-1 and rownum<=5;
 select 'CHECK|WARN|'||count(*)||' datafile(s) in hot backup mode' from v\$backup where status='ACTIVE' having count(*)>0;
 select 'CHECK|WARN|guaranteed restore point '||name||' is '||round(sysdate-time)||' days old' from v\$restore_point where guarantee_flashback_database='YES' and time<sysdate-7;"
   # invalid-object delta
-  local inv; inv="$(sql_val "$sid" "(select count(*) from dba_objects where status<>'VALID')" 2>/dev/null)"; printf '%s' "$inv" >"$OUT/invalid_${sid}.txt"
+  local inv; inv="$(sql_val "$sid" "(select count(*) from cdb_objects where status<>'VALID')" 2>/dev/null)"; printf '%s' "$inv" >"$OUT/invalid_${sid}.txt"
   if [ -n "$PREV" ] && [ -f "$PREV/invalid_${sid}.txt" ]; then local pinv; pinv="$(cat "$PREV/invalid_${sid}.txt")"; [ "${inv:-0}" -gt "$((${pinv:-0}+10))" ] && finding WARN db "$sid: invalid objects went from $pinv to $inv"; fi
   check_alert_log "$sid"
   # per PDB: accounts + tablespaces
