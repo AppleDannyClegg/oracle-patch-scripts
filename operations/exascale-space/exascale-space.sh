@@ -500,7 +500,8 @@ prov_now() { # <vault> <media>: current provisioned bytes the way the grow read 
 grow_run_dir() { [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/state" ] && grep -q '^vault=' "$RUN_DIR/state" && { init_run_dir "$1"; return 0; }
   local d; for d in $(find "$RUN_BASE" -maxdepth 1 -type d -name '*-grow-*' 2>/dev/null | sort -r); do grep -q '^vault=' "$d/state" 2>/dev/null && { RUN_DIR="$d"; init_run_dir "$1"; return 0; }; done
   RUN_DIR=""; init_run_dir "$1"; }
-cmd_verify() {
+cmd_verify() { # [grow|rollback]: what the re-read proves; the SUCCESS line and the state key say which
+  local what="${1:-grow}"
   grow_run_dir verify; escli_setup || die "escli is needed for verify"
   local v; v="$(state_get vault || true)"; [ -n "$v" ] || die "no grow recorded in $RUN_DIR"
   [ "$DRY_RUN" = 1 ] && { log "SUCCESS (dry-run) grow @$v: nothing changed, nothing to verify"; return 0; }
@@ -511,8 +512,8 @@ cmd_verify() {
   done
   es lsvault "@$v" --detail | grep -E 'spaceProv|spaceUsed' | sed 's/^/  /' >&2
   local summary=""; for m in HC EF XT; do local want2; want2="$(state_get "new_spaceProv$m" || true)"; [ -n "$want2" ] && summary="$summary$m=$(human "$want2") "; done
-  [ "$ok" = 1 ] && { log "SUCCESS grow @$v: $summary"; return 0; }
-  die "verify failed: $RUN_DIR"
+  [ "$ok" = 1 ] && { state_set "$what" ok; log "SUCCESS $what @$v: $summary"; return 0; }
+  state_set "$what" failed; err "verify failed: @$v does not read back what $what set (see $RUN_DIR)"; return 1
 }
 cmd_rollback() {
   grow_run_dir rollback; escli_setup || die "escli is needed for rollback"
@@ -523,7 +524,7 @@ cmd_rollback() {
     chvault_set "$v" "$m" "$old" || die "rollback chvault failed"
     state_set "new_$a" "$old"
   done
-  cmd_verify && log "SUCCESS rollback @$v"
+  cmd_verify rollback   # re-reads the vault against the restored value; rollback=ok|failed and the SUCCESS line come from it
 }
 
 # ---------------------------------------------------------------------------
