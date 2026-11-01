@@ -344,7 +344,11 @@ cmd_drop() {
 
 create_pdb_clone() {
   local ks=""; local enc; enc="$(prod_val "(select count(*) from v\$encrypted_tablespaces where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"
-  if [ "${enc:-0}" != 0 ]; then read_secret KEYSTORE_PASSWORD "TEST keystore password (TDE source)"; ks="keystore identified by \"$KEYSTORE_PASSWORD\""; fi
+  # a second read over the link at clone time: an empty answer is 'unknown', not 'not encrypted' - a clone without the keystore
+  # clause would fail with ORA-28374/46659 and blame TDE for a link that never answered (Daneel 1 Nov 22:55)
+  [ "$DRY_RUN" = 1 ] && [ -z "$enc" ] && enc=0
+  [ -n "$enc" ] || die "could not re-read PROD's encrypted tablespaces over $PROD_LINK (empty answer): not assumed unencrypted - check the link and run create again"
+  if [ "$enc" != 0 ]; then read_secret KEYSTORE_PASSWORD "TEST keystore password (TDE source)"; ks="keystore identified by \"$KEYSTORE_PASSWORD\""; fi
   local src="$PROD_PDB@$PROD_LINK"
   if [ "$REFRESHABLE" = 1 ]; then
     if pdb_exists "$GOLD_PDB"; then

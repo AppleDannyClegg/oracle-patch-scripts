@@ -126,7 +126,12 @@ tail_file() {
 # recent_errors <name> <file> <regex>: lines matching regex from the last DIAG_DAYS days (by file mtime cut), counted by message
 recent_errors() {
   local name="$1" f="$2" re="$3"
-  [ -r "$f" ] || return 0
+  # a log that cannot be read is not a log with no errors: say so in the report and as a WARN (the caller sees no count)
+  if [ ! -r "$f" ]; then
+    local area=db; case "$name" in wls_*|ohs_*|obi*) area=wls;; ords_*) area=ords;; ogg_*) area=ogg;; crs_*) area=grid;; esac
+    para "_could not read ${f:-<no file>} (missing or no permission): errors unknown, not 0_"
+    finding WARN "$area" "could not read ${f:-the log for $name} - its recent errors are unknown, not 0 (run as a user that can read it)"; return 0
+  fi
   # files are not always dated per line; take the tail that fits the window by size heuristic (last 200k lines)
   tail -n 200000 "$f" 2>/dev/null | grep -aE "$re" | redact >"$RAW/$name.errors"
   local n; n="$(wc -l <"$RAW/$name.errors" | tr -d ' ')"
@@ -513,7 +518,14 @@ diag_adr() { # ADR incidents and problems for the instance
   [ -x "$home/bin/adrci" ] || return 0
   h3 "ADR incidents / problems ($sid, last ${DIAG_DAYS} days)"
   section "adr_${sid}" env ORACLE_HOME="$home" ORACLE_SID="$sid" "$home/bin/adrci" exec="set home $(ls -d "${ORACLE_BASE:-/u01/app/oracle}"/diag/rdbms/*/"$sid" 2>/dev/null | head -1 | sed "s#^${ORACLE_BASE:-/u01/app/oracle}/##"); show problem -last 10; show incident -last 20 -p \"create_time > systimestamp - interval '$DIAG_DAYS' day\""
-  local inc; inc="$(grep -cE '^[0-9]+ +[0-9]+ +ORA-' "$RAW/adr_${sid}.txt" 2>/dev/null)"
+  # adrci output that is missing, empty, without its 'ADR Home =' header or carrying a DIA- error is unread, not 'no incidents'
+  # (Daneel 1 Nov 22:55: grep -c on a file adrci never wrote says 0, and the report showed clean for the SID it could not read)
+  local raw="$RAW/adr_${sid}.txt" inc
+  if [ ! -s "$raw" ] || ! grep -q '^ADR Home = ' "$raw" || grep -qE 'DIA-[0-9]+|No ADR homes are (set|current)' "$raw"; then
+    local why; why="$(grep -oE 'DIA-[0-9]+[^\n]{0,60}' "$raw" 2>/dev/null | head -1)"
+    finding WARN db "$sid: ADR could not be read (${why:-no adrci output}) - incidents unknown, not 0 (raw/adr_${sid}.txt)"; return 0
+  fi
+  inc="$(grep -cE '^[0-9]+ +[0-9]+ +ORA-' "$raw" 2>/dev/null)"
   [ "${inc:-0}" -gt 0 ] && finding WARN db "$sid: $inc ADR incident(s) in the last $DIAG_DAYS days (adrci output in raw/adr_${sid}.txt) - 'adrci> ips pack' for an SR"
 }
 
