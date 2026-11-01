@@ -163,8 +163,9 @@ cmd_inspect() {
   local tns_lines="" a; for a in ${APP_TNS//,/ }; do local d; d="$(tnsping_desc "$a")"; if [ -z "$d" ]; then tns_lines="${tns_lines}$a: does not resolve (tnsping)"$'\n'; else local hs; hs="$(desc_hosts "$d")"; local nh; nh="$(printf '%s' "$hs" | wc -w | tr -d ' ')"; tns_lines="${tns_lines}$a: service $(desc_service "$d") hosts [$hs] ($nh host$([ "$nh" = 1 ] && echo ' - ONE SITE ONLY' || echo 's'))"$'\n'; fi; done
   if [ "$JSON_OUT" = 1 ]; then
     printf '{"sid":"%s","local":{"db_unique_name":"%s","role":"%s","open_mode":"%s"},"configuration":"%s","status":"%s","protection_mode":"%s","fsfo":"%s","fsfo_target":"%s","primary":"%s","target":"%s","insufficient_srls":%s,"static_dgmgrl_entry":%s,"active_services":"%s","members":[' \
-      "$SID" "$LOCAL_DBUN" "$LOCAL_ROLE" "$LOCAL_OPEN" "$CFG_NAME" "$CFG_STATUS" "$PROT_MODE" "$FSFO" "$FSFO_TARGET" "$PRIMARY" "$TARGET" "$srl" "$found" "$active"
-    printf '%s' "$rows" | awk -F'|' 'NF>1{printf "%s{\"name\":\"%s\",\"role\":\"%s\",\"intended_state\":\"%s\",\"status\":\"%s\",\"transport_lag\":\"%s\",\"apply_lag\":\"%s\",\"errors\":\"%s\"}", (NR>1?",":""), $1, $2, $3, $4, $5, $6, $8}'; echo ']}'; return
+      "$(json_escape "$SID")" "$(json_escape "$LOCAL_DBUN")" "$(json_escape "$LOCAL_ROLE")" "$(json_escape "$LOCAL_OPEN")" "$(json_escape "$CFG_NAME")" "$(json_escape "$CFG_STATUS")" "$(json_escape "$PROT_MODE")" "$(json_escape "$FSFO")" "$(json_escape "$FSFO_TARGET")" "$(json_escape "$PRIMARY")" "$(json_escape "$TARGET")" "$srl" "$found" "$(json_escape "$active")"
+    # broker text (status, errors) can carry quotes and backslashes: escape every string field
+    printf '%s' "$rows" | awk -F'|' 'function j(s){gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); return s} NF>1{printf "%s{\"name\":\"%s\",\"role\":\"%s\",\"intended_state\":\"%s\",\"status\":\"%s\",\"transport_lag\":\"%s\",\"apply_lag\":\"%s\",\"errors\":\"%s\"}", (NR>1?",":""), j($1), j($2), j($3), j($4), j($5), j($6), j($8)}'; echo ']}'; return
   fi
   sid_line="$SID ($LOCAL_DBUN) $LOCAL_ROLE, $LOCAL_OPEN, home $DB_HOME$([ -n "$GRID_HOME" ] && echo ", grid $GRID_HOME")"
   echo "Local instance  : $sid_line"

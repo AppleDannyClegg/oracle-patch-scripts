@@ -198,7 +198,7 @@ cmd_commit() {
   local msg; msg="apex-export $HOST: $(printf '%s\n' "$apps" | grep -c . ) application(s), $nf file(s) changed"$'\n\n'"$(printf '%s\n' "$apps" | while IFS= read -r a; do [ -n "$a" ] || continue; local m; m="$APEX_REPO/${a%/f*}/$(basename "$a").meta"; printf '%s  %s  (changed %s by %s)\n' "$a" "$(meta_get "$m" name)" "$(meta_get "$m" last_updated_on)" "$(meta_get "$m" last_updated_by)"; done)"
   printf '%s\n' "$msg" | tee "$RUN_DIR/commit_msg.txt"; [ "$DRY_RUN" = 1 ] && { g reset -q; return 0; }
   g commit -q -F "$RUN_DIR/commit_msg.txt" && say "committed $(g rev-parse --short HEAD)"
-  if [ "$PUSH" = 1 ] || [ "$APEX_PUSH" = 1 ]; then g remote get-url origin >/dev/null 2>&1 || die "no 'origin' remote (APEX_REMOTE= in the config before the first export, or git remote add origin ...)"; g push -q -u origin HEAD 2>&1 | tail -2 && say "pushed"; fi
+  if [ "$PUSH" = 1 ] || [ "$APEX_PUSH" = 1 ]; then g remote get-url origin >/dev/null 2>&1 || die "no 'origin' remote (APEX_REMOTE= in the config before the first export, or git remote add origin ...)"; if g push -q -u origin HEAD >"$RUN_DIR/push.log" 2>&1; then say "pushed"; else tail -3 "$RUN_DIR/push.log" >&2; die "git push failed (see $RUN_DIR/push.log) - the commit is local only"; fi; fi   # the status used to be tail's, so a failed push said 'pushed'
 }
 
 cmd_diff() {
