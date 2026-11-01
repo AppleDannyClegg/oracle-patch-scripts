@@ -216,13 +216,17 @@ standalone on https in front of it; rman-ops against the full image, which has `
   verify, rollback, run again, cleanup), java-patch run with restart (same build with `--force`,
   and 17 to 21 with `--force`, ORDS moved and moved back), cert-renew on the ORDS certificate
   (CA-signed cert with chain, `run`, verify, rollback) and the cacerts trust import, plus the
-  refusal paths (key does not match, expired, failed restart, read-only cacerts)
+  refusal paths (key does not match, expired, failed restart, read-only cacerts), and cert-renew on
+  a listener wallet (TCPS endpoint on 2484: wallet swap, `lsnrctl reload`, stop/start when the port
+  still served the old certificate, verify, rollback, a sysdba login over TCPS after each step)
 
 `tests/oracle-free-container.sh` repeats the six reports on any machine with docker (pulls
 `gvenzl/oracle-free:23-slim`, about 700 MB, runs the scripts inside as `oracle`, copies the
 reports to `tests/out/`). `--trace` records every SQL statement and answer so errors the scripts
 swallow still show up; `--keep` leaves the container running for the next run. No WebLogic, APEX,
-Data Guard, RAC, Exadata, ZDLRA or OKV there, and no `rman`, OPatch or `orapki` in the slim image,
-so db-patch apply, the listener wallet path and everything WebLogic are still mock-tested only.
+Data Guard, RAC, Exadata, ZDLRA or OKV there, and no `rman` or OPatch in the slim image, so
+db-patch apply and everything WebLogic are still mock-tested only. `orapki` and `mkstore` are in
+the slim image but fail for want of `$ORACLE_HOME/jlib/oraclepki.jar`; the jar from Maven Central
+(`com.oracle.database.security:oraclepki`, same version as the database) makes them work.
 None of the scripts takes a lock on its run directory, so two change runs started at the same
 time do not stop each other.

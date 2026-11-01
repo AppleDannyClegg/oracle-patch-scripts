@@ -373,16 +373,24 @@ resolve_target() {
 # wls_all_servers: expand wls:<domain> into one target per SSL-enabled server
 expand_targets() { local t="$1"; if [ "${t%%:*}" = wls ] && [ "$(printf '%s' "$t" | tr -cd ':' | wc -c | tr -d ' ')" = 1 ]; then local d; d="$(find_domain "${t#wls:}")" || die "domain not found"; wls_ssl_servers "$d" | awk -F'|' -v d="$(basename "$d")" '$3=="true"{print "wls:"d":"$1}'; else echo "$t"; fi; }
 restart_cmd_for() { printf '%s\n' "${RESTART_CMDS//,/$'\n'}" | sed -n "s/^$1=//p" | head -1; }
+# lsnrctl reload and stop/start drop the dynamic service registrations: until LREG registers again (up to 60 s) every
+# connect gets ORA-12514, so wait for the first dynamic service to come back before reporting the restart done
+listener_services_wait() {
+  local l="$1" i n s
+  for i in $(seq 1 "${LSNR_REG_WAIT:-70}"); do n="$(to 20 "$l" status "$T_INST" 2>/dev/null | grep -c '^Service "' || true)"; [ "$n" -gt 0 ] && { log "listener $T_INST: $n service(s) registered after ${i}s"; return 0; }
+    [ "$i" = 3 ] && for s in $(db_instances); do log "alter system register on $s (LREG otherwise re-registers within 60 s)"; sql_run "$s" "alter system register;" >>"$LOG_FILE" 2>&1 || true; done; sleep 1; done
+  warn "listener $T_INST shows no registered services after ${LSNR_REG_WAIT:-70}s: connections get ORA-12514 until LREG re-registers (alter system register; on each instance hurries it)"; return 0
+}
 restart_target() {
   local cmd; cmd="$(restart_cmd_for "$T_NAME")"; [ -z "$cmd" ] && [ "$T_KIND" = wls ] && cmd="$(restart_cmd_for "wls:$(basename "$T_DOMAIN")")"
   if [ -n "$cmd" ]; then log "restart $T_NAME: $cmd"; run_sh "$cmd" || { err "restart command failed (see $LOG_FILE)"; return 1; }; return 0; fi
   case "$T_KIND" in
     ords) if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"; sleep 5; run_sh "${ORDS_START_CMD:?ORDS_START_CMD needed with ORDS_STOP_CMD}"; elif [ -n "${ORDS_SERVICE:-$(ords_service)}" ]; then run_sh "$SUDO systemctl restart ${ORDS_SERVICE:-$(ords_service)}"; else warn "no ORDS service/RESTART_CMDS: restart ORDS yourself"; return 0; fi;;
     listener) local l="${T_HOME:+$T_HOME/bin/}lsnrctl"; log "lsnrctl reload $T_INST (the wallet is read at listener start: a full restart follows if the port still serves the old cert)"; run_sh "$l reload $T_INST" || true
-      [ "$DRY_RUN" = 1 ] && return 0; sleep 3; local s; s="$(live_pem "127.0.0.1:$T_PORT" "$RUN_DIR/after_reload.pem" && x509_facts "$RUN_DIR/after_reload.pem" && printf '%s' "$X_SERIAL")"
+      [ "$DRY_RUN" = 1 ] && return 0; sleep 3; listener_services_wait "$l"; local s; s="$(live_pem "127.0.0.1:$T_PORT" "$RUN_DIR/after_reload.pem" && x509_facts "$RUN_DIR/after_reload.pem" && printf '%s' "$X_SERIAL")"
       [ "$s" = "$(state_get new_serial || true)" ] && return 0
       confirm "Still the old certificate on $T_PORT. lsnrctl stop/start $T_INST (new connections fail for a few seconds)?" || { warn "listener not restarted: the old certificate stays live until it is"; return 0; }
-      run_sh "$l stop $T_INST"; run_sh "$l start $T_INST";;
+      run_sh "$l stop $T_INST"; run_sh "$l start $T_INST"; listener_services_wait "$l";;
     ohs) if [ -x "$T_DOMAIN/bin/restartComponent.sh" ]; then log "restartComponent.sh $T_INST (NodeManager credentials from WLS_ADMIN_USER/WLS_ADMIN_PASSWORD)"; read_secret WLS_ADMIN_PASSWORD "NodeManager/WebLogic admin password"; [ "$DRY_RUN" = 1 ] || printf '%s\n%s\n' "${WLS_ADMIN_USER:-weblogic}" "$WLS_ADMIN_PASSWORD" | to 300 "$T_DOMAIN/bin/restartComponent.sh" "$T_INST" >>"$LOG_FILE" 2>&1 || { err "restartComponent.sh failed"; return 1; }; else warn "no restartComponent.sh: restart OHS $T_INST yourself (RESTART_CMDS ohs:$T_INST=...)"; fi;;
     wls) warn "no RESTART_CMDS entry for $T_NAME: if verify shows the old certificate, restart $T_SERVER (console or the domain's start scripts)";;
     nm) warn "restart the NodeManager of $(basename "$T_DOMAIN") so it reads the new keystore (stopNodeManager.sh / startNodeManager.sh)";;
@@ -621,7 +629,7 @@ wallet_apply() {
   local new="$RUN_DIR/wallet_new" p12="$RUN_DIR/wallet.p12" p12pw; p12pw="$(openssl rand -base64 18)"
   make_p12 "$p12" "$p12pw"; build_wallet "$new" "$p12" "$p12pw"; rm -f "$p12"
   log "swapping wallet files into $T_WALLET (same path, config unchanged)"; [ "$DRY_RUN" = 1 ] && return 0
-  cp -p "$new/cwallet.sso" "$new/ewallet.p12" "$T_WALLET/" || die "copy into $T_WALLET failed"; [ -f "$new/ewallet.p12.lck" ] && cp -p "$new/ewallet.p12.lck" "$T_WALLET/" 2>/dev/null; return 0
+  cp -p "$new/cwallet.sso" "$new/ewallet.p12" "$T_WALLET/" || die "copy into $T_WALLET failed"; return 0
 }
 java_apply() { local pw; pw="$(ks_pass "$T_FILE" JKS)" || die "cacerts password unknown (CACERTS_PASSWORD)"; [ -n "$CHAIN" ] || CHAIN="$CERT"; import_cas "$T_FILE" "$pw" JKS; }
 
