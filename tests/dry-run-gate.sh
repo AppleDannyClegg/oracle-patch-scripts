@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behavioural gate for --dry-run: every change command of every script is run with --dry-run --yes on a PATH of stub
 # tools (sqlplus, sql, rman, opatch, srvctl, systemctl, ords, java, keytool, orapki, expdp, impdp, ggsci, datapatch,
-# lsnrctl, crsctl, emctl, wlst.sh, crontab; pgrep finds nothing) that record their argv and stdin and change nothing.
+# lsnrctl, crsctl, emctl, wlst.sh, dgmgrl, crontab; pgrep finds nothing) that record their argv and stdin and change nothing.
 # tests/dry-run-env/<tool>.sh, when present, is sourced first (with CMD set to the command): it gives the script what it needs to reach its change step - extra arguments (ARGS,
 # ARGS_<cmd>), fake homes under $T, and canned answers for the sqlplus stub ($ANSWERS: one 'regex|answer' per line). confirm() answers yes under
 # --dry-run in every script, so a statement without its own dry-run guard runs for real: this gate reads what the
@@ -14,7 +14,7 @@ exec </dev/null
 T="$(mktemp -d)"; STUB="$T/stub"; export DRY_LOG="$T/log" ANSWERS="$T/answers"; mkdir -p "$STUB" "$T/home"; : >"$ANSWERS"
 trap 'rm -rf "$T"' EXIT
 alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
-for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh crontab pgrep; do
+for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl crontab pgrep; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
 me="$(basename "$0")"; q=""; [ -t 0 ] || q="$(cat)"
@@ -47,6 +47,7 @@ for s in "${scripts[@]}"; do
     bad="$(awk '/^TOOL (sqlplus|sql) /{s=1;next} /^TOOL /{s=0} s && /^  > /{print}' "$DRY_LOG" | sed 's/^  > //' | grep -iE '^[[:space:]]*(alter[[:space:]]+(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)' | head -3)"
     bad="$bad$(grep -E '^TOOL (opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab -$)' "$DRY_LOG" | head -3)"
     bad="$bad$(awk '/^TOOL (rman|ggsci) /{s=1;next} /^TOOL /{s=0} s && /^  > /{print}' "$DRY_LOG" | grep -iE '^  > [[:space:]]*(restore|duplicate|delete|recover|backup|run|stop|start|alter|add)' | head -3)"
+    bad="$bad$(awk '/^TOOL dgmgrl /{s=1;next} /^TOOL /{s=0} s && /^  > /{print}' "$DRY_LOG" | grep -iE '^  > [[:space:]]*(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)' | head -3)"
     if [ -n "$bad" ]; then echo "FAIL $tool $c --dry-run changed something:"; printf '%s\n' "$bad" | sed 's/^/    /'; fail=$((fail+1))
     else pass=$((pass+1)); echo "ok   $tool $c: $(grep -c '^TOOL ' "$DRY_LOG") tool call(s), $(grep -oE '^TOOL [a-z.]+' "$DRY_LOG" | sort | uniq -c | awk '{printf "%s x%s ", $3, $1}')"; fi
   done

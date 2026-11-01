@@ -17,8 +17,8 @@ T="$(mktemp -d)"; STUB="$T/stub"; export DRY_LOG="$T/log" ANSWERS="$T/answers" F
 trap 'rm -rf "$T"' EXIT
 alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 # a changing call, on one line 'tool argv | stdin': the same verbs tests/dry-run-gate.sh forbids under --dry-run
-CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add)'
-for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh crontab pgrep; do
+CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add)|^dgmgrl .*\| *(.*; *)?(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)'
+for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl crontab pgrep; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
 me="$(basename "$0")"; q=""; [ -t 0 ] || q="$(cat)"
