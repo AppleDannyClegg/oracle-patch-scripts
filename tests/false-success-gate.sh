@@ -29,8 +29,8 @@ q=""; [ -t 0 ] || q="$(cat)"
 { echo "TOOL $me $*"; [ -n "$q" ] && printf '%s\n' "$q" | sed 's/^/  > /'; } >>"$DRY_LOG"
 [ "$me" = pgrep ] && exit 1                       # nothing is running on this box
 line="$me $* | $(printf '%s' "$q" | tr '\n' ';')"
-# RMAN's 'restore ... preview' and 'restore ... validate' read the backup pieces and write nothing (rman-ops validate/run): not a change
-ro="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | sed -E 's/restore [^;{}]*(preview|validate)[^;{}]*;?//g; s/set until[^;]*;//g; s/run *\{ *\}//g')"
+# RMAN's 'restore ... preview', 'restore ... validate' and 'backup validate' read the pieces or the datafiles and write nothing (rman-ops validate/run): not a change
+ro="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | sed -E 's/(restore|backup) [^;{}]*(preview|validate)[^;{}]*;?//g; s/set until[^;]*;//g; s/run *\{ *\}//g')"
 if [ -n "$FAIL_RE" ] && printf '%s' "$ro" | grep -qiE -- "$FAIL_RE"; then
   echo "FAILED $me $*" >>"$DRY_LOG"
   case "$me" in sqlplus|sql) echo "ERROR at line 1:"; echo "ORA-00600: internal error code (false-success gate)";; *) echo "$me: failed (false-success gate)" >&2;; esac
