@@ -519,8 +519,17 @@ images_switch() {
 images_revert() {
   local prev; prev="$(state_get images_prev_target)" || return 0
   [ -n "${APEX_IMAGES_DIR:-}" ] || return 0
-  if [ "$(state_get images_mode)" = link ]; then run_cmd ln -sfn "$prev" "$APEX_IMAGES_DIR"
-  elif [ -d "$prev" ]; then run_cmd rm -rf "$APEX_IMAGES_DIR" && run_cmd mv "$prev" "$APEX_IMAGES_DIR"; fi
+  # the proof is what APEX_IMAGES_DIR is afterwards, not the ln/mv status; the new images are moved aside before the
+  # old ones go back, so a failed mv leaves both on disk, named, instead of an images dir that is gone
+  if [ "$(state_get images_mode)" = link ]; then
+    run_cmd ln -sfn "$prev" "$APEX_IMAGES_DIR" || true
+    [ "$DRY_RUN" = 1 ] || [ "$(readlink "$APEX_IMAGES_DIR" 2>/dev/null)" = "$prev" ] || { err "$APEX_IMAGES_DIR does not point at $prev after the revert ($(ls -ld "$APEX_IMAGES_DIR" 2>&1))"; return 1; }
+  elif [ -d "$prev" ]; then
+    local aside; aside="$APEX_IMAGES_DIR.rolled-back-$(date +%Y%m%d%H%M)"
+    run_cmd mv "$APEX_IMAGES_DIR" "$aside" && run_cmd mv "$prev" "$APEX_IMAGES_DIR" || true
+    [ "$DRY_RUN" = 1 ] || { [ -d "$APEX_IMAGES_DIR" ] && [ ! -L "$APEX_IMAGES_DIR" ] && [ ! -e "$prev" ]; } || { err "$APEX_IMAGES_DIR is not the previous images dir put back ($(ls -ld "$APEX_IMAGES_DIR" 2>&1); previous $prev $([ -e "$prev" ] && echo 'still there' || echo gone); new images at $aside)"; return 1; }
+    [ "$DRY_RUN" = 1 ] || run_cmd rm -rf "$aside" || warn "the replaced images are still at $aside - remove by hand"
+  else err "the previous images dir $prev is gone: $APEX_IMAGES_DIR left serving the current images"; return 1; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -610,7 +619,7 @@ alter pluggable database $pdb open resetlogs;" >/dev/null && { done=1; log "Flas
     fi
   fi
   [ $done = 1 ] || { err "Rollback not completed: database is still on $APEX_VER ($APEX_SCHEMA). See Oracle's 'Reverting to a Previous Release After a Failed Upgrade Installation'."; ords_start || true; return 1; }
-  images_revert
+  images_revert || { state_set images_failed 1; state_set rolled_back 0; err "the database is back on $prev but the images dir was not put back (previous: $(state_get images_prev_target || echo '?')) - fix APEX_IMAGES_DIR by hand, then 'verify'"; ords_start || true; return 1; }
   state_set rolled_back 1
   ords_start || true
   if [ "$DRY_RUN" = 0 ] && [ "$(sql_val "(select count(*) from dba_users where username='$new_schema')")" = 1 ] && confirm "Drop the abandoned schema $new_schema now? (Oracle docs: 'DROP USER $new_schema CASCADE')"; then

@@ -449,7 +449,7 @@ cmd_apply() {
     log "Replacing $WLS_ORDS_WAR and redeploying '$WLS_ORDS_APP'"
     run_cmd cp -p "$war" "$WLS_ORDS_WAR" || return 1
     wls_deployer -redeploy -name "$WLS_ORDS_APP" || { err "redeploy failed (see log)"; return 1; }
-    [ -n "$ORDS_HOME" ] && switch_home "$nd"
+    if [ -n "$ORDS_HOME" ]; then switch_home "$nd" || { err "the war is deployed but $ORDS_HOME was not switched to $nd - applied not recorded; fix the link, then 'verify'"; return 1; }; fi
   else
     switch_home "$nd" || return 1
     log "ORDS_HOME now -> $nd"
@@ -490,10 +490,19 @@ cmd_rollback() {
   local failed=0
   if [ "$WLS_MODE" = 1 ]; then
     [ -f "$pw" ] && { run_cmd cp -p "$pw" "$WLS_ORDS_WAR" || { err "cannot put the old war back"; return 1; }; wls_deployer -redeploy -name "$WLS_ORDS_APP" || { err "redeploy of the old war failed"; failed=1; }; }
-    [ -n "$ORDS_HOME" ] && [ -d "$prev" ] && [ "$(readlink -f "$prev")" != "$(readlink -f "$ORDS_HOME")" ] && run_cmd ln -sfn "$prev" "$ORDS_HOME"
-  elif [ "$(state_get prev_was_link)" = 0 ] && [ -L "$ORDS_HOME" ]; then run_cmd rm -f "$ORDS_HOME" && run_cmd mv "$prev" "$ORDS_HOME"
+    [ -n "$ORDS_HOME" ] && [ -d "$prev" ] && [ "$(readlink -f "$prev")" != "$(readlink -f "$ORDS_HOME")" ] && { run_cmd ln -sfn "$prev" "$ORDS_HOME" || true; }
+  elif [ "$(state_get prev_was_link)" = 0 ] && [ -L "$ORDS_HOME" ]; then run_cmd rm -f "$ORDS_HOME" && run_cmd mv "$prev" "$ORDS_HOME" || true
   elif [ "$(readlink -f "$prev")" = "$(readlink -f "$ORDS_HOME")" ]; then log "$ORDS_HOME already is the previous release (apply did not get to the switch)"
-  else run_cmd ln -sfn "$prev" "$ORDS_HOME"; fi
+  else run_cmd ln -sfn "$prev" "$ORDS_HOME" || true; fi
+  # the proof is what ORDS_HOME is now, not the ln/mv status: a link must resolve to the previous release, a moved-back
+  # directory must be a real directory with bin/ords and the aside copy gone - otherwise rolled_back is not recorded
+  if [ "$DRY_RUN" = 0 ] && [ -n "$ORDS_HOME" ] && { [ -d "$prev" ] || [ -f "$pw" ]; }; then
+    if [ -L "$ORDS_HOME" ]; then
+      [ -d "$prev" ] && [ "$(readlink -f "$ORDS_HOME" 2>/dev/null)" != "$(readlink -f "$prev")" ] && { err "$ORDS_HOME still is not the previous release after the switch back ($(ls -ld "$ORDS_HOME" 2>&1)): binaries NOT switched back"; failed=1; }
+    elif [ -d "$prev" ] && [ "$(state_get prev_was_link)" = 0 ]; then
+      { [ -x "$ORDS_HOME/bin/ords" ] && [ ! -e "$prev" ]; } || { err "$ORDS_HOME is not the previous release put back ($(ls -ld "$ORDS_HOME" 2>&1); $prev $([ -e "$prev" ] && echo 'still there' || echo gone)): binaries NOT switched back"; failed=1; }
+    elif [ -d "$prev" ]; then err "$ORDS_HOME is neither a link to $prev nor the directory put back ($(ls -ld "$ORDS_HOME" 2>&1)): binaries NOT switched back"; failed=1; fi
+  fi
   local rp; rp="$(state_get restore_point || true)"
   # any pool whose schema was upgraded (pool_<name>=ok) is on the new schema, whether or not 'applied' was reached
   if [ -n "$rp" ] && grep -q '^pool_.*=ok' "$STATE_FILE" 2>/dev/null; then
