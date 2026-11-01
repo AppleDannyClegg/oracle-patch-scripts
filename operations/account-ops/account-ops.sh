@@ -347,14 +347,14 @@ cmd_heal() {
     [ "$code" = 503 ] && { warn "ORDS still 503 with open accounts: wrong password in the pool, or the database/listener is down. Pool users: $(for p in $ORDS_POOLS; do printf '%s=%s ' "$p" "$(ords_pool_user "$p")"; done). Try: ords --config $ORDS_CONFIG config --db-pool default verify ; tail $ORDS_CONFIG/../logs or journalctl -u ords"; grep -hE 'ORA-01017|ORA-28000|ORA-28001|ORA-28002|ORA-12514|ORA-12541' "${ORDS_HOME:-/nonexistent}"/logs/*.log /var/log/ords/*.log 2>/dev/null | tail -5 | sed 's/^/  log: /' >&2; }
     return 0
   fi
-  local t; for t in $bad; do IFS='|' read -r sid pdb u st <<<"$t"
+  local t hfail=0; for t in $bad; do IFS='|' read -r sid pdb u st <<<"$t"
     case "$st" in
       LOCKED*) warn "$sid$(cs "$pdb") $u is $st (lock date $(wp "$pdb" sql_val "$sid" "(select to_char(lock_date,'YYYY-MM-DD HH24:MI') from dba_users where username='$u')"); failed logins come from something using an OLD password - find it before unlocking or it locks again): $(stores_of "$u")"
-        confirm "unlock $u now?" && usql "$sid" "$pdb" "unlock $u" "alter user \"$u\" account unlock;";;
+        confirm "unlock $u now?" && { usql "$sid" "$pdb" "unlock $u" "alter user \"$u\" account unlock;" || { err "heal: unlock of $u failed"; hfail=$((hfail+1)); }; };;
       EXPIRED*GRACE*) warn "$sid$(cs "$pdb") $u is in its grace period: logins still work but will stop. Fix for good: 'profile' (no expiry) + 'reset' (new password everywhere)"
-        confirm "move $u to profile $SA_PROFILE now (stops the clock, does not un-expire)?" && { USERS="$u" ONLY_SID="$sid" ONLY_PDB="$([ "$pdb" = - ] || echo "$pdb")" cmd_profile; };;
+        confirm "move $u to profile $SA_PROFILE now (stops the clock, does not un-expire)?" && { USERS="$u" ONLY_SID="$sid" ONLY_PDB="$([ "$pdb" = - ] || echo "$pdb")" cmd_profile || { err "heal: profile change of $u failed"; hfail=$((hfail+1)); }; };;
       EXPIRED*) err "$sid$(cs "$pdb") $u is EXPIRED: every login fails (ORA-28001) until the password is reset. Stored in: $(stores_of "$u")"
-        if confirm "reset $u now with a generated password and propagate it?"; then USERS="$u" ONLY_SID="$sid" ONLY_PDB="$([ "$pdb" = - ] || echo "$pdb")" GENERATE=1 cmd_reset; else log "then do: account-ops.sh reset --user $u --sid $sid$([ "$pdb" = - ] || echo " --pdb $pdb") --generate"; fi;;
+        if confirm "reset $u now with a generated password and propagate it?"; then USERS="$u" ONLY_SID="$sid" ONLY_PDB="$([ "$pdb" = - ] || echo "$pdb")" GENERATE=1 cmd_reset || { err "heal: reset of $u failed"; hfail=$((hfail+1)); }; else log "then do: account-ops.sh reset --user $u --sid $sid$([ "$pdb" = - ] || echo " --pdb $pdb") --generate"; fi;;
       *) warn "$sid$(cs "$pdb") $u: $st";;
     esac
   done
@@ -365,7 +365,11 @@ cmd_heal() {
            else warn "ORDS does not answer at all (no HTTP): start it (ORDS_SERVICE or ORDS_STOP_CMD/ORDS_START_CMD let this script do it)"; fi;;
     esac
   fi
-  code="$(url_code "${ORDS_URL:-http://localhost:8080/ords/}" 15)"; log "ORDS after healing: HTTP ${code:-none}"; cmd_verify
+  code="$(url_code "${ORDS_URL:-http://localhost:8080/ords/}" 15)"; log "ORDS after healing: HTTP ${code:-none}"
+  # verify re-reads every account and ORDS; a heal action that failed is still a failed heal even if verify were to pass
+  local vrc=0; cmd_verify || vrc=1
+  [ "$hfail" -gt 0 ] && { state_set heal failed; err "heal: $hfail action(s) failed - see above, the accounts are as verify shows them"; return 1; }
+  return "$vrc"
 }
 
 main() {

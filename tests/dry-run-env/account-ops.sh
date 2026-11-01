@@ -1,6 +1,8 @@
 # shellcheck shell=bash disable=SC2034,SC2016   # sourced by tests/dry-run-gate.sh and tests/false-success-gate.sh: ARGS*, FAIL_*, OK* are read there
 # account-ops: one SID given explicitly (no oratab on a dev box), one service account, no ORDS/WebLogic/GoldenGate
-ST=OPEN; [ "$CMD" = unlock ] && ST=LOCKED   # unlock has something to do only on a locked account
+ST=OPEN; case "$CMD" in unlock|heal|run) ST=LOCKED;; esac   # unlock, and heal (run = heal), have something to do only on a locked account
+# heal probes ORDS with curl: answer 000 (no ORDS here) without touching the network
+printf '#!/bin/sh\necho "TOOL curl $*" >>"$DRY_LOG"; printf 000\n' >"$STUB/curl"; chmod +x "$STUB/curl"
 cat >"$ANSWERS" <<A
 from dba_users where username in|FREE|-|APPUSER|${ST:-OPEN}|NO
 v\\\$pdbs|
