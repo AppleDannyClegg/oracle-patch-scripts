@@ -480,12 +480,17 @@ ords_stop() {
   if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"
   elif [ "$WLS_MODE" = 1 ]; then wls_deployer -stop -name "$WLS_ORDS_APP" && { ORDS_RUNNING=""; state_set app_stopped 1; log "app $WLS_ORDS_APP stopped"; }; return $?
   elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
-  else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING"; fi
-  local t=60; while [ "$DRY_RUN" = 0 ] && [ $t -gt 0 ] && kill -0 "$ORDS_RUNNING" 2>/dev/null; do sleep 5; t=$((t - 5)); done
-  [ "$DRY_RUN" = 1 ] || ! kill -0 "$ORDS_RUNNING" 2>/dev/null || { [ "$FORCE" = 1 ] && kill -9 "$ORDS_RUNNING" && sleep 2; }
-  [ "$DRY_RUN" = 1 ] || ! kill -0 "$ORDS_RUNNING" 2>/dev/null || { err "ORDS (pid $ORDS_RUNNING) is still running after 60 s (--force sends kill -9)"; return 1; }
+  else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING" || { err "cannot signal ORDS pid $ORDS_RUNNING (owner: $(ps -o user= -p "$ORDS_RUNNING" 2>/dev/null || echo '?')): not stopped"; return 1; }; fi
+  [ "$DRY_RUN" = 1 ] && { ORDS_RUNNING=""; return 0; }
+  # the proof is the process table, not kill -0: kill -0 also fails on a process this user may not signal (EPERM), which read as 'gone'
+  local t=60; while [ $t -gt 0 ] && pid_alive "$ORDS_RUNNING"; do sleep 5; t=$((t - 5)); done
+  if pid_alive "$ORDS_RUNNING"; then
+    if [ "$FORCE" = 1 ]; then kill -9 "$ORDS_RUNNING" 2>/dev/null; sleep 2; fi
+    pid_alive "$ORDS_RUNNING" && { err "ORDS (pid $ORDS_RUNNING) is still running after 60 s$([ "$FORCE" = 1 ] || echo ' (--force sends kill -9)')"; return 1; }
+  fi
   ORDS_RUNNING=""
 }
+pid_alive() { ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
 ords_start() {
   ords_detect
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }

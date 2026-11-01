@@ -143,7 +143,7 @@ export_app() { # <row>
   mkdir -p "$wsdir"; rm -rf "$dir" "$dir.sql"
   if [ -d "$got" ]; then mv "$got" "$dir"; else mv "$got" "$dir.sql"; fi || { err "application $id: cannot move the export into $dir"; rm -rf "$tmp"; return 1; }   # -split gives a directory; a plain export gives f<ID>.sql
   normalise "$dir"; [ -f "$dir.sql" ] && normalise "$wsdir"
-  meta_write "$wsdir/f$id.meta" "$row"; rm -rf "$tmp"
+  meta_write "$wsdir/f$id.meta" "$row" || { err "application $id: cannot write $wsdir/f$id.meta (disk full?) - the export is on disk but unrecorded"; rm -rf "$tmp"; return 1; }; rm -rf "$tmp"
 }
 export_workspace() { # <ws row>
   local wsid ws schema users apps; IFS='|' read -r wsid ws schema users apps <<<"$1"

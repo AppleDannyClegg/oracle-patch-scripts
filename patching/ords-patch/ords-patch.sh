@@ -390,12 +390,17 @@ ords_stop() {
   if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"
   elif [ "$WLS_MODE" = 1 ]; then wls_deployer -stop -name "$WLS_ORDS_APP" && { ORDS_RUNNING=""; state_set app_stopped 1; log "app $WLS_ORDS_APP stopped"; }; return $?
   elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
-  else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING"; fi
+  else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING" || { err "cannot signal ORDS pid $ORDS_RUNNING (owner: $(ps -o user= -p "$ORDS_RUNNING" 2>/dev/null || echo '?')): not stopped"; return 1; }; fi
   [ "$DRY_RUN" = 1 ] && return 0
-  local t=60; while [ $t -gt 0 ] && kill -0 "$ORDS_RUNNING" 2>/dev/null; do sleep 5; t=$((t - 5)); done
-  if kill -0 "$ORDS_RUNNING" 2>/dev/null; then [ "$FORCE" = 1 ] && kill -9 "$ORDS_RUNNING" || { err "ORDS did not stop (use --force)"; return 1; }; fi
+  # the proof is the process table, not kill -0: kill -0 also fails on a process this user may not signal (EPERM), which read as 'gone'
+  local t=60; while [ $t -gt 0 ] && pid_alive "$ORDS_RUNNING"; do sleep 5; t=$((t - 5)); done
+  if pid_alive "$ORDS_RUNNING"; then
+    if [ "$FORCE" = 1 ]; then kill -9 "$ORDS_RUNNING" 2>/dev/null; sleep 2; fi
+    pid_alive "$ORDS_RUNNING" && { err "ORDS (pid $ORDS_RUNNING) is still running after 60 s$([ "$FORCE" = 1 ] || echo ' (--force sends kill -9)')"; return 1; }
+  fi
   ORDS_RUNNING=""; log "ORDS stopped"
 }
+pid_alive() { ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
 ords_start() {
   detect || true
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }
@@ -467,10 +472,13 @@ cmd_verify() {
   wait_for_url "$ORDS_URL" 30 && log "URL answers: $ORDS_URL" || { err "$ORDS_URL not answering"; ok=0; }
   local pool
   local ob="${ORDS_HOME:-$(state_get new_dir || true)}"
-  for pool in $POOLS; do
-    [ -x "$ob/bin/ords" ] || break
+  # the pools are checked with the release's own bin/ords: none recorded (WebLogic, war only) is the documented reliance on URL + schema
+  # above; a recorded directory WITHOUT bin/ords is a wrong or half-unpacked release and used to end the loop silently as a pass
+  if [ -z "$ob" ]; then warn "no ORDS_HOME and no release directory recorded: pools not verified (URL and schema checks only)"
+  elif [ ! -x "$ob/bin/ords" ]; then err "$ob/bin/ords is missing or not executable: the pools ($POOLS) could not be verified"; ok=0
+  else for pool in $POOLS; do
     if "$ob/bin/ords" --config "$ORDS_CONFIG" config --db-pool "$pool" verify >>"$LOG_FILE" 2>&1; then log "pool $pool verifies"; else err "pool $pool: 'ords config verify' failed (see log)"; ok=0; fi
-  done
+  done; fi
   if sql_available && [ "$(sql_val "(select count(*) from dba_registry where comp_id='APEX')")" = 1 ]; then
     log "APEX present: running sys.validate_apex (Oracle requires this after every ORDS upgrade)"
     run_sql "begin sys.validate_apex; end;
