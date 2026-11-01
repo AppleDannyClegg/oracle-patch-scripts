@@ -405,17 +405,19 @@ cmd_create() {
 # ---------------------------------------------------------------------------
 cmd_rename_services() {
   discover; reuse_or_init rename-services; skipped rename-services && return 0
-  local rows; rows="$(plines "select name||'|'||network_name from dba_services where name not like 'SYS%' and upper(name)<>upper('$TEST_PDB') and name not like '%XDB';" 2>/dev/null)"
+  # every per-object step counts its failures: <step>=ok after a failed statement was the false-success gate's finding
+  local fail=0 rows; rows="$(plines "select name||'|'||network_name from dba_services where name not like 'SYS%' and upper(name)<>upper('$TEST_PDB') and name not like '%XDB';" 2>/dev/null)"
   local line; while IFS='|' read -r name net; do [ -z "$name" ] && continue
     local new=""; local m; for m in ${SERVICE_MAP//,/ }; do [ "$(printf '%s' "${m%%:*}" | uc)" = "$(printf '%s' "$name" | uc)" ] && new="${m#*:}"; done
     [ -z "$new" ] && [ -n "$PROD_PDB" ] && printf '%s' "$name" | grep -qi "$PROD_PDB" && new="$(printf '%s' "$name" | sed "s/$PROD_PDB/$TEST_PDB/I")"
     [ -z "$new" ] && [ -n "$PROD_HOST_PATTERN" ] && printf '%s' "$name" | grep -qiE "$PROD_HOST_PATTERN" && new="$(printf '%s' "$name" | sed -E "s/$PROD_HOST_PATTERN/test/I")"
     if [ -n "$new" ]; then
       log "service $name -> $new"
-      do_sql pdb "replace service $name" "begin begin dbms_service.stop_service('$name'); exception when others then null; end; dbms_service.delete_service('$name'); dbms_service.create_service('$new','$new'); dbms_service.start_service('$new'); end;\n/" || warn "could not replace service $name"
+      do_sql pdb "replace service $name" "begin begin dbms_service.stop_service('$name'); exception when others then null; end; dbms_service.delete_service('$name'); dbms_service.create_service('$new','$new'); dbms_service.start_service('$new'); end;\n/" || { err "could not replace service $name (PROD's service name is still published)"; fail=1; }
     else log "service $name kept"; fi
   done <<<"$rows"
   [ -n "$GRID_HOME" ] && warn "clusterware: PROD's srvctl services are not copied by a PDB clone; add test ones with srvctl add service -d $TEST_DBUN -pdb $TEST_PDB -s <name>"
+  [ "$fail" = 0 ] || { state_set rename_services failed; return 1; }
   state_set rename_services ok
 }
 
@@ -432,15 +434,16 @@ cmd_mask() {
 
 cmd_relock() {
   discover; reuse_or_init relock; skipped relock && return 0
-  local keep; keep="$(printf '%s,%s' "$ACCOUNT_WHITELIST" "$TEST_ACCOUNTS" | tr ',' '\n' | grep . | uc | sed "s/.*/'&'/" | paste -sd, -)"; [ -z "$keep" ] && keep="'NONE_'"
+  local fail=0 keep; keep="$(printf '%s,%s' "$ACCOUNT_WHITELIST" "$TEST_ACCOUNTS" | tr ',' '\n' | grep . | uc | sed "s/.*/'&'/" | paste -sd, -)"; [ -z "$keep" ] && keep="'NONE_'"
   local to_lock; to_lock="$(plines "select username from dba_users where oracle_maintained='N' and account_status not like '%LOCKED%' and username not in ($keep) order by 1;" | tr '\n' ' ')"
   log "locking $(printf '%s' "$to_lock" | wc -w | tr -d ' ') account(s): $to_lock"
-  local u; for u in $to_lock; do do_sql pdb "lock $u" "alter user \"$u\" account lock;" || true; done
+  local u; for u in $to_lock; do do_sql pdb "lock $u" "alter user \"$u\" account lock;" || fail=1; done
   if [ -n "$TEST_ACCOUNTS" ]; then
     read_secret TEST_ACCOUNT_PASSWORD "new password for the test accounts ($TEST_ACCOUNTS)"
-    for u in ${TEST_ACCOUNTS//,/ }; do plines "select 1 from dba_users where username=upper('$u');" | grep -q 1 || { warn "test account $u does not exist in the clone (preserved DDL may create it in reimport)"; continue; }; do_sql pdb "reset + unlock $u" "alter user \"$(printf '%s' "$u" | uc)\" identified by \"$TEST_ACCOUNT_PASSWORD\" account unlock;" || true; done
+    for u in ${TEST_ACCOUNTS//,/ }; do plines "select 1 from dba_users where username=upper('$u');" | grep -q 1 || { warn "test account $u does not exist in the clone (preserved DDL may create it in reimport)"; continue; }; do_sql pdb "reset + unlock $u" "alter user \"$(printf '%s' "$u" | uc)\" identified by \"$TEST_ACCOUNT_PASSWORD\" account unlock;" || fail=1; done
   fi
-  for u in ${ACCOUNT_WHITELIST//,/ }; do do_sql pdb "unlock $u" "alter user \"$(printf '%s' "$u" | uc)\" account unlock;" >/dev/null 2>&1 || true; done
+  for u in ${ACCOUNT_WHITELIST//,/ }; do do_sql pdb "unlock $u" "alter user \"$(printf '%s' "$u" | uc)\" account unlock;" >/dev/null 2>&1 || true; done   # whitelisted names that do not exist here are fine
+  [ "$fail" = 0 ] || { state_set relock failed; err "relock: an account is NOT locked or reset (see $LOG_FILE) - production-named accounts may still be open"; return 1; }
   state_set relock ok
 }
 
@@ -452,7 +455,7 @@ link_ddl() { local owner="$1"; shift; local stmt="$*"
   esac; }
 cmd_fix_dblinks() {
   discover; reuse_or_init fix-dblinks; skipped fix-dblinks && return 0
-  local rows; rows="$(plines "select owner||'|'||db_link||'|'||nvl(host,'') from dba_db_links;" 2>/dev/null)"
+  local fail=0 rows; rows="$(plines "select owner||'|'||db_link||'|'||nvl(host,'') from dba_db_links;" 2>/dev/null)"
   [ -z "$rows" ] && { log "no database links in $TEST_PDB"; state_set fix_dblinks ok; return 0; }
   local owner link host; while IFS='|' read -r owner link host; do [ -z "$link" ] && continue
     local mapped=""; local m; for m in ${DBLINK_MAP//,/ }; do [ "$(printf '%s' "${m%%=*}" | uc)" = "$(printf '%s' "$link" | uc)" ] && mapped="${m#*=}"; done
@@ -461,13 +464,14 @@ cmd_fix_dblinks() {
       local user; user="$(plines "select username from dba_db_links where owner='$owner' and db_link='$link';" | head -1)"
       local pw_var; pw_var="DBLINK_PASSWORD_$(printf '%s' "$link" | tr -c 'A-Za-z0-9\n' '_' | uc)"; read_secret "$pw_var" "password of $user for link $link"
       local pfx=""; [ "$owner" = PUBLIC ] && pfx="public "
-      do_sql pdb "re-create $link" "$(link_ddl "$owner" "drop ${pfx}database link \"$link\"")\n$(link_ddl "$owner" "create ${pfx}database link \"$link\" connect to \"$user\" identified by \"${!pw_var}\" using '$mapped'")" || warn "could not re-create $link (as $owner)"
+      do_sql pdb "re-create $link" "$(link_ddl "$owner" "drop ${pfx}database link \"$link\"")\n$(link_ddl "$owner" "create ${pfx}database link \"$link\" connect to \"$user\" identified by \"${!pw_var}\" using '$mapped'")" || { err "could not re-create $link (as $owner)"; fail=1; }
     elif [ -n "$PROD_HOST_PATTERN" ] && printf '%s' "$host" | grep -qiE "$PROD_HOST_PATTERN"; then
       log "link $owner.$link points at production ($host): dropping"
       local pfx=""; [ "$owner" = PUBLIC ] && pfx="public "
-      do_sql pdb "drop $owner.$link" "$(link_ddl "$owner" "drop ${pfx}database link \"$link\"")" || warn "drop of $owner.$link failed (run as $owner through dbms_sys_sql) - drop it as $owner, or use DBLINK_MAP to re-point it"
+      do_sql pdb "drop $owner.$link" "$(link_ddl "$owner" "drop ${pfx}database link \"$link\"")" || { err "drop of $owner.$link failed (run as $owner through dbms_sys_sql): a link to production is still in $TEST_PDB - drop it as $owner, or use DBLINK_MAP to re-point it"; fail=1; }
     else log "link $owner.$link -> $host kept"; fi
   done <<<"$rows"
+  [ "$fail" = 0 ] || { state_set fix_dblinks failed; return 1; }
   state_set fix_dblinks ok
 }
 
@@ -475,44 +479,50 @@ cmd_fix_apex() {
   discover; reuse_or_init fix-apex; skipped fix-apex && return 0
   local ver; ver="$(pval "(select nvl(max(version_no),'none') from apex_release)" 2>/dev/null)"; [ -z "$ver" ] || [ "$ver" = none ] && { log "no APEX in $TEST_PDB"; state_set fix_apex ok; return 0; }
   log "APEX $ver in $TEST_PDB"
-  local kv; local saved="$RUN_DIR/preserve/apex_params.txt"
+  local fail=0 kv; local saved="$RUN_DIR/preserve/apex_params.txt"
   if [ "$APEX_RESTORE_PARAMS" = yes ] && [ -s "$saved" ]; then
-    while IFS='=' read -r k v; do [ -z "$k" ] && continue; do_sql pdb "apex $k = (old TEST value)" "begin apex_instance_admin.set_parameter('$k','$(printf '%s' "$v" | sed "s/'/''/g")'); commit; end;\n/" || true; done <"$saved"
+    while IFS='=' read -r k v; do [ -z "$k" ] && continue; do_sql pdb "apex $k = (old TEST value)" "begin apex_instance_admin.set_parameter('$k','$(printf '%s' "$v" | sed "s/'/''/g")'); commit; end;\n/" || fail=1; done <"$saved"
   fi
-  for kv in ${APEX_PARAMS//,/ }; do do_sql pdb "apex ${kv%%=*}" "begin apex_instance_admin.set_parameter('${kv%%=*}','$(printf '%s' "${kv#*=}" | sed "s/'/''/g")'); commit; end;\n/" || true; done
+  for kv in ${APEX_PARAMS//,/ }; do do_sql pdb "apex ${kv%%=*}" "begin apex_instance_admin.set_parameter('${kv%%=*}','$(printf '%s' "${kv#*=}" | sed "s/'/''/g")'); commit; end;\n/" || fail=1; done
   [ -n "${APEX_URL_REPLACE:-}" ] && warn "APEX_URL_REPLACE: URLs inside applications (REST data sources, web credentials, substitution strings) are application data - put those UPDATEs in MASK_SCRIPT; this step only sets instance parameters"
   plines "select name||'='||value from apex_instance_parameters where name in ('SMTP_HOST_ADDRESS','SMTP_FROM','EMAIL_INSTANCE_URL','IMAGE_PREFIX','WALLET_PATH') order by 1;" 2>/dev/null | sed 's/^/  apex: /' | tee -a "$LOG_FILE" >&2
+  [ "$fail" = 0 ] || { state_set fix_apex failed; err "fix-apex: an instance parameter was not set (see $LOG_FILE) - PROD's mail host or URL may still be in place"; return 1; }
   state_set fix_apex ok
 }
 
 cmd_fix_scheduler() {
   discover; reuse_or_init fix-scheduler; skipped fix-scheduler && return 0
+  local fail=0
   case "$(printf '%s' "$DISABLE_JOBS" | uc)" in
     NONE) log "DISABLE_JOBS=NONE: scheduler jobs left as they came from PROD (they WILL run here)";;
     ALL) local jobs; jobs="$(plines "select owner||'.'||job_name from dba_scheduler_jobs where enabled='TRUE' and owner not in (select username from dba_users where oracle_maintained='Y');" | tr '\n' ' ')"
-      log "disabling $(printf '%s' "$jobs" | wc -w | tr -d ' ') enabled job(s)"; local j; for j in $jobs; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('\"${j%%.*}\".\"$(printf '%s' "${j#*.}" | sed "s/'/''/g")\"', force=>true); end;\n/" || true; done
-      local saved="$RUN_DIR/preserve/jobs.txt"; [ -s "$saved" ] && { log "re-enabling what the old TEST had enabled"; grep '|TRUE$' "$saved" | cut -d'|' -f1 | while read -r j; do do_sql pdb "enable $j (was enabled on the old TEST)" "begin dbms_scheduler.enable('\"${j%%.*}\".\"${j#*.}\"'); end;\n/" >/dev/null 2>&1 || true; done; };;
-    *) local j; for j in ${DISABLE_JOBS//,/ }; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('$j', force=>true); end;\n/" || true; done;;
+      log "disabling $(printf '%s' "$jobs" | wc -w | tr -d ' ') enabled job(s)"; local j; for j in $jobs; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('\"${j%%.*}\".\"$(printf '%s' "${j#*.}" | sed "s/'/''/g")\"', force=>true); end;\n/" || fail=1; done
+      local saved="$RUN_DIR/preserve/jobs.txt"; [ -s "$saved" ] && { log "re-enabling what the old TEST had enabled"; while read -r j; do do_sql pdb "enable $j (was enabled on the old TEST)" "begin dbms_scheduler.enable('\"${j%%.*}\".\"${j#*.}\"'); end;\n/" >/dev/null 2>&1 || warn "could not re-enable $j (it may not exist in the clone)"; done < <(grep '|TRUE$' "$saved" | cut -d'|' -f1); };;
+    *) local j; for j in ${DISABLE_JOBS//,/ }; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('$j', force=>true); end;\n/" || fail=1; done;;
   esac
+  [ "$fail" = 0 ] || { state_set fix_scheduler failed; err "fix-scheduler: a job is still enabled (see $LOG_FILE) - it WILL run here with PROD's settings"; return 1; }
   state_set fix_scheduler ok
 }
 
 cmd_fix_directories() {
   discover; reuse_or_init fix-directories; skipped fix-directories && return 0
   [ -z "$DIRECTORY_MAP" ] && { log "no DIRECTORY_MAP; directories: $(plines "select listagg(directory_name||'='||directory_path,' ') within group (order by 1) from dba_directories where directory_path not like '%/rdbms/%';" | head -1)"; state_set fix_directories ok; return 0; }
-  local m; for m in ${DIRECTORY_MAP//,/ }; do local from="${m%%=*}" to="${m#*=}"
-    plines "select directory_name||'|'||directory_path from dba_directories where directory_path like '$from%';" | while IFS='|' read -r n p; do [ -z "$n" ] && continue; local np="$to${p#"$from"}"; do_sql pdb "directory $n: $p -> $np" "create or replace directory \"$n\" as '$np';" || true; [ -d "$np" ] || warn "  $np does not exist on this host"; done
+  local fail=0 m; for m in ${DIRECTORY_MAP//,/ }; do local from="${m%%=*}" to="${m#*=}"
+    while IFS='|' read -r n p; do [ -z "$n" ] && continue; local np="$to${p#"$from"}"; do_sql pdb "directory $n: $p -> $np" "create or replace directory \"$n\" as '$np';" || fail=1; [ -d "$np" ] || warn "  $np does not exist on this host"; done < <(plines "select directory_name||'|'||directory_path from dba_directories where directory_path like '$from%';")
   done
+  [ "$fail" = 0 ] || { state_set fix_directories failed; err "fix-directories: a directory still points under its PROD path (see $LOG_FILE)"; return 1; }
   state_set fix_directories ok
 }
 
 cmd_reimport() {
   discover; reuse_or_init reimport; skipped reimport && return 0
   local d="$RUN_DIR/preserve"; [ -d "$d" ] || { log "nothing preserved in this run ($d missing)"; state_set reimport ok; return 0; }
-  local f; for f in "$d"/01_profiles.sql "$d"/02_roles.sql "$d"/03_users.sql "$d"/04_grants.sql "$d"/06_directories.sql "$d"/05_dblinks.sql; do
+  local fail=0 f; for f in "$d"/01_profiles.sql "$d"/02_roles.sql "$d"/03_users.sql "$d"/04_grants.sql "$d"/06_directories.sql "$d"/05_dblinks.sql; do
     [ -s "$f" ] || continue; log "replaying $(basename "$f") (objects that already exist raise errors that are ignored)"; [ "$DRY_RUN" = 1 ] && continue
     psql "set echo on feedback on\n@$f" >"$RUN_DIR/reimport_$(basename "$f" .sql).log" 2>&1
-    local okn errn; okn="$(grep -cE 'created|succeeded|altered' "$RUN_DIR/reimport_$(basename "$f" .sql).log")"; errn="$(grep -cE '^ORA-' "$RUN_DIR/reimport_$(basename "$f" .sql).log")"; log "  $okn ok, $errn errors (ORA-01920/01921/02379 'already exists' are expected)"
+    local okn errn other; okn="$(grep -cE 'created|succeeded|altered' "$RUN_DIR/reimport_$(basename "$f" .sql).log")"; errn="$(grep -cE '^ORA-' "$RUN_DIR/reimport_$(basename "$f" .sql).log")"; log "  $okn ok, $errn errors (ORA-01920/01921/02379/00955 'already exists' are expected)"
+    # anything but 'already exists' means a definition did not come back (false-success gate: reimport=ok after ORA-00600)
+    other="$(grep -E '^ORA-' "$RUN_DIR/reimport_$(basename "$f" .sql).log" | grep -vE '^ORA-(01920|01921|02379|00955)' | head -2 | tr '\n' ';')"; [ -z "$other" ] || { err "  $(basename "$f"): $other"; fail=1; }
   done
   # links re-created from the old TEST must not point at production either
   [ -s "$d/05_dblinks.sql" ] && [ -n "$PROD_HOST_PATTERN" ] && grep -qiE "$PROD_HOST_PATTERN" "$d/05_dblinks.sql" && warn "the old TEST had links matching PROD_HOST_PATTERN; fix-dblinks runs again in verify's check - drop them"
@@ -527,10 +537,11 @@ cmd_reimport() {
     local irc=0; [ "$DRY_RUN" = 1 ] || dp_run impdp schemas="$PRESERVE_SCHEMAS" directory="$idir" dumpfile="$dump" logfile="imp_${dump%.dmp}.log" table_exists_action=replace || irc=$?
     if [ "$DRY_RUN" != 1 ]; then local before after; before="$(state_get preserve_objects || echo 0)"; after="$(plines "select count(*) from dba_objects where owner in ($(printf '%s' "$PRESERVE_SCHEMAS" | uc | sed "s/[^,]*/'&'/g"));" | head -1)"
       log "preserved schemas: $after object(s) now, $before before the refresh"
-      [ "${after:-0}" -lt "${before:-0}" ] && { err "impdp brought back only $after of $before objects of $PRESERVE_SCHEMAS (rc $irc) - see $LOG_FILE and the Data Pump log; the old TEST is $([ "$KEEP_OLD" = 1 ] && echo "${TEST_PDB}_OLD (rollback restores it)" || echo 'gone: restore the schemas from the dump by hand')"; return 1; }
+      [ "${after:-0}" -lt "${before:-0}" ] && { err "impdp brought back only $after of $before objects of $PRESERVE_SCHEMAS (rc $irc) - see $LOG_FILE and the Data Pump log; the old TEST is $([ "$KEEP_OLD" = 1 ] && echo "${TEST_PDB}_OLD (rollback restores it)" || echo 'gone: restore the schemas from the dump by hand')"; return 1; fail=1; }
       [ "$irc" != 0 ] && warn "impdp finished with warnings (rc $irc): check imp_${dump%.dmp}.log"; fi
   fi
   [ "$DRY_RUN" = 1 ] || psql "@?/rdbms/admin/utlrp.sql" >>"$LOG_FILE" 2>&1
+  [ "$fail" = 0 ] || { state_set reimport failed; err "reimport incomplete (see $LOG_FILE): TEST-only definitions or schemas are missing from $TEST_PDB"; return 1; }
   state_set reimport ok
 }
 

@@ -470,8 +470,15 @@ cmd_rollback() {
 
 cmd_cleanup() {
   discover; reuse_or_init cleanup
-  local rp; for rp in $(state_get restore_points || true); do local s="${rp%%:*}" name="${rp#*:}"; confirm "Drop restore point $name in $s?" && { [ "$DRY_RUN" = 1 ] || sql_run "$s" "drop restore point $name;" >>"$LOG_FILE" 2>&1; log "$s: dropped $name"; }; done
-  local others; others="$(sql_lines "$SID" "select name from v\$restore_point where name like 'DGSWITCH_%';" 2>/dev/null | tr '\n' ' ')"; [ -n "$others" ] && log "other DGSWITCH restore points still present: $others"; return 0
+  local rp fail=0 out; for rp in $(state_get restore_points || true); do local s="${rp%%:*}" name="${rp#*:}"; confirm "Drop restore point $name in $s?" || continue
+    if [ "$DRY_RUN" = 1 ]; then log "dry-run: would drop restore point $name in $s"; continue; fi
+    # a failed drop is reported, not logged as 'dropped' (false-success gate)
+    out="$(sql_run "$s" "whenever sqlerror exit 1\ndrop restore point $name;")"; printf '%s\n' "$out" >>"$LOG_FILE"
+    if printf '%s' "$out" | grep -qE 'ORA-[0-9]+|SP2-[0-9]+'; then err "$s: drop restore point $name failed: $(printf '%s' "$out" | grep -E 'ORA-|SP2-' | head -1)"; fail=1; else log "$s: dropped $name"; fi
+  done
+  local others; others="$(sql_lines "$SID" "select name from v\$restore_point where name like 'DGSWITCH_%';" 2>/dev/null | tr '\n' ' ')"; [ -n "$others" ] && log "other DGSWITCH restore points still present: $others"
+  [ "$fail" = 0 ] || { state_set cleanup failed; return 1; }
+  [ "$DRY_RUN" = 1 ] || state_set cleanup ok; return 0
 }
 
 # ---------------------------------------------------------------------------
