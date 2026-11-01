@@ -220,17 +220,21 @@ cmd_preflight() {
   printf '%s\n' "$val" | grep -qiE "^ *$TARGET: *Off" && warn "flashback database is OFF on $TARGET"
   # local checks (SQL): gap, recent errors, RMAN, long transactions, switchover_status
   local gap; if [ "$LOCAL_ROLE" = PRIMARY ]; then gap="$(sql_val "$SID" "(select count(*) from v\$archive_dest_status where status not in ('INACTIVE','DEFERRED') and gap_status is not null and gap_status<>'NO GAP')")"; else gap="$(sql_val "$SID" "(select count(*) from v\$archive_gap)")"; fi
-  [ "${gap:-0}" != 0 ] && { err "$LOCAL_DBUN: archive log gap reported ($gap)"; fail=1; }
+  # an unreadable count is unknown, not zero: the gap check is a hard gate, so empty fails it; the advisory counts say so
+  if [ -z "$gap" ]; then err "$LOCAL_DBUN: could not read the archive gap status (query failed) - not assuming NO GAP"; fail=1; elif [ "$gap" != 0 ]; then err "$LOCAL_DBUN: archive log gap reported ($gap)"; fail=1; fi
   local derr; derr="$(sql_val "$SID" "(select count(*) from v\$dataguard_status where severity in ('Error','Fatal') and timestamp>sysdate-1/24)")"
+  [ -z "$derr" ] && warn "$LOCAL_DBUN: could not read v\$dataguard_status (query failed)"
   [ "${derr:-0}" != 0 ] && { warn "$LOCAL_DBUN: $derr Error/Fatal rows in v\$dataguard_status in the last hour:"; sql_lines "$SID" "select to_char(timestamp,'HH24:MI')||' '||substr(message,1,120) from (select * from v\$dataguard_status where severity in ('Error','Fatal') and timestamp>sysdate-1/24 order by timestamp desc) where rownum<=5;" | sed 's/^/    /' >&2; }
-  [ "$(sql_val "$SID" "(select count(*) from v\$rman_backup_job_details where status='RUNNING')")" != 0 ] && { err "$LOCAL_DBUN: an RMAN backup is running"; fail=1; }
+  local rb; rb="$(sql_val "$SID" "(select count(*) from v\$rman_backup_job_details where status='RUNNING')")"
+  if [ -z "$rb" ]; then err "$LOCAL_DBUN: could not read v\$rman_backup_job_details (query failed)"; fail=1; elif [ "$rb" != 0 ]; then err "$LOCAL_DBUN: an RMAN backup is running"; fail=1; fi
   pgrep -f 'OPatch/datapatch|datapatc[h]' >/dev/null 2>&1 && { err "datapatch is running on this host"; fail=1; }
-  [ "$(sql_val "$SID" "(select count(*) from v\$backup where status='ACTIVE')")" != 0 ] && { err "$LOCAL_DBUN: datafiles in hot backup mode"; fail=1; }
+  local hb; hb="$(sql_val "$SID" "(select count(*) from v\$backup where status='ACTIVE')")"
+  if [ -z "$hb" ]; then err "$LOCAL_DBUN: could not read v\$backup (query failed)"; fail=1; elif [ "$hb" != 0 ]; then err "$LOCAL_DBUN: datafiles in hot backup mode"; fail=1; fi
   if [ "$LOCAL_ROLE" = PRIMARY ]; then
     local so; so="$(sql_val "$SID" "(select switchover_status from v\$database)")"
     case "$so" in "TO STANDBY"|"SESSIONS ACTIVE") log "$LOCAL_DBUN: switchover_status $so";; *) err "$LOCAL_DBUN: switchover_status '$so' (expected TO STANDBY or SESSIONS ACTIVE)"; fail=1;; esac
-    local ltx; ltx="$(sql_val "$SID" "(select count(*) from v\$transaction where start_date<sysdate-10/1440)")"; [ "${ltx:-0}" != 0 ] && warn "$LOCAL_DBUN: $ltx transaction(s) open for more than 10 minutes - they will be rolled back by the switchover (users disconnected)"
-    local jobs; jobs="$(sql_val "$SID" "(select count(*) from dba_scheduler_running_jobs)")"; [ "${jobs:-0}" != 0 ] && warn "$LOCAL_DBUN: $jobs scheduler job(s) running"
+    local ltx; ltx="$(sql_val "$SID" "(select count(*) from v\$transaction where start_date<sysdate-10/1440)")"; [ -z "$ltx" ] && warn "$LOCAL_DBUN: could not read v\$transaction (query failed)"; [ "${ltx:-0}" != 0 ] && warn "$LOCAL_DBUN: $ltx transaction(s) open for more than 10 minutes - they will be rolled back by the switchover (users disconnected)"
+    local jobs; jobs="$(sql_val "$SID" "(select count(*) from dba_scheduler_running_jobs)")"; [ -z "$jobs" ] && warn "$LOCAL_DBUN: could not read dba_scheduler_running_jobs (query failed)"; [ "${jobs:-0}" != 0 ] && warn "$LOCAL_DBUN: $jobs scheduler job(s) running"
     log "$LOCAL_DBUN: $(sql_val "$SID" "(select count(*) from v\$session where type='USER' and username is not null)") user sessions will be disconnected"
     [ "$(sql_val "$SID" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)" != 0 ] && warn "$LOCAL_DBUN: some PDBs are not READ WRITE (note what should be open on the new primary; the broker opens what the state says)"
   else
@@ -426,7 +430,7 @@ cmd_verify() {
   CFG=""; discover
   if [ "$LOCAL_ROLE" = PRIMARY ]; then
     [ "$LOCAL_OPEN" = "READ WRITE" ] || { err "$LOCAL_DBUN is primary but $LOCAL_OPEN"; fail=1; }
-    local closed; closed="$(sql_val "$SID" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ "${closed:-0}" != 0 ] && warn "$LOCAL_DBUN: $closed PDB(s) not READ WRITE"
+    local closed; closed="$(sql_val "$SID" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ -z "$closed" ] && warn "$LOCAL_DBUN: could not read v\$pdbs (query failed)"; [ "${closed:-0}" != 0 ] && warn "$LOCAL_DBUN: $closed PDB(s) not READ WRITE"
     local active; active="$(sql_lines "$SID" "select listagg(name,',') within group (order by name) from v\$active_services where name not like 'SYS%' and name not like '%XDB';" | head -1)"; log "$LOCAL_DBUN: active services: ${active:-none}"
     local s; for s in ${PRIMARY_SERVICES//,/ }; do printf ',%s,' "$active" | grep -qiF ",$s," || { err "service $s is not running on the primary"; fail=1; }; done
   else

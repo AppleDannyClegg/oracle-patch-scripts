@@ -228,9 +228,11 @@ cmd_preflight() {
       [ "$pcs" = "$tcs" ] || { [ "$tcs" = AL32UTF8 ] && warn "charset PROD $pcs, TEST $tcs (superset; plug-in allowed but check)" || { err "charset mismatch PROD $pcs vs TEST $tcs"; fail=1; }; }
       local pco tco; pco="$(prod_val "(select value from v\$parameter where name='compatible')")"; tco="$(rval "(select value from v\$parameter where name='compatible')")"; version_ge "$tco" "$pco" || { err "compatible TEST $tco < PROD $pco"; fail=1; }
       local enc; enc="$(prod_val "(select count(*) from v\$encrypted_tablespaces where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"
+      # an empty answer over the link is unknown, not zero: TDE and size decide whether the clone can work at all
+      [ -z "$enc" ] && { err "could not read PROD's encrypted tablespaces over the link (query failed) - not assuming none"; fail=1; }
       if [ "${enc:-0}" != 0 ]; then local ks; ks="$(rval "(select nvl(max(status),'none') from v\$encryption_wallet where con_id in (0,1))")"; [ "$ks" = OPEN ] || { err "PROD PDB has $enc encrypted tablespace(s) and TEST's keystore is $ks"; fail=1; }; [ -n "${KEYSTORE_PASSWORD:-}" ] || warn "TDE source and no KEYSTORE_PASSWORD: the clone needs 'keystore identified by' (one_step_plugin_for_pdb_with_tde) - will prompt"; fi
       # space
-      local need; need="$(prod_val "(select ceil(sum(bytes)/1048576) from cdb_data_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"; need="${need:-0}"; local tmp; tmp="$(prod_val "(select ceil(nvl(sum(bytes),0)/1048576) from cdb_temp_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"; need=$((need + ${tmp:-0}))
+      local need; need="$(prod_val "(select ceil(sum(bytes)/1048576) from cdb_data_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"; [ -z "$need" ] && { err "could not read the PROD PDB size over the link (query failed) - the space check needs it"; fail=1; }; need="${need:-0}"; local tmp; tmp="$(prod_val "(select ceil(nvl(sum(bytes),0)/1048576) from cdb_temp_files where con_id=(select con_id from v\$pdbs where name='$PROD_PDB'))")"; need=$((need + ${tmp:-0}))
       local have; local dest; dest="$(rval "(select nvl(value,'') from v\$parameter where name='db_create_file_dest')")"
       # without OMF, "create pluggable database ... from x@link" fails with ORA-65016 unless the statement names the file destination
       if [ -z "$dest" ] && ! printf '%s' "$CLONE_OPTIONS" | grep -qiE 'file_name_convert|create_file_dest'; then
@@ -244,7 +246,7 @@ cmd_preflight() {
       [ -n "$have" ] && [ $((have + reclaim)) -lt $((want + 2048)) ] && { err "not enough space: need ~${want} MB (+2 GB), have ${have} MB + ${reclaim} MB reclaimable"; fail=1; }
     fi
     # sessions in the TEST PDB
-    if pdb_exists "$TEST_PDB"; then local n; n="$(rval "(select count(*) from v\$session s join v\$pdbs p on p.con_id=s.con_id where p.name='$TEST_PDB' and s.type='USER' and s.username is not null)")"; [ "${n:-0}" != 0 ] && warn "$n user session(s) in $TEST_PDB will be killed: $(rlines "select listagg(distinct s.username||'@'||s.machine,', ') within group (order by 1) from v\$session s join v\$pdbs p on p.con_id=s.con_id where p.name='$TEST_PDB' and s.type='USER' and s.username is not null;" | head -1)"
+    if pdb_exists "$TEST_PDB"; then local n; n="$(rval "(select count(*) from v\$session s join v\$pdbs p on p.con_id=s.con_id where p.name='$TEST_PDB' and s.type='USER' and s.username is not null)")"; [ -z "$n" ] && warn "could not count user sessions in $TEST_PDB (query failed)"; [ "${n:-0}" != 0 ] && warn "$n user session(s) in $TEST_PDB will be killed: $(rlines "select listagg(distinct s.username||'@'||s.machine,', ') within group (order by 1) from v\$session s join v\$pdbs p on p.con_id=s.con_id where p.name='$TEST_PDB' and s.type='USER' and s.username is not null;" | head -1)"
     else warn "$TEST_PDB does not exist yet in $SID (first refresh: nothing to preserve)"; fi
     [ "$KEEP_OLD" = 1 ] && pdb_exists "${TEST_PDB}_OLD" && { err "${TEST_PDB}_OLD already exists: run cleanup first"; fail=1; }
     [ "$SNAPSHOT" = 1 ] && [ "$(rval "(select value from v\$parameter where name='clonedb')")" != TRUE ] && [ -z "$(rval "(select value from v\$parameter where name='db_create_file_dest')" | grep -E '^\+|acfs|/zfs|/nfs')" ] && warn "--snapshot: clonedb=FALSE and the file dest does not look like ACFS/ZFS/NFS - snapshot copy may fail (ORA-65169)"
@@ -355,7 +357,7 @@ create_pdb_clone() {
   fi
   do_sql root "open $TEST_PDB" "alter pluggable database $TEST_PDB open read write instances=all;\nalter pluggable database $TEST_PDB save state instances=all;" || return 1
   [ "$DRY_RUN" = 1 ] || [ "$(pdb_mode "$TEST_PDB")" = "READ WRITE" ] || { err "$TEST_PDB is $(pdb_mode "$TEST_PDB") after open: $(rlines "select cause||': '||message from pdb_plug_in_violations where name='$TEST_PDB' and status<>'RESOLVED' and type='ERROR';" | head -3 | tr '\n' ';')"; return 1; }
-  [ "$DRY_RUN" = 1 ] || { local v; v="$(rval "(select count(*) from pdb_plug_in_violations where name='$TEST_PDB' and status<>'RESOLVED' and type='ERROR')")"; [ "${v:-0}" != 0 ] && warn "$v unresolved plug-in violation(s): select * from pdb_plug_in_violations where name='$TEST_PDB'"; }
+  [ "$DRY_RUN" = 1 ] || { local v; v="$(rval "(select count(*) from pdb_plug_in_violations where name='$TEST_PDB' and status<>'RESOLVED' and type='ERROR')")"; [ -z "$v" ] && warn "could not read pdb_plug_in_violations for $TEST_PDB (query failed)"; [ "${v:-0}" != 0 ] && warn "$v unresolved plug-in violation(s): select * from pdb_plug_in_violations where name='$TEST_PDB'"; }
   return 0
 }
 create_rman_duplicate() {
@@ -529,7 +531,7 @@ cmd_verify() {
   discover; reuse_or_init verify; local fail=0
   if [ "$METHOD" = pdb-clone ]; then
     [ "$(pdb_mode "$TEST_PDB")" = "READ WRITE" ] && log "$TEST_PDB is READ WRITE" || { err "$TEST_PDB is $(pdb_mode "$TEST_PDB")"; fail=1; }
-    [ "$DRY_RUN" = 0 ] && { local v; v="$(rval "(select count(*) from pdb_plug_in_violations where name='$TEST_PDB' and status<>'RESOLVED' and type='ERROR')")"; [ "${v:-0}" != 0 ] && { err "$v plug-in violation(s)"; fail=1; }; }
+    [ "$DRY_RUN" = 0 ] && { local v; v="$(rval "(select count(*) from pdb_plug_in_violations where name='$TEST_PDB' and status<>'RESOLVED' and type='ERROR')")"; if [ -z "$v" ]; then err "could not read pdb_plug_in_violations for $TEST_PDB (query failed) - verify cannot pass on an unread answer"; fail=1; elif [ "$v" != 0 ]; then err "$v plug-in violation(s)"; fail=1; fi; }
   else [ "$(rval "(select open_mode from v\$database)")" = "READ WRITE" ] && log "$SID open READ WRITE ($(rval "(select log_mode from v\$database)"))" || { err "$SID is not open read write"; fail=1; }; fi
   [ "$DRY_RUN" = 1 ] && { log "dry-run: verify skipped"; return 0; }
   if [ -n "$MASK_VERIFY_SQL" ]; then local m; m="$(plines "$MASK_VERIFY_SQL" 2>/dev/null | head -1)"; if [ "$m" = OK ]; then log "masking verified: OK"; else err "MASK_VERIFY_SQL returned '${m:-nothing}' (expected OK) - production data may be unmasked"; fail=1; fi
