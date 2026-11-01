@@ -169,6 +169,7 @@ okv_confs() {
 # okv_age_control <scope> <wallet> <age days>: the heuristic for every path that cannot read the real date (one copy)
 okv_age_control() {
   local sc="$1" wal="$2" age="$3"
+  case "$age" in ''|*[!0-9]*) control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" FAIL "age of $wal is unknown ('$age') - not 0, not a pass"; return;; esac
   if [ "$age" -ge 365 ]; then control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" FAIL "CRIT:$wal is $age days old - unless rotated in place the certificate has EXPIRED and TDE cannot reach Key Vault at the next keystore open; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC moves to a subfolder of ssl/ (OKV_WALLET_PASSWORD reads the real date)"
   elif [ "$age" -ge 300 ]; then control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" FAIL "$wal is $age days old: about $((365 - age)) days remain unless it was rotated - plan the console rotation (OKV_WALLET_PASSWORD reads the real date)"
   else control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" PASS "$wal is $age days old (set OKV_WALLET_PASSWORD to read the real notAfter)"; fi
@@ -184,7 +185,10 @@ okv_controls() {
     case "$loc" in */ssl|*/ssl/) control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - not rotated: the original ssl/ wallet";; *) control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - rotated: a subfolder of ssl/";; esac
     control "$sc" "" "OKV_HOSTNAME (node last talked to) / UPDATE_TIMESTAMP" INFO "${host:-?} / ${upd:-?}"
     [ -f "$wal" ] || { control "$sc" "" "endpoint wallet file exists where SSL_WALLET_LOC points" FAIL "CRIT:$wal does not exist - the endpoint cannot present a certificate to Key Vault"; continue; }
-    age="$(( ( $(date +%s) - $(stat -c %Y "$wal" 2>/dev/null || stat -f %m "$wal") ) / 86400 ))"
+    # a stat that fails must not leave age empty: '' -ge 365 is false, and the else branch below is PASS (Pi, 22:10)
+    local m; m="$(stat -c %Y "$wal" 2>/dev/null || stat -f %m "$wal" 2>/dev/null)" || true
+    case "$m" in ''|*[!0-9]*) control "$sc" "" "endpoint wallet age readable" FAIL "cannot stat $wal - age unknown, not 0; the certificate's expiry is unknown"; continue;; esac
+    age=$(( ( $(date +%s) - m ) / 86400 ))
     # the real notAfter needs the endpoint wallet password (OKV_WALLET_PASSWORD, through a 600-mode file, never argv/environ);
     # an unreadable wallet or date is a FAIL plus the age heuristic, never silence
     if [ -n "${OKV_WALLET_PASSWORD:-}" ] && command -v openssl >/dev/null 2>&1; then
