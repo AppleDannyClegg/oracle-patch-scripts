@@ -714,6 +714,9 @@ cmd_stop() {
   nm="$(nodemanager_pid)"
   state_set servers_were_running "$(printf '%s\n' "$running" | awk '{print $1}' | tr '\n' ' ')"
   state_set nm_was_running "$([ -n "$nm" ] && echo 1 || echo 0)"
+  # an empty list is 'nothing running' only when ps itself answered: a ps that cannot run would otherwise prove the stop here,
+  # before the second proof after the waits ever runs (TARS / Multivac, 1 Nov 23:22)
+  ps -eo pid >/dev/null 2>&1 || { err "cannot read the process list (ps failed) - cannot tell whether anything is running"; return 1; }
   if [ -z "$running" ] && [ -z "$nm" ]; then log "Nothing running"; return 0; fi
 
   if [ -n "${STOP_CMD:-}" ]; then
@@ -758,6 +761,8 @@ cmd_stop() {
   # returned with its server still up, is not stopped even though the pid we noted is gone
   local still; still="$(running_servers | awk '{print $1}' | tr '\n' ' ')"
   [ -n "$still" ] && { err "still running after stop: $still"; ok=0; }
+  # and an empty list is only proof when ps itself answered (a ps that cannot run must not read as 'nothing running')
+  ps -eo pid >/dev/null 2>&1 || { err "cannot read the process list (ps failed) - the stop is not proven"; ok=0; }
   if [ $ok = 0 ]; then err "Some processes still running. Re-run with --force to kill them."; return 1; fi
   log "All WebLogic processes stopped"
 }
@@ -948,10 +953,18 @@ cmd_rollback() {
   for id in $ids; do
     log "Rolling back $id"
     if opatch rollback -silent -id "$id"; then
-      # as for apply: the inventory says whether the patch is gone, not the exit status
-      if [ "$DRY_RUN" != 1 ] && "$ORACLE_HOME/OPatch/opatch" lspatches 2>/dev/null | grep -q "^$id;"; then
-        err "opatch rollback exited 0 but $id is still in 'opatch lspatches' - not recorded as rolled back. See $ORACLE_HOME/cfgtoollogs/opatch/"; fail=1
-      else state_append rolled_back "$id"; fi
+      # as for apply: the inventory says whether the patch is gone, not the exit status - and an inventory that could not be read
+      # says nothing: 'lspatches | grep -q' was fail-open (an opatch that did not run = not listed = rolled back), the twin of
+      # db-patch 378dc1d; empty is 'gone' only when lspatches itself exited 0
+      local inv rci=0
+      if [ "$DRY_RUN" = 1 ]; then state_append rolled_back "$id"
+      else
+        inv="$("$ORACLE_HOME/OPatch/opatch" lspatches 2>/dev/null)" || rci=$?
+        if [ "$rci" != 0 ]; then err "opatch rollback exited 0 but 'opatch lspatches' failed (rc $rci) afterwards - cannot confirm $id is gone, not recorded as rolled back"; fail=1
+        elif printf '%s\n' "$inv" | grep -q "^$id;"; then
+          err "opatch rollback exited 0 but $id is still in 'opatch lspatches' - not recorded as rolled back. See $ORACLE_HOME/cfgtoollogs/opatch/"; fail=1
+        else state_append rolled_back "$id"; fi
+      fi
     else
       err "opatch rollback FAILED for $id"; fail=1
     fi
