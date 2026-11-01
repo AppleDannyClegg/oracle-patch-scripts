@@ -150,6 +150,38 @@ load_config() {
 unexport_secrets() { local v; for v in $(compgen -A variable | grep -E 'PASSWORD|PASSWD|SECRET|_PASS($|_)|TOKEN|PWD|_CONNECT$' | grep -vxE 'PWD|OLDPWD' || true); do export -n "${v?}" 2>/dev/null; done; }
 
 # ---------------------------------------------------------------------------
+# Rollback material that must not outlive its usefulness: old password verifiers, keystore copies, wallet backups, the
+# previous keystore password. shred_path removes a file or a tree with shred -u (dd urandom + rm without it); file_age
+# prints "1d 2h 3m"; expire_run_material sweeps every run under RUN_BASE whose <marker> file is older than <hours> and
+# shreds the named paths (globs, relative to the run dir), appending <key>=<ts> to that run's state so a later rollback
+# can say why the material is gone. Scripts call it on every command but help, so a run nobody cleaned up still expires
+# ---------------------------------------------------------------------------
+shred_path() {
+  local f; [ -e "$1" ] || return 0
+  find "$1" -type f | while IFS= read -r f; do
+    if command -v shred >/dev/null 2>&1; then shred -u "$f"; else dd if=/dev/urandom of="$f" bs=4096 count=$(( $(wc -c <"$f") / 4096 + 1 )) conv=notrunc 2>/dev/null; rm -f "$f"; fi
+  done
+  [ -d "$1" ] && rm -rf "$1"; return 0
+}
+file_age() { local m s; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"; s=$(( $(date +%s) - m )); printf '%dd %dh %dm' $((s/86400)) $((s%86400/3600)) $((s%3600/60)); }
+# file_older_than <file> <hours>: true when the file's mtime is at least <hours> old
+file_older_than() { local m; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || return 1; [ $(( $(date +%s) - m )) -ge $(( $2 * 3600 )) ]; }
+# expire_run_material <hours> <marker> <state-key> <glob>...
+expire_run_material() {
+  local hours="$1" marker="$2" key="$3"; shift 3
+  local d g p
+  for d in "$RUN_BASE"/*/; do
+    [ -f "$d$marker" ] || continue
+    file_older_than "$d$marker" "$hours" || continue
+    # shellcheck disable=SC2231  # $g is a glob on purpose
+    for g in "$@"; do for p in "$d"$g; do [ -e "$p" ] && shred_path "$p"; done; done
+    printf '%s=%s (expired after %sh)\n' "$key" "$(ts)" "$hours" >>"${d}state" 2>/dev/null
+    log "removed expired rollback material from ${d%/} (older than ${hours}h)"
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # SQL*Plus. Every function takes the SID first; ORACLE_HOME comes from /etc/oratab for that SID,
 # connection from SQL_CONNECT (default "/ as sysdba"). PDB_SET="alter session set container=X;"
 # when exported makes every statement run in that PDB.
@@ -648,6 +680,7 @@ lib_selftest() {
   t "redact connect u/pw@t" '[ "$(echo "connect app/\"s3cret\"@PRD" | redact)" = "connect app/***REDACTED***@PRD" ]'
   t "sql_run: SQL and connect string on stdin, not argv" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "echo \"ARGV:\$*\"; cat" >"$d/sqlplus"; chmod +x "$d/sqlplus"; o=$(SQL_CMD="$d/sqlplus -S" SQL_CONNECT="u/CANARYpw@t" sql_run X "alter user a identified by CANARYsql;"); rm -f "$d/sqlplus"; rmdir "$d"; printf "%s" "$o" | grep -q "^ARGV:-S -L /nolog$" && printf "%s" "$o" | grep -q "^connect u/CANARYpw@t$" && printf "%s" "$o" | grep -q "identified by CANARYsql"'
   t "mos_login keeps the caller EXIT trap" 'o=$(bash -c "source $0 2>/dev/null; trap \"echo CALLER-TRAP\" EXIT; RUN_DIR=\$(mktemp -d); OFFLINE=0; mos_cleanup(){ echo MOS-CLEANUP; }; MOS_TRAP_SET=\"\"; eval \"set -- \$(trap -p EXIT)\"; MOS_PREV_EXIT_TRAP=\"\${3:-}\"; trap \"mos_cleanup; eval \\\"\\\$MOS_PREV_EXIT_TRAP\\\"\" EXIT; rm -rf \"\$RUN_DIR\"" 2>/dev/null | tr "\n" " "); [ "$o" = "MOS-CLEANUP CALLER-TRAP " ]'
+  t "expire_run_material shreds only the old run" 'b=$(mktemp -d); mkdir -p $b/old $b/new; echo h >$b/old/m; echo k >$b/old/x.bak; echo h >$b/new/m; echo k >$b/new/x.bak; touch -t 202001010000 $b/old/m; (RUN_BASE=$b; LOG_FILE=/dev/null; expire_run_material 72 m gone m "*.bak"); r=0; [ ! -e $b/old/m ] && [ ! -e $b/old/x.bak ] && [ -e $b/new/m ] && [ -e $b/new/x.bak ] && grep -q "^gone=" $b/old/state && [ ! -e $b/new/state ] || r=1; rm -rf "$b"; [ $r = 0 ]'
   t "load_config does not export secrets" 'd=$(mktemp -d); printf "MY_PASSWORD=s3cret\nSQL_CONNECT=u/p@t\nMY_HOME=/x\n" >"$d/t.conf"; (TOOL=t; SCRIPT_DIR=$d; HOME=$d; load_config "$d/t.conf"; e="$(env)"; printf "%s" "$e" | grep -q "^MY_HOME=/x$" && ! printf "%s" "$e" | grep -q "s3cret" && ! printf "%s" "$e" | grep -q "^SQL_CONNECT=" && [ "$MY_PASSWORD" = s3cret ]); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"

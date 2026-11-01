@@ -286,29 +286,11 @@ for s in cmo.getServerRuntimes():
   return "$fail"
 }
 
-# shred_path <file|dir>: overwrite then remove (shred -u where it exists; a credential backup must not survive as free blocks)
-shred_path() {
-  local f; [ -e "$1" ] || return 0
-  find "$1" -type f | while IFS= read -r f; do
-    if command -v shred >/dev/null 2>&1; then shred -u "$f"; else dd if=/dev/urandom of="$f" bs=4096 count=$(( $(wc -c <"$f") / 4096 + 1 )) conv=notrunc 2>/dev/null; rm -f "$f"; fi
-  done; rm -rf "$1"
-}
-# file_age <path>: "3h 12m" from the mtime (GNU and BSD stat)
-file_age() { local m s; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"; s=$(( $(date +%s) - m )); printf '%dd %dh %dm' $((s/86400)) $((s%86400/3600)) $((s%3600/60)); }
-# expire_rollback_material: the verifiers and credential backups a reset keeps for rollback live HASHES_KEEP_HOURS
-# (default 72) - every command sweeps older runs and shreds them, so a run nobody cleaned up does not keep a credential
-# on disk for ever; rollback refuses past the same limit (the applications have used the new password for days)
 HASHES_KEEP_HOURS="${HASHES_KEEP_HOURS:-72}"
-expire_rollback_material() {
-  local d f now; now="$(date +%s)"
-  for d in "$RUN_BASE"/*/; do
-    [ -d "$d" ] || continue; f="$d/old_hashes.txt"; [ -f "$f" ] || continue
-    [ $(( now - $(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") )) -ge $(( HASHES_KEEP_HOURS * 3600 )) ] || continue
-    local p; for p in "$f" "$d"/cwallet.sso.*.bak "$d/dircrd.bak"; do [ -e "$p" ] && shred_path "$p"; done
-    printf 'hashes_removed=%s (expired after %sh)\n' "$(ts)" "$HASHES_KEEP_HOURS" >>"$d/state" 2>/dev/null   # the lib's STATE_FILE of that run
-    log "removed expired rollback material from ${d%/} (older than HASHES_KEEP_HOURS=$HASHES_KEEP_HOURS h)"
-  done
-}
+# shred_path, file_age and expire_run_material come from the lib. expire_rollback_material: the verifiers and credential
+# backups a reset keeps for rollback live HASHES_KEEP_HOURS (default 72) - every command sweeps older runs and shreds them,
+# so a run nobody cleaned up does not keep a credential for ever; rollback refuses past the limit
+expire_rollback_material() { expire_run_material "$HASHES_KEEP_HOURS" old_hashes.txt hashes_removed old_hashes.txt 'cwallet.sso.*.bak' dircrd.bak; }
 cmd_cleanup() {
   reuse_or_init cleanup
   local removed; removed="$(state_get hashes_removed || true)"; [ -n "$removed" ] && { log "nothing to do: cleaned up at $removed"; return 0; }
@@ -325,7 +307,7 @@ cmd_rollback() {
   reuse_or_init rollback
   local removed; removed="$(state_get hashes_removed || true)"; [ -n "$removed" ] && die "cleanup shredded the previous password verifiers of this run at $removed: nothing to roll back to"
   [ -f "$RUN_DIR/old_hashes.txt" ] || die "no old_hashes.txt in $RUN_DIR (nothing from a reset to roll back)"
-  [ $(( $(date +%s) - $(stat -c %Y "$RUN_DIR/old_hashes.txt" 2>/dev/null || stat -f %m "$RUN_DIR/old_hashes.txt") )) -lt $(( HASHES_KEEP_HOURS * 3600 )) ] || die "old_hashes.txt is $(file_age "$RUN_DIR/old_hashes.txt") old, past HASHES_KEEP_HOURS=$HASHES_KEEP_HOURS h: the applications have run on the new password for that long - restore from your own records if you really must"
+  ! file_older_than "$RUN_DIR/old_hashes.txt" "$HASHES_KEEP_HOURS" || die "old_hashes.txt is $(file_age "$RUN_DIR/old_hashes.txt") old, past HASHES_KEEP_HOURS=$HASHES_KEEP_HOURS h: the applications have run on the new password for that long - restore from your own records if you really must"
   log "old_hashes.txt is $(file_age "$RUN_DIR/old_hashes.txt") old (reset $(state_get reset_done 2>/dev/null | wc -w | tr -d ' ') account(s)); the applications have used the NEW password since then"
   confirm "Restore the previous password hashes of $(wc -l <"$RUN_DIR/old_hashes.txt" | tr -d ' ') account(s) and the backed-up ORDS/WebLogic/GoldenGate files?" || die "aborted"
   local nfail=0 nok=0
