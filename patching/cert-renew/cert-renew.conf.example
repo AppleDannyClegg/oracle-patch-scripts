@@ -52,3 +52,5 @@
 
 #CERT_OUT=/u01/backup/cert-renew          # inspect --report output
 #RUN_BASE=/u01/backup/cert-renew/runs
+#BACKUP_KEEP_HOURS=168                   # how long a run keeps the previous keystore/wallet + its password for rollback;
+                                         # every command shreds older backups, rollback refuses past it, 'cleanup' shreds now

@@ -19,7 +19,10 @@
 #   backup <target>      Copy the current keystore/wallet/config of the target into the run dir
 #   apply <target>       Build the new store, back up, switch the config, restart when --restart (or RESTART_CMDS)
 #   verify <target>      s_client on the target's port(s): serial = the new cert, chain verifies, hostname covered, days left
-#   rollback             Put the previous store/config back (latest run or --run-dir) and restart again
+#   rollback             Put the previous store/config back (latest run or --run-dir) and restart again; refuses once the
+#                        backup is past BACKUP_KEEP_HOURS (168) or cleanup has shredded it
+#   cleanup              Shred this run's backup (the previous keystore/wallet and the password that opens it); every
+#                        command also shreds backups older than BACKUP_KEEP_HOURS in RUN_BASE, so none is kept for ever
 #   run <target>         inspect > preflight > backup > apply > restart > verify (rollback on failure)
 #
 # Targets
@@ -572,6 +575,23 @@ cmd_backup() {
     esac
     state_set backup_dir "$b"; state_set target "$one"; log "backup of $one in $b: $(find "$b" -type f | wc -l | tr -d ' ') file(s)"
   done
+  # the marker's mtime is the backup time: the sweep in main shreds the whole backup dir once it is BACKUP_KEEP_HOURS old
+  # (a keystore or wallet plus .old_ks_pass is a usable private key, not something a run dir should keep for ever)
+  touch "$RUN_DIR/backup/.kept"; log "the backup is kept ${BACKUP_KEEP_HOURS}h for rollback, then shredded ('cleanup' does it sooner)"
+}
+
+# expire_backups: every command but help sweeps RUN_BASE and shreds the backup dir of any run older than BACKUP_KEEP_HOURS
+# (default 168 = a week: a renewal is verified within days, the old key should not outlive that in a run dir that gets
+# rsynced to a jump box). shred_path, file_age, file_older_than, expire_run_material are the lib's; rollback refuses past the limit
+expire_backups() { expire_run_material "$BACKUP_KEEP_HOURS" backup/.kept backup_removed backup; }
+cmd_cleanup() {
+  last_change_run || die "no run under $RUN_BASE has applied anything (--run-dir DIR to point at one)"; reuse_or_init cleanup
+  local removed; removed="$(state_get backup_removed || true)"; [ -n "$removed" ] && { log "nothing to do: the backup of $RUN_DIR was shredded at $removed"; return 0; }
+  [ -d "$RUN_DIR/backup" ] || { log "no backup kept in $RUN_DIR"; state_set backup_removed "$(ts)"; return 0; }
+  echo "Kept for rollback in $RUN_DIR/backup ($(file_age "$RUN_DIR/backup/.kept" 2>/dev/null || echo '?') old):"; find "$RUN_DIR/backup" -type f | sed 's/^/  /'
+  confirm "Shred the backup of $(state_get target || echo '?')? rollback will refuse afterwards" || die "aborted"
+  [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: would shred $RUN_DIR/backup"; return 0; }
+  shred_path "$RUN_DIR/backup"; state_set backup_removed "$(ts)"; log "cleaned up: the previous keystore/wallet and its password are gone; rollback is no longer possible for this run"
 }
 
 wls_apply_one() {
@@ -685,8 +705,10 @@ cmd_verify() {
 cmd_rollback() {
   last_change_run || die "no run under $RUN_BASE has applied anything (--run-dir DIR to point at one)"; reuse_or_init rollback; find_tools
   local t; t="$(state_get target || true)"; [ -n "$t" ] || die "no target recorded in $RUN_DIR (nothing to roll back)"
+  local removed; removed="$(state_get backup_removed || true)"; [ -n "$removed" ] && die "the backup of this run was shredded at $removed (cleanup, or past BACKUP_KEEP_HOURS): nothing to roll back to"
   local b; b="$RUN_DIR/backup/$(printf '%s' "$t" | tr ':/' '__')"; [ -d "$b" ] || die "no backup dir $b"
-  resolve_target "$t"; confirm "Roll $t back to the files in $b?" || die "aborted"
+  [ -f "$RUN_DIR/backup/.kept" ] && { ! file_older_than "$RUN_DIR/backup/.kept" "$BACKUP_KEEP_HOURS" || die "the backup is $(file_age "$RUN_DIR/backup/.kept") old, past BACKUP_KEEP_HOURS=$BACKUP_KEEP_HOURS h: $t has served the new certificate for that long - renew again from your own records instead"; }
+  resolve_target "$t"; confirm "Roll $t back to the files in $b ($(file_age "$RUN_DIR/backup/.kept" 2>/dev/null || echo '?') old)?" || die "aborted"
   case "$T_KIND" in
     wls) local old mode file type alias trust trusttype; old="$(state_get "old_$T_SERVER" || true)"; IFS='|' read -r mode file type alias trust trusttype <<<"$old"
       local op=""; [ -f "$b/.old_ks_pass" ] && op="$(cat "$b/.old_ks_pass")"
@@ -739,14 +761,16 @@ cmd_run() {
   cmd_backup
   cmd_apply || { err "apply did not complete"; confirm "Roll back?" && cmd_rollback; die "FAILED: apply. Log: $LOG_FILE"; }
   if ! cmd_verify; then err "verify failed"; confirm "Roll back to the previous certificate?" && cmd_rollback; die "FAILED: verify. Log: $LOG_FILE"; fi
-  echo "SUCCESS: $t now serves CN=$NEW_CN (serial $NEW_SERIAL) until $NEW_END. Backup: $RUN_DIR/backup. Log: $LOG_FILE"
+  echo "SUCCESS: $t now serves CN=$NEW_CN (serial $NEW_SERIAL) until $NEW_END. Backup: $RUN_DIR/backup (kept ${BACKUP_KEEP_HOURS}h, 'cleanup' shreds it sooner). Log: $LOG_FILE"
 }
 
 main() {
   load_config; refuse_root
   local cmd="${1:-}"; shift || true; parse_opts "$@"
+  BACKUP_KEEP_HOURS="${BACKUP_KEEP_HOURS:-168}"; [[ "$BACKUP_KEEP_HOURS" =~ ^[0-9]+$ ]] || die "BACKUP_KEEP_HOURS must be a whole number of hours: '$BACKUP_KEEP_HOURS'"
+  case "$cmd" in ""|-h|--help|help) ;; *) if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: backups older than ${BACKUP_KEEP_HOURS}h under $RUN_BASE are left alone"; else expire_backups; fi;; esac
   case "$cmd" in
-    inspect) cmd_inspect;; csr) cmd_csr;; plan) cmd_plan;; preflight) cmd_preflight;; backup) cmd_backup;; apply) cmd_apply;; verify) cmd_verify;; rollback) cmd_rollback;; run) cmd_run;;
+    inspect) cmd_inspect;; cleanup) cmd_cleanup;; csr) cmd_csr;; plan) cmd_plan;; preflight) cmd_preflight;; backup) cmd_backup;; apply) cmd_apply;; verify) cmd_verify;; rollback) cmd_rollback;; run) cmd_run;;
     ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;
   esac
 }

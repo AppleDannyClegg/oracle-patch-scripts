@@ -78,14 +78,19 @@ files (WebLogic: WLST back to the previous keystore settings, prompting for the 
 password if `KS_PASSWORDS` did not open it) and restarts again; it exits 0 only when the target was
 restarted onto the previous files, 2 (`rollback=restart-pending`) when the script has no way to
 restart that target and told you how, 1 when the restart failed. `run` chains it all and rolls back
-when verify fails. Passwords travel in 600-mode temp files (`-storepass:file`) or on stdin; the
+when verify fails. The backup holds the previous keystore or wallet and, for WebLogic, the password
+that opens it (`.old_ks_pass`, mode 600): a usable private key, so it is not kept for ever. `cleanup`
+shreds it once the renewal is confirmed, every command shreds the backups of runs older than
+`BACKUP_KEEP_HOURS` (default 168, a week) and records `backup_removed` in that run's state, and
+`rollback` refuses past the limit, naming the age. Passwords travel in 600-mode temp files (`-storepass:file`) or on stdin; the
 WLST script is written with mode 600 and deleted after the run (a redacted copy stays).
 
 ## Options and config
 
 `--cert --key --chain`, `--cn --san --bits` (csr), `--alias`, `--wallet DIR|FILE`, `--trust-mode`,
 `--restart`, `--no-scan`, `--report`, `--out DIR`, `--dry-run`, `--yes`, `--force`, `--json`,
-`--verbose`, `--run-dir`. Config in `cert-renew.conf` (see the example) or the shared `oracle.conf`.
+`--verbose`, `--run-dir`. Config in `cert-renew.conf` (see the example) or the shared `oracle.conf`;
+`BACKUP_KEEP_HOURS` bounds the rollback material.
 Needs `lib/oracle-lib.sh` one folder up and `openssl`; `keytool` for keystores, `orapki` for wallets.
 
 Tested against a fake WebLogic domain, ORDS standalone config, listener wallet with a fake
