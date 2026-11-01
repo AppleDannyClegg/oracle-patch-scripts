@@ -336,6 +336,8 @@ cmd_drop() {
     kill_pdb_sessions "$TEST_PDB"
     do_sql root "close $TEST_PDB" "alter pluggable database $TEST_PDB close immediate instances=all;" || true
     do_sql root "drop $TEST_PDB" "drop pluggable database $TEST_PDB including datafiles;" || return 1
+    # the outcome, not the statement: a drop that printed no ORA- but left the PDB (another instance still had it open) is not 'dropped'
+    [ "$DRY_RUN" = 1 ] || ! pdb_exists "$TEST_PDB" || { err "$TEST_PDB still exists after the drop (mode $(pdb_mode "$TEST_PDB")) - not recorded as dropped"; state_set drop failed; return 1; }
   fi
   state_set drop ok
 }
