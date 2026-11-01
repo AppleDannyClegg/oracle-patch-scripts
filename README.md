@@ -231,6 +231,21 @@ the slim image but fail for want of `$ORACLE_HOME/jlib/oraclepki.jar`; the jar f
 None of the scripts takes a lock on its run directory, so two change runs started at the same
 time do not stop each other.
 
+Reviewed on 1 Nov 2026 by several independent readers (pi, DeepSeek, Qwen, Claude sonnet and three
+Claude Code sessions on a shared message board), every finding checked against the source before
+it was touched. Fixed from that review: every value option dies when its value is missing or is
+another option (before, `--sid` as the last word made the option loop spin forever and `--sid
+--dry-run` took `--dry-run` as the SID); the SQL runner put every statement, passwords inside, on
+a `bash -c` process's command line; db-refresh's PROD-side rewrite was case-sensitive and silently
+compared PROD with itself on an uppercase `FROM`; account-ops, dg-switchover, apex-export,
+java-patch and cert-renew recorded `rollback ok` or `restore ok` before the outcome was known;
+exascale-space `release` let an escli error pass its ownership guard; gg-ops read GoldenGate
+errors with the wrong pattern and returned success. Findings that turned out to be wrong after
+reading the code were left alone (the GoldenGate password is on stdin; `--keep-old` does rename
+the PDB; `--as-new-id` is honoured). oracle-diag now reports the Oracle Key Vault endpoint
+certificate state per `okvclient.ora` (rotated or not, node last talked to, wallet age or real
+expiry with `OKV_WALLET_PASSWORD`), written from the first production rotation.
+
 Three gates need no database and run anywhere with bash: `tests/check-parse.sh` (every value
 option's `case` arm calls `optchk`), `tests/optchk-gate.sh` (every documented value option run as
 the last argument and followed by `--dry-run`: none may hang or swallow the flag) and
