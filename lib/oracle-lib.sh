@@ -103,10 +103,17 @@ file_mtime() { if [ "$GNU_DATE" = 1 ]; then date -r "$1" '+%Y-%m-%d %H:%M' 2>/de
 # ---------------------------------------------------------------------------
 # run directory + state (so rollback / resume know what happened)
 # ---------------------------------------------------------------------------
+# state_set <key> <value>: the run's state file is what resume, verify, rollback and cleanup believe. A write that fails
+# must not pass in silence (the step was done, nothing recorded, the next command contradicts the operator): it dies, and
+# the message says the step itself may have completed
 state_set() {
   [ -z "$STATE_FILE" ] && return 0
-  touch "$STATE_FILE"; grep -v "^$1=" "$STATE_FILE" >"$STATE_FILE.tmp" 2>/dev/null || true
-  printf '%s=%s\n' "$1" "$2" >>"$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
+  local why="the step before it may have completed - read the log before re-running"
+  touch "$STATE_FILE" 2>/dev/null || die "cannot write the run state $STATE_FILE ($1=$2 not recorded): $why"
+  { grep -v "^$1=" "$STATE_FILE" >"$STATE_FILE.tmp" || true; } 2>/dev/null          # rc 1 = nothing left, fine
+  [ -f "$STATE_FILE.tmp" ] || die "cannot write $STATE_FILE.tmp ($1=$2 not recorded): $why"
+  { printf '%s=%s\n' "$1" "$2" >>"$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"; } 2>/dev/null \
+    || { rm -f "$STATE_FILE.tmp" 2>/dev/null; die "cannot record $1=$2 in $STATE_FILE (disk full, or the run dir not writable): $why"; }
 }
 state_get() { [ -f "$STATE_FILE" ] || return 1; sed -n "s/^$1=//p" "$STATE_FILE" | tail -1 | grep .; }
 state_append() { local cur; cur="$(state_get "$1" || true)"; state_set "$1" "${cur:+$cur }$2"; }
@@ -692,6 +699,7 @@ lib_selftest() {
   t "shred_path removes a file and a tree" 'b=$(mktemp -d); mkdir -p $b/t/u; echo s >$b/t/u/f; echo s >$b/g; shred_path $b/g && shred_path $b/t && [ ! -e $b/g ] && [ ! -e $b/t ]; r=$?; rm -rf "$b"; [ $r = 0 ]'
   t "expire_run_material under DRY_RUN=1 shreds nothing" 'b=$(mktemp -d); mkdir -p $b/old; echo h >$b/old/m; echo k >$b/old/x.bak; touch -t 202001010000 $b/old/m; (RUN_BASE=$b; LOG_FILE=/dev/null; DRY_RUN=1; expire_run_material 72 m gone m "*.bak" >/dev/null); r=0; [ -e $b/old/m ] && [ -e $b/old/x.bak ] && [ ! -e $b/old/state ] || r=1; rm -rf "$b"; [ $r = 0 ]'
   t "load_config does not export secrets" 'd=$(mktemp -d); printf "MY_PASSWORD=s3cret\nSQL_CONNECT=u/p@t\nMY_HOME=/x\n" >"$d/t.conf"; (TOOL=t; SCRIPT_DIR=$d; HOME=$d; load_config "$d/t.conf"; e="$(env)"; printf "%s" "$e" | grep -q "^MY_HOME=/x$" && ! printf "%s" "$e" | grep -q "s3cret" && ! printf "%s" "$e" | grep -q "^SQL_CONNECT=" && [ "$MY_PASSWORD" = s3cret ]); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
+  t "state_set round trip, overwrite and unwritable dir" 'b=$(mktemp -d); (STATE_FILE=$b/s; state_set a 1; state_set b 2; state_set a 3; [ "$(state_get a)" = 3 ] && [ "$(state_get b)" = 2 ] && [ "$(wc -l <"$STATE_FILE" | tr -d " ")" = 2 ]); r1=$?; mkdir $b/d; chmod 500 $b/d; (STATE_FILE=$b/d/s; LOG_FILE=/dev/null; state_set a 1 2>/dev/null); r2=$?; chmod 700 $b/d; rm -rf "$b"; [ $r1 = 0 ] && [ $r2 = 1 ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
