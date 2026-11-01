@@ -75,7 +75,9 @@ present **INFO** (its certificate is the OMS's business). `inspect --report` wri
 `verify <target>` probes the port: serial = the new cert, days left, hostname, chain (`-untrusted`
 with what the server sends, against `--chain` or the system store). `rollback` restores the
 files (WebLogic: WLST back to the previous keystore settings, prompting for the old keystore
-password if `KS_PASSWORDS` did not open it) and restarts again. `run` chains it all and rolls back
+password if `KS_PASSWORDS` did not open it) and restarts again; it exits 0 only when the target was
+restarted onto the previous files, 2 (`rollback=restart-pending`) when the script has no way to
+restart that target and told you how, 1 when the restart failed. `run` chains it all and rolls back
 when verify fails. Passwords travel in 600-mode temp files (`-storepass:file`) or on stdin; the
 WLST script is written with mode 600 and deleted after the run (a redacted copy stays).
 

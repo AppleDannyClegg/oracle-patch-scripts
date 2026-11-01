@@ -459,10 +459,9 @@ build_wallet() {
   [ "$DRY_RUN" = 1 ] && { log "orapki wallet create/import_pkcs12/add -trusted_cert in $d"; return 0; }
   rm -rf "$d"; mkdir -p "$d"
   printf '%s\n%s\n' "$WALLET_PASSWORD" "$WALLET_PASSWORD" | to 120 "$ORAPKI" wallet create -wallet "$d" -auto_login >>"$LOG_FILE" 2>&1 || die "orapki wallet create failed (see $LOG_FILE)"
-  # the wallet password goes to orapki on stdin (without -pwd it prompts 'Enter wallet password:'), as for 'wallet create' above - never on
-  # its command line (verified on PKI 23 in the container, board review 1 Nov 2026). -pkcs12pwd is the random one-off password of the
-  # temporary p12 that build_wallet's caller removes straight after: ephemeral, and the only argv value here
-  printf '%s\n' "$WALLET_PASSWORD" | to 120 "$ORAPKI" wallet import_pkcs12 -wallet "$d" -pkcs12file "$p12" -pkcs12pwd "$p12pw" >>"$LOG_FILE" 2>&1 || die "orapki wallet import_pkcs12 failed (needs 18c+ orapki; on older releases create the CSR inside the wallet: orapki wallet add -dn ... -keysize, then add -user_cert)"
+  # both passwords go to orapki on stdin: without -pwd/-pkcs12pwd it prompts 'Enter wallet password:' then 'Enter PKCS#12 file password:'
+  # (verified on PKI 23 in the container, board review 1 Nov 2026), as 'wallet create' above - no password word on any orapki command line
+  printf '%s\n%s\n' "$WALLET_PASSWORD" "$p12pw" | to 120 "$ORAPKI" wallet import_pkcs12 -wallet "$d" -pkcs12file "$p12" >>"$LOG_FILE" 2>&1 || die "orapki wallet import_pkcs12 failed (needs 18c+ orapki; on older releases create the CSR inside the wallet: orapki wallet add -dn ... -keysize, then add -user_cert)"
   for f in $(chain_cas "$RUN_DIR/chain"); do printf '%s\n' "$WALLET_PASSWORD" | to 60 "$ORAPKI" wallet add -wallet "$d" -trusted_cert -cert "$f" >>"$LOG_FILE" 2>&1 || dbg "trusted cert $f already in the wallet or rejected"; done
   [ -f "$d/cwallet.sso" ] || die "$d/cwallet.sso was not created"
 }

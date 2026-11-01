@@ -40,6 +40,18 @@ with the exact SQL/commands, and tell me which FAILs are acceptable with a docum
   for PUBLIC or host `*`
 - Data: TDE coverage and keystore state, Database Vault status, directory objects on system
   paths, scheduler credentials and external jobs, Java in the database, logon/DDL triggers
+
+**Oracle Key Vault endpoints** (every `okvclient.ora` found: `WALLET_ROOT`, the usual client
+paths, `<ORACLE_HOME>/flex_tde_wallet/okv`, or `wallet_root` from the database). The endpoint
+certificate lives one year, and a console rotation does not replace `ssl/ewallet.p12`: the client
+writes the new wallet into a subfolder of `ssl/` and repoints `SSL_WALLET_LOC` only when `okvutil
+list` reaches the node that generated it. Controls: where `SSL_WALLET_LOC` points (rotated or
+not), `OKV_HOSTNAME` / `UPDATE_TIMESTAMP`, the pointed-to wallet exists (CRIT when not), the
+certificate's `notAfter` when `OKV_WALLET_PASSWORD` is set (CRIT expired or under 30 days, FAIL
+under 90; the password reaches openssl through a 600-mode file), otherwise the wallet file's age
+(CRIT at 365 days, FAIL from 300), and the TDE secret store `conf/ewallet.p12` is listed as
+do-not-touch with its mode. An unreadable wallet or date is a FAIL plus the age check, never
+silence.
 - APEX: `REQUIRE_HTTPS`, `ACL_ENABLED`, `ALLOW_HOSTNAMES`, `PLSQL_EDITING`, demo objects,
   strong admin password, login failure and account lifetime settings, instance admins, apps with
   session state protection off or no authentication

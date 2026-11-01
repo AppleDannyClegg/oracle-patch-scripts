@@ -40,7 +40,9 @@ after `download` is the same.
    clone, then switches `/etc/oratab` and `srvctl` to it (shorter outage, instant fallback).
 5. **start**: what was running, listener, `alter pluggable database all open`.
 6. **datapatch**: `datapatch -verbose` per database (all open PDBs; standbys skipped, they get it
-   via redo), then `utlrp` in root and the CDB.
+   via redo), then `utlrp` in root and the CDB. A `utlrp` that does not run cleanly fails the step
+   (`datapatch=failed`), and the invalid SYS/SYSTEM objects left afterwards are counted: a count
+   that cannot be read fails the step, a non-zero count is a WARN that `heal` offers to fix.
 7. **verify**: patch ids in `opatch lspatches`; the RU description present with SUCCESS in
    `cdb_registry_sqlpatch` for every open container; no failed rows; invalid SYS objects; PDBs
    open; services; MRP running on standbys; listener up.

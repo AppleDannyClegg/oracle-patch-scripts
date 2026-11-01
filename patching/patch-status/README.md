@@ -10,7 +10,9 @@ Rows: database and Grid Infrastructure homes (Release Update, Monthly Recommende
 OPatch version), **datapatch level per database and per PDB** (a binary RU that `datapatch` has
 not applied yet is CRIT: the classic "we patched but the SQL side didn't happen"), WebLogic
 homes (PSU, Coherence, ADF/OPSS/OWSM/SOA/OSB bundles), every JDK in use and who uses it, ORDS and
-APEX versions vs the newest public release, GoldenGate, EM agent, AHF, kernel and Ksplice.
+APEX versions vs the newest public release, GoldenGate, Enterprise Manager (the OMS home's and the
+agent's RU from `opatch lspatches`, e.g. `EM-OMS RU 24.1.0.10`; `OMS_HOME` / `EM_AGENT_INST` when
+they are not in the usual places), AHF, kernel and Ksplice.
 
 `behind` is the number of CPUs published after the installed patch's date (read from the patch
 description, e.g. `19.24.0.0.240716` → 2024-07-16). `CURRENT` = patched to this quarter;

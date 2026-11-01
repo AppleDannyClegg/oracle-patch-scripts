@@ -154,6 +154,56 @@ host_controls() {
   local sr; sr="$($SUDO grep -hE '^oracle.*NOPASSWD.*ALL' /etc/sudoers /etc/sudoers.d/* 2>/dev/null | head -1)"; [ -n "$sr" ] && control host "" "oracle has NOPASSWD: ALL sudo" FAIL "CRIT:$sr"
 }
 
+# Oracle Key Vault endpoints, from Gen's rotation runbook (1 Nov 2026): the endpoint certificate lives one year. A console
+# rotation does NOT replace $OKV_HOME/ssl/ewallet.p12 - the client writes the new wallet into a subfolder of ssl/ and repoints
+# SSL_WALLET_LOC in okvclient.ora at it on an 'okvutil list' that reaches the node that generated the certificate (OKV_HOSTNAME is
+# the node last talked to). Until that line changes the endpoint still presents the old certificate. Same logic as oracle-diag's
+# okv_endpoint_cert, as controls. $OKV_HOME/conf/ewallet.p12 is the TDE secret store: listed as do-not-touch, never opened.
+okv_confs() {
+  local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora 2>/dev/null | sort -u | head -5)"
+  [ -z "$conf" ] && conf="$(for s in $(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX'); do sql_lines "$s" "select value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"
+  [ -n "$conf" ] && printf '%s\n' "$conf"
+}
+# okv_age_control <scope> <wallet> <age days>: the heuristic for every path that cannot read the real date (one copy)
+okv_age_control() {
+  local sc="$1" wal="$2" age="$3"
+  if [ "$age" -ge 365 ]; then control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" FAIL "CRIT:$wal is $age days old - unless rotated in place the certificate has EXPIRED and TDE cannot reach Key Vault at the next keystore open; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC moves to a subfolder of ssl/ (OKV_WALLET_PASSWORD reads the real date)"
+  elif [ "$age" -ge 300 ]; then control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" FAIL "$wal is $age days old: about $((365 - age)) days remain unless it was rotated - plan the console rotation (OKV_WALLET_PASSWORD reads the real date)"
+  else control "$sc" "" "endpoint certificate within its 1-year life (by wallet age)" PASS "$wal is $age days old (set OKV_WALLET_PASSWORD to read the real notAfter)"; fi
+}
+okv_controls() {
+  local confs; confs="$(okv_confs)"; [ -n "$confs" ] || return 0
+  h1 "Oracle Key Vault endpoints"
+  local f; for f in $confs; do
+    local d sc loc host upd wal age; d="$(dirname "$(dirname "$f")")"; sc="okv/$(basename "$d")"
+    loc="$(grep -iE '^SSL_WALLET_LOC=' "$f" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"; host="$(grep -iE '^OKV_HOSTNAME=' "$f" | tail -1 | cut -d= -f2-)"; upd="$(grep -iE '^UPDATE_TIMESTAMP=' "$f" | tail -1 | cut -d= -f2-)"
+    [ -n "$loc" ] || loc="$d/ssl"; wal="$loc/ewallet.p12"
+    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "echo '== $f'; grep -vE '^#|^\$' '$f' | redact; echo; ls -la '$loc' '$d/conf' 2>/dev/null"
+    case "$loc" in */ssl|*/ssl/) control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - not rotated: the original ssl/ wallet";; *) control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - rotated: a subfolder of ssl/";; esac
+    control "$sc" "" "OKV_HOSTNAME (node last talked to) / UPDATE_TIMESTAMP" INFO "${host:-?} / ${upd:-?}"
+    [ -f "$wal" ] || { control "$sc" "" "endpoint wallet file exists where SSL_WALLET_LOC points" FAIL "CRIT:$wal does not exist - the endpoint cannot present a certificate to Key Vault"; continue; }
+    age="$(( ( $(date +%s) - $(stat -c %Y "$wal" 2>/dev/null || stat -f %m "$wal") ) / 86400 ))"
+    # the real notAfter needs the endpoint wallet password (OKV_WALLET_PASSWORD, through a 600-mode file, never argv/environ);
+    # an unreadable wallet or date is a FAIL plus the age heuristic, never silence
+    if [ -n "${OKV_WALLET_PASSWORD:-}" ] && command -v openssl >/dev/null 2>&1; then
+      local pf exp=""; pf="$(mktemp "${TMPDIR:-/tmp}/okv.XXXXXX" 2>/dev/null)"
+      [ -n "$pf" ] && { chmod 600 "$pf"; printf '%s' "$OKV_WALLET_PASSWORD" >"$pf"; exp="$( { openssl pkcs12 -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null || openssl pkcs12 -legacy -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null; } | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"; rm -f "$pf"; }
+      if [ -z "$exp" ]; then control "$sc" "" "endpoint certificate readable with OKV_WALLET_PASSWORD" FAIL "could not open $wal (wrong password, or an openssl that cannot read this p12) - the wallet age stands in"; okv_age_control "$sc" "$wal" "$age"
+      else
+        local es dl; es="$(date -d "$exp" +%s 2>/dev/null || date -j -f '%b %d %T %Y %Z' "$exp" +%s 2>/dev/null)"
+        if [ -z "$es" ]; then control "$sc" "" "endpoint certificate notAfter parsed" FAIL "notAfter '$exp' could not be parsed by date - check it by hand; the wallet age stands in"; okv_age_control "$sc" "$wal" "$age"
+        else dl=$(( (es - $(date +%s)) / 86400 ))
+          if [ "$dl" -lt 0 ]; then control "$sc" "" "endpoint certificate valid" FAIL "CRIT:EXPIRED on $exp ($wal) - TDE cannot reach Key Vault after the next keystore open"
+          elif [ "$dl" -lt 30 ]; then control "$sc" "" "endpoint certificate valid for more than 30 days" FAIL "CRIT:expires in $dl days ($exp): rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC changes"
+          elif [ "$dl" -lt 90 ]; then control "$sc" "" "endpoint certificate valid for more than 90 days" FAIL "expires in $dl days ($exp): plan the rotation"
+          else control "$sc" "" "endpoint certificate valid for more than 90 days" PASS "notAfter $exp ($dl days)"; fi
+        fi
+      fi
+    else okv_age_control "$sc" "$wal" "$age"; fi
+    local ss="$d/conf/ewallet.p12"; [ -f "$ss" ] && { local m; m="$(file_mode "$ss")"; control "$sc" "" "TDE secret store $ss (NOT the endpoint certificate - never touch, never re-enrol around it) not world-readable" "$([ -n "$m" ] && [ "${m: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${m:-unknown}"; }
+  done
+}
+
 wls_controls() {
   local h d; for h in $(wls_homes); do for d in $(wls_domains "$h"); do
     local cfg="$d/config/config.xml" dn; dn="$(basename "$d")"
@@ -189,6 +239,7 @@ main() {
   say "security-posture $VERSION -> $OUT"
   h1 "Host"; host_controls
   h1 "Listener / Oracle Net"; network_controls
+  okv_controls
   local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
   for s in $sids; do
     h1 "Database $s"; say "database $s"

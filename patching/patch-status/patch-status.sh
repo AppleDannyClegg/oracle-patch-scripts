@@ -2,7 +2,8 @@
 # patch-status.sh - every Oracle home on this host against the current quarter. Read-only.
 # Database and Grid homes (RU / MRP / OJVM level and date, datapatch applied per database and PDB),
 # WebLogic / FMW homes (PSU, Coherence, ADF/OPSS bundles), ORDS and APEX versions vs the newest
-# public release, every JDK in use, GoldenGate, EM agent, AHF, kernel / Ksplice. One table:
+# public release, every JDK in use, GoldenGate, Enterprise Manager OMS and agent (RU from lspatches; OMS_HOME /
+# EM_AGENT_INST when not in the usual places), AHF, kernel / Ksplice. One table:
 # product, home, installed level, its date, how many Critical Patch Updates behind, status.
 #
 # Usage: patch-status.sh [options]
@@ -149,8 +150,23 @@ other_products() {
     [ -x "$OGG_HOME/OPatch/opatch" ] && { local gp; gp="$(to 120 "$OGG_HOME/OPatch/opatch" lspatches 2>/dev/null | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; [ -n "$gp" ] && gd="$(date_from_desc "$gp")"; }
     row "GoldenGate" "$OGG_HOME" "${gv:-unknown}" "$gd" "" ""
   fi
-  local ah; ah="$(ls -d /u01/app/oracle/agent*/agent_inst /u01/app/oracle/product/agent*/agent_inst /opt/oracle/agent*/agent_inst 2>/dev/null | head -1)"
-  [ -x "$ah/bin/emctl" ] && { local ev; ev="$(to 60 "$ah/bin/emctl" status agent 2>/dev/null | sed -n 's/^Agent Version *: *//p')"; row "EM agent" "$ah" "${ev:-unknown}" "" "" ""; }
+  # Enterprise Manager (the estate runs OEM 24ai: RU 10 = 24.1.0.10, OMS 39193593 / agent 39193599 in June 2026). The RU level is
+  # the EM-OMS / EM-AGENT patch in opatch lspatches of the OMS home and the agent binaries home; emctl getversion needs no login
+  local ah; ah="$(ls -d "${EM_AGENT_INST:-/nonexistent}" /u01/app/oracle/agent*/agent_inst /u01/app/oracle/product/agent*/agent_inst /opt/oracle/agent*/agent_inst 2>/dev/null | head -1)"
+  if [ -x "$ah/bin/emctl" ]; then
+    local est ev abin aru=""; est="$(to 60 "$ah/bin/emctl" status agent 2>/dev/null)"; ev="$(printf '%s\n' "$est" | sed -n 's/^Agent Version *: *//p' | head -1)"
+    abin="$(printf '%s\n' "$est" | sed -n 's/^Agent Binaries *: *//p' | head -1)"; [ -z "$abin" ] && abin="$(ls -d "$(dirname "$ah")"/agent_[0-9]* 2>/dev/null | tail -1)"
+    [ -x "${abin:-/nonexistent}/OPatch/opatch" ] && { local alsp; alsp="$(to 120 "$abin/OPatch/opatch" lspatches 2>/dev/null)"; printf '%s\n' "$alsp" >"$RAW/lspatches_em_agent.txt"; aru="$(printf '%s\n' "$alsp" | grep -iE 'AGENT' | grep -iE 'RU|RELEASE UPDATE|BUNDLE' | sort | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; }
+    row "EM agent ${ev:-?}" "$ah" "${aru:-${ev:-unknown}}" "$(date_from_desc "$aru")" "$([ -n "$aru" ] && echo "RU of $LATEST_CPU")" "$([ -n "$aru" ] && echo 'RU from opatch lspatches of the agent binaries' || echo 'no RU seen in lspatches: agent patched with agent RUs, not here')"
+  fi
+  local oh; oh="$(for x in "${OMS_HOME:-/nonexistent}" /u01/app/oracle/middleware* /u01/app/oracle/em*/middleware /u01/app/oracle/product/em*/middleware /opt/oracle/middleware*; do [ -x "$x/bin/emctl" ] && [ -x "$x/OPatch/opatch" ] && echo "$x"; done 2>/dev/null | head -1)"
+  if [ -n "$oh" ]; then
+    local ov olsp oru; ov="$(to 60 "$oh/bin/emctl" getversion oms 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+){2,4}' | head -1)"
+    olsp="$(to 180 "$oh/OPatch/opatch" lspatches 2>/dev/null)"; printf '%s\n' "$olsp" >"$RAW/lspatches_em_oms.txt"
+    oru="$(printf '%s\n' "$olsp" | grep -iE 'OMS|ENTERPRISE MANAGER' | grep -iE 'RU|RELEASE UPDATE|BUNDLE' | sort | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
+    row "EM OMS ${ov:-?}" "$oh" "${oru:-no OMS RU in lspatches}" "$(date_from_desc "$oru")" "RU of $LATEST_CPU" "EM RUs come about monthly; the OMS RU and the agent RU are applied as a pair (OMSPatcher for the OMS)"
+    case "$ov" in 13.[0-4].*) [ "$DO_REPORT" = 1 ] && finding WARN patch "Enterprise Manager $ov in $oh: 13.4 and older are out of Premier Support (13.5 or 24ai)";; esac
+  fi
   local t; t="$(ls /opt/oracle.ahf/bin/tfactl /u01/app/oracle.ahf/bin/tfactl 2>/dev/null | head -1)"
   [ -n "$t" ] && { local av; av="$(to 60 "$(dirname "$t")/ahfctl" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$av" ] && av="$(to 60 "$t" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; row "AHF" "$(dirname "$(dirname "$t")")" "${av:-unknown}" "" "" "AHF is updated monthly; check MOS 2550798.1"; }
   local kd; kd="$(uptrack-uname -r 2>/dev/null)"; row "Kernel" "$(uname -r)" "${kd:-$(uname -r)}" "$(rpm -q --qf '%{INSTALLTIME:date}\n' kernel-uek 2>/dev/null | tail -1 | xargs -I{} date -d {} +%Y-%m-%d 2>/dev/null)" "" "$([ -n "$kd" ] && echo 'Ksplice effective kernel' || echo 'no Ksplice')"

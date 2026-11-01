@@ -350,8 +350,14 @@ cmd_datapatch() {
     ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" PATH="$HOME_DIR/bin:$HOME_DIR/OPatch:$PATH" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch returned an error"; rc=1; }
     local bad; bad="$(sql_val "$s" "(select count(*) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))" 2>/dev/null)"; [ -z "$bad" ] && bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
     [ "${bad:-0}" != 0 ] && { err "$s: $bad datapatch entries not SUCCESS"; sql_lines "$s" "select con_id||' '||patch_id||' '||status||' '||substr(description,1,60) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" 2>/dev/null | tee -a "$LOG_FILE"; rc=1; }
-    log "$s: utlrp"; sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql
-    db_is_cdb "$s" && sql_run "$s" "alter session set container=CDB\$ROOT;\n@?/rdbms/admin/utlrp.sql" >>"$LOG_FILE" 2>&1
+    # utlrp's status used to be dropped: a recompile that never ran (no sqlplus, wrong SID, ORA-12162) left SYS objects invalid
+    # with the step reported ok. Its exit status counts, and the outcome - invalid SYS/SYSTEM objects left - is printed
+    log "$s: utlrp"; sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql || { err "$s: utlrp did not run cleanly (see $LOG_FILE)"; rc=1; }
+    db_is_cdb "$s" && { sql_run "$s" "alter session set container=CDB\$ROOT;\n@?/rdbms/admin/utlrp.sql" >>"$LOG_FILE" 2>&1 || { err "$s: utlrp in CDB\$ROOT failed (see $LOG_FILE)"; rc=1; }; }
+    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))" 2>/dev/null)"
+    if [ -z "$inv" ]; then err "$s: cannot count the invalid SYS/SYSTEM objects after utlrp"; rc=1
+    elif [ "$inv" -gt 0 ]; then warn "$s: $inv invalid SYS/SYSTEM object(s) remain after utlrp - 'heal' offers utlrp again; if they stay invalid, dba_objects names them"
+    else log "$s: no invalid SYS/SYSTEM objects after utlrp"; fi
   done
   state_set datapatch "$([ "$rc" = 0 ] && echo ok || echo failed)"; return "$rc"
 }
@@ -425,7 +431,8 @@ cmd_heal() {
   local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" || continue
     local bad; bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
     [ "${bad:-0}" != 0 ] && { warn "$s: $bad datapatch rows not SUCCESS:"; sql_lines "$s" "select patch_id||' '||status||' '||substr(description,1,60)||' log: '||logfile from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" ; log "  usual fix: read the logfile, fix the invalid object / missing grant it names, re-run: datapatch -verbose"; confirm "re-run datapatch -verbose on $s now?" && { cmd_datapatch; did=1; }; }
-    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))")"; [ "${inv:-0}" -gt 0 ] && confirm "$s: $inv invalid SYS/SYSTEM objects - run utlrp?" && { sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql; did=1; }
+    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))")"
+    [ "${inv:-0}" -gt 0 ] && confirm "$s: $inv invalid SYS/SYSTEM objects - run utlrp?" && { if sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql; then did=1; local left; left="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))" 2>/dev/null)"; log "$s: utlrp done, ${left:-?} invalid SYS/SYSTEM object(s) left (was $inv)"; else err "$s: utlrp did not run cleanly (see $LOG_FILE) - the $inv objects are still invalid"; fi; }
     local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ "${closed:-0}" != 0 ] && confirm "$s: open all PDBs?" && { sql_run "$s" "alter pluggable database all open;" >>"$LOG_FILE"; did=1; }
     local home; home="$(oratab_home "$s")"; [ "$home" != "$HOME_DIR" ] && warn "$s: /etc/oratab says $home but you patched $HOME_DIR"
   done
