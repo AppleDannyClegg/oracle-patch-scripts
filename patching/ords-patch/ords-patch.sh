@@ -246,7 +246,7 @@ EOF
 
 # date Oracle last published ords-latest.zip (cheap HEAD request); the version number is only inside the zip
 zip_published() {
-  net_ok || { local z; z="$(ls -t "$ORDS_BASE"/downloads/ords*.zip 2>/dev/null | head -1)"; if [ -n "$z" ]; then printf '(no internet from here; newest zip on disk: %s)' "$z"; else printf '(no internet from here; put ords-latest.zip in %s/downloads/)' "$ORDS_BASE"; fi; return 0; }
+  net_ok || { local z; z="$(newest_zip_on_disk)"; if [ -n "$z" ]; then printf '(no internet from here; newest zip on disk: %s = %s)' "$z" "$(zip_version "$z")"; else printf '(no internet from here; put ords-latest.zip in %s/downloads/)' "$ORDS_BASE"; fi; return 0; }
   local h; h="$(curl -sIL --max-time 8 -A 'Mozilla/5.0' "$ORDS_DL_URL" 2>/dev/null | tr -d '\r')" || true
   local lm; lm="$(printf '%s\n' "$h" | sed -n 's/^[Ll]ast-[Mm]odified: *//p' | tail -1)"
   [ -n "$lm" ] && printf 'ords-latest.zip published %s (exact version known after '"'"'latest'"'"' downloads it)' "$lm" || printf '(download.oracle.com not reachable from here)'
@@ -270,13 +270,18 @@ cmd_plan() {
 }
 
 # ---------------------------------------------------------------------------
+# zip_version <zip>: the ORDS release inside a zip without unpacking it (plugin jar name in the listing, else the war manifest)
+zip_version() { local v; v="$(unzip -l "$1" 2>/dev/null | grep -oE 'ords-plugin-api-[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/ords-plugin-api-//')"
+  [ -z "$v" ] && { local w; w="$(mktemp)"; unzip -p "$1" ords.war >"$w" 2>/dev/null && v="$(unzip -p "$w" META-INF/MANIFEST.MF 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; rm -f "$w"; }; printf '%s' "$v"; }
+# newest_zip_on_disk: the ORDS zip in downloads/ with the highest release, not the newest file date (an older release copied later must not win)
+newest_zip_on_disk() { local z best="" bv=""; for z in "$ORDS_BASE"/downloads/ords*.zip; do [ -f "$z" ] || continue; local v; v="$(zip_version "$z")"; if [ -z "$best" ] || { [ -n "$v" ] && { [ -z "$bv" ] || version_ge "$v" "$bv"; }; }; then best="$z"; bv="$v"; fi; done; printf '%s' "$best"; }
 cmd_latest() {
   setup_env; reuse_or_init latest
   command -v unzip >/dev/null || die "unzip required"
   mkdir -p "$ORDS_BASE/downloads" || die "Cannot write to $ORDS_BASE"
   local zip; zip="$ORDS_BASE/downloads/ords-latest-$(date +%Y%m%d).zip"
   if ! net_ok; then
-    zip="$(ls -t "$ORDS_BASE"/downloads/ords*.zip 2>/dev/null | head -1)"
+    zip="$(newest_zip_on_disk)"
     [ -n "$zip" ] || die "No internet from this host and no ORDS zip on disk: download ords-latest.zip (public, no login) elsewhere and copy it to $ORDS_BASE/downloads/"
     log "No internet: using $zip ($(date -r "$zip" '+%Y-%m-%d' 2>/dev/null || stat -c %y "$zip" | cut -c1-10))"
   elif [ ! -f "$zip" ]; then
@@ -320,7 +325,10 @@ cmd_preflight() {
     unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null | grep -q 'config.url' && log "ords.war carries its config dir ($ORDS_CONFIG); the new war will be built with 'ords --config $ORDS_CONFIG war'" || log "config dir comes from -Dconfig.url on the server; the stock ords.war from the new release will be deployed"
   elif [ -n "$ORDS_HOME" ] && [ ! -L "$ORDS_HOME" ]; then warn "ORDS_HOME $ORDS_HOME is a real directory; apply will rename it to ${ORDS_HOME}-$ORDS_VER and make $ORDS_HOME a symlink (start scripts keep working)"; fi
   if [ -n "$ORDS_RUNNING" ]; then wait_for_url "$ORDS_URL" 5 && log "ORDS answers at $ORDS_URL now" || warn "ORDS running but $ORDS_URL does not answer - check ORDS_URL"; fi
-  sql_available && log "SQL access available: a restore point will protect the ORDS schema upgrade (if ARCHIVELOG)" || warn "No SQL*Plus/SQLcl here: schema-level rollback not possible, only the binaries can be switched back"
+  if sql_available; then local lm fra; lm="$(sql_val "(select log_mode from v\$database)" 2>/dev/null)"; fra="$(sql_val "(select nvl(max(value),'') from v\$parameter where name='db_recovery_file_dest')" 2>/dev/null)"
+    if [ "$lm" = ARCHIVELOG ] && [ -n "$fra" ]; then log "SQL access, ARCHIVELOG and a recovery area: a guaranteed restore point will protect the ORDS schema upgrade"
+    else warn "no restore point possible ($({ [ "$lm" = ARCHIVELOG ] || echo "log_mode $lm"; [ -n "$fra" ] || echo "no db_recovery_file_dest"; } | paste -sd, - | sed 's/,/, /g')): a failed schema upgrade can only be undone from a backup, the binaries can be switched back"; fi
+  else warn "No SQL*Plus/SQLcl here: schema-level rollback not possible, only the binaries can be switched back"; fi
   {
     echo; echo "PLAN"; echo "  ORDS $ORDS_VER -> ${nv:-?}  pools: $POOLS  Java $JAVA_VER"
     if [ "$WLS_MODE" = 1 ]; then echo "  Steps: backup config+war > stop app '$WLS_ORDS_APP' > ords install --db-only per pool > build+replace war > redeploy > verify"
@@ -390,8 +398,10 @@ cmd_apply() {
   local pool rc=0
   for pool in $POOLS; do
     log "Upgrading ORDS schema in pool '$pool' with ORDS $nv"
-    if [ "$DRY_RUN" = 1 ]; then log "CMD: $nd/bin/ords --config $ORDS_CONFIG install --db-pool $pool --admin-user $ORDS_ADMIN_USER --db-only --password-stdin"; continue; fi
-    if "$nd/bin/ords" --config "$ORDS_CONFIG" install --db-pool "$pool" --admin-user "$ORDS_ADMIN_USER" --db-only --log-folder "$RUN_DIR" --password-stdin <"$pwfile" >>"$LOG_FILE" 2>&1; then
+    # ords refuses "--db-pool default" ("The default name is not allowed"): the default pool is addressed by leaving the option out
+    local poolopt=(); [ "$pool" = default ] || poolopt=(--db-pool "$pool")
+    if [ "$DRY_RUN" = 1 ]; then log "CMD: $nd/bin/ords --config $ORDS_CONFIG install ${poolopt[*]} --admin-user $ORDS_ADMIN_USER --db-only --password-stdin"; continue; fi
+    if "$nd/bin/ords" --config "$ORDS_CONFIG" install "${poolopt[@]}" --admin-user "$ORDS_ADMIN_USER" --db-only --log-folder "$RUN_DIR" --password-stdin <"$pwfile" >>"$LOG_FILE" 2>&1; then
       log "  pool $pool: schema upgraded"; state_set "pool_$pool" ok
     else err "  pool $pool: ords install failed (see $LOG_FILE and $RUN_DIR/*.log)"; rc=1; break; fi
   done
