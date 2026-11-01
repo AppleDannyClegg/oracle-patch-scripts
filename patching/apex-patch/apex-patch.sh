@@ -276,7 +276,9 @@ db_detect() {
     # a runtime-only install is a full one with the App Builder applications (ids 4000-4999) removed by apxdevrm.sql
     local n; n="$(sql_val "(select count(*) from $APEX_SCHEMA.wwv_flows where id between 4000 and 4999)" 2>/dev/null)"
     [ -z "$n" ] && n="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and object_name='WWV_FLOW_F4000_PLUGINS' and object_type='PACKAGE')" 2>/dev/null)"
-    if [ "${n:-0}" -gt 0 ]; then APEX_TYPE="full"; else APEX_TYPE="runtime"; fi
+    # an unreadable count is not 'runtime': apxrtins.sql on a full install would strip the App Builder
+    if [ -z "$n" ]; then APEX_TYPE="unknown"; warn "cannot read the APEX install type (wwv_flows / WWV_FLOW_F4000_PLUGINS unreadable): set APEX_INSTALL_TYPE=full|runtime in apex-patch.conf"
+    elif [ "$n" -gt 0 ]; then APEX_TYPE="full"; else APEX_TYPE="runtime"; fi
     [ -n "${APEX_INSTALL_TYPE:-}" ] && APEX_TYPE="$APEX_INSTALL_TYPE"
     APEX_PATCHES="$(run_sql "select patch_number||' '||patch_version from apex_patches order by 1;" 2>/dev/null)"
   fi
@@ -414,7 +416,8 @@ cmd_preflight() {
   fi
   [ "$APEX_STATUS" = VALID ] || warn "APEX registry status is '${APEX_STATUS:-?}' (expected VALID)"
   local inv; inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"
-  [ "${inv:-0}" -eq 0 ] || { warn "$inv invalid objects in $APEX_SCHEMA - 'heal' recompiles them (utlrp)"; }
+  if [ -z "$inv" ]; then warn "could not read the invalid-object count of $APEX_SCHEMA (not assuming 0)"; elif [ "$inv" -gt 0 ]; then warn "$inv invalid objects in $APEX_SCHEMA - 'heal' recompiles them (utlrp)"; fi
+  [ "$APEX_TYPE" = unknown ] && { err "install type unknown (full or runtime decides apexins.sql vs apxrtins.sql): set APEX_INSTALL_TYPE"; p=$((p + 1)); }
   local t
   for t in "$APEX_TS" "$APEX_FILES_TS"; do
     [ "$(sql_val "(select count(*) from dba_tablespaces where tablespace_name=upper('$t'))")" = 1 ] || { err "Tablespace $t does not exist"; p=$((p + 1)); }
@@ -434,7 +437,7 @@ cmd_preflight() {
   if [ "$DB_LOG_MODE" = ARCHIVELOG ]; then log "ARCHIVELOG: a guaranteed restore point will be created (whole-database rollback possible)"
   else warn "NOARCHIVELOG: no restore point possible; rollback = apxdwngrd.sql only"; fi
   local free_mb; free_mb="$(df -Pm "$APEX_BASE" 2>/dev/null | awk 'NR==2{print $4}')"
-  [ "${free_mb:-0}" -ge 2000 ] || { err "Less than 2 GB free under $APEX_BASE"; p=$((p + 1)); }
+  if [ -z "$free_mb" ]; then err "cannot read the free space under $APEX_BASE (df failed)"; p=$((p + 1)); elif [ "$free_mb" -lt 2000 ]; then err "Less than 2 GB free under $APEX_BASE"; p=$((p + 1)); fi
   {
     echo; echo "PLAN"
     echo "  Database   : $DB_VER ($DB_CON), APEX $APEX_VER ($APEX_TYPE, $APEX_SCHEMA) -> $ver ($(apex_schema_for "$ver"))"
@@ -529,6 +532,7 @@ cmd_apply() {
   [ -f "$src/apexins.sql" ] || die "Source for $ver not found at $src (run download)"
   [ "$WLS_MODE" = 1 ] && [ "$(state_get app_stopped || true)" = 1 ] && ORDS_RUNNING=""   # stopped via weblogic.Deployer in this run
   [ -z "$ORDS_RUNNING" ] || { [ "$DRY_RUN" = 1 ] || die "ORDS is still running - run 'stop' first (or use 'run')"; }
+  [ "$APEX_TYPE" = unknown ] && die "install type unknown (apexins.sql for a full install, apxrtins.sql for runtime - the wrong one strips or breaks the App Builder): set APEX_INSTALL_TYPE=full|runtime in apex-patch.conf"
   local script="apexins.sql"; [ "$APEX_TYPE" = runtime ] && script="apxrtins.sql"
   [ -n "$DB_VER" ] || die "no database access: apply needs the database"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: would run $script from $src and switch the images dir"; return 0; }
@@ -555,8 +559,9 @@ cmd_verify() {
   [ -n "$want" ] && { [ "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)" = "$want" ] && log "apex_release says $APEX_VER" || { err "apex_release says '$APEX_VER', expected $want"; ok=0; }; }
   [ "$APEX_STATUS" = VALID ] && log "registry VALID" || { err "registry status '$APEX_STATUS'"; ok=0; }
   local inv; inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"
-  if [ "${inv:-0}" -gt 0 ]; then warn "$inv invalid objects in $APEX_SCHEMA - recompiling"; run_sql "exec sys.utl_recomp.recomp_parallel(4,'$APEX_SCHEMA')" >/dev/null 2>&1 || true
-    inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"; [ "${inv:-0}" -eq 0 ] || { err "$inv objects still invalid"; ok=0; }
+  if [ -z "$inv" ]; then err "cannot read the invalid-object count of $APEX_SCHEMA - not assuming 0"; ok=0
+  elif [ "$inv" -gt 0 ]; then warn "$inv invalid objects in $APEX_SCHEMA - recompiling"; run_sql "exec sys.utl_recomp.recomp_parallel(4,'$APEX_SCHEMA')" >/dev/null 2>&1 || true
+    inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"; [ -n "$inv" ] && [ "$inv" -eq 0 ] || { err "${inv:-?} objects still invalid"; ok=0; }
   fi
   if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -n "$want" ]; then
     if [ ! -f "$APEX_IMAGES_DIR/apex_version.txt" ]; then err "$APEX_IMAGES_DIR has no apex_version.txt: not an APEX images directory"; ok=0
@@ -635,7 +640,8 @@ cmd_heal() {
   local found=0 fixed=0 inv
   if [ -n "$APEX_SCHEMA" ]; then
     inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"
-    if [ "${inv:-0}" -gt 0 ]; then found=$((found + 1)); log "Recompiling $inv invalid objects in $APEX_SCHEMA"; run_sql "exec sys.utl_recomp.recomp_parallel(4,'$APEX_SCHEMA')" >/dev/null 2>&1 && fixed=$((fixed + 1)); fi
+    if [ -z "$inv" ]; then found=$((found + 1)); warn "cannot read the invalid-object count of $APEX_SCHEMA (not assuming 0)"
+    elif [ "$inv" -gt 0 ]; then found=$((found + 1)); log "Recompiling $inv invalid objects in $APEX_SCHEMA"; run_sql "exec sys.utl_recomp.recomp_parallel(4,'$APEX_SCHEMA')" >/dev/null 2>&1 && fixed=$((fixed + 1)); fi
   fi
   if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -n "$IMAGES_VER" ] && [ -n "$APEX_VER" ] && [ "$(printf '%s' "$IMAGES_VER" | cut -d. -f1,2)" != "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)" ]; then
     found=$((found + 1)); local src; src="$(src_dir_for "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)")"

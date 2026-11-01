@@ -5,6 +5,7 @@ cat >"$ANSWERS" <<A
 from dba_users where username in|FREE|-|APPUSER|${ST:-OPEN}|NO
 v\\\$pdbs|
 spare4|VALUES 'S:ABC'
+dba_profiles where profile=|1
 A
 ARGS="--sid FREE --user APPUSER"; ARGS_reset="--sid FREE --user APPUSER --generate --no-propagate"; ARGS_rollback=""; ARGS_cleanup=""
 export SQL_CMD="$STUB/sqlplus -S"

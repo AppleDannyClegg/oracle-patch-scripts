@@ -345,7 +345,8 @@ cmd_preflight() {
   fi
   if [ -z "${ORDS_ADMIN_PASSWORD:-}" ] && [ ! -t 0 ] && [ "$DRY_RUN" = 0 ]; then err "ORDS_ADMIN_PASSWORD not set and not interactive (needed to upgrade the ORDS schema as $ORDS_ADMIN_USER)"; p=$((p + 1)); fi
   if [ -n "$ORDS_VER" ] && ! version_ge "$ORDS_VER" 22.1; then warn "ORDS $ORDS_VER is pre-22.1 (java -jar ords.war era): the config must be migrated first with 'ords --config NEW install --legacy-config OLD'; this script does not automate that"; p=$((p + 1)); fi
-  local free_mb; free_mb="$(df -Pm "$ORDS_BASE" | awk 'NR==2{print $4}')"; [ "${free_mb:-0}" -ge 1500 ] || { err "Less than 1.5 GB free under $ORDS_BASE"; p=$((p + 1)); }
+  local free_mb; free_mb="$(df -Pm "$ORDS_BASE" 2>/dev/null | awk 'NR==2{print $4}')"
+  if [ -z "$free_mb" ]; then err "cannot read the free space under $ORDS_BASE (df failed)"; p=$((p + 1)); elif [ "$free_mb" -lt 1500 ]; then err "Less than 1.5 GB free under $ORDS_BASE"; p=$((p + 1)); fi
   if [ "$WLS_MODE" = 1 ]; then
     [ -n "${WLS_USERCONFIG:-}${WLS_ADMIN_USER:-}" ] || { err "WebLogic mode needs admin credentials for weblogic.Deployer: WLS_USERCONFIG+WLS_USERKEY or WLS_ADMIN_USER+WLS_ADMIN_PASSWORD"; p=$((p + 1)); }
     [ -f "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" ] || { err "setWLSEnv.sh not found under $WLS_ORACLE_HOME"; p=$((p + 1)); }

@@ -252,7 +252,8 @@ cmd_profile() {
   local sid pdb; for sid in $(sids); do sql_ok "$sid" || continue
     for pdb in $(containers "$sid"); do
       local have; have="$(wp "$pdb" sql_val "$sid" "(select count(*) from dba_profiles where profile='$SA_PROFILE')")"
-      if [ "${have:-0}" = 0 ]; then
+      [ -n "$have" ] || { err "$sid$(cs "$pdb"): cannot read dba_profiles - skipped (not assuming the profile is missing)"; fail=$((fail+1)); continue; }
+      if [ "$have" = 0 ]; then
         confirm "Create profile $SA_PROFILE in $sid$(cs "$pdb") (PASSWORD_LIFE_TIME UNLIMITED, FAILED_LOGIN_ATTEMPTS $SA_FAILED_LOGINS, PASSWORD_GRACE_TIME UNLIMITED)?" || continue
         usql "$sid" "$pdb" "create profile $SA_PROFILE" "create profile \"$SA_PROFILE\" limit password_life_time unlimited failed_login_attempts $SA_FAILED_LOGINS password_grace_time unlimited password_lock_time 1/24 password_reuse_time unlimited password_reuse_max unlimited$([ "$pdb" = - ] && db_is_cdb "$sid" && echo ' container=all');" || { fail=$((fail+1)); continue; }
       fi
