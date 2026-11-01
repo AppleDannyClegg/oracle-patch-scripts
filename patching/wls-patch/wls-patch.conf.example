@@ -28,11 +28,11 @@
 #RUN_BASE=/u01/backup/wls-patch/runs
 
 # --- Downloading from My Oracle Support ------------------------------------
-# Needed only for `download` and `run --patches`. The account must have a Support Identifier
-# with WebLogic entitlement. Safer alternative to putting the password here: a line in ~/.netrc
-#   machine updates.oracle.com login you@company.com password xxxx      (then: chmod 600 ~/.netrc)
-#MOS_USER=you@company.com
-#MOS_PASSWORD=xxxx
+# Needed only for `latest`, `download` and `run --latest`. The account must have a Support Identifier with
+# WebLogic entitlement. Since 2026 MOS takes a bearer token, not the password: log in to MOS in a browser, open
+# https://updates.oracle.com/Orion/GenToken/get_token, Generate token (lasts 60 minutes) and save it in
+# ~/.mos-token (chmod 600), or name the file here. MOS_USER/MOS_PASSWORD and ~/.netrc no longer work.
+#MOS_TOKEN_FILE=/home/oracle/.mos-token
 
 # Default patch numbers for `run --patches` / `download` when none are given on the command line.
 # Update this each quarter from the WebLogic Patch Availability Document on My Oracle Support.

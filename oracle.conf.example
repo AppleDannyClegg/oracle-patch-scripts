@@ -15,9 +15,10 @@ OFFLINE=1
 #ORDS_URL=https://apex.example.com/ords/
 #WLS_ADMIN_URL=t3://localhost:7001
 
-# My Oracle Support (only used by latest/download on a machine that can reach it); or ~/.netrc
-#MOS_USER=someone@example.com
-#MOS_PASSWORD=
+# My Oracle Support (only latest/download, on a machine that can reach it). Since 2026 it takes a bearer token, not
+# the password: log in to MOS in a browser, open https://updates.oracle.com/Orion/GenToken/get_token, Generate token
+# (lasts 60 minutes), save it in ~/.mos-token (chmod 600) or point MOS_TOKEN_FILE at the file
+#MOS_TOKEN_FILE=/home/oracle/.mos-token
 
 # Where run logs go (default ~/<script>/runs)
 #RUN_BASE=/u01/backup/scripts/runs

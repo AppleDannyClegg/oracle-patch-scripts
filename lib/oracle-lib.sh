@@ -401,65 +401,122 @@ tls_enddate() { echo | to 10 openssl s_client -connect "$1" -servername "${1%%:*
 days_until() { local es; es="$(epoch_of "$1")"; [ -z "$es" ] && es="$( [ "$GNU_DATE" = 1 ] && date -d "$1" +%s 2>/dev/null || date -j -f '%b %d %T %Y %Z' "$1" +%s 2>/dev/null)"; [ -z "$es" ] && return 1; echo $(( (es - $(date +%s)) / 86400 )); }
 
 # ---------------------------------------------------------------------------
-# My Oracle Support: login (~/.netrc or MOS_USER/MOS_PASSWORD), name search, file pick, download
+# My Oracle Support (the ARU web services on updates.oracle.com). Since 2026 they take an OAuth2 bearer
+# token, not the account password: generate one (valid 60 minutes) while logged in to MOS at
+# https://updates.oracle.com/Orion/GenToken/get_token and keep it in MOS_TOKEN_FILE (default ~/.mos-token,
+# mode 600) or MOS_TOKEN. The old name search (SimpleSearch) answers 401 to everything now; "latest" reads
+# the Recommended list for the product/release/platform instead. Number lookups and downloads use search?bug=.
 # ---------------------------------------------------------------------------
-MOS_BASE="${MOS_BASE:-https://updates.oracle.com}"; MOS_NETRC=""; MOS_COOKIES=""; MOS_CURL=()
+MOS_BASE="${MOS_BASE:-https://updates.oracle.com}"; MOS_TOKEN_FILE="${MOS_TOKEN_FILE:-$HOME/.mos-token}"; MOS_CFG=""; MOS_CURL=(); MOS_REL=""
 # No internet on the servers: OFFLINE=1 in oracle.conf skips every probe and download; net_ok probes once (5 s) otherwise
 OFFLINE="${OFFLINE:-0}"; NET_OK=""
 net_ok() { [ "$OFFLINE" = 1 ] && return 1; [ -n "$NET_OK" ] || { NET_OK=0; command -v curl >/dev/null 2>&1 && curl -sI -m "${NET_PROBE_TIMEOUT:-5}" -o /dev/null https://download.oracle.com/ >/dev/null 2>&1 && NET_OK=1; }; [ "$NET_OK" = 1 ]; }
 offline_hint() { printf 'no internet from this host (OFFLINE=1, or download.oracle.com does not answer): download on a machine that has it and copy the file to %s - see README "Servers without internet access"' "${1:-the patch directory}"; }
-mos_cleanup() { [ -n "$MOS_NETRC" ] && rm -f "$MOS_NETRC"; [ -n "$MOS_COOKIES" ] && rm -f "$MOS_COOKIES"; return 0; }
+mos_cleanup() { [ -n "$MOS_CFG" ] && rm -f "$MOS_CFG"; return 0; }
+mos_token_hint() { printf 'log in to My Oracle Support in a browser, open %s/Orion/GenToken/get_token, press Generate token (it lasts 60 minutes) and save it as %s (chmod 600) or in MOS_TOKEN' "$MOS_BASE" "$MOS_TOKEN_FILE"; }
+epoch_hm() { if [ "$GNU_DATE" = 1 ]; then date -d "@$1" '+%H:%M'; else date -r "$1" '+%H:%M'; fi; }
 mos_login() {
   [ "$OFFLINE" = 1 ] && die "My Oracle Support is not reachable: $(offline_hint "${1:-}")"
   require_cmd curl
   [ -n "$RUN_DIR" ] || init_run_dir mos
-  MOS_COOKIES="$RUN_DIR/.mos-cookies"; trap mos_cleanup EXIT
-  local host netrc_opt=(); host="$(printf '%s' "$MOS_BASE" | sed -E 's#^[a-z]+://##; s#[:/].*##')"
-  if [ -f "$HOME/.netrc" ] && grep -q "$host" "$HOME/.netrc"; then netrc_opt=(--netrc); log "MOS login: using ~/.netrc"
-  else
-    local user="${MOS_USER:-}" pass="${MOS_PASSWORD:-}"
-    [ -z "$user" ] && { [ -t 0 ] || die "No MOS credentials: set MOS_USER/MOS_PASSWORD in the conf or add $host to ~/.netrc"; read -r -p "My Oracle Support email: " user; }
-    [ -z "$pass" ] && { [ -t 0 ] || die "No MOS_PASSWORD and not interactive"; read -r -s -p "My Oracle Support password: " pass; echo; }
-    MOS_NETRC="$RUN_DIR/.mos-netrc"; ( umask 077; printf 'machine %s login %s password %s\n' "$host" "$user" "$pass" >"$MOS_NETRC" )
-    netrc_opt=(--netrc-file "$MOS_NETRC"); log "MOS login: as $user"
+  trap mos_cleanup EXIT
+  local tok="${MOS_TOKEN:-}"
+  [ -z "$tok" ] && [ -f "$MOS_TOKEN_FILE" ] && tok="$(grep -vE '^[[:space:]]*(#|$)' "$MOS_TOKEN_FILE" | head -1 | tr -d '[:space:]')"
+  [ -z "$tok" ] && [ -t 0 ] && { read -r -s -p "My Oracle Support access token: " tok; echo; }
+  if [ -z "$tok" ]; then
+    { [ -n "${MOS_USER:-}" ] || grep -qs 'updates.oracle.com' "$HOME/.netrc"; } && die "MOS_USER/~/.netrc are no use any more: updates.oracle.com stopped taking the account password - $(mos_token_hint)"
+    die "No MOS token: $(mos_token_hint)"
   fi
-  MOS_CURL=(curl -sS -L --fail-with-body --retry 3 --retry-delay 5 "${netrc_opt[@]}" -b "$MOS_COOKIES" -c "$MOS_COOKIES")
-  local code; code="$("${MOS_CURL[@]}" -o /dev/null -w '%{http_code}' "$MOS_BASE/Orion/Services/download" || true)"
-  case "$code" in 200|302) log "MOS login OK";; 401|403) die "MOS login rejected (HTTP $code)";; *) die "Cannot reach $MOS_BASE (HTTP ${code:-none}). Set HTTPS_PROXY if there is a proxy; otherwise $(offline_hint "${1:-}")";; esac
+  # the token goes into a curl config file (mode 600), never on a command line
+  MOS_CFG="$RUN_DIR/.mos-curl"; ( umask 077; printf 'header = "Authorization: Bearer %s"\n' "$tok" >"$MOS_CFG" )
+  MOS_CURL=(curl -sS -L --fail --compressed --retry 3 --retry-delay 5 -K "$MOS_CFG")   # --compressed: a patch record can be 9 MB raw (6880880 is); --fail not --fail-with-body: OL8 has curl 7.61
+  local exp pay; pay="$(printf '%s' "$tok" | cut -d. -f2 | tr '_-' '/+')"; case $(( ${#pay} % 4 )) in 2) pay="$pay==";; 3) pay="$pay=";; esac
+  exp="$(printf '%s' "$pay" | base64 -d 2>/dev/null | tr -d '\n' | sed -n 's/.*"exp": *\([0-9]*\).*/\1/p')"
+  [ -n "$exp" ] && [ "$exp" -le "$(date +%s)" ] && die "the MOS token expired at $(epoch_hm "$exp") - $(mos_token_hint)"
+  local code; code="$("${MOS_CURL[@]}" -o /dev/null -w '%{http_code}' "$MOS_BASE/Orion/Services/search?bug=6880880" || true)"
+  case "$code" in 200) log "MOS token accepted${exp:+ (valid until $(epoch_hm "$exp"))}";; 401|403) die "MOS rejected the token (HTTP $code): expired or mis-pasted - $(mos_token_hint)";; *) die "Cannot reach $MOS_BASE (HTTP ${code:-none}). Set HTTPS_PROXY if there is a proxy; otherwise $(offline_hint "${1:-}")";; esac
 }
-# mos_name_search <text>: "number|description" rows from the legacy simple search
+# ARU ids: platform from this host (WebLogic/Coherence patches are Generic = 2000), products by number
+mos_platform_id() { case "$(uname -s)/$(uname -m)" in Linux/aarch64) echo 541;; SunOS/*) echo 23;; AIX/*) echo 212;; *) echo 226;; esac; }
+mos_platform_name() { case "$(mos_platform_id)" in 541) echo "Linux ARM 64-bit";; 23) echo "Oracle Solaris on SPARC (64-bit)";; 212) echo "IBM AIX on POWER Systems (64-bit)";; *) echo "Linux x86-64";; esac; }
+# mos_release_ids "<label prefix>": "label|name|id" rows of the ARU release table whose label starts so, e.g. "Oracle Database 19.0.0.0.0", "Oracle JDK 17."
+mos_release_ids() {
+  if [ -z "$MOS_REL" ]; then
+    # the table is 4 MB and changes rarely: kept for the day per user (no secrets in it) so every "latest" does not pull it again
+    local cache raw; cache="${TMPDIR:-/tmp}/aru-releases-$(id -u)-$(date +%Y%m%d).txt"; raw="$RUN_DIR/.aru-releases.xml"
+    if [ -s "$cache" ]; then MOS_REL="$cache"; else
+      "${MOS_CURL[@]}" -o "$raw" "$MOS_BASE/Orion/Services/metadata?table=aru_releases" || { rm -f "$raw"; err "could not fetch the MOS release table"; return 1; }
+      tail -c 200 "$raw" | grep -q '</results>' || { rm -f "$raw"; err "the MOS release table arrived incomplete ($(wc -c <"$raw" 2>/dev/null || echo 0) bytes): try again"; return 1; }
+      tr -d '\n\r' <"$raw" | sed 's/<release /\n<release /g' | sed -nE 's/^<release id="([0-9]+)"[^>]*name="([^"]*)"><!\[CDATA\[([^]]*)\]\]>.*/\3|\2|\1/p' >"$cache.$$" && mv "$cache.$$" "$cache"; rm -f "$raw"
+      [ -s "$cache" ] || { err "MOS returned an empty release table"; rm -f "$cache"; return 1; }
+      MOS_REL="$cache"
+    fi
+  fi
+  awk -F'|' -v p="$1" 'index($1,p)==1' "$MOS_REL" | sort -u
+}
+# mos_patch_rows <product> <release id> <platform> [recommended]: "number|abstract (yymmdd)" per patch filed there; the
+# plain list is capped at 150 rows by the service, the Recommended one holds the current RU/PSU/CPU patches
+mos_patch_rows() {
+  local xml p; xml="$("${MOS_CURL[@]}" "$MOS_BASE/Orion/Services/search?product=$1&release=$2&platform=$3&patch_type=all${4:+&classification=$4}" | tr -d '\n\r')" || return 1
+  printf '%s' "$xml" | sed 's/<patch /\n<patch /g' | grep '<patch ' | while read -r p; do
+    # first <number> and <abstract> only: the record goes on to list every bug the patch fixes, each with its own
+    local n a d; n="$(printf '%s' "$p" | grep -oE '<number>[0-9]+' | head -1 | cut -c9-)"; a="$(printf '%s' "$p" | grep -oE '<abstract><!\[CDATA\[[^]]*' | head -1 | cut -c20-)"
+    d="$(printf '%s' "$p" | grep -oE '<released_date[^>]*>[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | sed 's/.*>//; s/-//g' | cut -c3-8)"
+    [ -n "$n" ] && printf '%s|%s%s\n' "$n" "$a" "${d:+ ($d)}"
+  done
+}
+pad5() { local v="$1"; while [ "$(printf '%s' "$v" | tr -cd . | wc -c)" -lt 4 ]; do v="$v.0"; done; printf '%s' "$v"; }
+# mos_name_search <text>: what the old MOS name search gave ("number|description"), now from the Recommended lists. It
+# understands the queries the scripts use: "Database Release Update 19" (also "OJVM RELEASE UPDATE 19", "GI Release
+# Update 19"), "WLS PATCH SET UPDATE 14.1.2", "Coherence 14.1.2 Cumulative Patch", "JDK 17.0." / "JDK 8U". The
+# description ends with the release date as (yymmdd). Rows are sorted by that date; the caller picks.
 mos_name_search() {
-  local q html; q="$(printf '%s' "$1" | sed 's/ /%20/g')"
-  html="$("${MOS_CURL[@]}" "$MOS_BASE/Orion/SimpleSearch/process_form?search_type=patch&patch_number=$q&plat_lang=2000P" | tr -d '\n\r')" || return 1
-  printf '%s' "$html" | sed 's/<tr/\n<tr/g' | sed 's/<[^>]*>/ /g; s/&nbsp;/ /g; s/  */ /g' \
-    | grep -oE '\b[0-9]{8}\b.*' | awk '{n=$1; $1=""; sub(/^ /,""); print n "|" $0}' \
-    | sed -E 's/ (Generic Platform|Linux x86|Linux x86-64|Microsoft Windows|Oracle Solaris|IBM AIX|Download)( .*)?$//'
+  local q="$1" prod plat label v ids r rows
+  plat="$(mos_platform_id)"
+  case "$q" in
+    [Dd]atabase\ [Rr]elease\ [Uu]pdate*|OJVM*|GI\ [Rr]elease*|[Gg]rid*) prod=9480; v="$(printf '%s' "$q" | grep -oE '[0-9]+' | head -1)"; label="Oracle Database $v.0.0.0.0";;
+    WLS\ PATCH\ SET\ UPDATE*) prod=15991; plat=2000; label="Oracle WebLogic Server $(pad5 "$(printf '%s' "$q" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)")";;
+    Coherence*) prod=13964; plat=2000; label="Oracle Coherence $(pad5 "$(printf '%s' "$q" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)")";;
+    JDK*) prod=12443; v="$(printf '%s' "$q" | grep -oE '[0-9]+' | head -1)"; case "$v" in 8) label="Oracle JDK 1.8.0_";; *) label="Oracle JDK $v.";; esac
+      # one ARU release per JDK update; the newest ones are announced before the patch exists, so walk down until one has a file for this platform
+      ids="$(mos_release_ids "$label" | grep -vE '^[^|]*(-|Performance)' | sort -t'|' -k2,2rV | head -4 | cut -d'|' -f3)"
+      for r in $ids; do rows="$(mos_patch_rows "$prod" "$r" "$plat")"; [ -n "$rows" ] && { printf '%s\n' "$rows"; return 0; }; done
+      err "no $label patch for $(mos_platform_name) in the newest ARU releases"; return 1;;
+    *) err "MOS has no patch name search any more: '$q' cannot be looked up, pass the patch number (--patches)"; return 1;;
+  esac
+  ids="$(mos_release_ids "$label")" || return 1
+  ids="$(printf '%s\n' "$ids" | awk -F'|' -v l="$label" '$1==l {print $3; exit}')"
+  [ -n "$ids" ] || { err "release '$label' not in the MOS release table (product $prod)"; return 1; }
+  rows="$(mos_patch_rows "$prod" "$ids" "$plat" recommended)" || return 1
+  [ -n "$rows" ] || { err "MOS lists no Recommended patch for $label on $([ "$plat" = 2000 ] && echo Generic || mos_platform_name)"; return 1; }
+  printf '%s\n' "$rows" | awk -F'[()]' '{print $(NF-1) "|" $0}' | sort -t'|' -k1,1 | cut -d'|' -f2-
 }
 # mos_pick_file <bug> [release]: "filename|url|sha256|release|platform" for this platform/release
 mos_pick_file() {
   local bug="$1" want="${2:-}" xml cands="" p f
   xml="$("${MOS_CURL[@]}" "$MOS_BASE/Orion/Services/search?bug=$bug" | tr -d '\n\r')" || return 1
-  printf '%s' "$xml" | grep -qi '<html' && { err "MOS returned a web page for $bug - login did not stick"; return 1; }
+  printf '%s' "$xml" | grep -qi '<html' && { err "MOS returned a web page for $bug - the token was not accepted"; return 1; }
   while read -r p; do
     [ -z "$p" ] && continue
-    local rel plat; rel="$(printf '%s' "$p" | sed -n 's/.*<release[^>]*name="\([^"]*\)".*/\1/p')"; plat="$(printf '%s' "$p" | sed -n 's/.*<platform[^>]*>\([^<]*\)<\/platform>.*/\1/p')"
+    local rel plat; rel="$(printf '%s' "$p" | sed -n 's/.*<release[^>]*name="\([^"]*\)".*/\1/p')"; plat="$(printf '%s' "$p" | sed 's/<!\[CDATA\[//g; s/\]\]>//g' | grep -oE '<platform id="[0-9]+"[^>]*>[^<]*' | head -1 | sed 's/.*>//')"   # the name is in CDATA
     while read -r f; do
-      [ -z "$f" ] && continue
+      [ -z "$f" ] && continue; f="$(printf '%s' "$f" | sed 's/<!\[CDATA\[//g; s/\]\]>//g')"   # the URL is wrapped in CDATA
       local name url sha; name="$(printf '%s' "$f" | sed -n 's/.*<name>\([^<]*\)<\/name>.*/\1/p')"
       url="$(printf '%s' "$f" | sed -n 's/.*<download_url[^>]*host="\([^"]*\)"[^>]*>\([^<]*\)<\/download_url>.*/\1\2/p' | sed 's/&amp;/\&/g')"
       sha="$(printf '%s' "$f" | sed -n 's/.*<digest type="SHA-256">\([^<]*\)<\/digest>.*/\1/p')"
       [ -n "$name" ] && [ -n "$url" ] && cands="${cands:+$cands$'\n'}$name|$url|$sha|$rel|$plat"
     done < <(printf '%s' "$p" | sed 's/<file>/\n<file>/g' | grep '<file>')
-  done < <(printf '%s' "$xml" | sed 's/<patch>/\n<patch>/g' | grep '<patch>')
+  done < <(printf '%s' "$xml" | sed 's/<patch /\n<patch /g' | grep '<patch ')
   [ -n "$cands" ] || { err "Patch $bug: no downloadable files (not entitled, or wrong number)"; return 1; }
-  local os="Linux x86-64"; case "$(uname -s)" in SunOS) os="Solaris";; AIX) os="IBM AIX";; esac
-  local byplat; byplat="$(printf '%s\n' "$cands" | grep -iE '\|(Generic Platform|'"$os"')$' || printf '%s\n' "$cands")"
+  local os; os="$(mos_platform_name)"
+  local byplat; byplat="$(printf '%s\n' "$cands" | grep -iF -e "|Generic Platform" -e "|$os" || printf '%s\n' "$cands")"
   local pick=""; [ -n "$want" ] && pick="$(printf '%s\n' "$byplat" | awk -F'|' -v r="$want" -v t="_$(printf '%s' "$want" | tr -d .)" 'index($4,r)==1 || index($1,t) {print; exit}')"
   [ -z "$pick" ] && [ "$(printf '%s\n' "$byplat" | wc -l)" -eq 1 ] && pick="$byplat"
   [ -z "$pick" ] && { err "Patch $bug has several files; pass --release <one of>:"; printf '%s\n' "$byplat" | awk -F'|' '{printf "    %-45s release %-14s %s\n", $1, $4, $5}' >&2; return 1; }
   printf '%s\n' "$pick"
 }
-# mos_download <bug> <dir> [release]: fetch + verify SHA-256; prints the zip path
+# mos_download <bug> <dir> [release]: fetch + verify SHA-256; prints the zip path. The download URL answers with a
+# redirect to Oracle's CDN; curl drops the Authorization header on that hop, which is what the CDN expects.
 mos_download() {
   local bug="$1" dir="$2" rel="${3:-}" pick name url sha
   pick="$(mos_pick_file "$bug" "$rel")" || return 1

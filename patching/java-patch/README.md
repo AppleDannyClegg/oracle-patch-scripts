@@ -60,7 +60,7 @@ JDK directory stays (harmless). `run` rolls back when apply fails and offers it 
 
 `--java-home DIR`, `--java-base DIR`, `--tar FILE`, `--restart`, `--force`, `--no-cacerts`,
 `--dry-run`, `--yes`, `--json`, `--verbose`, `--run-dir`. Config in `java-patch.conf` (see the
-example) or the shared `oracle.conf`; MOS login as for `wls-patch`. Needs `lib/oracle-lib.sh` one
+example) or the shared `oracle.conf`; MOS access is a bearer token in `~/.mos-token` (see `oracle.conf.example`). Needs `lib/oracle-lib.sh` one
 folder up. Logs and backups under `~/java-patch/runs/<ts>/`.
 
 Tip: make the product's `JAVA_HOME` a symlink once (`/u01/app/oracle/jdk -> jdk1.8.0_421`), and

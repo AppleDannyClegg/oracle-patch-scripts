@@ -132,8 +132,8 @@ cmd_inspect() {
 cmd_latest() {
   discover; [ -n "$RUN_DIR" ] || init_run_dir latest; mos_login
   local q; case "$OLD_MAJOR" in 8) q="JDK 8U";; *) q="JDK $OLD_MAJOR.0.";; esac
-  log "Searching MOS for '$q' (Linux x86-64)"
-  local rows; rows="$(mos_name_search "$q" | grep -iE "JDK ?$OLD_MAJOR" | grep -viE 'windows|solaris|aix|arm|aarch|macos|docs|source' || true)"
+  log "Searching MOS for '$q' ($(mos_platform_name))"
+  local rows; rows="$(mos_name_search "$q" | grep -iE "JDK[^|]*\b${OLD_MAJOR}[.u_]" | grep -viE 'windows|solaris|aix|arm|aarch|macos|docs|source' || true)"
   [ -n "$rows" ] || { mos_cleanup; die "no JDK $OLD_MAJOR rows from MOS search; get the patch number from Doc 1439822.2 (All Java SE Downloads on MOS) and run: download <dir> <patch>"; }
   local best; best="$(printf '%s\n' "$rows" | awk -F'|' '{match($2,/[0-9]+[uU._][0-9]+([._][0-9]+)*/); v=substr($2,RSTART,RLENGTH); gsub(/[uU]/,".0.",v); print v "|" $0}' | sort -t'|' -k1,1V | tail -1 | cut -d'|' -f2-)"
   mos_cleanup

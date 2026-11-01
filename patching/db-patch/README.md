@@ -10,7 +10,7 @@ Runs on the database server as `oracle`, never root.
 ```bash
 cd patching/db-patch
 ./db-patch.sh inspect                           # home, RU level, OPatch, databases, roles, datapatch level per container
-./db-patch.sh latest                            # MOS: newest RU + OJVM for this release (needs ~/.netrc)
+./db-patch.sh latest                            # MOS: newest RU + OJVM for this release (needs a MOS token, see below)
 ./db-patch.sh download /u01/patches/oct2026     # fetch them (adds the OPatch kit p6880880 if OPatch is old)
 ./db-patch.sh plan /u01/patches/oct2026         # what run would do, changes nothing
 ./db-patch.sh preflight /u01/patches/oct2026    # conflicts, OPatch minimum, disk, roles, datapatch prereqs
@@ -67,7 +67,7 @@ asks before rolling back.
 `--home DIR`, `--sid A,B`, `--grid`, `--oop NEWHOME`, `--rolling`, `--no-restore-point`,
 `--no-backup`, `--patches ID,ID`, `--release X`, `--latest`, `--dry-run`, `--yes`, `--force`,
 `--json`, `--verbose`, `--run-dir DIR`. Config in `db-patch.conf` (see the example) or the shared
-`oracle.conf`; MOS login as for `wls-patch`. Needs `lib/oracle-lib.sh` one folder up. Logs and
+`oracle.conf`; MOS access is a bearer token in `~/.mos-token` (see `oracle.conf.example`). Needs `lib/oracle-lib.sh` one folder up. Logs and
 state under `~/db-patch/runs/<ts>/`, `runs/latest` points at the last one.
 
 Tested against a mock home (fake `opatch`, `sqlplus`); not yet on a real database. Do `inspect`,

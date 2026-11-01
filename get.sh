@@ -11,7 +11,7 @@
 set -euo pipefail
 REPO="AppleDannyClegg/oracle-patch-scripts"
 URL="https://github.com/$REPO/archive/refs/heads/main.tar.gz"
-DEST="${1:-oracle-patch-scripts}"
+DEST="${1:-oracle-patch-scripts}"; DEST="${DEST%/}"
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL"
@@ -23,22 +23,23 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "downloading $URL"
 fetch | tar -xzf - -C "$tmp"
-src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
+src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 [ -d "$src" ] || { echo "download did not contain a folder" >&2; exit 1; }
 
+moved=0
 if [ -d "$DEST" ]; then
   rm -rf "$DEST.old"
   mv "$DEST" "$DEST.old"
-  echo "previous copy moved to $DEST.old"
+  echo "previous copy moved to $DEST.old"; moved=1
 fi
 mv "$src" "$DEST"
-chmod +x "$DEST"/*/*/*.sh "$DEST"/lib/*.sh; [ -f "$DEST/get.sh" ] && chmod +x "$DEST/get.sh"
+find "$DEST" -name '*.sh' -type f -exec chmod +x {} +
 [ -f "$DEST/lib/oracle-lib.sh" ] || { echo "lib/oracle-lib.sh missing from the download; the scripts will not run" >&2; exit 1; }
 bash "$DEST/lib/oracle-lib.sh" selftest >/dev/null 2>&1 && echo "lib/oracle-lib.sh selftest ok" || echo "warning: lib/oracle-lib.sh selftest failed on this machine (bash 4+, GNU coreutils?)"
-if [ -d "$DEST.old" ]; then
+if [ "$moved" = 1 ]; then   # only the copy just moved aside, not a stale .old from an interrupted run
   for c in "$DEST.old"/*/*/*.conf "$DEST.old"/*/*.conf "$DEST.old"/oracle.conf; do
     [ -f "$c" ] || continue
-    n="$(basename "$(dirname "$c")")"; d="$(ls -d "$DEST"/*/"$n" 2>/dev/null | head -1)"; [ "$n" = "$(basename "$DEST.old")" ] && d="$DEST"
+    n="$(basename "$(dirname "$c")")"; d="$(find "$DEST" -mindepth 2 -maxdepth 2 -type d -name "$n" -print -quit 2>/dev/null)"; [ "$n" = "$(basename "$DEST.old")" ] && d="$DEST"
     [ -d "${d:-/nonexistent}" ] && cp -p "$c" "$d/" && echo "kept your ${d#"$DEST"/}/$(basename "$c")"
   done
 fi

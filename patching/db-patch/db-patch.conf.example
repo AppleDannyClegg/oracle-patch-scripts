@@ -16,9 +16,9 @@
 # Patch numbers for 'run --patches' (or use --latest to look them up on MOS)
 #PATCHES=36582781,36414915
 
-# My Oracle Support login for latest/download (or a ~/.netrc line for updates.oracle.com, chmod 600)
-#MOS_USER=you@bank.example
-#MOS_PASSWORD=...
+# My Oracle Support for latest/download: a bearer token (60 minutes) from https://updates.oracle.com/Orion/GenToken/get_token,
+# kept in ~/.mos-token (chmod 600) or the file named here; MOS_USER/MOS_PASSWORD no longer work
+#MOS_TOKEN_FILE=/home/oracle/.mos-token
 
 #STOP_TIMEOUT=300
 #START_TIMEOUT=600

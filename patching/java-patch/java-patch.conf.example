@@ -4,9 +4,9 @@
 #JAVA_HOME=/u01/app/oracle/jdk              # best when this is a symlink to jdk1.8.0_xxx: the switch is then a link flip
 #JAVA_BASE=/u01/app/oracle                  # default: the parent directory of the real JDK
 
-# My Oracle Support for latest/download (or ~/.netrc for updates.oracle.com)
-#MOS_USER=you@bank.example
-#MOS_PASSWORD=...
+# My Oracle Support for latest/download: a bearer token (60 minutes) from https://updates.oracle.com/Orion/GenToken/get_token,
+# kept in ~/.mos-token (chmod 600) or the file named here; MOS_USER/MOS_PASSWORD no longer work
+#MOS_TOKEN_FILE=/home/oracle/.mos-token
 
 # Password of the JDK trust store when it is not the default
 #CACERTS_PASSWORD=changeit

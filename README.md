@@ -96,7 +96,7 @@ reach out, and each has an offline path:
 | Need | Where it comes from | What to do on an air-gapped server |
 |---|---|---|
 | the scripts themselves | GitHub (`get.sh`) | run `get.sh` on your laptop, then `scp -r oracle-patch-scripts oracle@server:~/` |
-| patch files | My Oracle Support (login) or download.oracle.com (public) | download on the laptop, copy the file to the place in the table below, run the script without `latest`/`download`/`--latest`/`--patches` |
+| patch files | My Oracle Support (bearer token from the get_token page, 60 minutes) or download.oracle.com (public) | download on the laptop, copy the file to the place in the table below, run the script without `latest`/`download`/`--latest`/`--patches` |
 | "is there a newer release" probes | download.oracle.com | put `OFFLINE=1` in `oracle.conf` (top of the tree) so no script waits on a blocked connection; without it each script probes once for 5 s and then carries on offline |
 
 Where to put the files:
@@ -133,7 +133,7 @@ cd ~/oracle-patch-scripts
 
 ```bash
 cd patching/wls-patch
-cp wls-patch.conf.example wls-patch.conf     # first time: My Oracle Support login (or put it in ~/.netrc)
+cp wls-patch.conf.example wls-patch.conf     # first time; MOS token in ~/.mos-token for latest/download
 ./wls-patch.sh inspect                       # version, PSU level, OPatch, JDK, domain, running servers
 ./wls-patch.sh plan --latest                 # which PSU / Coherence patch would be applied
 ./wls-patch.sh download /u01/patches/latest --patches latest

@@ -30,8 +30,8 @@ Or steps 2 to 4 in one go once you trust it: `./wls-patch.sh run /u01/patches/la
 If `latest` cannot find the numbers, or Oracle lists extra bundle patches for your installation
 (ADF, OPSS, OWSM...), pass them by hand: `--patches 38111111,38555555`. Everything else is the same.
 
-First time only: `cp wls-patch.conf.example wls-patch.conf` and put your My Oracle Support login in
-(or in `~/.netrc`, see the file). The detail is below.
+First time only: `cp wls-patch.conf.example wls-patch.conf`; for `latest`/`download` put a My Oracle
+Support token in `~/.mos-token` (see the file). The detail is below.
 
 ## What you do
 
@@ -49,8 +49,9 @@ First time only: `cp wls-patch.conf.example wls-patch.conf` and put your My Orac
    you fall back to reading the numbers off that document.
 
 2. **Copy `wls-patch.sh` to the server**, run it as the user that owns WebLogic (usually `oracle`),
-   never as root. Put your My Oracle Support login in `~/.netrc` (safest) or in `wls-patch.conf`
-   next to the script (see `wls-patch.conf.example`):
+   never as root. For `latest`/`download`, generate a My Oracle Support token (log in to MOS, open
+   `https://updates.oracle.com/Orion/GenToken/get_token`, Generate token, 60 minutes) and save it in
+   `~/.mos-token`, chmod 600 (or name the file in `wls-patch.conf`, see `wls-patch.conf.example`):
 
    ```bash
    chmod +x wls-patch.sh
@@ -155,14 +156,14 @@ but swapping the JDK is a separate job: install the new JDK, point `JAVA_HOME` a
 - One domain per run (the first registered one unless `DOMAIN_HOME` is set). Servers on other
   machines in a cluster are not touched; patch each machine's Oracle home separately, admin
   server machine first.
-- Downloads use Oracle's own `updates.oracle.com` download service, the same mechanism as the
-  "wget script" button on the patch page. It needs a My Oracle Support account with a Support
-  Identifier that covers WebLogic. If Oracle ever changes that service the script will say the
-  login failed; download by hand and carry on from `preflight`.
-- `latest` uses the My Oracle Support patch *name* search, which has been stable for years but is a
-  web page, not an API. It was tested against a stand-in copy of that page, not the live site, so
-  the first real run is the proof: if it prints sensible numbers it works; if it prints nothing,
-  use `--patches` with the numbers from the CPU Patch Advisor document.
+- Downloads use Oracle's `updates.oracle.com` patch service with a bearer token, the same mechanism
+  as the "wget script" button on the patch page (the password login stopped working in 2026). It
+  needs a My Oracle Support account with a Support Identifier that covers WebLogic. If the service
+  changes again the script says the token was rejected; download by hand and carry on from `preflight`.
+- `latest` reads the Recommended patch list for the WebLogic release from that service (the old
+  patch name search is gone). Checked against the live service on 1 Nov 2026: WLS 14.1.2 returned the
+  PSU 14.1.2.0.260922 and the Stack Patch Bundle. If it prints nothing, use `--patches` with the
+  numbers from the CPU Patch Advisor document.
 - Patches that require database schema changes (some ADF/OPSS bundles say "run the Upgrade
   Assistant" in their README) are applied, but the schema step is not automated. The README
   says if it is needed.

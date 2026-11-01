@@ -23,13 +23,15 @@ description, e.g. `19.24.0.0.240716` → 2024-07-16). `CURRENT` = patched to thi
 cd patching/patch-status
 ./patch-status.sh                     # table on the terminal, no network needed except the ORDS/APEX probes
 ./patch-status.sh --no-net            # air-gapped
-./patch-status.sh --mos               # ask My Oracle Support for the newest RU / PSU names (needs ~/.netrc)
+./patch-status.sh --mos               # ask My Oracle Support for the newest RU / PSU names (needs a MOS token, see below)
 ./patch-status.sh --csv > patches.csv # for the risk register
 ./patch-status.sh --report            # REPORT.md with FINDINGS + every `opatch lspatches`, for Claude
 ```
 
-`--mos` uses the same name search as `wls-patch.sh latest` (`~/.netrc` line for
-`updates.oracle.com`, or `MOS_USER`/`MOS_PASSWORD` in the conf). Without it the "latest" column
+`--mos` asks the MOS patch service for the Recommended patches of each release (the current
+DBRU, OJVM, GI RU, WLS PSU). MOS takes a bearer token since 2026, not the password: log in to MOS
+in a browser, open `https://updates.oracle.com/Orion/GenToken/get_token`, Generate token (60
+minutes), save it in `~/.mos-token` (chmod 600) or set `MOS_TOKEN_FILE`. Without `--mos` the "latest" column
 says which CPU the home should be at; the actual patch numbers come from MOS Doc 2118136.2
 (database) and 2806740.2 (Fusion Middleware), which the report links.
 
@@ -43,7 +45,7 @@ says which CPU the home should be at; the actual patch numbers come from MOS Doc
 | `--report` | write `REPORT.md` + `raw/` + tar.gz under `PATCH_OUT` (default `~/patch-status`) |
 | `--out DIR`, `--quiet`, `--no-tar` | |
 
-Config keys: `PATCH_OUT`, `MOS_USER`, `MOS_PASSWORD`, `SQL_CONNECT`. Needs `lib/oracle-lib.sh`
+Config keys: `PATCH_OUT`, `MOS_TOKEN_FILE`, `SQL_CONNECT`. Needs `lib/oracle-lib.sh`
 one folder up. The next step for each row is the matching script: `db-patch`, `wls-patch`,
 `ords-patch`, `apex-patch`, `java-patch`.
 

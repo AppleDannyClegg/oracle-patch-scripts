@@ -72,6 +72,8 @@ discover() {
   [ -z "$SIDS" ] && SIDS="$(oratab_sids | while read -r s; do [ "$(oratab_home "$s")" = "$HOME_DIR" ] && echo "$s"; done | tr '\n' ' ')"
   DB_VERSION="$("$HOME_DIR/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | tail -1)"; [ -z "$DB_VERSION" ] && DB_VERSION="$("$HOME_DIR/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   OPATCH_VERSION="$("$HOME_DIR/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
+  # opatch refuses homes without an OUI inventory ("not OUI based home"): keep its words for inspect/preflight instead of a blank version
+  OPATCH_ERR=""; [ -z "$OPATCH_VERSION" ] && OPATCH_ERR="$("$HOME_DIR/OPatch/opatch" version 2>&1 | grep -vE '^\s*$|returns with error code' | head -1)"
   INSTALLED="$(to 180 "$HOME_DIR/OPatch/opatch" lspatches 2>/dev/null | grep -E '^[0-9]+;' || true)"
   RU_DESC="$(printf '%s\n' "$INSTALLED" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE' | grep -viE 'OJVM|MONTHLY' | sort -t';' -k2 | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
   RU_LEVEL="$(printf '%s' "$RU_DESC" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
@@ -90,7 +92,7 @@ cmd_inspect() {
     printf '{"oracle_home":"%s","version":"%s","ru":"%s","ru_desc":"%s","opatch":"%s","grid_home":"%s","rac":%s,"databases":"%s","patches":[' "$HOME_DIR" "$DB_VERSION" "$RU_LEVEL" "$(json_escape "$RU_DESC")" "$OPATCH_VERSION" "$GRID_HOME" "$IS_RAC" "$DB_ROLES"
     printf '%s\n' "$INSTALLED" | awk -F';' 'NF>1{printf "%s{\"id\":\"%s\",\"description\":\"%s\"}", (NR>1?",":""), $1, $2}'; echo ']}'; return
   fi
-  echo "ORACLE_HOME     : $HOME_DIR"; echo "Version         : $DB_VERSION"; echo "RU level        : ${RU_DESC:-none}"; echo "OPatch          : $OPATCH_VERSION"
+  echo "ORACLE_HOME     : $HOME_DIR"; echo "Version         : $DB_VERSION"; echo "RU level        : ${RU_DESC:-none}"; echo "OPatch          : ${OPATCH_VERSION:-FAILED: ${OPATCH_ERR:-opatch version gave nothing}}"
   echo "Grid home       : ${GRID_HOME:-none}   RAC: $IS_RAC"; echo "Databases       : $DB_ROLES"
   echo "Patches         : $(printf '%s\n' "$INSTALLED" | grep -c .)"; printf '%s\n' "$INSTALLED" | sed 's/^/  /' | head -30
   opatch_locked && echo "WARNING         : stale OPatch lock present (heal)"
@@ -102,7 +104,7 @@ cmd_latest() {
   local major="${DB_VERSION%%.*}" found="" rows
   mos_login
   log "Searching MOS for the newest Database Release Update $major"
-  rows="$(mos_name_search "Database Release Update $major" | grep -iE "^[0-9]{8}\|Database Release Update $major\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{6}" || true)"
+  rows="$(mos_name_search "Database Release Update $major" | grep -iE "^[0-9]{8}\|Database Release Update $major\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ *\(" || true)"   # plain RU rows: the " - CMAN" / " - GSM" variants are not for the database home
   if [ -n "$rows" ]; then
     local ru; ru="$(printf '%s\n' "$rows" | awk -F'|' '{match($2,/[0-9]{6}/); print substr($2,RSTART,6) "|" $0}' | sort -r | head -1 | cut -d'|' -f2-)"
     local ru_level; ru_level="$(printf '%s' "${ru#*|}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
@@ -110,7 +112,7 @@ cmd_latest() {
     else log "  newest RU: ${ru%%|*}  ${ru#*|}  (installed: ${RU_LEVEL:-none})"; found="${ru%%|*}"; fi
   else warn "  no RU rows returned"; fi
   log "Searching MOS for the newest OJVM Release Update $major"
-  rows="$(mos_name_search "OJVM RELEASE UPDATE $major" | grep -iE "OJVM RELEASE UPDATE:? ?$major\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{6}" || true)"
+  rows="$(mos_name_search "OJVM RELEASE UPDATE $major" | grep -iE "OJVM RELEASE UPDATE:? ?$major\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" || true)"
   if [ -n "$rows" ]; then local oj; oj="$(printf '%s\n' "$rows" | awk -F'|' '{match($2,/[0-9]{6}/); print substr($2,RSTART,6) "|" $0}' | sort -r | head -1 | cut -d'|' -f2-)"; local ojl; ojl="$(printf '%s' "${oj#*|}" | grep -oE '[0-9]{6}' | head -1)"; local have; have="$(printf '%s\n' "$INSTALLED" | grep -i OJVM | grep -oE '\.[0-9]{6}' | tr -d . | sort | tail -1)"; if [ -n "$have" ] && [ "$have" -ge "$ojl" ]; then log "  OJVM already at $have"; else log "  newest OJVM: ${oj%%|*}  ${oj#*|}"; found="${found:+$found,}${oj%%|*}"; fi; fi
   if [ "$GRID" = 1 ] && [ -n "$GRID_HOME" ]; then
     log "Searching MOS for the newest GI Release Update $major"
@@ -134,8 +136,12 @@ cmd_download() {
     todo="$todo $id"
   done
   [ -n "$todo" ] && { mos_login "$dir"; for id in $todo; do mos_download "$id" "$dir" "${PICK_RELEASE:-$DB_VERSION}" || die "download of $id failed"; done; }
-  # OPatch kit when too old (12.2.0.1.x needs 12.2.0.1.40+ for recent RUs)
-  if ! version_ge "$OPATCH_VERSION" "12.2.0.1.40"; then log "OPatch $OPATCH_VERSION is old - adding the OPatch kit (6880880)"; mos_download 6880880 "$dir" "${DB_VERSION%%.*}.0.0.0.0" || warn "could not download OPatch kit; get p6880880 by hand"; fi
+  # OPatch kit when too old (12.2.0.1.x needs 12.2.0.1.40+ for recent RUs) or when opatch cannot even report its version
+  if ls "$dir"/p6880880_*.zip >/dev/null 2>&1; then log "OPatch kit already in $dir"
+  elif [ -z "$OPATCH_VERSION" ] || ! version_ge "$OPATCH_VERSION" "12.2.0.1.40"; then
+    log "OPatch ${OPATCH_VERSION:-version unknown (${OPATCH_ERR:-opatch failed})} - adding the OPatch kit (6880880)"; [ ${#MOS_CURL[@]} -gt 0 ] || mos_login "$dir"
+    mos_download 6880880 "$dir" "${DB_VERSION%%.*}.0.0.0.0" || warn "could not download the OPatch kit; get p6880880 by hand"
+  fi
   mos_cleanup; ls -la "$dir"
 }
 
