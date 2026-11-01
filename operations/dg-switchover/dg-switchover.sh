@@ -461,7 +461,10 @@ cmd_verify() {
     local s; for s in ${PRIMARY_SERVICES//,/ }; do printf ',%s,' "$active" | grep -qiF ",$s," || { err "service $s is not running on the primary"; fail=1; }; done
   else
     [ "$(sql_val "$SID" "(select count(*) from v\$managed_standby where process like 'MRP%')" 2>/dev/null)" = 0 ] && [ "$(sql_val "$SID" "(select count(*) from v\$dataguard_process where name like 'MRP%' or role like '%apply%')" 2>/dev/null)" = 0 ] && { err "$LOCAL_DBUN: no redo apply process (MRP) running"; fail=1; }
-    local s; for s in ${PRIMARY_SERVICES//,/ }; do sql_lines "$SID" "select name from v\$active_services where upper(name)=upper('$s');" 2>/dev/null | grep -q . && warn "primary service $s is running on the standby $LOCAL_DBUN"; done
+    local s rows; for s in ${PRIMARY_SERVICES//,/ }; do
+      if rows="$(sql_lines "$SID" "select name from v\$active_services where upper(name)=upper('$s');" 2>/dev/null)"; then printf '%s' "$rows" | grep -q . && warn "primary service $s is running on the standby $LOCAL_DBUN"
+      else warn "$LOCAL_DBUN: could not read v\$active_services for $s - whether the primary service runs here is unknown"; fi
+    done
   fi
   # application TNS
   local a; for a in ${APP_TNS//,/ }; do

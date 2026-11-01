@@ -134,7 +134,12 @@ discover() {
 }
 refuse_prod() { # never run this against something that looks like production
   local n; n="$(printf '%s' "$TEST_DBUN" | uc)"
-  if [ -n "$PROD_HOST_PATTERN" ] && hostname -f 2>/dev/null | grep -qiE "$PROD_HOST_PATTERN"; then [ "$FORCE" = 1 ] || die "this host matches PROD_HOST_PATTERN ($PROD_HOST_PATTERN) - refusing to refresh here (--force if you are sure)"; fi
+  # the PROD guard must not pass because the hostname could not be read (hostname -f fails on a host without a resolvable FQDN)
+  if [ -n "$PROD_HOST_PATTERN" ]; then
+    local hn; hn="$(hostname -f 2>/dev/null)"; [ -n "$hn" ] || hn="$(hostname 2>/dev/null)"; [ -n "$hn" ] || hn="$(uname -n 2>/dev/null)"
+    [ -n "$hn" ] || [ "$FORCE" = 1 ] || die "cannot read this host's name (hostname -f / hostname / uname -n all empty): PROD_HOST_PATTERN cannot be checked - refusing (--force if you are sure this is not PROD)"
+    if printf '%s' "$hn" | grep -qiE "$PROD_HOST_PATTERN"; then [ "$FORCE" = 1 ] || die "this host ($hn) matches PROD_HOST_PATTERN ($PROD_HOST_PATTERN) - refusing to refresh here (--force if you are sure)"; fi
+  fi
   case "$n" in *PROD*|*PRD*|*LIVE*) [ "$FORCE" = 1 ] || die "TEST database is called $TEST_DBUN - that looks like production; --force if it really is the test";; esac
   [ "$METHOD" = pdb-clone ] && [ "$TEST_PDB" = "$PROD_PDB" ] && [ -z "$PROD_LINK" ] && die "TEST and PROD PDB have the same name on the same CDB?"
   return 0

@@ -97,7 +97,9 @@ gg_alias_for() { # <user>: credential store aliases whose userid is this user
 }
 wallet_hits() { # <user>: wallets (mkstore) that hold a credential for this user, best effort
   local w mk; mk="$(db_home_of "$(sids | head -1)")/bin/mkstore"; [ -x "$mk" ] || return 0
-  for w in /u01/app/oracle/*/wallet* "$HOME"/wallet* /etc/ORACLE/WALLETS/*/; do [ -f "$w/cwallet.sso" ] || continue; to 10 "$mk" -wrl "$w" -listCredential </dev/null 2>/dev/null | grep -qi " $1\$" && echo "$w"; done; return 0
+  local out; for w in /u01/app/oracle/*/wallet* "$HOME"/wallet* /etc/ORACLE/WALLETS/*/; do [ -f "$w/cwallet.sso" ] || continue
+    # a wallet mkstore could not open is 'unknown', not 'does not hold it' (the operator is told where to look by hand)
+    if out="$(to 10 "$mk" -wrl "$w" -listCredential </dev/null 2>&1)"; then printf '%s' "$out" | grep -qi " $1\$" && echo "$w"; else echo "$w(unreadable: mkstore -listCredential failed)"; fi; done; return 0
 }
 stores_of() { # <user>: one line
   local u="$1" s=""; local p; for p in $(ords_pools_for "$u"); do s="$s ords:$p"; done
