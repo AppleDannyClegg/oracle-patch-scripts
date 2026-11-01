@@ -281,7 +281,13 @@ cmd_backup() {
   # every write is checked: a backup that exited 0 with an ORA- in the log claimed a copy it does not have (false-success gate)
   local fail=0 out
   bk_dgm() { local f="$RUN_DIR/$1"; shift; dgm "$@" >"$f" 2>&1; grep -qE 'ORA-|DGM-' "$f" && { err "backup: dgmgrl $*: $(grep -E 'ORA-|DGM-' "$f" | head -1)"; return 1; }; [ -s "$f" ] || { err "backup: dgmgrl $* gave no output"; return 1; }; return 0; }
-  bk_sql() { out="$(sql_run "$SID" "whenever sqlerror exit 1\n$1")"; printf '%s\n' "$out" >>"$LOG_FILE"; printf '%s' "$out" | grep -qE 'ORA-[0-9]+|SP2-[0-9]+' && { err "backup: $(printf '%s' "$out" | grep -E 'ORA-|SP2-' | head -1)"; return 1; }; return 0; }
+  # sql_run's status is kept: a sqlplus that never ran the statement (no sqlplus for the SID, the SQL_TIMEOUT kill, a binary
+  # this user cannot execute) prints no ORA-/SP2- line, and the grep alone read that as a clean write (Durandal 1 Nov 23:36)
+  bk_sql() { local rc=0; out="$(sql_run "$SID" "whenever sqlerror exit 1\n$1")" || rc=$?; printf '%s\n' "$out" >>"$LOG_FILE"
+    if [ "$rc" != 0 ] || printf '%s' "$out" | grep -qE 'ORA-[0-9]+|SP2-[0-9]+'; then
+      local why; why="$(printf '%s' "$out" | grep -E 'ORA-|SP2-' | head -1)"; [ -n "$why" ] || why="sqlplus exited $rc without an ORA-/SP2- line: $(printf '%s' "$out" | grep -vE '^[[:space:]]*$' | head -1 | cut -c1-120)"
+      err "backup: $why"; return 1
+    fi; return 0; }
   bk_dgm dg_configuration.txt "show configuration verbose" || fail=1
   local m; for m in $(members); do bk_dgm "dg_database_$m.txt" "show database verbose $m" || fail=1; done
   bk_dgm dg_fsfo.txt "show fast_start failover" || fail=1
@@ -295,7 +301,15 @@ cmd_backup() {
   if [ "$WANT_RP" = 1 ]; then
     if [ "$LOCAL_ROLE" = PRIMARY ] && [ "$(sql_val "$SID" "(select log_mode from v\$database)")" = ARCHIVELOG ]; then
       local rp; rp="DGSWITCH_$(date +%Y%m%d%H%M%S)"; log "$LOCAL_DBUN: creating guaranteed restore point $rp (drop it with cleanup; it is also on the standby if flashback is on there)"
-      if sql_run "$SID" "create restore point $rp guarantee flashback database;" | grep -q 'ORA-'; then err "restore point $rp failed (asked for with --restore-point)"; fail=1; else state_append restore_points "$SID:$rp"; fi
+      # 'sql_run | grep -q ORA-' was the test here: under pipefail it is true only when sqlplus exits 0 AND prints ORA-, so a
+      # failed create with a non-zero exit (the gate's own stub, a lost connection, a kill) took the else branch and recorded
+      # restore_points=<rp> that does not exist - the switchover then ran believing it had the fallback the operator asked for.
+      # Now the write goes through bk_sql (rc + ORA-/SP2-) and the point is recorded only when v$restore_point lists it.
+      if bk_sql "create restore point $rp guarantee flashback database;"; then
+        local n; n="$(sql_val "$SID" "(select count(*) from v\$restore_point where name='$rp' and guarantee_flashback_database='YES')")"
+        if [ "$n" = 1 ]; then state_append restore_points "$SID:$rp"
+        else err "restore point $rp NOT confirmed in v\$restore_point (read gave '${n:-nothing}') - not recorded, backup fails"; fail=1; fi
+      else err "restore point $rp failed (asked for with --restore-point)"; fail=1; fi
     else warn "--restore-point: only done on an ARCHIVELOG primary (this is $LOCAL_ROLE)"; fi
   fi
   state_set old_primary "$PRIMARY"; [ -n "$TARGET" ] && state_set target "$TARGET"
