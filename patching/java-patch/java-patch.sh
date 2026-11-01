@@ -78,7 +78,8 @@ cacerts_pw_file() { local f; f="$(mktemp "${TMPDIR:-/tmp}/javapatch.XXXXXX")" ||
 # cacerts_aliases <keytool> <keystore> <pwfile>: the trustedCertEntry aliases, sorted; returns 1 (keytool's last line on stderr) when the store cannot be opened
 cacerts_aliases() {
   local out; out="$(to 60 "$1" -list -keystore "$2" -storepass:file "$3" 2>&1)" || { printf '%s\n' "$out" | tail -1 >&2; return 1; }
-  printf '%s\n' "$out" | grep trustedCertEntry | cut -d, -f1 | sort
+  # a store keytool listed with no trustedCertEntry is readable and empty, not unreadable (grep's 1 is not keytool's)
+  printf '%s\n' "$out" | { grep trustedCertEntry || true; } | cut -d, -f1 | sort
 }
 running_on() { # <jdk real path>: "pid name" of JVMs whose exe lives under it
   ps -eo pid,args 2>/dev/null | awk '$2 ~ /\/bin\/java$/ {print $1}' | while read -r p; do local exe; exe="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -z "$exe" ] && exe="$(readlink -f "$(ps -o args= -p "$p" | awk '{print $1}')" 2>/dev/null)"
@@ -242,7 +243,8 @@ cmd_apply() {
 
 cmd_restart() {
   discover; reuse_or_init restart; local fail=0
-  if [ -n "$RESTART_CMDS" ]; then local m; for m in ${RESTART_CMDS//,/ }; do log "restart ${m%%=*}: ${m#*=}"; run_sh "${m#*=}" || { err "${m%%=*}: restart command returned an error (see $LOG_FILE)"; fail=1; }; done
+  # one entry per comma: the documented form 'ords=sudo systemctl restart ords' has spaces, and splitting on them ran 'systemctl', 'restart' and 'ords' as three commands
+  if [ -n "$RESTART_CMDS" ]; then local m; while IFS= read -r m; do [ -n "$m" ] || continue; log "restart ${m%%=*}: ${m#*=}"; run_sh "${m#*=}" || { err "${m%%=*}: restart command returned an error (see $LOG_FILE)"; fail=1; }; done <<<"${RESTART_CMDS//,/$'\n'}"
   elif [ -n "$(ords_service)" ]; then run_sh "$SUDO systemctl restart $(ords_service)" || { err "systemctl restart $(ords_service) failed (see $LOG_FILE)"; fail=1; }
   else warn "no RESTART_CMDS and no ORDS service: restart WebLogic servers / node manager / ORDS yourself"; fi
   [ "$DRY_RUN" = 1 ] && return 0; sleep 10
