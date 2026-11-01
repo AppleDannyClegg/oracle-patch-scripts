@@ -23,6 +23,9 @@
 #   verify                  sqlplus login test with the stored/new password where possible, ORDS URL 200, WebLogic
 #                           JDBC testPool, ggsci dblogin useridalias
 #   rollback                Restore the previous password hash ('identified by values') and the backed-up config files
+#   cleanup                 Shred what a reset keeps for rollback: the old password verifiers (old_hashes.txt), the ORDS
+#                           wallet and GoldenGate credential-store backups. Do it once the new password is confirmed
+#                           everywhere; rollback refuses after it
 #   heal                    ORDS answers 503 / "pool not available"? find the locked or expired account behind it, fix it,
 #                           restart ORDS, check again
 #   run                     = heal
@@ -277,12 +280,38 @@ for s in cmo.getServerRuntimes():
         print 'TESTPOOL', s.getName(), '$ds', (res is None and 'OK' or res)" 2>/dev/null; then grep -E '^TESTPOOL' "$LOG_FILE" | tail -3 | sed 's/^/  /' >&2; grep -E "^TESTPOOL .* $ds OK" "$LOG_FILE" >/dev/null && log "WebLogic $ds: testPool OK" || { warn "WebLogic $ds: testPool did not report OK"; }; fi
   done < <(for u in $(printf '%s\n' "$(targets)" | cut -d'|' -f3 | sort -u); do wls_ds_for "$u"; done)
   if ogg_detect >/dev/null 2>&1 && [ -x "${OGG_HOME:-/nonexistent}/ggsci" ]; then local a; for a in $(for u in $(printf '%s\n' "$(targets)" | cut -d'|' -f3 | sort -u); do gg_alias_for "$u"; done); do ggsci "dblogin useridalias $a" | grep -q 'Successfully logged into database' && log "GoldenGate alias $a: dblogin ok" || { err "GoldenGate alias $a: dblogin failed"; fail=1; }; done; fi
-  state_set verify "$([ "$fail" = 0 ] && echo ok || echo failed)"; [ "$fail" = 0 ] && log "Verify OK" || err "Verify FAILED"; return "$fail"
+  state_set verify "$([ "$fail" = 0 ] && echo ok || echo failed)"; [ "$fail" = 0 ] && log "Verify OK" || err "Verify FAILED"
+  # verify passing does not make the reset final (a nightly job only logs in tomorrow): the rollback material stays until cleanup
+  [ -f "$RUN_DIR/old_hashes.txt" ] && [ -z "$(state_get hashes_removed || true)" ] && log "the previous password verifiers are still in $RUN_DIR/old_hashes.txt (mode 600, $(file_age "$RUN_DIR/old_hashes.txt") old): run 'cleanup' once the new password is confirmed everywhere"
+  return "$fail"
+}
+
+# shred_path <file|dir>: overwrite then remove (shred -u where it exists; a credential backup must not survive as free blocks)
+shred_path() {
+  local f; [ -e "$1" ] || return 0
+  find "$1" -type f | while IFS= read -r f; do
+    if command -v shred >/dev/null 2>&1; then shred -u "$f"; else dd if=/dev/urandom of="$f" bs=4096 count=$(( $(wc -c <"$f") / 4096 + 1 )) conv=notrunc 2>/dev/null; rm -f "$f"; fi
+  done; rm -rf "$1"
+}
+# file_age <path>: "3h 12m" from the mtime (GNU and BSD stat)
+file_age() { local m s; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)"; s=$(( $(date +%s) - m )); printf '%dd %dh %dm' $((s/86400)) $((s%86400/3600)) $((s%3600/60)); }
+cmd_cleanup() {
+  reuse_or_init cleanup
+  local removed; removed="$(state_get hashes_removed || true)"; [ -n "$removed" ] && { log "nothing to do: cleaned up at $removed"; return 0; }
+  local -a keep=(); local p; for p in "$RUN_DIR/old_hashes.txt" "$RUN_DIR"/cwallet.sso.*.bak "$RUN_DIR/dircrd.bak"; do [ -e "$p" ] && keep+=("$p"); done
+  [ ${#keep[@]} -gt 0 ] || { log "nothing kept for rollback in $RUN_DIR"; state_set hashes_removed "$(ts)"; return 0; }
+  echo "Kept for rollback in $RUN_DIR:"; for p in "${keep[@]}"; do echo "  $(basename "$p")  ($(file_age "$p") old)"; done
+  confirm "Shred these ${#keep[@]} item(s)? rollback will refuse afterwards" || die "aborted"
+  [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: would shred ${keep[*]}"; return 0; }
+  for p in "${keep[@]}"; do shred_path "$p"; log "shredded $(basename "$p")"; done
+  state_set hashes_removed "$(ts)"; log "cleaned up: the previous password verifiers and credential backups are gone; rollback is no longer possible for this run"
 }
 
 cmd_rollback() {
   reuse_or_init rollback
+  local removed; removed="$(state_get hashes_removed || true)"; [ -n "$removed" ] && die "cleanup shredded the previous password verifiers of this run at $removed: nothing to roll back to"
   [ -f "$RUN_DIR/old_hashes.txt" ] || die "no old_hashes.txt in $RUN_DIR (nothing from a reset to roll back)"
+  log "old_hashes.txt is $(file_age "$RUN_DIR/old_hashes.txt") old (reset $(state_get reset_done 2>/dev/null | wc -w | tr -d ' ') account(s)); the applications have used the NEW password since then"
   confirm "Restore the previous password hashes of $(wc -l <"$RUN_DIR/old_hashes.txt" | tr -d ' ') account(s) and the backed-up ORDS/WebLogic/GoldenGate files?" || die "aborted"
   local nfail=0 nok=0
   while IFS='|' read -r sid pdb u hash; do if usql "$sid" "$pdb" "restore old password of $u" "alter user \"$u\" identified by $hash;"; then nok=$((nok+1)); else nfail=$((nfail+1)); fi; done <"$RUN_DIR/old_hashes.txt"
@@ -331,7 +360,7 @@ main() {
   local cmd="${1:-}"; shift || true; parse_opts "$@"
   case "$cmd" in
     inspect) cmd_inspect;; expiring) cmd_expiring;; unlock) cmd_unlock;; reset) cmd_reset;; profile) cmd_profile;; verify) cmd_verify;;
-    rollback) cmd_rollback;; heal|run) cmd_heal;; ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;
+    rollback) cmd_rollback;; cleanup) cmd_cleanup;; heal|run) cmd_heal;; ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;
   esac
 }
 main "$@"

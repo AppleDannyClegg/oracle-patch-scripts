@@ -56,7 +56,13 @@ cp account-ops.conf.example account-ops.conf     # ORDS paths, WebLogic credenti
   using the account; `ggsci dblogin useridalias` for each alias.
 - **rollback**: `alter user ... identified by values '<old hash>'` for every reset account in
   the run dir, ORDS `pool.xml`/wallet restored and ORDS restarted, GoldenGate `dircrd` restored;
-  WebLogic JDBC backups are named (the encrypted password inside is domain-specific).
+  WebLogic JDBC backups are named (the encrypted password inside is domain-specific). It prints
+  how old the saved verifiers are first: the applications have used the new password since then.
+- **cleanup**: shreds what `reset` keeps for rollback: `old_hashes.txt` (the previous password
+  verifiers, a credential by another name), the ORDS wallet backups and the GoldenGate `dircrd`
+  backup. Nothing removes them otherwise, and `verify` passing does not make a reset final (a
+  nightly job only logs in tomorrow), so run `cleanup` yourself once the new password is confirmed
+  everywhere; `rollback` refuses after it. Until then the file sits in the run dir, mode 600.
 - **heal** (= `run`): the ORDS-503 case end to end: HTTP code, every service account's state;
   LOCKED → shows the lock time, where the account is used (the thing with the old password that
   keeps locking it) and offers unlock; EXPIRED(GRACE) → offers the profile move; EXPIRED →
@@ -70,7 +76,7 @@ cp account-ops.conf.example account-ops.conf     # ORDS paths, WebLogic credenti
 `--no-restart`, `--dry-run`, `--yes`, `--force`, `--json`, `--verbose`, `--run-dir`. Config in
 `account-ops.conf` (see the example, mode 600) or the shared `oracle.conf`. Needs
 `lib/oracle-lib.sh` one folder up. Each `unlock`/`reset`/`profile`/`heal` gets its own run dir
-under `~/account-ops/runs/`; `verify` and `rollback` use the latest one (or `--run-dir`).
+under `~/account-ops/runs/`; `verify`, `rollback` and `cleanup` use the latest one (or `--run-dir`).
 
 Tested against a fake `sqlplus`/`ords` (inspect, expiring, reset + rollback, heal for EXPIRED
 and LOCKED, profile, dry-run); WebLogic and GoldenGate propagation only by inspection. Not yet
