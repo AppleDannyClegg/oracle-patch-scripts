@@ -3,8 +3,8 @@
 # PATH of stub tools, with HOME and every path the script touches under a temp dir, and the FIRST changing call
 # fails - the stub logs 'FAILED <tool> <argv>', prints an error (ORA-00600 for sqlplus/sql) and exits 1; every later
 # changing call fails the same way (the tool is broken), probes (select, --version, config get ...) keep answering.
-# A script that then exits 0, or records success in its run dir (applied=, verified=1, rolled_back=1, restored=,
-# <step>=ok, pool_<p>=ok, exported_<c>=N ok, 0 failed) claimed a change that did not happen: FAIL. NOT-EXERCISED:
+# A script that then exits 0, or records success in its run dir (applied*=, verified=1, rolled_back=1, restored*=,
+# opatch_upgraded=1, deleted=, <step>=ok, pool_<p>=ok, exported_<c>=N ok, 0 failed) claimed a change that did not happen: FAIL. NOT-EXERCISED:
 # no changing call was reached (the command only reads, or ended before it): counted and listed, never a pass.
 # tests/dry-run-env/<tool>.sh (shared with tests/dry-run-gate.sh) is sourced first, with CMD set to the command; it may set
 # FAIL_<cmd> (the call to fail instead of the first changing one, a regex on 'tool argv | stdin') and OK / OK_<cmd>
@@ -39,7 +39,10 @@ STUB
   chmod +x "$STUB/$tool"
 done
 readonly_cmds='inspect plan latest preflight verify expiring diff validate recovery-window zdlra evidence csr help'
-default_ok='^(applied=|verified=1|rolled_back=1|restored=|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
+# success lines a run may not add after its change failed. Prefixes, not exact keys: applied_spaceProvHC=1 (exascale-space),
+# restored_from= and opatch_upgraded=1 (wls-patch), deleted= (exascale-space release) are change claims too (DeepSeek 21:00);
+# not a blanket '=1' - app_stopped=1 and dry_run=1 are sub-states written before the change
+default_ok='^(applied[^=]*=|verified=1|rolled_back=1|restored[^=]*=|opatch_upgraded=1|deleted=|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
 states() { find "$T/home" -name state -type f 2>/dev/null | sort | while read -r f; do sed "s|^|$f:|" "$f"; done; }
 scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(patching/*/*.sh operations/*/*.sh)
 pass=0; fail=0; nx=0; nxlist=""
