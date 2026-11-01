@@ -581,7 +581,9 @@ cmd_release() {
   local n=0; for f in "${files[@]}"; do
     if run_cmd es rmfile "$f" --nowait; then n=$((n+1)); state_append deleted "$f"; else err "rmfile $f failed"; fi
   done
-  log "SUCCESS release: $n of ${#files[@]} file(s) submitted for deletion ($(human "$total")); space returns in the background (lsfile --include-being-deleted shows the progress)"
+  # a release whose rmfile failed used to end 'SUCCESS release: 0 of 1 file(s) submitted' and exit 0 (false-success gate, 1 Nov 2026)
+  if [ "$n" = "${#files[@]}" ]; then log "SUCCESS release: $n file(s) submitted for deletion ($(human "$total")); space returns in the background (lsfile --include-being-deleted shows the progress)"
+  else err "release INCOMPLETE: $n of ${#files[@]} file(s) submitted for deletion - the rest are still in the vault (see $LOG_FILE)"; return 1; fi
 }
 
 cmd_heal() {
@@ -595,6 +597,7 @@ cmd_heal() {
   local prc=0; cmd_purge || prc=$?
   [ "$prc" = 0 ] || err "purge-archivelogs did not complete on every database (see above): the vault is still as full as inspect found it"
   log "next: $TOOL.sh plan  (grow / release are never automatic)"
+  return "$prc"   # heal's one automatic step failed: heal failed (it used to exit 0 after the error above)
 }
 
 main() {
