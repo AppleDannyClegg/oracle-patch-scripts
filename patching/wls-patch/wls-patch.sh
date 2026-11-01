@@ -859,6 +859,11 @@ cmd_apply() {
     fi
     log "Applying $id : $(patch_description "$path")"
     if (cd "$path" && opatch apply -silent); then
+      # opatch's exit status is not the outcome: the inventory is re-read and must name the patch before it is recorded as applied
+      if [ "$DRY_RUN" != 1 ]; then
+        INSTALLED_PATCHES="$("$ORACLE_HOME/OPatch/opatch" lspatches 2>/dev/null | grep -E '^[0-9]+;' || true)"
+        printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" || { err "opatch apply exited 0 but $id is not in 'opatch lspatches' - not recorded as applied. See $ORACLE_HOME/cfgtoollogs/opatch/"; state_set failed_patch "$id"; return 1; }
+      fi
       state_append applied "$id"
       log "Applied $id"
     else

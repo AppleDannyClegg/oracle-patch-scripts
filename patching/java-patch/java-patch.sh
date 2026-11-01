@@ -190,7 +190,8 @@ cmd_plan() {
 
 cmd_backup() {
   discover; reuse_or_init backup; mkdir -p "$RUN_DIR/files"
-  local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do cp -p "$f" "$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"; state_append backed_files "$f"; done
+  # a copy that failed used to be recorded as backed up all the same, and rollback would have found nothing to restore
+  local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do cp -p "$f" "$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')" || die "cannot back up $f into $RUN_DIR/files (cp failed): nothing changed"; state_append backed_files "$f"; done
   [ "$LINKED" = 1 ] && state_set link_target "$OLD_REAL"
   log "backed up $(state_get backed_files | wc -w | tr -d ' ') file(s) to $RUN_DIR/files"; state_set backup ok
 }
@@ -222,12 +223,18 @@ cmd_apply() {
   fi
   if [ "$LINKED" = 1 ]; then
     log "flipping symlink $OLD_JH -> $NEW_JH"; confirm "ln -sfn $NEW_JH $OLD_JH ?" || die "aborted"
-    [ "$DRY_RUN" = 1 ] || { ln -sfn "$NEW_JH" "$OLD_JH" || die "symlink flip failed"; }
+    [ "$DRY_RUN" = 1 ] || { ln -sfn "$NEW_JH" "$OLD_JH" || die "symlink flip failed"; [ "$(readlink "$OLD_JH")" = "$NEW_JH" ] || die "symlink flip did not take: $OLD_JH -> $(readlink "$OLD_JH" || echo '?') (is $OLD_JH a directory, not a link?)"; }
   else
     local files; files="$(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u)"
     [ -z "$files" ] && warn "no file names $OLD_JH and it is not a symlink: nothing switched; set JAVA_HOME where your products read it (EXTRA_REF_FILES) or make $OLD_JH a symlink"
     confirm "edit $(printf '%s\n' "$files" | grep -c .) file(s): $OLD_JH -> $NEW_JH ?" || die "aborted"
-    local f; for f in $files; do log "editing $f"; [ "$DRY_RUN" = 1 ] || { sed -i.javapatch -e "s#$OLD_JH\([/\"' ]\)#$NEW_JH\1#g" -e "s#$OLD_JH\$#$NEW_JH#" "$f" && rm -f "$f.javapatch"; }; done
+    # the outcome of each edit is read back: sed's status, then the file must name the new JDK (and is told when the old path is still in it)
+    local f efail=0; for f in $files; do log "editing $f"; [ "$DRY_RUN" = 1 ] && continue
+      if sed -i.javapatch -e "s#$OLD_JH\([/\"' :;]\)#$NEW_JH\1#g" -e "s#$OLD_JH\$#$NEW_JH#" "$f"; then rm -f "$f.javapatch"; else err "editing $f failed (sed): left as it was"; efail=1; continue; fi
+      grep -qF "$NEW_JH" "$f" || { err "$f does not reference $NEW_JH after the edit - the old path was in a form the edit does not match; change it by hand"; efail=1; }
+      grep -qF "$OLD_JH" "$f" && warn "$f still mentions $OLD_JH somewhere (a comment, or a form the edit does not match) - check it"
+    done
+    [ "$efail" = 0 ] || { state_set apply failed; err "apply: not every file was switched to $NEW_JH (see above); rollback restores the backups"; return 1; }
   fi
   [ -d /usr/java ] && [ -L /usr/java/latest ] && [ "$(readlink -f /usr/java/latest)" = "$OLD_REAL" ] && [ -w /usr/java ] && { log "updating /usr/java/latest"; [ "$DRY_RUN" = 1 ] || ln -sfn "$NEW_JH" /usr/java/latest; }
   state_set apply ok; state_set new_jh "$NEW_JH"
@@ -261,12 +268,18 @@ cmd_rollback() {
   discover; reuse_or_init rollback
   local tgt; tgt="$(state_get link_target || true)"
   [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
-  if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; log "symlink restored -> $tgt"; fi
-  local f b; for f in $(state_get backed_files || true); do b="$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"; [ -f "$b" ] && { log "restoring $f"; [ "$DRY_RUN" = 1 ] || cp -p "$b" "$f"; }; done
+  local rfail=0
+  if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; if [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; then log "symlink restored -> $tgt"; else err "cannot restore the symlink $OLD_JH -> $tgt"; rfail=1; fi; fi
+  # a missing or uncopyable backup used to be skipped silently and the rollback still said ok
+  local f b; for f in $(state_get backed_files || true); do b="$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"
+    if [ -f "$b" ]; then log "restoring $f"; if [ "$DRY_RUN" = 1 ] || cp -p "$b" "$f"; then :; else err "cannot restore $f from $b"; rfail=1; fi
+    else err "no backup of $f in $RUN_DIR/files - not restored"; rfail=1; fi
+  done
   [ -L /usr/java/latest ] && [ -n "$tgt" ] && [ -w /usr/java ] && { [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" /usr/java/latest; }
   log "the new JDK stays unpacked at $(state_get new_jh || echo '?') (harmless); restarting"
   # the files are back; the rollback is only "ok" when the services came back up on the old JDK as well
-  if cmd_restart; then state_set rollback ok; log "rolled back"
+  if [ "$rfail" != 0 ]; then cmd_restart || true; state_set rollback failed; err "rollback incomplete: not every file is back on the old JDK (see above) - check them and the services by hand (see $LOG_FILE)"; return 1
+  elif cmd_restart; then state_set rollback ok; log "rolled back"
   else state_set rollback failed; err "rollback incomplete: the old JDK is referenced again but the restart FAILED - check the services by hand (see $LOG_FILE)"; return 1; fi
 }
 

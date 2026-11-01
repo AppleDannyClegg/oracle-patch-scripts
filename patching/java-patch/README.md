@@ -54,7 +54,10 @@ cp java-patch.conf.example java-patch.conf      # JAVA_HOME if auto-detection is
    starts on the new JDK.
 
 `rollback` flips the symlink back / restores the files from the run dir and restarts; the new
-JDK directory stays (harmless). `run` rolls back when apply fails and offers it when verify fails.
+JDK directory stays (harmless). Outcomes are read, not assumed: `backup` dies on a copy that
+failed, `apply` records `apply=failed` (exit 1) when an edited file does not name the new JDK
+afterwards or the symlink flip did not take, and `rollback` records `failed` when a backup is
+missing or cannot be copied back. `run` rolls back when apply fails and offers it when verify fails.
 `restart` and `rollback` record `failed` and exit 1 when a restart command fails or a `CHECK_URLS`
 URL does not answer within 300 s; the state says `ok` only when the services are back. The
 cacerts carry-over refuses to continue when either keystore cannot be listed (wrong
