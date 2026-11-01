@@ -12,3 +12,4 @@ A
 export SQL_CMD="$STUB/sqlplus -S" ORDS_HOME="$T/env/ords/home" ORDS_CONFIG="$T/env/ords/config" ORDS_BASE="$T/env/ords" ORDS_ADMIN_USER=SYS ORDS_ADMIN_PASSWORD=x ORDS_URL=http://localhost:1/ords/
 # a run dir that 'latest' would have left: the new release recorded
 mkdir -p "$T/home/ords-patch/runs/r1"; printf 'new_dir=%s\nnew_version=26.3.0\nprev_dir=%s\nprev_version=26.2.3\nrestore_point=ORDSPATCH_X\npool_default=ok\n' "$T/env/ords/ords-26.3.0" "$T/env/ords/ords-26.2.3" >"$T/home/ords-patch/runs/r1/state"; ln -sfn "$T/home/ords-patch/runs/r1" "$T/home/ords-patch/runs/latest"
+ARGS_rollback="--allow-flashback"   # the flashback branch must be reached, and under --dry-run must send nothing

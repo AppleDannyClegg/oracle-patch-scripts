@@ -15,4 +15,4 @@ A
 mkdir -p "$T/env/apex/apex_26.2/apex/images" "$T/env/apex/apex_24.2/apex" "$T/env/images"; touch "$T/env/apex/apex_26.2/apex/apexins.sql" "$T/env/apex/apex_26.2/apex/apxrtins.sql" "$T/env/apex/apex_24.2/apex/apxdwngrd.sql" "$T/env/apex/apex_24.2/apex/apexins.sql"
 echo "Application Express Version: 26.2.0" >"$T/env/apex/apex_26.2/apex/images/apex_version.txt"; echo "Application Express Version: 24.2.0" >"$T/env/images/apex_version.txt"
 export SQL_CMD="$STUB/sqlplus -S" APEX_BASE="$T/env/apex" APEX_IMAGES_DIR="$T/env/images" APEX_TS=SYSAUX APEX_FILES_TS=SYSAUX APEX_TEMP_TS=TEMP
-ARGS="26.2"; ARGS_stop=""; ARGS_cleanup=""; ARGS_heal=""; ARGS_rollback=""; ARGS_verify=""
+ARGS="26.2"; ARGS_stop=""; ARGS_cleanup=""; ARGS_heal=""; ARGS_rollback="--allow-flashback"; ARGS_verify=""
