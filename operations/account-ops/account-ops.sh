@@ -201,7 +201,8 @@ exit()")"
 }
 wls_set_ds_password() { # <domain> <jdbc file> <jndi> <password>
   local dom="$1" f="$2" jndi="$3" pw="$4" ds; ds="$(grep -oE '<name>[^<]*</name>' "$f" | head -1 | sed 's/<[^>]*>//g')"
-  cp -p "$f" "$RUN_DIR/$(basename "$dom")_$(basename "$f").bak" 2>/dev/null
+  # the .bak is what rollback points the operator at: no copy, no change (its status used to be dropped)
+  cp -p "$f" "$RUN_DIR/$(basename "$dom")_$(basename "$f").bak" 2>>"$LOG_FILE" || { err "cannot back up $f into the run dir: data source '$ds' in $(basename "$dom") left unchanged (rollback would have nothing to point at)"; return 1; }
   log "WebLogic $(basename "$dom"): data source '$ds' ($jndi) password via WLST (edit session, activate)"
   wlst_run "$dom" "edit()
 startEdit()
