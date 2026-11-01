@@ -1,5 +1,6 @@
 # shellcheck shell=bash disable=SC2034,SC2016   # sourced by tests/dry-run-gate.sh and tests/false-success-gate.sh: ARGS*, FAIL_*, OK* are read there
-# db-patch: one 19c home under $T/env/oh with a fake OPatch, one database FREE given with --sid (no oratab, nothing in ps), RU 39000000 waiting in $T/env/patches
+# db-patch: one 19c home under $T/env/oh with a fake OPatch, one database FREE given with --sid (no oratab; its pmon is in the gate's
+# ps for every command but start and restore, which want it down), RU 39000000 waiting in $T/env/patches
 OH="$T/env/oh"; mkdir -p "$OH/OPatch" "$OH/bin" "$OH/rdbms/admin" "$OH/dbs" "$OH/network/admin" "$T/env/patches/39000000/etc/config" "$T/env/backups"
 # opatch: version/lspatches answer here; apply and rollback go to the gate's stub, and only a stub that SUCCEEDED marks the patch installed
 # (lspatches lists 39000000 while $T/env/installed exists) - so a failed apply is not in the inventory, as on a real home
@@ -7,6 +8,7 @@ cat >"$OH/OPatch/opatch" <<O
 #!/bin/sh
 case "\$1" in
   version) echo "OPatch Version: 12.2.0.1.42"; exit 0;;
+  prereq) echo 'Prereq "checkConflictAgainstOHWithDetail" passed.'; exit 0;;
   lspatches) [ -e "$T/env/installed" ] && echo "39000000;Database Release Update : 19.24.0.0.240716 (39000000)"; echo "29585399;OCW RELEASE UPDATE 19.3.0.0.0 (29585399)"; exit 0;;
   apply) "$STUB/opatch" "\$@" && touch "$T/env/installed"; exit \$?;;
   rollback) "$STUB/opatch" "\$@" && rm -f "$T/env/installed"; exit \$?;;
@@ -16,7 +18,17 @@ O
 chmod +x "$OH/OPatch/opatch"
 # datapatch is called by its path in the home; sqlplus by its path for -V, shutdown and startup (the SQL itself goes through SQL_CMD = the stub)
 printf '#!/bin/sh\nexec "%s/datapatch" "$@"\n' "$STUB" >"$OH/OPatch/datapatch"; chmod +x "$OH/OPatch/datapatch"
-printf '#!/bin/sh\n[ "$1" = -V ] && { echo "SQL*Plus: Release 19.0.0.0.0 - Production"; echo "Version 19.24.0.0.0"; exit 0; }\nexec "%s/sqlplus" "$@"\n' "$STUB" >"$OH/bin/sqlplus"; chmod +x "$OH/bin/sqlplus"
+# the home's sqlplus models the world the ps stub shows ($T/ps.txt): a shutdown the stub accepted takes ora_pmon_FREE out of ps, a
+# startup it accepted puts it back - so stop's 'pmon gone' proof and start's 'already running' check see what the statements did
+cat >"$OH/bin/sqlplus" <<S
+#!/bin/sh
+[ "\$1" = -V ] && { echo "SQL*Plus: Release 19.0.0.0.0 - Production"; echo "Version 19.24.0.0.0"; exit 0; }
+q="\$(cat)"; printf '%s' "\$q" | "$STUB/sqlplus" "\$@"; rc=\$?
+[ \$rc = 0 ] && case "\$q" in *shutdown*) rm -f "$T/ps.txt";; *startup*) echo ora_pmon_FREE >"$T/ps.txt";; esac
+exit \$rc
+S
+chmod +x "$OH/bin/sqlplus"
+case "$CMD" in start|restore) rm -f "$T/ps.txt";; *) echo ora_pmon_FREE >"$T/ps.txt";; esac
 : >"$OH/rdbms/admin/utlrp.sql"; : >"$OH/dbs/initFREE.ora"
 # the patch, already unzipped (prepare_patch_dir unzips only what is not there)
 printf '<oneoffs><oneoff ref_id="39000000"><description>Database Release Update : 19.24.0.0.240716 (39000000)</description></oneoff></oneoffs>\n' >"$T/env/patches/39000000/etc/config/inventory.xml"
@@ -27,6 +39,8 @@ database_role.*open_mode|PRIMARY/READ WRITE
 database_role|PRIMARY
 log_mode|ARCHIVELOG
 dataguard_stats|
+archive_dest where target|0
+v\$session where type|3
 v\$backup where status|0
 rman_backup_job_details|0
 sqlpatch where status not in|0
@@ -46,6 +60,11 @@ ln -sfn "$R" "$T/home/db-patch/runs/latest"
 # start: the change is 'startup' through the home's sqlplus; when it fails the instance is down, so every later sqlplus call fails
 # too (the probes included) - the default 'probes keep answering' would make a down instance answer 'ok' as sysdba
 FAIL_start='^sqlplus '
-# rollback: the change is 'opatch rollback'; a home left half rolled back does not start, so the startup inside rollback and the
-# probes after it fail as well (otherwise the stub answers 'PRIMARY/READ WRITE' to a database whose startup just failed)
-FAIL_rollback='^(opatch rollback|sqlplus )'
+# rollback: the change is 'opatch rollback' and only that fails - the stop before it succeeds (pmon leaves ps) and the start after it
+# brings FREE back READ WRITE on the home as it was, which is what a cleanly refused opatch rollback leaves. The lines a failed
+# opatch rollback must not produce: rollback=ok. stopped=ok and started=ok are those steps' own claims, each proved (pmon gone / open_mode read)
+FAIL_rollback='^opatch rollback'; OK_rollback='^rollback=ok$'
+# run: the change is 'opatch apply'; backup (pfile, controlfile, restore point) and stop (pmon gone) before it are true, the fake
+# opatch leaves a failed RU out of lspatches so apply=failed, nothing is recorded as applied and run starts FREE again (started=ok,
+# open_mode read) and exits 1. Forbidden after that: apply=ok, applied=<id>, datapatch=ok, verify=ok, rollback=ok
+FAIL_run='^opatch apply'; OK_run='^(apply=ok|applied=[^[:space:]]|datapatch=ok|verify=ok|rollback=ok)'

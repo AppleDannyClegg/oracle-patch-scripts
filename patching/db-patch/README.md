@@ -32,9 +32,15 @@ after `download` is the same.
    full outage; `--grid` needs `sudo -n opatchauto`.
 2. **backup**: `tar` of ORACLE_HOME and the central inventory to `BACKUP_DIR`; per database a
    pfile, a controlfile copy and trace, and a **guaranteed restore point** `DBPATCH_<ts>` (if
-   ARCHIVELOG and primary; `--no-restore-point` to skip).
+   ARCHIVELOG and primary; `--no-restore-point` to skip). Each statement's output is read: a copy
+   or restore point that was not made is `backup=failed`, exit 1, and `run` stops there with
+   nothing changed (the restore point is the undo a bad datapatch needs - opting out is
+   `--no-restore-point`, not a warning).
 3. **stop**: `srvctl stop database` when Grid is there (one instance only with `--rolling`), else
    `shutdown immediate` (abort after `STOP_TIMEOUT`); the listener of this home. Records what ran.
+   Stopped means pmon is gone from `ps` (waits up to 20 s after an abort), not that sqlplus
+   returned: an instance or listener still up is `stopped=failed`, exit 1, and `run` and
+   `rollback` go no further (OPatch would meet a home in use).
 4. **apply**: `opatch apply -silent` per patch, skipping what is already installed; `--grid`
    adds `opatchauto apply` for the GI patches; `--oop NEWHOME` clones the home first, patches the
    clone, then switches `/etc/oratab` and `srvctl` to it (shorter outage, instant fallback).
@@ -53,7 +59,9 @@ On failure: apply → `opatch rollback` in reverse, restart, `datapatch` again (
 side), and `restore` from the tar if the home is broken. `rollback` records `failed` and exits 1
 when any of its steps did not do what it says (an `opatch rollback` with errors, a database that
 did not start, datapatch errors, an out-of-place run whose `/etc/oratab` or `srvctl modify` could
-not be restored); `ok` means every step succeeded. datapatch → asks whether to roll back
+not be restored); `ok` means every step succeeded. A failed apply with no patch recorded as
+applied has nothing to roll back: `run` starts the databases on the home as it is and exits 1
+(it used to die in rollback's "nothing to roll back" with the databases down). datapatch → asks whether to roll back
 now or leave it for `heal`, and prints the flashback commands for the restore points. verify →
 asks before rolling back.
 

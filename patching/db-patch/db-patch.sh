@@ -200,7 +200,9 @@ cmd_preflight() {
     sql_ok "$s" || { err "$s: cannot connect as sysdba"; fail=1; continue; }
     local role mode; role="$(sql_val "$s" "(select database_role from v\$database)")"; mode="$(sql_val "$s" "(select open_mode from v\$database)")"
     log "$s: $role, $mode, $(sql_val "$s" "(select count(*) from v\$session where type='USER')") user sessions"
-    if [ "$role" = PRIMARY ] && [ "$DG_STANDBY_FIRST" = yes ] && [ "$(sql_val "$s" "(select count(*) from v\$archive_dest where target='STANDBY' and status='VALID')")" != 0 ]; then
+    # an unreadable standby-destination count is not 'has a standby' (it was: '' != 0 said Data Guard PRIMARY of a database with no v$archive_dest answer)
+    local sbd=""; [ "$role" = PRIMARY ] && [ "$DG_STANDBY_FIRST" = yes ] && { sbd="$(sql_val "$s" "(select count(*) from v\$archive_dest where target='STANDBY' and status='VALID')")"; [ -n "$sbd" ] || { err "$s: cannot read v\$archive_dest - cannot tell whether a standby exists (patch the standby first; --force to patch this one anyway)"; [ "$FORCE" = 1 ] || fail=1; }; }
+    if [ "$role" = PRIMARY ] && [ "$DG_STANDBY_FIRST" = yes ] && [ -n "$sbd" ] && [ "$sbd" != 0 ]; then
       local sb; sb="$(sql_lines "$s" "select db_unique_name||':'||nvl(value,'?') from v\$dataguard_stats, (select db_unique_name from v\$database) where name='apply lag';" | head -1)"
       if [ "$FORCE" = 1 ]; then warn "$s is a Data Guard PRIMARY; --force given, patching before the standby (Oracle says standby first)"
       else err "$s is a Data Guard PRIMARY: patch the standby first (same patches, 'db-patch run' there), then here. --force to override"; fail=1; fi
@@ -245,26 +247,38 @@ cmd_plan() {
 # ---------------------------------------------------------------------------
 cmd_backup() {
   setup_env; reuse_or_init backup
-  local ts; ts="$(date +%Y%m%d%H%M%S)"; mkdir -p "$BACKUP_DIR"
+  local ts fail=0; ts="$(date +%Y%m%d%H%M%S)"; mkdir -p "$BACKUP_DIR"
   if [ "$NO_BACKUP" = 0 ]; then
     local tarf; tarf="$BACKUP_DIR/oracle_home_$(basename "$HOME_DIR")_$ts.tar.gz"
     log "backing up $HOME_DIR to $tarf ($(du -sh "$HOME_DIR" | cut -f1))"
-    [ "$DRY_RUN" = 1 ] || tar -czf "$tarf" -C "$(dirname "$HOME_DIR")" "$(basename "$HOME_DIR")" --exclude='*/log/*' --exclude='*/diag/*' || die "tar failed"
-    local inv; inv="$(sed -n 's/^inventory_loc=//p' /etc/oraInst.loc 2>/dev/null)"; [ -d "$inv" ] && [ "$DRY_RUN" = 0 ] && tar -czf "$BACKUP_DIR/oraInventory_$ts.tar.gz" -C "$(dirname "$inv")" "$(basename "$inv")"
+    # --exclude before the operands: after them bsdtar (and GNU tar under POSIXLY_CORRECT) reads each as a file name and fails
+    [ "$DRY_RUN" = 1 ] || tar -czf "$tarf" --exclude='*/log/*' --exclude='*/diag/*' -C "$(dirname "$HOME_DIR")" "$(basename "$HOME_DIR")" || die "tar failed"
+    local inv; inv="$(sed -n 's/^inventory_loc=//p' /etc/oraInst.loc 2>/dev/null)"
+    if [ -d "$inv" ] && [ "$DRY_RUN" = 0 ]; then tar -czf "$BACKUP_DIR/oraInventory_$ts.tar.gz" -C "$(dirname "$inv")" "$(basename "$inv")" || { err "oraInventory backup ($inv) failed - a broken inventory could not be put back"; fail=1; }; fi
     state_set home_backup "$tarf"
   fi
   local s; for s in $SIDS; do
     db_instances | grep -qx "$s" || continue; sql_ok "$s" || continue
     mkdir -p "$RUN_DIR/$s"
-    sql_run "$s" "create pfile='$RUN_DIR/$s/init$s.ora.bak' from spfile;" >>"$LOG_FILE" 2>&1
-    sql_run "$s" "alter database backup controlfile to '$RUN_DIR/$s/control.bak' reuse;" >>"$LOG_FILE" 2>&1
-    sql_run "$s" "alter database backup controlfile to trace as '$RUN_DIR/$s/control.trc' reuse;" >>"$LOG_FILE" 2>&1
+    # each statement's output is read for ORA-: the pfile and controlfile copies went to the log unread and backup=ok followed
+    # whatever they said (a run then stopped the database with no pfile backup and no controlfile copy, told the backup was fine)
+    local stmt out; for stmt in "create pfile='$RUN_DIR/$s/init$s.ora.bak' from spfile;" "alter database backup controlfile to '$RUN_DIR/$s/control.bak' reuse;" "alter database backup controlfile to trace as '$RUN_DIR/$s/control.trc' reuse;"; do
+      [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: $s: $stmt"; continue; }
+      out="$(sql_run "$s" "$stmt" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
+      printf '%s' "$out" | grep -qE 'ORA-[0-9]+' && { err "$s: $stmt failed: $(printf '%s\n' "$out" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"; fail=1; }
+    done
     if [ "$NO_RP" = 0 ] && [ "$(sql_val "$s" "(select log_mode from v\$database)")" = ARCHIVELOG ] && [ "$(sql_val "$s" "(select database_role from v\$database)")" = PRIMARY ]; then
       local rp="DBPATCH_$ts"; log "$s: creating guaranteed restore point $rp"
-      [ "$DRY_RUN" = 1 ] || sql_run "$s" "create restore point $rp guarantee flashback database;" | grep -E 'ORA-' && warn "$s: restore point failed (flashback not possible)" || state_append restore_points "$s:$rp"
+      if [ "$DRY_RUN" = 0 ]; then out="$(sql_run "$s" "create restore point $rp guarantee flashback database;" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
+        # the restore point is the undo 'run' promises for a bad datapatch; a run without one used to carry on after a warning.
+        # Not having it is an error - --no-restore-point is the way to say so on purpose
+        if printf '%s' "$out" | grep -qE 'ORA-[0-9]+'; then err "$s: restore point $rp NOT created: $(printf '%s\n' "$out" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120) - fix it (FRA, flashback) or re-run with --no-restore-point"; fail=1
+        else state_append restore_points "$s:$rp"; fi
+      fi
     fi
   done
-  state_set backup ok
+  if [ "$fail" = 0 ]; then state_set backup ok
+  else state_set backup failed; err "backup INCOMPLETE: a copy or restore point above was not made - nothing has been changed, fix it before 'stop' or 'apply'"; return 1; fi
 }
 
 cmd_stop() {
@@ -274,14 +288,23 @@ cmd_stop() {
   local dbn; for dbn in $(srvctl_db_name); do
     if [ "$ROLLING" = 1 ]; then local inst; inst="$(db_instances | grep -E "^${dbn}" | head -1)"; run_cmd "$GRID_HOME/bin/srvctl" stop instance -d "$dbn" -i "$inst" -o immediate; else run_cmd "$GRID_HOME/bin/srvctl" stop database -d "$dbn" -o immediate; fi
   done
+  local fail=0
   for s in $running; do
     db_instances | grep -qx "$s" || continue
-    log "shutdown immediate $s"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to "$STOP_TIMEOUT" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown immediate" >>"$LOG_FILE" 2>&1
-    db_instances | grep -qx "$s" && { warn "$s still up after immediate; shutdown abort"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown abort" >>"$LOG_FILE" 2>&1; }
+    log "shutdown immediate $s"; [ "$DRY_RUN" = 1 ] && continue
+    ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to "$STOP_TIMEOUT" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown immediate" >>"$LOG_FILE" 2>&1
+    db_instances | grep -qx "$s" && { warn "$s still up after immediate; shutdown abort"; ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown abort" >>"$LOG_FILE" 2>&1; }
+    # the proof is pmon gone (an abort's processes take a moment to go), not sqlplus's exit status: the shutdown output went to
+    # the log unread and stopped=ok was written whatever ps said afterwards - 'run' then took opatch apply to a home with an instance up
+    local w=0; while db_instances | grep -qx "$s" && [ "$w" -lt 20 ]; do sleep 2; w=$((w + 2)); done
+    db_instances | grep -qx "$s" && { err "$s is STILL RUNNING after shutdown immediate and shutdown abort (see $LOG_FILE)"; fail=1; }
   done
-  local h lsn; listener_homes | while read -r h lsn; do [ "$h" = "$HOME_DIR" ] && { run_cmd env ORACLE_HOME="$h" "$h/bin/lsnrctl" stop "$lsn"; state_append listeners "$lsn"; }; done
+  # process substitution, not '| while': a listener that would not stop must reach fail (opatch refuses a home whose listener runs: files in use)
+  local h lsn; while read -r h lsn; do [ "$h" = "$HOME_DIR" ] || continue
+    run_cmd env ORACLE_HOME="$h" "$h/bin/lsnrctl" stop "$lsn" || { err "lsnrctl stop $lsn failed - a listener from $HOME_DIR is still running"; fail=1; }; state_append listeners "$lsn"; done < <(listener_homes)
   [ "$DRY_RUN" = 1 ] || { local left; left="$(ps -eo args | grep -E "^ora_[a-z0-9]+_" | grep -E "$(printf '%s' "$SIDS" | sed 's/ /|/g')" | wc -l | tr -d ' ')"; [ "$left" != 0 ] && [ -n "$SIDS" ] && warn "$left oracle processes of these SIDs still running"; }
-  state_set stopped ok
+  if [ "$fail" = 0 ]; then state_set stopped ok
+  else state_set stopped failed; err "stop INCOMPLETE: a database or listener of $HOME_DIR is still running - nothing in this home can be patched until it is down"; return 1; fi
 }
 
 cmd_apply() {
@@ -419,7 +442,8 @@ cmd_rollback() {
     # a database started from the new home after a failed oratab/srvctl restore is NOT rolled back: count every failure
     [ "$DRY_RUN" = 1 ] || { cp "$RUN_DIR/oratab.bak" /etc/oratab 2>>"$LOG_FILE" || { err "cannot write /etc/oratab (restore $RUN_DIR/oratab.bak by hand)"; rfail=1; }; local dbn; for dbn in $(srvctl_db_name); do "$GRID_HOME/bin/srvctl" modify database -d "$dbn" -oraclehome "$oldhome" >>"$LOG_FILE" 2>&1 || { err "srvctl modify database -d $dbn -oraclehome $oldhome failed (see $LOG_FILE)"; rfail=1; }; done; }
   else
-    cmd_stop; local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
+    cmd_stop || { state_set rollback failed; err "rollback NOT started: the databases of $HOME_DIR did not all stop and opatch rollback needs the home idle - fix the stop, then 'rollback' again"; return 1; }
+    local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
   fi
   cmd_start || rfail=1
   local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" && { log "$s: datapatch after rollback (reverts the SQL side)"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch after the rollback had errors (see $LOG_FILE)"; rfail=1; }; }; done
@@ -480,9 +504,14 @@ cmd_run() {
   cmd_inspect; echo
   cmd_preflight || die "preflight failed - nothing changed"
   cmd_plan; confirm "Proceed with backup > stop > apply > start > datapatch > verify?" || die "aborted"
-  cmd_backup
-  cmd_stop
-  if ! cmd_apply; then err "apply failed - rolling back"; cmd_rollback; cmd_verify || cmd_restore; die "FAILED: apply (rolled back). Log: $LOG_FILE"; fi
+  cmd_backup || die "FAILED: backup - nothing changed, the databases are up and the home untouched. Log: $LOG_FILE"
+  cmd_stop || die "FAILED: stop - a database or listener of $HOME_DIR is still running, nothing patched. Log: $LOG_FILE"
+  if ! cmd_apply; then err "apply failed"
+    # with nothing recorded as applied there is nothing for opatch to roll back - rollback died on that ('nothing to roll back')
+    # and the databases, stopped a step earlier, stayed DOWN; they are started on the home as it is
+    if [ -n "$(state_get applied || true)" ]; then err "rolling back what was applied"; cmd_rollback; cmd_verify || cmd_restore; die "FAILED: apply (rolled back). Log: $LOG_FILE"
+    else log "no patch recorded as applied - starting the databases on the home as it is"; cmd_start || err "the databases did NOT start - they are DOWN (see $LOG_FILE)"; die "FAILED: apply (no patch applied, nothing to roll back). Log: $LOG_FILE"; fi
+  fi
   cmd_start || { err "start failed after apply - rolling back"; cmd_rollback; die "FAILED: start (rolled back). Log: $LOG_FILE"; }
   if ! cmd_datapatch; then err "datapatch failed"; if confirm "Roll back the patches (opatch rollback + datapatch) now? [no = leave it for heal]"; then cmd_rollback; fi; die "FAILED: datapatch. Log: $LOG_FILE  (heal shows the failed rows; flashback restore points: $(state_get restore_points || echo none))"; fi
   cmd_verify || { err "verify failed"; confirm "Roll back?" && cmd_rollback; die "FAILED: verify. Log: $LOG_FILE"; }
