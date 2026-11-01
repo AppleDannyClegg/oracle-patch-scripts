@@ -69,10 +69,7 @@ find_tools() {
   SQLCL="${SQLCL:-$(command -v sql 2>/dev/null || ls /opt/oracle/sqlcl/bin/sql "$HOME"/sqlcl/bin/sql /u01/app/oracle/product/sqlcl/bin/sql 2>/dev/null | head -1)}"
   SQLPLUS="${SQLPLUS:-$(command -v sqlplus 2>/dev/null || ls /u01/app/oracle/product/*/dbhome*/bin/sqlplus "${ORACLE_HOME:-/nonexistent}/bin/sqlplus" 2>/dev/null | head -1)}"
   if [ -x "${SQLCL:-}" ]; then TOOL_MODE=sqlcl
-  elif [ -n "${APEX_HOME:-}" ] && [ -f "$APEX_HOME/utilities/oracle/apex/APEXExport.class" ]; then
-    # java APEXExport takes -password on its command line: visible in ps for the whole export. Not a silent fallback.
-    [ "${APEX_ALLOW_JAVA_EXPORT:-0}" = 1 ] || die "no SQLcl found (SQLCL=/path/to/sql): the java APEXExport fallback puts the database password on the command line; install SQLcl, or set APEX_ALLOW_JAVA_EXPORT=1 to accept that"
-    TOOL_MODE=java; [ -x "${SQLPLUS:-}" ] || die "java mode still needs sqlplus for the catalogue queries"
+  elif [ -n "${APEX_HOME:-}" ] && [ -f "$APEX_HOME/utilities/oracle/apex/APEXExport.class" ]; then TOOL_MODE=java; [ -x "${SQLPLUS:-}" ] || die "java mode still needs sqlplus for the catalogue queries"
     JAVA="${JAVA_HOME:+$JAVA_HOME/bin/java}"; JAVA="${JAVA:-$(command -v java)}"; [ -x "${JAVA:-}" ] || die "java not found (JAVA_HOME)"
     OJDBC_JAR="${OJDBC_JAR:-$(ls "${ORACLE_HOME:-/nonexistent}"/jdbc/lib/ojdbc8.jar /u01/app/oracle/product/*/dbhome*/jdbc/lib/ojdbc8.jar 2>/dev/null | head -1)}"; [ -f "${OJDBC_JAR:-}" ] || die "ojdbc8.jar not found (OJDBC_JAR)"
   else die "neither SQLcl (SQLCL=/path/to/sql) nor APEXExport (APEX_HOME=/path/to/apex) found"; fi
