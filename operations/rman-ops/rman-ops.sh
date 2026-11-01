@@ -76,6 +76,9 @@ rmansec() {
   return 0
 }
 rman_errors() { grep -E 'RMAN-[0-9]+|ORA-[0-9]+' "$1" 2>/dev/null | grep -vE 'RMAN-08[0-9]+' | sort -u | head -5 | tr -s ' ' | tr '\n' ';'; }
+# rman_completed <rc> <file>: true only when RMAN exited 0 AND printed its closing line - a connect failure, a missing rman or a
+# timeout leaves an output file with none of the lines the callers count, and a count of 0 must not read as 'nothing found'
+rman_completed() { [ "$1" = 0 ] && grep -q 'Recovery Manager complete' "$2" 2>/dev/null; }
 db_basics() { # <sid>: DBUN LOG_MODE ROLE SHOWALL
   local sid="$1"
   IFS='|' read -r DBUN LOG_MODE ROLE <<<"$(sql_lines "$sid" "select db_unique_name||'|'||log_mode||'|'||database_role from v\$database;" | head -1)"
@@ -253,10 +256,10 @@ cmd_restore_test() {
   grep -q 'Finished restore' "$RUN_DIR/rman_restore_test.txt" || { err "RMAN did not finish the restore: $(rman_errors "$RUN_DIR/rman_restore_test.txt")  (full: $RUN_DIR/rman_restore_test.txt)"; rc=1; }
   if [ -f "$df" ]; then
     local got; got="$(file_size "$df")"; log "restored $df: $((got/1048576)) MB in ${secs}s ($(( got/1048576 / (secs>0?secs:1) )) MB/s)"
-    local dbv; dbv="$(db_home_of "$sid")/bin/dbv"; [ -x "$dbv" ] && { ORACLE_HOME="$(db_home_of "$sid")" to 1800 "$dbv" file="$df" blocksize="$bs" >"$RUN_DIR/dbv.txt" 2>&1; local fails; fails="$(sed -n 's/^Total Pages Failing *(Data) *: *//p' "$RUN_DIR/dbv.txt" | head -1)"; local idx; idx="$(sed -n 's/^Total Pages Failing *(Index) *: *//p' "$RUN_DIR/dbv.txt" | head -1)"; if [ "${fails:-0}" = 0 ] && [ "${idx:-0}" = 0 ]; then log "dbverify: no failing pages"; else err "dbverify: $fails data / $idx index pages failing (see $RUN_DIR/dbv.txt)"; rc=1; fi; }
+    local dbv; dbv="$(db_home_of "$sid")/bin/dbv"; if [ -x "$dbv" ]; then { ORACLE_HOME="$(db_home_of "$sid")" to 1800 "$dbv" file="$df" blocksize="$bs" >"$RUN_DIR/dbv.txt" 2>&1; local fails; fails="$(sed -n 's/^Total Pages Failing *(Data) *: *//p' "$RUN_DIR/dbv.txt" | head -1)"; local idx; idx="$(sed -n 's/^Total Pages Failing *(Index) *: *//p' "$RUN_DIR/dbv.txt" | head -1)"; if [ "${fails:-0}" = 0 ] && [ "${idx:-0}" = 0 ]; then log "dbverify: no failing pages"; else err "dbverify: $fails data / $idx index pages failing (see $RUN_DIR/dbv.txt)"; rc=1; fi; }; else warn "no dbv under $(db_home_of "$sid")/bin: the restored file was NOT block-verified, only restored"; fi
     sql_val "$sid" "(select count(*) from v\$datafile where file#=$fno and name='$df')" | grep -q '^0$' || { err "the controlfile now points at $df - a SWITCH happened; this should not be possible from this script. Do NOT delete the file; investigate"; KEEP=1; rc=1; }
   else err "no file at $df after the restore"; rc=1; fi
-  [ -f "$cf" ] && log "controlfile copy $cf: $(( $(file_size "$cf") / 1048576 )) MB"
+  if [ -f "$cf" ]; then log "controlfile copy $cf: $(( $(file_size "$cf") / 1048576 )) MB"; else err "no controlfile copy at $cf - 'restore controlfile to' failed: $(rman_errors "$RUN_DIR/rman_restore_test.txt")"; rc=1; fi
   if [ "$KEEP" = 1 ]; then log "keeping $df and $cf (--keep)"; else rm -f "$df" "$cf"; log "deleted the restored files"; fi
   [ "$rc" = 0 ] && echo "SUCCESS: restore test of datafile $fno on $sid passed in ${secs}s. Log: $RUN_DIR" || die "FAILED: restore test on $sid. Log: $RUN_DIR"
 }
@@ -265,28 +268,40 @@ cmd_crosscheck() {
   local sid="$1"; init_run_dir "crosscheck-$sid"; db_basics "$sid"
   confirm "crosscheck backup and archivelog all on $sid (marks pieces that are gone as EXPIRED; deletes nothing)?" || die "aborted"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: crosscheck backup; crosscheck archivelog all; list expired backup; list expired archivelog all;"; return 0; }
-  rman_run "$sid" "$RMAN_TIMEOUT" "crosscheck backup;\ncrosscheck archivelog all;\nlist expired backup summary;\nlist expired archivelog all;" >"$RUN_DIR/rman_crosscheck.txt" 2>&1
+  rman_run "$sid" "$RMAN_TIMEOUT" "crosscheck backup;\ncrosscheck archivelog all;\nlist expired backup summary;\nlist expired archivelog all;" >"$RUN_DIR/rman_crosscheck.txt" 2>&1; local rrc=$?
+  rman_completed "$rrc" "$RUN_DIR/rman_crosscheck.txt" || die "crosscheck did not complete on $sid (rman rc $rrc): $(rman_errors "$RUN_DIR/rman_crosscheck.txt")  (full: $RUN_DIR/rman_crosscheck.txt) - nothing is known about expired entries"
   local exp_b exp_a; exp_b="$(grep -cE "^[0-9]+ +B +.* X " "$RUN_DIR/rman_crosscheck.txt")"; exp_a="$(grep -cE "crosschecked archived log: found to be 'EXPIRED'" "$RUN_DIR/rman_crosscheck.txt")"
   log "expired: $exp_b backup set(s) in the summary, $exp_a archived log(s). Output: $RUN_DIR/rman_crosscheck.txt"
   grep -E 'RMAN-0[0-9]{4}|ORA-' "$RUN_DIR/rman_crosscheck.txt" | grep -vE 'RMAN-08' | head -3 | sed 's/^/  /' >&2
   if [ "$exp_b" != 0 ] || [ "$exp_a" != 0 ]; then
     warn "expired entries mean files the backup software thinks it has are gone - find out WHY before deleting the records (NFS unmounted? wrong host? tape recalled?)"
-    confirm "delete noprompt expired backup; delete noprompt expired archivelog all;  (records only; the files are already gone)" && rman_run "$sid" "$RMAN_TIMEOUT" "delete noprompt expired backup;\ndelete noprompt expired archivelog all;" >"$RUN_DIR/rman_delete_expired.txt" 2>&1 && log "expired records deleted ($RUN_DIR/rman_delete_expired.txt)"
+    if confirm "delete noprompt expired backup; delete noprompt expired archivelog all;  (records only; the files are already gone)"; then
+      rman_run "$sid" "$RMAN_TIMEOUT" "delete noprompt expired backup;\ndelete noprompt expired archivelog all;" >"$RUN_DIR/rman_delete_expired.txt" 2>&1; rrc=$?
+      if rman_completed "$rrc" "$RUN_DIR/rman_delete_expired.txt" && [ -z "$(rman_errors "$RUN_DIR/rman_delete_expired.txt")" ]; then log "expired records deleted ($RUN_DIR/rman_delete_expired.txt)"
+      else err "delete expired did not complete on $sid (rman rc $rrc): $(rman_errors "$RUN_DIR/rman_delete_expired.txt")  (full: $RUN_DIR/rman_delete_expired.txt)"; return 1; fi
+    fi
   fi
 }
 
+obsolete_count() { grep -cE '^(Backup Set|Backup Piece|Archive Log|Datafile Copy|Control File Copy) ' "$1"; }
 cmd_delete_obsolete() {
   local sid="$1"; init_run_dir "delete-obsolete-$sid"; db_basics "$sid"
   local ret; ret="$(cfg_val 'RETENTION POLICY')"; [ "$ret" = NONE ] && die "retention policy is NONE: 'delete obsolete' would be meaningless (nothing is obsolete). Set a policy first."
-  rman_run "$sid" 600 "report obsolete;" >"$RUN_DIR/rman_report_obsolete.txt" 2>&1
-  local n; n="$(grep -cE '^(Backup Set|Backup Piece|Archive Log|Datafile Copy|Control File Copy) ' "$RUN_DIR/rman_report_obsolete.txt")"
+  rman_run "$sid" 600 "report obsolete;" >"$RUN_DIR/rman_report_obsolete.txt" 2>&1; local rrc=$?
+  rman_completed "$rrc" "$RUN_DIR/rman_report_obsolete.txt" || die "report obsolete did not complete on $sid (rman rc $rrc): $(rman_errors "$RUN_DIR/rman_report_obsolete.txt")  (full: $RUN_DIR/rman_report_obsolete.txt) - that is not 'nothing obsolete'"
+  local n; n="$(obsolete_count "$RUN_DIR/rman_report_obsolete.txt")"
   log "retention: $ret; report obsolete lists $n item(s) ($RUN_DIR/rman_report_obsolete.txt)"; grep -E '^(Backup Set|Archive Log|Datafile Copy)' "$RUN_DIR/rman_report_obsolete.txt" | head -10 | sed 's/^/  /' >&2
-  [ "$n" = 0 ] && { log "nothing obsolete"; return 0; }
+  # zero items is only 'nothing obsolete' when RMAN said so; anything else (RMAN-01009 on this release, an unexpected layout) is read, not assumed
+  [ "$n" = 0 ] && { grep -q 'no obsolete backups found' "$RUN_DIR/rman_report_obsolete.txt" || die "report obsolete on $sid listed no items and did not say 'no obsolete backups found' - read $RUN_DIR/rman_report_obsolete.txt before deleting anything"; log "nothing obsolete"; return 0; }
   confirm "delete noprompt obsolete on $sid ($n items, per '$ret')?" || die "aborted"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: delete noprompt obsolete;"; return 0; }
-  rman_run "$sid" "$RMAN_TIMEOUT" "delete noprompt obsolete;" >"$RUN_DIR/rman_delete_obsolete.txt" 2>&1
+  rman_run "$sid" "$RMAN_TIMEOUT" "delete noprompt obsolete;" >"$RUN_DIR/rman_delete_obsolete.txt" 2>&1; rrc=$?
+  rman_completed "$rrc" "$RUN_DIR/rman_delete_obsolete.txt" || { err "delete obsolete did not complete on $sid (rman rc $rrc): $(rman_errors "$RUN_DIR/rman_delete_obsolete.txt")  (full: $RUN_DIR/rman_delete_obsolete.txt)"; return 1; }
   grep -qE 'RMAN-0[0-9]{4}|ORA-' "$RUN_DIR/rman_delete_obsolete.txt" && { warn "errors during delete: $(rman_errors "$RUN_DIR/rman_delete_obsolete.txt")"; return 1; }
-  log "deleted. FRA now: $(sql_lines "$sid" "select round((space_used-space_reclaimable)*100/nullif(space_limit,0))||'% net' from v\$recovery_file_dest;" | head -1)"
+  # the outcome, not the command: report obsolete again and say what is left
+  local left="?"; rman_run "$sid" 600 "report obsolete;" >"$RUN_DIR/rman_report_obsolete_after.txt" 2>&1 && left="$(obsolete_count "$RUN_DIR/rman_report_obsolete_after.txt")"
+  [ "$left" = 0 ] || warn "$left item(s) still obsolete after the delete (was $n): see $RUN_DIR/rman_report_obsolete_after.txt"
+  log "deleted: $n obsolete item(s) listed, ${left} left. FRA now: $(sql_lines "$sid" "select round((space_used-space_reclaimable)*100/nullif(space_limit,0))||'% net' from v\$recovery_file_dest;" | head -1)"
 }
 
 # ---------------------------------------------------------------------------

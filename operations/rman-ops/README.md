@@ -65,11 +65,18 @@ unprotected window over the archivelog limit, ACTIVE appliance incidents.
   issued**, so the running database keeps its own files; the script double-checks that
   `v$datafile` still does not mention the scratch path and refuses to delete anything if it
   does. The restored file is checked with `dbverify`, throughput is logged, and both files are
-  deleted unless `--keep`. The last line is `SUCCESS ... in Ns` or an error naming the log.
+  deleted unless `--keep`. The last line is `SUCCESS ... in Ns` or an error naming the log; a
+  missing controlfile copy or a host without `dbv` (file restored but not block-verified) is
+  reported, not passed over.
 - **crosscheck**: `crosscheck backup; crosscheck archivelog all;` then lists what is EXPIRED and
   offers `delete noprompt expired ...` (records only). Asks before both steps.
 - **delete-obsolete**: refuses with retention NONE; shows `report obsolete`, asks, then `delete
-  noprompt obsolete` and the FRA usage afterwards.
+  noprompt obsolete`, runs `report obsolete` again and says what is left, with the FRA usage.
+
+Every RMAN run these three read is checked to have completed (exit 0 and `Recovery Manager
+complete.`) before its output is counted: a connect failure, a missing `rman` or a timeout is an
+error naming the raw file, never "0 expired" or "nothing obsolete". Zero obsolete items is only
+accepted when RMAN itself said `no obsolete backups found`.
 
 ## Options and config
 
