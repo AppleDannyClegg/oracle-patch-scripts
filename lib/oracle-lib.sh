@@ -54,7 +54,14 @@ optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$
 # execution
 # ---------------------------------------------------------------------------
 # to <secs> <cmd...>: run under a timeout when 'timeout' exists, so a hung tool cannot hang the script
-to() { local s="$1"; shift; if [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 5 "$s" "$@"; else "$@"; fi; }
+# to <secs> <cmd...>: run under timeout(1) where it exists. A shell FUNCTION cannot be wrapped by timeout (it execs a PATH
+# binary of that name instead - db-patch's opatch() went to whatever opatch was on PATH, 1 Nov 23:10): a function runs
+# directly, without the timeout, and is told so once under --verbose; the function itself should wrap its external call in to.
+to() {
+  local s="$1"; shift
+  if [ "$(type -t "$1" 2>/dev/null)" = function ]; then dbg "to: $1 is a shell function - run directly (timeout $s s not applied)"; "$@"
+  elif [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 5 "$s" "$@"; else "$@"; fi
+}
 # run_cmd: execute (or print under --dry-run), tee output to the log, return its exit code
 run_cmd() {
   log "CMD: $(printf '%s' "$*" | redact)"; [ "$DRY_RUN" = 1 ] && return 0
@@ -704,6 +711,7 @@ lib_selftest() {
   t "load_config does not export secrets" 'd=$(mktemp -d); printf "MY_PASSWORD=s3cret\nSQL_CONNECT=u/p@t\nMY_HOME=/x\n" >"$d/t.conf"; (TOOL=t; SCRIPT_DIR=$d; HOME=$d; load_config "$d/t.conf"; e="$(env)"; printf "%s" "$e" | grep -q "^MY_HOME=/x$" && ! printf "%s" "$e" | grep -q "s3cret" && ! printf "%s" "$e" | grep -q "^SQL_CONNECT=" && [ "$MY_PASSWORD" = s3cret ]); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
   t "state_set round trip, overwrite and unwritable dir" 'b=$(mktemp -d); (STATE_FILE=$b/s; state_set a 1; state_set b 2; state_set a 3; [ "$(state_get a)" = 3 ] && [ "$(state_get b)" = 2 ] && [ "$(wc -l <"$STATE_FILE" | tr -d " ")" = 2 ]); r1=$?; mkdir $b/d; chmod 500 $b/d; (STATE_FILE=$b/d/s; LOG_FILE=/dev/null; state_set a 1 2>/dev/null); r2=$?; chmod 700 $b/d; rm -rf "$b"; [ $r1 = 0 ] && [ $r2 = 1 ]'
   t "init_run_dir warns when latest cannot be relinked" 'b=$(mktemp -d); mkdir -p $b/old $b/new; ln -s $b/old $b/latest; chmod 555 $b; o=$( (RUN_BASE=$b; RUN_DIR=$b/new; TOOL=t; VERSION=0; init_run_dir x 2>&1) ); chmod 755 $b; r=0; printf "%s" "$o" | grep -q "could not point $b/latest" && [ "$(readlink $b/latest)" = "$b/old" ] || r=1; rm -rf "$b"; [ $r = 0 ]'
+  t "to runs a shell function, not a PATH binary of the same name" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "shift 3; exec \"\$@\"" >"$d/timeout"; printf "%s\n" "#!/bin/sh" "echo BIN" >"$d/samename"; chmod +x "$d/timeout" "$d/samename"; samename(){ echo FUNC; }; o=$(PATH="$d:$PATH" HAVE_TIMEOUT=1 to 5 samename); b=$(PATH="$d:$PATH" HAVE_TIMEOUT=1 to 5 "$d/samename"); unset -f samename; rm -rf "$d"; [ "$o" = FUNC ] && [ "$b" = BIN ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
