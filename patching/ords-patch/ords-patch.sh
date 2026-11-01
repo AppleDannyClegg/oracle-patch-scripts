@@ -351,7 +351,7 @@ cmd_preflight() {
     [ -n "${WLS_USERCONFIG:-}${WLS_ADMIN_USER:-}" ] || { err "WebLogic mode needs admin credentials for weblogic.Deployer: WLS_USERCONFIG+WLS_USERKEY or WLS_ADMIN_USER+WLS_ADMIN_PASSWORD"; p=$((p + 1)); }
     [ -f "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" ] || { err "setWLSEnv.sh not found under $WLS_ORACLE_HOME"; p=$((p + 1)); }
     [ -f "$WLS_ORDS_WAR" ] || { err "Deployed war $WLS_ORDS_WAR is missing on disk"; p=$((p + 1)); }
-    unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null | grep -q 'config.url' && log "ords.war carries its config dir ($ORDS_CONFIG); the new war will be built with 'ords --config $ORDS_CONFIG war'" || log "config dir comes from -Dconfig.url on the server; the stock ords.war from the new release will be deployed"
+    war_embeds_config; case $? in 0) log "ords.war carries its config dir ($ORDS_CONFIG); the new war will be built with 'ords --config $ORDS_CONFIG war'";; 2) err "cannot read WEB-INF/web.xml of $WLS_ORDS_WAR (unzip failed): cannot tell how the config dir reaches ORDS"; p=$((p + 1));; *) log "config dir comes from -Dconfig.url on the server; the stock ords.war from the new release will be deployed";; esac
   elif [ -n "$ORDS_HOME" ] && [ ! -L "$ORDS_HOME" ]; then warn "ORDS_HOME $ORDS_HOME is a real directory; apply will rename it to ${ORDS_HOME}-$ORDS_VER and make $ORDS_HOME a symlink (start scripts keep working)"; fi
   if [ -n "$ORDS_RUNNING" ]; then wait_for_url "$ORDS_URL" 5 && log "ORDS answers at $ORDS_URL now" || warn "ORDS running but $ORDS_URL does not answer - check ORDS_URL"; fi
   if sql_available; then local lm fra; lm="$(sql_val "(select log_mode from v\$database)" 2>/dev/null)"; fra="$(sql_val "(select nvl(max(value),'') from v\$parameter where name='db_recovery_file_dest')" 2>/dev/null)"
@@ -424,6 +424,11 @@ switch_home() { # point ORDS_HOME at <dir>
   fi
 }
 
+# war_embeds_config: 0 = the deployed war's web.xml names config.url, 1 = it does not, 2 = the war could not be read (which is not 'no')
+war_embeds_config() {
+  local x; x="$(unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null)" || return 2
+  printf '%s' "$x" | grep -q 'config.url'
+}
 cmd_apply() {
   setup_env; reuse_or_init apply
   local nd nv; nd="$(state_get new_dir || true)"; nv="$(state_get new_version || true)"
@@ -447,7 +452,10 @@ cmd_apply() {
   [ $rc = 0 ] || return 1
   if [ "$WLS_MODE" = 1 ]; then
     local war="$nd/ords.war"
-    if unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null | grep -q 'config.url'; then
+    # an unreadable deployed war used to read as 'no embedded config' and the plain war went out without its config dir
+    war_embeds_config; local wrc=$?
+    [ "$wrc" = 2 ] && { err "cannot read WEB-INF/web.xml of $WLS_ORDS_WAR (unzip failed): cannot tell whether the new war needs the config dir embedded - not deployed"; return 1; }
+    if [ "$wrc" = 0 ]; then
       war="$nd/ords-deploy.war"; log "Building war with embedded config dir"
       [ "$DRY_RUN" = 1 ] || "$nd/bin/ords" --config "$ORDS_CONFIG" war "$war" >>"$LOG_FILE" 2>&1 || { err "ords war failed (see log)"; return 1; }
     fi
