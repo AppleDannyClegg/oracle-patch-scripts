@@ -87,25 +87,31 @@ version_ge() {
 state_set() { [ -z "$STATE_FILE" ] && return 0; touch "$STATE_FILE"; grep -v "^$1=" "$STATE_FILE" >"$STATE_FILE.tmp" 2>/dev/null || true; printf '%s=%s\n' "$1" "$2" >>"$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"; }
 state_get() { [ -f "$STATE_FILE" ] || return 1; sed -n "s/^$1=//p" "$STATE_FILE" | tail -1 | grep . ; }
 init_run_dir() {
-  [ -z "$RUN_DIR" ] && RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-${1:-run}"
+  local new=0; [ -z "$RUN_DIR" ] && { RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-${1:-run}"; new=1; }
   mkdir -p "$RUN_DIR" || die "Cannot create $RUN_DIR"
   LOG_FILE="$RUN_DIR/ords-patch.log"; STATE_FILE="$RUN_DIR/state"; ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
   log "ords-patch $VERSION  run dir: $RUN_DIR  dry-run=$DRY_RUN"
+  [ "$DRY_RUN" = 1 ] && [ "$new" = 1 ] && state_set dry_run 1   # a dir created by --dry-run: rollback/cleanup refuse it
+  return 0
 }
 latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }
-reuse_or_init() { [ -n "$RUN_DIR" ] && return 0; RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir "$1"; }
+reuse_or_init() { [ -n "$RUN_DIR" ] && return 0; RUN_DIR="$(latest_run_dir)"; if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then init_run_dir; else RUN_DIR=""; init_run_dir "$1"; fi; }
+refuse_dry_run_dir() { [ "$(state_get dry_run || true)" = 1 ] && [ "$DRY_RUN" = 0 ] && die "$RUN_DIR is a --dry-run run (nothing in it happened): $1 needs the real run's dir (--run-dir)"; return 0; }
 load_config() {
   local f
   for f in "$SCRIPT_DIR/../../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/ords-patch.conf" ./ords-patch.conf "$HOME/.ords-patch.conf"; do
     if [ -f "$f" ]; then set -a; # shellcheck disable=SC1090
       . "$f"; set +a; fi
   done
+  # 'set -a' exported every conf variable: the passwords must not sit in the environment of every child (java, curl, tar, tee)
+  local v; for v in $(compgen -A variable | grep -E 'PASSWORD|CONNECT|SECRET|TOKEN'); do export -n "${v?}" 2>/dev/null || true; done
 }
 wait_for_url() {
-  local url="$1" t="$2" code; command -v curl >/dev/null || return 0
+  local url="$1" t="$2" code; command -v curl >/dev/null || { warn "no curl: cannot check $url"; return 1; }
   while [ "$t" -gt 0 ]; do
     code="$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
-    case "$code" in 200|30[1-3]|401|403) return 0;; esac; sleep 10; t=$((t - 10))
+    case "$code" in 200|30[1-3]|401|403) return 0;; esac
+    t=$((t - 5)); [ "$t" -gt 0 ] || return 1; sleep 5
   done; return 1
 }
 sql_available() {
@@ -116,8 +122,11 @@ sql_available() {
 run_sql() {
   sql_available || return 1
   local out
+  # confirm() answers yes under --dry-run, so this is the guard: no statement that changes anything runs in a dry run
+  if [ "$DRY_RUN" = 1 ] && ! printf '%s' "$1" | grep -qiE '^[[:space:]]*(select|with)[[:space:]]'; then log "DRY-RUN SQL: $(printf '%s' "$1" | head -1)"; return 0; fi
   # connect on stdin (/nolog): SQL_CONNECT may be user/pw@tns and must never sit on sqlplus's command line
   out="$(printf 'whenever sqlerror exit 1\nconnect %s\nset heading off feedback off pagesize 0 linesize 32767 trimspool on verify off\n%s\n%s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD -L /nolog 2>&1)" || { printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
+  printf '%s\n' "$out" | grep -qE '^ERROR:|SP2-0640|ORA-01017|ORA-12[0-9]{3}|ORA-65011|ORA-65019' && { printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }   # a failed connect is not an SQL error for 'whenever'
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 sql_val() { run_sql "select $1 from dual;" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//'; }
@@ -205,7 +214,7 @@ wls_deployer() {
 # ---------------------------------------------------------------------------
 detect() {
   if [ -z "${ORDS_HOME:-}" ]; then
-    local c; c="$(command -v ords 2>/dev/null)"; [ -n "$c" ] && ORDS_HOME="$(cd "$(dirname "$c")/.." && pwd)"
+    local c; c="$(command -v ords 2>/dev/null)"; [ -n "$c" ] && c="$(readlink -f "$c")" && ORDS_HOME="$(cd "$(dirname "$c")/.." && pwd)"   # the RPM links /usr/local/bin/ords -> /opt/oracle/ords/bin/ords: the home is the target's
   fi
   [ -z "${ORDS_HOME:-}" ] && for d in /opt/oracle/ords /opt/ords /u01/ords "$HOME/ords"; do [ -x "$d/bin/ords" ] && { ORDS_HOME="$d"; break; }; done
   wls_discover || true
@@ -228,7 +237,7 @@ detect() {
     ORDS_RUNNING="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null | head -1)"
   fi
   if [ -n "${ORDS_POOLS:-}" ]; then POOLS="$ORDS_POOLS"
-  elif [ -d "${ORDS_CONFIG:-/nonexistent}/databases" ]; then POOLS="$(ls "$ORDS_CONFIG/databases" 2>/dev/null | tr '\n' ' ')"; fi
+  elif [ -d "${ORDS_CONFIG:-/nonexistent}/databases" ]; then POOLS="$(for d in "$ORDS_CONFIG"/databases/*/; do [ -f "$d/pool.xml" ] && basename "$d"; done 2>/dev/null | tr '\n' ' ')"; fi
   [ -z "${ORDS_URL:-}" ] && ORDS_URL="http://localhost:8080/ords/"
   # not ords.installed_version: as SYS that raises ORA-06598 (INHERIT PRIVILEGES) on 19c+; the version table is readable
   DB_SCHEMA_VER="$(sql_val "(select version from ords_metadata.ords_version where rownum=1)" 2>/dev/null)"
@@ -359,13 +368,17 @@ cmd_preflight() {
 cmd_backup() {
   setup_env; reuse_or_init backup
   log "Backing up config $ORDS_CONFIG"
-  run_cmd tar -czf "$RUN_DIR/ords-config-before.tar.gz" -C "$(dirname "$ORDS_CONFIG")" "$(basename "$ORDS_CONFIG")" || die "config backup failed"
+  # the pool wallets (cwallet.sso, the database password in clear for whoever holds the file) stay out of the tar: --db-only
+  # does not touch them, and a run dir is what gets attached to incident packs
+  run_cmd tar -czf "$RUN_DIR/ords-config-before.tar.gz" --exclude='*/wallet' --exclude='*/wallet/*' -C "$(dirname "$ORDS_CONFIG")" "$(basename "$ORDS_CONFIG")" || die "config backup failed"
+  chmod 600 "$RUN_DIR/ords-config-before.tar.gz" 2>/dev/null || true
   state_set prev_dir "$ORDS_REAL"; state_set prev_version "$ORDS_VER"; state_set prev_was_link "$([ -L "${ORDS_HOME:-/nonexistent}" ] && echo 1 || echo 0)"
   if [ "$WLS_MODE" = 1 ]; then run_cmd cp -p "$WLS_ORDS_WAR" "$RUN_DIR/ords.war.before" || die "could not back up $WLS_ORDS_WAR"; state_set prev_war "$RUN_DIR/ords.war.before"; fi
   if [ "$NO_RP" = 1 ]; then warn "Restore point skipped"
   elif sql_available && [ "$(sql_val "(select log_mode from v\$database)")" = ARCHIVELOG ]; then
     local rp; rp="ORDSPATCH_$(date +%Y%m%d_%H%M)"
-    if [ "$DRY_RUN" = 1 ] || run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Guaranteed restore point $rp created ('cleanup' drops it later)"; else warn "Could not create restore point (see log)"; fi
+    if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: would create guaranteed restore point $rp"
+    elif run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Guaranteed restore point $rp created ('cleanup' drops it later)"; else warn "Could not create restore point (see log)"; fi
   else warn "No restore point (no SQL access or NOARCHIVELOG): the ORDS schema upgrade cannot be undone, only the binaries"; fi
 }
 
@@ -400,7 +413,7 @@ switch_home() { # point ORDS_HOME at <dir>
   else
     local aside="${ORDS_HOME}-${ORDS_VER:-old}"
     log "Converting $ORDS_HOME into a symlink (old files kept at $aside)"
-    run_cmd mv "$ORDS_HOME" "$aside" && run_cmd ln -s "$target" "$ORDS_HOME" && state_set prev_dir "$aside"
+    run_cmd mv "$ORDS_HOME" "$aside" && run_cmd ln -s "$target" "$ORDS_HOME" && { [ "$DRY_RUN" = 1 ] || state_set prev_dir "$aside"; }
   fi
 }
 
@@ -412,7 +425,7 @@ cmd_apply() {
   [ -z "$ORDS_RUNNING" ] || [ "$DRY_RUN" = 1 ] || die "ORDS still running - 'stop' first"
   local pw="${ORDS_ADMIN_PASSWORD:-}"
   if [ -z "$pw" ] && [ "$DRY_RUN" = 0 ]; then read -r -s -p "$ORDS_ADMIN_USER password for the ORDS schema upgrade: " pw; echo; fi
-  local pwfile="$RUN_DIR/.pw"; ( umask 077; printf '%s\n' "$pw" >"$pwfile" )
+  local pwfile="$RUN_DIR/.pw"; ( umask 077; printf '%s\n' "$pw" >"$pwfile" ); trap 'rm -f "$RUN_DIR/.pw"' EXIT
   local pool rc=0
   for pool in $POOLS; do
     log "Upgrading ORDS schema in pool '$pool' with ORDS $nv"
@@ -454,7 +467,7 @@ cmd_verify() {
   local ob="${ORDS_HOME:-$(state_get new_dir || true)}"
   for pool in $POOLS; do
     [ -x "$ob/bin/ords" ] || break
-    if "$ob/bin/ords" --config "$ORDS_CONFIG" config --db-pool "$pool" verify >>"$LOG_FILE" 2>&1; then log "pool $pool verifies"; else warn "pool $pool: 'ords config verify' not OK or unsupported on this version (see log)"; fi
+    if "$ob/bin/ords" --config "$ORDS_CONFIG" config --db-pool "$pool" verify >>"$LOG_FILE" 2>&1; then log "pool $pool verifies"; else err "pool $pool: 'ords config verify' failed (see log)"; ok=0; fi
   done
   if sql_available && [ "$(sql_val "(select count(*) from dba_registry where comp_id='APEX')")" = 1 ]; then
     log "APEX present: running sys.validate_apex (Oracle requires this after every ORDS upgrade)"
@@ -466,39 +479,47 @@ cmd_verify() {
 }
 
 cmd_rollback() {
-  setup_env; reuse_or_init rollback
+  setup_env; reuse_or_init rollback; refuse_dry_run_dir rollback
   local prev pv; prev="$(state_get prev_dir || true)"; pv="$(state_get prev_version || true)"
   local pw; pw="$(state_get prev_war || true)"
   [ -d "$prev" ] || [ -f "$pw" ] || die "No previous ORDS directory/war recorded in $RUN_DIR"
   confirm "Switch ORDS back to ${pv:-the previous release}?" || return 1
-  ords_stop || true
+  ords_stop || { err "ORDS could not be stopped: binaries NOT switched back (the new release would keep serving)"; return 1; }
+  local failed=0
   if [ "$WLS_MODE" = 1 ]; then
-    [ -f "$pw" ] && { run_cmd cp -p "$pw" "$WLS_ORDS_WAR"; wls_deployer -redeploy -name "$WLS_ORDS_APP" || err "redeploy of the old war failed"; }
-    [ -n "$ORDS_HOME" ] && [ -d "$prev" ] && run_cmd ln -sfn "$prev" "$ORDS_HOME"
+    [ -f "$pw" ] && { run_cmd cp -p "$pw" "$WLS_ORDS_WAR" || { err "cannot put the old war back"; return 1; }; wls_deployer -redeploy -name "$WLS_ORDS_APP" || { err "redeploy of the old war failed"; failed=1; }; }
+    [ -n "$ORDS_HOME" ] && [ -d "$prev" ] && [ "$(readlink -f "$prev")" != "$(readlink -f "$ORDS_HOME")" ] && run_cmd ln -sfn "$prev" "$ORDS_HOME"
   elif [ "$(state_get prev_was_link)" = 0 ] && [ -L "$ORDS_HOME" ]; then run_cmd rm -f "$ORDS_HOME" && run_cmd mv "$prev" "$ORDS_HOME"
+  elif [ "$(readlink -f "$prev")" = "$(readlink -f "$ORDS_HOME")" ]; then log "$ORDS_HOME already is the previous release (apply did not get to the switch)"
   else run_cmd ln -sfn "$prev" "$ORDS_HOME"; fi
   local rp; rp="$(state_get restore_point || true)"
-  if [ -n "$rp" ] && [ -n "$(state_get applied || true)" ]; then
+  # any pool whose schema was upgraded (pool_<name>=ok) is on the new schema, whether or not 'applied' was reached
+  if [ -n "$rp" ] && grep -q '^pool_.*=ok' "$STATE_FILE" 2>/dev/null; then
     warn "The ORDS schema in the database was upgraded; the old binaries may refuse a newer schema."
     if confirm_flashback "Flash the database back to restore point $rp? (ALL changes in it since the upgrade are lost)"; then
       local con; con="$(sql_val "sys_context('userenv','con_name')")"
       if [ -n "$con" ] && [ "$con" != 'CDB$ROOT' ] && [ "$(sql_val "(select cdb from v\$database)")" = YES ]; then
         PDB="" run_sql "alter pluggable database $con close immediate;
 flashback pluggable database $con to restore point $rp;
-alter pluggable database $con open resetlogs;" >/dev/null && log "Flashed back $con to $rp" || err "flashback failed - see $LOG_FILE"
-      else err "Non-CDB: do it by hand: shutdown immediate; startup mount; flashback database to restore point $rp; alter database open resetlogs;"; fi
-    fi
+alter pluggable database $con open resetlogs;" >/dev/null && log "Flashed back $con to $rp" || { err "flashback failed - see $LOG_FILE; the ORDS schema is still on the new release"; failed=1; }
+      else err "Non-CDB: do it by hand: shutdown immediate; startup mount; flashback database to restore point $rp; alter database open resetlogs;"; failed=1; fi
+    else warn "schema(s) upgraded and not flashed back: the old binaries may refuse the newer schema"; fi
   fi
+  [ "$failed" = 0 ] || { state_set rolled_back 0; err "rollback incomplete - see $LOG_FILE"; ords_start || true; return 1; }
   state_set rolled_back 1
   ords_start && log "Rollback complete: ORDS $pv" || { err "ORDS did not start after rollback"; return 1; }
 }
 
 cmd_cleanup() {
-  setup_env; reuse_or_init cleanup
-  local rp; rp="$(state_get restore_point || true)"
-  [ -n "$rp" ] && confirm "Drop restore point $rp?" && run_sql "drop restore point $rp;" >/dev/null && log "$rp dropped"
-  find "$ORDS_BASE/downloads" -name 'ords-latest-*.zip' -mtime +30 -print -delete 2>/dev/null | sed 's/^/removed /' >&2
-  return 0
+  setup_env; reuse_or_init cleanup; refuse_dry_run_dir cleanup
+  local rc=0 rp; rp="$(state_get restore_point || true)"
+  if [ -n "$rp" ] && confirm "Drop restore point $rp?"; then
+    if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: would drop restore point $rp"
+    elif run_sql "drop restore point $rp;" >/dev/null; then log "$rp dropped"; state_set restore_point ""; else err "drop restore point $rp failed (see $LOG_FILE): it keeps pinning flashback logs in the recovery area"; rc=1; fi
+  fi
+  if [ "$DRY_RUN" = 1 ]; then find "$ORDS_BASE/downloads" -name 'ords-latest-*.zip' -mtime +30 -print 2>/dev/null | sed 's/^/would remove /' >&2
+  else find "$ORDS_BASE/downloads" -name 'ords-latest-*.zip' -mtime +30 -print -delete 2>/dev/null | sed 's/^/removed /' >&2; fi
+  return $rc
 }
 
 cmd_heal() {
@@ -520,7 +541,7 @@ cmd_run() {
   log "=== 3/7 preflight"; cmd_preflight || { err "Preflight failed. Nothing changed."; return 1; }
   confirm "Upgrade ORDS $ORDS_VER -> $(state_get new_version) now? ORDS will be stopped." || return 1
   log "=== 4/7 backup"; cmd_backup
-  log "=== 5/7 stop"; ords_stop || die "Could not stop ORDS. Nothing changed."
+  log "=== 5/7 stop"; ords_stop || die "Could not stop ORDS. The schema is untouched; the guaranteed restore point $(state_get restore_point || echo '(none)') stays until 'cleanup'."
   log "=== 6/7 apply"
   if ! cmd_apply; then err "Upgrade failed - rolling back"; ASSUME_YES=1 cmd_rollback || err "Rollback incomplete - see $LOG_FILE"; return 1; fi
   log "=== 7/7 start + verify"; ords_start || true

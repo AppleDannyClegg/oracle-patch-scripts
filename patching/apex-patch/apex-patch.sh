@@ -115,6 +115,8 @@ load_config() {
     if [ -f "$f" ]; then set -a; # shellcheck disable=SC1090
       . "$f"; set +a; fi
   done
+  # 'set -a' exported every conf variable: the passwords must not sit in the environment of every child (java, curl, tar, tee)
+  local v; for v in $(compgen -A variable | grep -E 'PASSWORD|CONNECT|SECRET|TOKEN'); do export -n "${v?}" 2>/dev/null || true; done
 }
 wait_for_url() {
   local url="$1" t="$2" code; command -v curl >/dev/null || return 0
