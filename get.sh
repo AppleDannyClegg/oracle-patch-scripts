@@ -19,6 +19,9 @@ fetch() {
   else echo "need curl or wget" >&2; exit 1; fi
 }
 
+# the parent must be writable BEFORE the download and before the previous copy is moved aside, or a typo in the target leaves only <folder>.old
+parent="$(dirname "$DEST")"; mkdir -p "$parent" 2>/dev/null || true
+[ -d "$parent" ] && [ -w "$parent" ] || { echo "cannot write to $parent" >&2; exit 1; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 echo "downloading $URL"
