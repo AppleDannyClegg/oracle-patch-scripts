@@ -328,7 +328,7 @@ finish_restarts() {
 # v$pdbs could not be read, so a caller can tell 'none' from 'unknown'
 closed_pdbs() {
   local rows keep="," n m; rows="$(sql_lines "$SID" "select name||'|'||open_mode from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED' order by 1;" 2>/dev/null)" || { echo "?"; return 0; }
-  for n in ${KEEP_CLOSED_PDBS//,/ }; do keep="$keep$(printf '%s' "$n" | uc),"; done
+  keep=",$(printf '%s' "$KEEP_CLOSED_PDBS" | tr -d ' ' | tr '[:lower:]' '[:upper:]'),"     # no uc here: this script only has lc (Fable-2, 22:35)
   while IFS='|' read -r n m; do [ -n "$n" ] || continue; case "$keep" in *",$n,"*) ;; *) printf '%s(%s) ' "$n" "$m";; esac; done <<<"$rows"
 }
 after_role_change() {
