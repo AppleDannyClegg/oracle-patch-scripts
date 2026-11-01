@@ -546,7 +546,11 @@ cmd_preflight() {
   local need_kb free_kb
   need_kb="$(du -sk "$pdir" 2>/dev/null | awk '{print $1*3 + 2097152}')"
   free_kb="$(df -Pk "$ORACLE_HOME" | awk 'NR==2 {print $4}')"
-  if [ "${free_kb:-0}" -lt "${need_kb:-0}" ]; then
+  # an unreadable size is a failed check, not a passed one: need_kb empty (du failed on the patch dir) made the comparison '0 -lt 0'
+  if [ -z "$need_kb" ] || [ -z "$free_kb" ]; then
+    err "cannot run the disk space check: $([ -n "$need_kb" ] || echo "du failed on $pdir; ")$([ -n "$free_kb" ] || echo "df failed on $ORACLE_HOME")"
+    problems=$((problems + 1))
+  elif [ "$free_kb" -lt "$need_kb" ]; then
     err "Low disk: $((free_kb / 1024)) MB free, want >= $((need_kb / 1024)) MB on ORACLE_HOME filesystem"
     problems=$((problems + 1))
   else

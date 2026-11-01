@@ -205,11 +205,14 @@ cmd_preflight() {
       if [ "$FORCE" = 1 ]; then warn "$s is a Data Guard PRIMARY; --force given, patching before the standby (Oracle says standby first)"
       else err "$s is a Data Guard PRIMARY: patch the standby first (same patches, 'db-patch run' there), then here. --force to override"; fail=1; fi
     fi
-    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM','PUBLIC'))")"; [ "${inv:-0}" -gt 0 ] && warn "$s: $inv invalid SYS/SYSTEM objects before patching - run utlrp first, datapatch may fail"
-    local bad; bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"; [ "${bad:-0}" -gt 0 ] && { err "$s: $bad failed datapatch entries in dba_registry_sqlpatch - fix before applying more"; fail=1; }
+    # an empty count is 'could not read', never 0: the registry gate fails closed, the advisory counts say so
+    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM','PUBLIC'))")"
+    if [ -z "$inv" ]; then warn "$s: could not count invalid SYS/SYSTEM objects (dba_objects)"; elif [ "$inv" -gt 0 ]; then warn "$s: $inv invalid SYS/SYSTEM objects before patching - run utlrp first, datapatch may fail"; fi
+    local bad; bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
+    if [ -z "$bad" ]; then err "$s: cannot read dba_registry_sqlpatch - not assuming every earlier datapatch succeeded"; fail=1; elif [ "$bad" -gt 0 ]; then err "$s: $bad failed datapatch entries in dba_registry_sqlpatch - fix before applying more"; fail=1; fi
     [ "$NO_RP" = 0 ] && [ "$(sql_val "$s" "(select log_mode from v\$database)")" != ARCHIVELOG ] && warn "$s: NOARCHIVELOG - no restore point possible, rollback is opatch only"
     local fra; fra="$(sql_val "$s" "(select round((space_used-space_reclaimable)*100/space_limit) from v\$recovery_file_dest where space_limit>0)" 2>/dev/null)"; [ -n "$fra" ] && [ "$fra" -gt 85 ] && warn "$s: FRA ${fra}% - a guaranteed restore point will grow it"
-    local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ "${closed:-0}" != 0 ] && warn "$s: $closed PDB(s) not READ WRITE - datapatch will skip them (apply later with datapatch -pdbs)"
+    local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ -z "$closed" ] && warn "$s: could not read the PDB open modes (v\$pdbs)"; [ -n "$closed" ] && [ "$closed" != 0 ] && warn "$s: $closed PDB(s) not READ WRITE - datapatch will skip them (apply later with datapatch -pdbs)"
     [ "$(sql_val "$s" "(select count(*) from v\$backup where status='ACTIVE')")" != 0 ] && { err "$s: datafiles in hot backup mode"; fail=1; }
     [ "$(sql_val "$s" "(select count(*) from v\$rman_backup_job_details where status='RUNNING')")" != 0 ] && { err "$s: an RMAN backup is running"; fail=1; }
   done
@@ -349,7 +352,8 @@ cmd_datapatch() {
     [ "$DRY_RUN" = 1 ] && continue
     ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" PATH="$HOME_DIR/bin:$HOME_DIR/OPatch:$PATH" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch returned an error"; rc=1; }
     local bad; bad="$(sql_val "$s" "(select count(*) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))" 2>/dev/null)"; [ -z "$bad" ] && bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
-    [ "${bad:-0}" != 0 ] && { err "$s: $bad datapatch entries not SUCCESS"; sql_lines "$s" "select con_id||' '||patch_id||' '||status||' '||substr(description,1,60) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" 2>/dev/null | tee -a "$LOG_FILE"; rc=1; }
+    [ -z "$bad" ] && { err "$s: cannot read the sqlpatch registry after datapatch - not assuming SUCCESS (see $LOG_FILE)"; rc=1; }
+    [ -n "$bad" ] && [ "$bad" != 0 ] && { err "$s: $bad datapatch entries not SUCCESS"; sql_lines "$s" "select con_id||' '||patch_id||' '||status||' '||substr(description,1,60) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" 2>/dev/null | tee -a "$LOG_FILE"; rc=1; }
     # utlrp's status used to be dropped: a recompile that never ran (no sqlplus, wrong SID, ORA-12162) left SYS objects invalid
     # with the step reported ok. Its exit status counts, and the outcome - invalid SYS/SYSTEM objects left - is printed
     log "$s: utlrp"; sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql || { err "$s: utlrp did not run cleanly (see $LOG_FILE)"; rc=1; }
@@ -375,10 +379,13 @@ cmd_verify() {
       local homeru; homeru="$(printf '%s\n' "$INSTALLED" | grep -iE 'Database Release Update' | grep -viE 'OJVM|MONTHLY' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
       local miss; miss="$(sql_lines "$s" "select c.name from v\$containers c where c.open_mode='READ WRITE' and c.name<>'PDB\$SEED' and not exists (select 1 from cdb_registry_sqlpatch p where p.con_id=c.con_id and p.status='SUCCESS' and p.action='APPLY' and p.description='$homeru');" 2>/dev/null | tr '\n' ' ')"
       [ -n "$miss" ] && { err "$s: datapatch level is not '$homeru' in: $miss"; fail=1; } || log "$s: datapatch at '$homeru' in every open container"
-      local bad; bad="$(sql_val "$s" "(select count(*) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))" 2>/dev/null)"; [ "${bad:-0}" != 0 ] && { err "$s: $bad failed datapatch rows"; fail=1; }
+      local bad; bad="$(sql_val "$s" "(select count(*) from cdb_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))" 2>/dev/null)"
+      if [ -z "$bad" ]; then err "$s: cannot read cdb_registry_sqlpatch - verify cannot pass on an unread registry"; fail=1; elif [ "$bad" != 0 ]; then err "$s: $bad failed datapatch rows"; fail=1; fi
     else log "$s: $role - checking apply"; [ "$(sql_val "$s" "(select count(*) from v\$managed_standby where process like 'MRP%')")" = 0 ] && { warn "$s: no MRP process - start redo apply (dgmgrl / alter database recover managed standby database disconnect)"; fail=1; }; fi
-    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM','PUBLIC'))")"; [ "${inv:-0}" -gt 0 ] && warn "$s: $inv invalid SYS/SYSTEM objects after utlrp"
-    local pdbs; pdbs="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ "${pdbs:-0}" != 0 ] && warn "$s: $pdbs PDB(s) not open"
+    local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM','PUBLIC'))")"
+    if [ -z "$inv" ]; then warn "$s: could not count invalid SYS/SYSTEM objects (dba_objects)"; elif [ "$inv" -gt 0 ]; then warn "$s: $inv invalid SYS/SYSTEM objects after utlrp"; fi
+    local pdbs; pdbs="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"
+    if [ -z "$pdbs" ]; then warn "$s: could not read the PDB open modes (v\$pdbs)"; elif [ "$pdbs" != 0 ]; then warn "$s: $pdbs PDB(s) not open"; fi
     log "$s: services $(sql_lines "$s" "select listagg(name,',') within group (order by name) from v\$active_services where name not like 'SYS%';" | head -1)"
   done
   local h lsn ok=0; listener_homes | while read -r h lsn; do [ "$h" = "$HOME_DIR" ] && echo "$lsn"; done | grep -q . || { local lst; lst="$(state_get listeners || true)"; [ -n "$lst" ] && { err "listener $lst not running"; fail=1; }; }
@@ -430,10 +437,13 @@ cmd_heal() {
   if opatch_locked && ! pgrep -f 'OPatch/opatch|oracle.opatch' >/dev/null; then log "removing stale OPatch lock"; confirm "rm $HOME_DIR/.patch_storage/patch_locked ?" && { [ "$DRY_RUN" = 1 ] || rm -f "$HOME_DIR/.patch_storage/patch_locked"; did=1; }; fi
   local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" || continue
     local bad; bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
-    [ "${bad:-0}" != 0 ] && { warn "$s: $bad datapatch rows not SUCCESS:"; sql_lines "$s" "select patch_id||' '||status||' '||substr(description,1,60)||' log: '||logfile from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" ; log "  usual fix: read the logfile, fix the invalid object / missing grant it names, re-run: datapatch -verbose"; confirm "re-run datapatch -verbose on $s now?" && { cmd_datapatch; did=1; }; }
+    [ -z "$bad" ] && warn "$s: could not read dba_registry_sqlpatch - datapatch state unknown, not clean"
+    [ -n "$bad" ] && [ "$bad" != 0 ] && { warn "$s: $bad datapatch rows not SUCCESS:"; sql_lines "$s" "select patch_id||' '||status||' '||substr(description,1,60)||' log: '||logfile from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" ; log "  usual fix: read the logfile, fix the invalid object / missing grant it names, re-run: datapatch -verbose"; confirm "re-run datapatch -verbose on $s now?" && { cmd_datapatch; did=1; }; }
     local inv; inv="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))")"
-    [ "${inv:-0}" -gt 0 ] && confirm "$s: $inv invalid SYS/SYSTEM objects - run utlrp?" && { if sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql; then did=1; local left; left="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))" 2>/dev/null)"; log "$s: utlrp done, ${left:-?} invalid SYS/SYSTEM object(s) left (was $inv)"; else err "$s: utlrp did not run cleanly (see $LOG_FILE) - the $inv objects are still invalid"; fi; }
-    local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ "${closed:-0}" != 0 ] && confirm "$s: open all PDBs?" && { sql_run "$s" "alter pluggable database all open;" >>"$LOG_FILE"; did=1; }
+    [ -z "$inv" ] && warn "$s: could not count invalid SYS/SYSTEM objects (dba_objects) - utlrp not offered"
+    [ -n "$inv" ] && [ "$inv" -gt 0 ] && confirm "$s: $inv invalid SYS/SYSTEM objects - run utlrp?" && { if sql_script "$s" "$HOME_DIR/rdbms/admin" utlrp.sql; then did=1; local left; left="$(sql_val "$s" "(select count(*) from dba_objects where status<>'VALID' and owner in ('SYS','SYSTEM'))" 2>/dev/null)"; log "$s: utlrp done, ${left:-?} invalid SYS/SYSTEM object(s) left (was $inv)"; else err "$s: utlrp did not run cleanly (see $LOG_FILE) - the $inv objects are still invalid"; fi; }
+    local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"; [ -z "$closed" ] && warn "$s: could not read the PDB open modes (v\$pdbs)"
+    [ -n "$closed" ] && [ "$closed" != 0 ] && confirm "$s: open all PDBs?" && { sql_run "$s" "alter pluggable database all open;" >>"$LOG_FILE"; did=1; }
     local home; home="$(oratab_home "$s")"; [ "$home" != "$HOME_DIR" ] && warn "$s: /etc/oratab says $home but you patched $HOME_DIR"
   done
   pgrep -f datapatch >/dev/null 2>&1 && warn "a datapatch is still running ($(pgrep -f datapatch | head -1)); do not start another"

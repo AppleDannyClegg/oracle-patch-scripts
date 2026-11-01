@@ -45,7 +45,9 @@ after `download` is the same.
    that cannot be read fails the step, a non-zero count is a WARN that `heal` offers to fix.
 7. **verify**: patch ids in `opatch lspatches`; the RU description present with SUCCESS in
    `cdb_registry_sqlpatch` for every open container; no failed rows; invalid SYS objects; PDBs
-   open; services; MRP running on standbys; listener up.
+   open; services; MRP running on standbys; listener up. A sqlpatch registry that cannot be read
+   fails preflight, datapatch and verify (it is not 0 failed rows); the advisory counts say
+   "could not read" instead of staying silent.
 
 On failure: apply → `opatch rollback` in reverse, restart, `datapatch` again (reverts the SQL
 side), and `restore` from the tar if the home is broken. `rollback` records `failed` and exits 1

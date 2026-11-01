@@ -148,7 +148,9 @@ host_controls() {
   local pa; pa="$(grep -E '^PasswordAuthentication' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')"; [ -n "$pa" ] && control host "" "sshd PasswordAuthentication no (keys only)" "$([ "$pa" = no ] && echo PASS || echo INFO)" "value $pa"
   local se; se="$(getenforce 2>/dev/null)"; [ -n "$se" ] && control host "" "SELinux enforcing" "$([ "$se" = Enforcing ] && echo PASS || echo INFO)" "$se"
   local fw; fw="$(systemctl is-active firewalld 2>/dev/null)"; [ -n "$fw" ] && control host "" "host firewall active" "$([ "$fw" = active ] && echo PASS || echo INFO)" "firewalld $fw"
-  [ -f /etc/oratab ] && control host "" "/etc/oratab not world-writable" "$(o="$(file_mode /etc/oratab | cut -c3)"; [ $(( ${o:-0} & 2 )) -ne 0 ] && echo FAIL || echo PASS)" "mode $(file_mode /etc/oratab)"
+  # an unreadable mode is a FAIL with 'unreadable' as the evidence, not a PASS from a default of 0
+  if [ -f /etc/oratab ]; then local om; om="$(file_mode /etc/oratab)"   # last digit = others (a 4-digit mode with a sticky/setgid bit used to be read at the wrong position)
+    control host "" "/etc/oratab not world-writable" "$(if [ -z "$om" ]; then echo FAIL; elif [ $(( ${om: -1} & 2 )) -ne 0 ]; then echo FAIL; else echo PASS; fi)" "mode ${om:-unreadable (stat failed)}"; fi
   local ks; ks="$(uptrack-uname -r 2>/dev/null)"; control host "" "kernel patched (Ksplice effective kernel)" "$([ -n "$ks" ] && echo PASS || echo INFO)" "${ks:-no ksplice; running $(uname -r)}"
   [ -n "$SUDO" ] || control host "" "sudo -n available to this script" INFO "no: sudoers rules and iptables were not read"
   local sr; sr="$($SUDO grep -hE '^oracle.*NOPASSWD.*ALL' /etc/sudoers /etc/sudoers.d/* 2>/dev/null | head -1)"; [ -n "$sr" ] && control host "" "oracle has NOPASSWD: ALL sudo" FAIL "CRIT:$sr"

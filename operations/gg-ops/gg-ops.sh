@@ -142,7 +142,9 @@ inspect_trails() {
   local d; for d in "$OGG_HOME"/dirdat "$OGG_HOME"/dirdat_*; do [ -d "$d" ] || continue
     local use; use="$(df -P "$d" | awk 'NR==2{print $5}' | tr -d '%')"
     kv "$d" "$(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -type f | wc -l | tr -d ' ') files, filesystem ${use}% used, oldest $(find "$d" -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | tail -1 | sed 's#.*/##')"
-    [ "${use:-0}" -ge 95 ] && finding CRIT gg "trail filesystem of $d is ${use}% full: extracts abend when it fills" || { [ "${use:-0}" -ge 85 ] && finding WARN gg "trail filesystem of $d is ${use}% full"; }
+    if [ -z "$use" ]; then finding WARN gg "trail filesystem of $d: cannot read its usage (df failed) - fill level unknown, not 0"
+    elif [ "$use" -ge 95 ]; then finding CRIT gg "trail filesystem of $d is ${use}% full: extracts abend when it fills"
+    elif [ "$use" -ge 85 ]; then finding WARN gg "trail filesystem of $d is ${use}% full"; fi
   done; kv_end
   para "readers (checkpoint positions): $(trail_readers "$RAW" | tr '\n' ' ' | cut -c1-400)"
   grep -iE '^ *PURGEOLDEXTRACTS' "$GG_PRM_DIR/mgr.prm" 2>/dev/null | head -3 | sed 's/^/mgr.prm: /' | while IFS= read -r l; do para "$l"; done
