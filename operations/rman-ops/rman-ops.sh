@@ -79,7 +79,9 @@ rmansec() {
   fence_start
   if [ "$n" -gt "$DIAG_LINES" ]; then head -n "$DIAG_LINES" "$f" >>"$REPORT"; printf '... (%s lines, full in raw/rman_%s_%s.txt)\n' "$n" "$sid" "$name" >>"$REPORT"; else cat "$f" >>"$REPORT"; fi
   fence_end
-  grep -qE 'RMAN-0057[12]|ORA-01017|RMAN-04004|RMAN-06429' "$f" && finding CRIT rman "$sid: RMAN could not connect for '$title' (see raw/rman_${sid}_${name}.txt)"
+  # RMAN-00571/00569 are only the frame of any error stack: look for the real connection errors
+  grep -qE 'ORA-01017|ORA-01031|ORA-12[0-9]{3}|RMAN-0400[4-6]|RMAN-06429|RMAN-06171' "$f" && finding CRIT rman "$sid: RMAN could not connect for '$title' (see raw/rman_${sid}_${name}.txt)"
+  grep -qE 'RMAN-01009|RMAN-00558' "$f" && finding WARN rman "$sid: this RMAN does not accept '$q' (RMAN-01009: removed or renamed in this release?) - see raw/rman_${sid}_${name}.txt"
   return 0
 }
 rman_errors() { grep -E 'RMAN-[0-9]+|ORA-[0-9]+' "$1" 2>/dev/null | grep -vE 'RMAN-08[0-9]+' | sort -u | head -5 | tr -s ' ' | tr '\n' ';'; }
@@ -114,7 +116,7 @@ sec_inspect() {
   sqlsec "$sid" last_by_type "last COMPLETED job per input type (v\$rman_backup_job_details)" "select input_type, max(end_time) last_end, round((sysdate-max(end_time))*24,1) hours_ago, count(*) runs_in_${DAYS}d from v\$rman_backup_job_details where status like 'COMPLETED%' and start_time>sysdate-$DAYS group by input_type order by 2 desc;"
   local lastfull lastarch
   lastfull="$(sql_val "$sid" "(select round(sysdate-max(end_time),1) from v\$rman_backup_job_details where status like 'COMPLETED%' and input_type like 'DB%')")"
-  lastarch="$(sql_val "$sid" "(select round((sysdate-max(end_time))*24,1) from v\$rman_backup_job_details where status like 'COMPLETED%' and input_type like '%ARCHIVELOG%')")"
+  lastarch="$(sql_val "$sid" "(select round((sysdate-max(completion_time))*24,1) from v\$backup_set where backup_type='L')")"  # 'backup database plus archivelog' is one job of input_type DB FULL: the archivelog sets are the truth
   if [ -z "$lastfull" ]; then finding CRIT backup "$sid: no completed database backup in the last $DAYS days (job history)"; else awk -v d="$lastfull" -v m="$RMAN_MAX_FULL_DAYS" 'BEGIN{exit !(d>m)}' && finding CRIT backup "$sid: last completed database backup was $lastfull days ago (limit $RMAN_MAX_FULL_DAYS)"; fi
   if [ "$LOG_MODE" = ARCHIVELOG ]; then if [ -z "$lastarch" ]; then finding CRIT backup "$sid: no completed archivelog backup in $DAYS days"; else awk -v h="$lastarch" -v m="$RMAN_MAX_ARCH_HOURS" 'BEGIN{exit !(h>m)}' && finding CRIT backup "$sid: last archivelog backup $lastarch hours ago (limit $RMAN_MAX_ARCH_HOURS)"; fi; fi
   local notbacked; notbacked="$(sql_val "$sid" "(select count(*) from v\$archived_log where backup_count=0 and deleted='NO' and standby_dest='NO' and archived='YES')")"; [ "${notbacked:-0}" -gt 24 ] && finding WARN backup "$sid: $notbacked archived logs on disk have never been backed up"
@@ -135,8 +137,11 @@ sec_inspect() {
   rmansec "$sid" obsolete "report obsolete" 300 "report obsolete;"
   rmansec "$sid" needbackup "report need backup" 300 "report need backup;"
   local need; need="$(grep -cE '^[0-9]+ +[0-9]+ ' "$RAW/rman_${sid}_needbackup.txt")"; [ "${need:-0}" != 0 ] && finding WARN backup "$sid: report need backup lists $need file(s) outside the retention policy"
-  rmansec "$sid" failure "list failure (Data Recovery Advisor)" 300 "list failure;"
-  grep -qiE 'no failures found' "$RAW/rman_${sid}_failure.txt" || { grep -qE '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_failure.txt" && finding CRIT backup "$sid: Data Recovery Advisor lists CRITICAL/HIGH failures: $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_failure.txt" | head -2 | tr -s ' ' | tr '\n' ';')"; }
+  # Data Recovery Advisor (list failure) was desupported in 23ai: skip it there
+  local dbver; dbver="$(sql_val "$sid" "(select version_full from v\$instance)" 2>/dev/null)"
+  if version_ge "${dbver:-0}" 23; then log "$sid: Data Recovery Advisor desupported in ${dbver} - 'list failure' skipped"; : >"$RAW/rman_${sid}_failure.txt"; else
+  rmansec "$sid" failure "list failure (Data Recovery Advisor)" 300 "list failure;"; fi
+  [ -s "$RAW/rman_${sid}_failure.txt" ] && { grep -qiE 'no failures found' "$RAW/rman_${sid}_failure.txt" || { grep -qE '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_failure.txt" && finding CRIT backup "$sid: Data Recovery Advisor lists CRITICAL/HIGH failures: $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_failure.txt" | head -2 | tr -s ' ' | tr '\n' ';')"; } }
   sqlsec "$sid" corruption "block corruption known to the database" "select 'v\$database_block_corruption' src, count(*) blocks from v\$database_block_corruption union all select 'v\$backup_corruption', count(*) from v\$backup_corruption union all select 'v\$copy_corruption', count(*) from v\$copy_corruption;"
   local corr; corr="$(sql_val "$sid" "(select count(*) from v\$database_block_corruption)")"; [ "${corr:-0}" != 0 ] && finding CRIT backup "$sid: $corr corrupt block(s) in v\$database_block_corruption - 'recover corruption list' / 'list failure'"
   sqlsec "$sid" datafiles_last "days since each datafile was last backed up (worst 15)" "select d.file_id, d.tablespace_name, round(d.bytes/1048576) mb, nvl(to_char(b.last,'YYYY-MM-DD HH24:MI'),'NEVER') last_backup, round(sysdate-b.last,1) days_ago from dba_data_files d left join (select file#, max(completion_time) last from v\$backup_datafile group by file#) b on b.file#=d.file_id order by b.last nulls first fetch first 15 rows only;"
