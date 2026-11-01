@@ -198,8 +198,17 @@ sql_script() {
   local sid="$1" dir="$2" script="$3"; shift 3
   local home cmd; home="$(db_home_of "$sid")"; cmd="$(sqlplus_for "$sid")"
   log "SQL: cd $dir && @$script $*  (output: $LOG_FILE)"; [ "$DRY_RUN" = 1 ] && return 0
+  [ -n "$cmd" ] || { err "no sqlplus for $sid (home '$home'); cannot run $script"; return 1; }
+  [ -f "$dir/$script" ] || { err "$dir/$script not found"; return 1; }
+  # No default timeout: utlrp, datapatch helpers and upgrade scripts legitimately run for an hour and killing one
+  # half-way is worse than waiting. SQL_SCRIPT_TIMEOUT=<seconds> opts in (0 = none). Same environment as sql_run
+  # (LD_LIBRARY_PATH, NLS_LANG) so a home whose libraries are not in ldconfig still starts its own sqlplus
   # shellcheck disable=SC2086  # connect on stdin (/nolog): SQL_CONNECT may carry a password and must not reach argv
-  (cd "$dir" && ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" printf 'whenever sqlerror exit 1\nconnect %s\nwhenever sqlerror continue\n%s\nset echo off\n@%s %s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$script" "$*" | $cmd -L /nolog) >>"$LOG_FILE" 2>&1   # a failed login exits 1 (without the whenever, sqlplus carries on 'Not connected' and exits 0)
+  # The environment goes on the sqlplus side of the pipe. Until c470274+1 it prefixed printf, so sqlplus ran with the
+  # caller's ORACLE_SID: db-patch exports ORACLE_HOME but not the SID, so 'utlrp' after a patch connected to whatever
+  # SID the operator's shell had (every instance of a two-SID home recompiled the same one) or none (ORA-12162, utlrp
+  # skipped, exit 1 unchecked)
+  (cd "$dir" && printf 'whenever sqlerror exit 1\nconnect %s\nwhenever sqlerror continue\n%s\nset echo off\n@%s %s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$script" "$*" | ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" to "${SQL_SCRIPT_TIMEOUT:-0}" $cmd -L /nolog) >>"$LOG_FILE" 2>&1   # a failed login exits 1 (without the whenever, sqlplus carries on 'Not connected' and exits 0)
 }
 db_is_cdb() { [ "$(sql_val "$1" "(select cdb from v\$database)" 2>/dev/null)" = YES ]; }
 db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null; }
