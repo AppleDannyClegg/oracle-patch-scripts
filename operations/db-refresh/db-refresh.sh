@@ -29,8 +29,8 @@
 #   verify             PDB open, MASK_VERIFY_SQL says OK, no link to PROD, no stray open account, services, APEX URL
 #   rollback           Only after --keep-old: drop the new PDB, rename <PDB>_OLD back and open it
 #   cleanup            Drop <PDB>_OLD (and the golden copy with --all)
-#   run                inspect > preflight > backup > drop > create > rename-services > mask > relock > fix-dblinks >
-#                      fix-apex > fix-scheduler > fix-directories > reimport > verify
+#   run                inspect > preflight > backup > drop > create > rename-services > mask > reimport > relock >
+#                      fix-dblinks > fix-apex > fix-scheduler > fix-directories > verify
 #
 # Options
 #   --method pdb-clone|rman-duplicate    --sid TESTSID   --prod-pdb NAME   --test-pdb NAME   --link DBLINK
@@ -95,6 +95,14 @@ pdb_exists() { [ "$(pdb_mode "$1")" != ABSENT ]; }
 pdb_refresh_mode() { rval "(select nvl(max(refresh_mode),'-') from dba_pdbs where pdb_name=upper('$1'))"; }
 # prod_val "(select x from t ...)": the scalar from PROD. "@link" goes on every table in the expression ("from t" -> "from t@link");
 # an expression cannot carry the link itself ("(select ...)@link" is not SQL)
+# dp_run expdp|impdp <parameters...>: EXP_CONNECT goes in as userid= through a 600-mode parfile under $TMPDIR (not the run
+# dir: that is what gets attached to incident packs), removed when the tool exits; nothing secret on the command line
+dp_run() {
+  local tool="$1"; shift; local pf rc=0 d; d="$(mktemp -d "${TMPDIR:-/tmp}/dp.XXXXXX")" || return 1; pf="$d/$tool.par"
+  ( umask 077; { printf 'userid=%s\n' "$EXP_CONNECT"; printf '%s\n' "$@"; } >"$pf" ) || { rm -f "$pf"; rmdir "$d"; return 1; }
+  ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 7200 "$DB_HOME/bin/$tool" parfile="$pf" >>"$LOG_FILE" 2>&1 || rc=$?
+  rm -f "$pf"; rmdir "$d"; return $rc
+}
 prod_val() {
   [ -n "$PROD_LINK" ] || return 1; local q n m k
   # case-insensitive, and every FROM must end up linked: a FROM the rewrite did not reach (uppercase before this
@@ -288,7 +296,7 @@ cmd_backup() {
   if [ -n "$PRESERVE_SCHEMAS" ]; then
     if [ -n "$EXP_CONNECT" ]; then
       local dump; dump="refresh_preserve_$(date +%Y%m%d%H%M%S).dmp"; local dpath; dpath="$(plines "select directory_path from dba_directories where directory_name=upper('$DATA_PUMP_DIR');" | head -1)"; state_set preserve_dir_path "$dpath"; state_set preserve_objects "$(plines "select count(*) from dba_objects where owner in ($(printf '%s' "$PRESERVE_SCHEMAS" | uc | sed "s/[^,]*/'&'/g"));" | head -1)"; log "expdp schemas=$PRESERVE_SCHEMAS ($(state_get preserve_objects) objects) to $DATA_PUMP_DIR ($dpath)/$dump"
-      [ "$DRY_RUN" = 1 ] || { ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 7200 "$DB_HOME/bin/expdp" "$EXP_CONNECT" schemas="$PRESERVE_SCHEMAS" directory="$DATA_PUMP_DIR" dumpfile="$dump" logfile="${dump%.dmp}.log" reuse_dumpfiles=y >>"$LOG_FILE" 2>&1 && state_set preserve_dump "$dump" || { err "expdp failed (see $LOG_FILE)"; return 1; }; }
+      [ "$DRY_RUN" = 1 ] || { dp_run expdp schemas="$PRESERVE_SCHEMAS" directory="$DATA_PUMP_DIR" dumpfile="$dump" logfile="${dump%.dmp}.log" reuse_dumpfiles=y && state_set preserve_dump "$dump" || { err "expdp failed (see $LOG_FILE)"; return 1; }; }
     else err "PRESERVE_SCHEMAS set but no EXP_CONNECT (user/pw@TESTPDB with DATAPUMP_EXP_FULL_DATABASE): cannot export"; return 1; fi
   fi
   state_set backup ok
@@ -504,7 +512,7 @@ cmd_reimport() {
     local dpath expuser idir="$DATA_PUMP_DIR"; dpath="$(state_get preserve_dir_path || true)"; expuser="${EXP_CONNECT%%/*}"; expuser="${expuser%%@*}"
     if [ -n "$dpath" ]; then idir=DB_REFRESH_DPDIR; do_sql pdb "directory $idir -> $dpath for $expuser" "create or replace directory $idir as '$dpath';\ngrant read, write on directory $idir to \"$(printf '%s' "$expuser" | uc)\";" || { err "cannot create $idir in the clone"; return 1; }; fi
     log "impdp schemas=$PRESERVE_SCHEMAS from $idir/$dump (table_exists_action=replace)"
-    local irc=0; [ "$DRY_RUN" = 1 ] || ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 7200 "$DB_HOME/bin/impdp" "$EXP_CONNECT" schemas="$PRESERVE_SCHEMAS" directory="$idir" dumpfile="$dump" logfile="imp_${dump%.dmp}.log" table_exists_action=replace >>"$LOG_FILE" 2>&1 || irc=$?
+    local irc=0; [ "$DRY_RUN" = 1 ] || dp_run impdp schemas="$PRESERVE_SCHEMAS" directory="$idir" dumpfile="$dump" logfile="imp_${dump%.dmp}.log" table_exists_action=replace || irc=$?
     if [ "$DRY_RUN" != 1 ]; then local before after; before="$(state_get preserve_objects || echo 0)"; after="$(plines "select count(*) from dba_objects where owner in ($(printf '%s' "$PRESERVE_SCHEMAS" | uc | sed "s/[^,]*/'&'/g"));" | head -1)"
       log "preserved schemas: $after object(s) now, $before before the refresh"
       [ "${after:-0}" -lt "${before:-0}" ] && { err "impdp brought back only $after of $before objects of $PRESERVE_SCHEMAS (rc $irc) - see $LOG_FILE and the Data Pump log; the old TEST is $([ "$KEEP_OLD" = 1 ] && echo "${TEST_PDB}_OLD (rollback restores it)" || echo 'gone: restore the schemas from the dump by hand')"; return 1; }
@@ -562,7 +570,7 @@ cmd_run() {
   cmd_backup || die "FAILED: backup (preservation) - nothing destroyed yet. Log: $LOG_FILE"
   cmd_drop || die "FAILED: drop. Log: $LOG_FILE"
   cmd_create || die "FAILED: create. $([ "$KEEP_OLD" = 1 ] && echo "'rollback' brings ${TEST_PDB}_OLD back." || echo 'The old TEST is gone; fix the cause and run create again.') Log: $LOG_FILE"
-  local step rc=0; for step in rename_services mask relock fix_dblinks fix_apex fix_scheduler fix_directories reimport; do
+  local step rc=0; for step in rename_services mask reimport relock fix_dblinks fix_apex fix_scheduler fix_directories; do   # reimport first: its DDL re-creates users and links, relock/fix-dblinks must see them
     "cmd_$step" || { err "step $step failed"; [ "$step" = mask ] && [ "$REQUIRE_MASK" = yes ] && { err "masking is required: the clone stays CLOSED until it is masked"; do_sql root "close $TEST_PDB" "alter pluggable database $TEST_PDB close immediate instances=all;"; die "FAILED: mask. Fix MASK_SCRIPT, open the PDB, run 'mask' then the remaining steps. Log: $LOG_FILE"; }; rc=1; }
   done
   cmd_verify || rc=1

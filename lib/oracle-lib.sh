@@ -42,7 +42,7 @@ ts()   { date '+%Y-%m-%d %H:%M:%S'; }
 log()  { printf '%s [INFO ] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}" >&2; }
 warn() { printf '%s [WARN ] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}" >&2; }
 err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}" >&2; }
-dbg()  { [ "$VERBOSE" = 1 ] && printf '%s [DEBUG] %s\n' "$(ts)" "$*" >&2; return 0; }
+dbg()  { [ "$VERBOSE" = 1 ] && printf '%s [DEBUG] %s\n' "$(ts)" "$*" | redact >&2; return 0; }   # SQL with 'identified by' goes through here
 say()  { [ "$QUIET" = 1 ] || printf '%s  %s\n' "$(ts)" "$*" >&2; [ -n "$LOG_FILE" ] && printf '%s  %s\n' "$(ts)" "$*" >>"$LOG_FILE"; return 0; }
 die()  { err "$*"; exit 1; }
 # optchk "$@": inside parse_opts, before taking "$2" as the value of option "$1". Without it "--sid" as the last word made
@@ -171,8 +171,11 @@ sql_run() {
   local nl q; nl=$'\n'; q="${*//\\n/$nl}"
   local home cmd; home="$(db_home_of "$sid")"; cmd="$(sqlplus_for "$sid")"
   [ -n "$cmd" ] || { echo "no sqlplus for $sid"; return 1; }
-  ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" \
-    to "$SQL_TIMEOUT" bash -c "printf 'set pagesize 500 linesize 250 trimspool on tab off feedback off verify off echo off colsep \"  \"\nset numwidth 14\nalter session set nls_date_format=\"YYYY-MM-DD HH24:MI:SS\";\n%s\n%s\nexit\n' \"\${PDB_SET:-}\" \"\$1\" | $cmd \"\${SQL_CONNECT:-/ as sysdba}\" 2>&1" _ "$q"
+  # /nolog, then 'connect' and the SQL on stdin: neither the connect string (SQL_CONNECT may hold a password) nor the
+  # statement (alter user ... identified by, create database link ...) ever appears on a command line (ps, /proc)
+  # shellcheck disable=SC2086  # $cmd is "sqlplus -S" or a path plus -S
+  printf 'connect %s\nset pagesize 500 linesize 250 trimspool on tab off feedback off verify off echo off colsep "  "\nset numwidth 14\nalter session set nls_date_format="YYYY-MM-DD HH24:MI:SS";\n%s\n%s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$q" \
+    | ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" to "$SQL_TIMEOUT" $cmd -L /nolog 2>&1
 }
 # sql_lines <sid> <sql>: rows only, no heading, trimmed, blank lines removed; fails on ORA-/SP2- errors
 sql_lines() {
@@ -324,6 +327,8 @@ redact() {
       -e 's/(<(password|passwd|secret|credential-store-password|db\.password|node-manager-password|password-encrypted)[^>]*>)[^<]*(<\/)/\1***REDACTED***\3/Ig' \
       -e 's/((password|passwd|secret|pwd)[A-Za-z0-9_.-]*[[:space:]]*[=:][[:space:]]*)[^[:space:]"]+/\1***REDACTED***/Ig' \
       -e 's/(password=")[^"]*(")/\1***REDACTED***\2/Ig' \
+      -e 's/(identified by[[:space:]]+)("[^"]*"|[^[:space:];]+)/\1***REDACTED***/Ig' \
+      -e 's/((connect|conn)[[:space:]]+[^[:space:]\/@"]+\/)("[^"]*"|[^[:space:]@]+)/\1***REDACTED***/Ig' \
       -e 's#(//[^/:@[:space:]]+:)[^@[:space:]]+(@)#\1***REDACTED***\2#g' \
       -e 's#(^|[[:space:]:="(\x27])([A-Za-z0-9_$#.-]+)/[^@/[:space:]"]+@#\1\2/***REDACTED***@#g'
   else cat; fi
@@ -591,7 +596,9 @@ read_secret() {
   local var="$1" prompt="$2"
   [ -n "${!var:-}" ] && return 0
   [ -t 0 ] || die "$var is not set and the session is not interactive"
-  local v; read -r -s -p "$prompt: " v; echo; printf -v "$var" '%s' "$v"; export "${var?}"
+  # not exported: no child reads a secret from the environment, and an exported one sits in every child's
+  # /proc/<pid>/environ (ps eww, incident packs) for as long as that child runs
+  local v; read -r -s -p "$prompt: " v; echo; printf -v "$var" '%s' "$v"
 }
 # tmp_secret_file: a 600-mode file in the run dir whose path can be given to tools that read a file
 tmp_secret_file() { local f="$RUN_DIR/.secret.$RANDOM"; ( umask 077; printf '%s' "$1" >"$f" ); printf '%s' "$f"; }
@@ -616,6 +623,10 @@ lib_selftest() {
   t "report roundtrip" 'd=$(mktemp -d); report_init "$d/r"; h1 T; finding WARN x "hello"; (finding CRIT y "from subshell"); f=$(report_finish "t" 0); grep -q "from subshell" "$f" && grep -q "1 critical, 1 warnings" "$f"; rc=$?; rm -rf "$d"; [ $rc = 0 ]'
   t "rman_script env (SID HOME LD_LIBRARY_PATH PATH NLS_DATE_FORMAT)" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null" "echo \"\$ORACLE_SID|\$ORACLE_HOME|\$LD_LIBRARY_PATH|\$PATH|\$NLS_DATE_FORMAT\"" >"$d/rman"; chmod +x "$d/rman"; o=$(ORACLE_HOME=/h/x RMAN_CMD="$d/rman" rman_run XSID 5 "list backup" | tr -d "\n"); rm -rf "$d"; case "$o" in "XSID|/h/x|/h/x/lib:"*"|/h/x/bin:"*"|YYYY-MM-DD HH24:MI:SS") true;; *) echo "got: $o"; false;; esac'
   t "rman_script returns rman exit status" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null; echo RMAN-00569; exit 1" >"$d/rman"; chmod +x "$d/rman"; ! (RMAN_CMD="$d/rman" rman_script X 5 </dev/null >/dev/null); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
+  t "redact identified by" '[ "$(echo "create database link L connect to U identified by \"Pa;ss\" using '"'"'x'"'"'" | redact)" = "create database link L connect to U identified by ***REDACTED*** using '"'"'x'"'"'" ]'
+  t "redact identified by values" '[ "$(echo "alter user A identified by values S:ABC;" | redact)" = "alter user A identified by ***REDACTED*** S:ABC;" ]'
+  t "redact connect u/pw@t" '[ "$(echo "connect app/\"s3cret\"@PRD" | redact)" = "connect app/***REDACTED***@PRD" ]'
+  t "sql_run: SQL and connect string on stdin, not argv" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "echo \"ARGV:\$*\"; cat" >"$d/sqlplus"; chmod +x "$d/sqlplus"; o=$(SQL_CMD="$d/sqlplus -S" SQL_CONNECT="u/CANARYpw@t" sql_run X "alter user a identified by CANARYsql;"); rm -f "$d/sqlplus"; rmdir "$d"; printf "%s" "$o" | grep -q "^ARGV:-S -L /nolog$" && printf "%s" "$o" | grep -q "^connect u/CANARYpw@t$" && printf "%s" "$o" | grep -q "identified by CANARYsql"'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]

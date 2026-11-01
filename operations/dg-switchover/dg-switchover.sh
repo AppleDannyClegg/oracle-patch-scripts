@@ -81,7 +81,7 @@ dbfield() { printf '%s\n' "$1" | sed -n "s/^ *$2: *//p" | head -1 | sed 's/ *(co
 dbstatus() { printf '%s\n' "$1" | awk '/^Database Status:/{getline; print $1; exit}'; }
 # lag_secs "2 minutes 3 seconds" -> 123; unknown/empty -> -1
 lag_secs() {
-  local s="$1"; { [ -z "$s" ] || [[ "$s" == *unknown* ]]; } && { echo -1; return; }
+  local s="$1"; { [ -z "$s" ] || [[ "${s,,}" == *unknown* ]] || ! [[ "$s" =~ [0-9] ]]; } && { echo -1; return; }   # "(unknown)", "UNKNOWN", no number: -1, never 0
   printf '%s\n' "$s" | awk '{t=0; for(i=1;i<NF;i++){ if($(i+1)~/^day/)t+=$i*86400; else if($(i+1)~/^hour/)t+=$i*3600; else if($(i+1)~/^minute/)t+=$i*60; else if($(i+1)~/^second/)t+=$i } print t}'
 }
 # dg_conn <database the command targets>: connection for a role change. Local database: OS auth. Remote: sys@<name>
@@ -433,7 +433,8 @@ cmd_verify() {
   local a; for a in ${APP_TNS//,/ }; do
     local d; d="$(tnsping_desc "$a")"; [ -z "$d" ] && { err "app TNS $a does not resolve"; fail=1; continue; }
     if [ -n "${APP_TEST_CONNECT:-}" ] && [ "$DRY_RUN" = 0 ]; then
-      local got; got="$(printf "set heading off feedback off\nselect sys_context('USERENV','DB_UNIQUE_NAME') from dual;\nexit\n" | ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 30 "$DB_HOME/bin/sqlplus" -S -L "${APP_TEST_CONNECT%@*}@$a" 2>&1 | grep -vE '^[[:space:]]*$' | tail -1 | tr -d ' ')"
+      # connect on stdin (/nolog): user/password@alias on sqlplus's command line would sit in the process list for 30 s
+      local got; got="$(printf "connect %s@%s\nset heading off feedback off\nselect sys_context('USERENV','DB_UNIQUE_NAME') from dual;\nexit\n" "${APP_TEST_CONNECT%@*}" "$a" | ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" to 30 "$DB_HOME/bin/sqlplus" -S -L /nolog 2>&1 | grep -vE '^[[:space:]]*$' | tail -1 | tr -d ' ')"
       if same_db "$got" "$PRIMARY"; then log "app TNS $a: connected, answered by $got (the primary)"; else err "app TNS $a: expected the primary $PRIMARY, got '$got'"; fail=1; fi
     else log "app TNS $a resolves to [$(desc_hosts "$d")] service $(desc_service "$d") (set APP_TEST_CONNECT=user/pw@x to test a real login)"; fi
   done
@@ -449,7 +450,7 @@ cmd_rollback() {
   state_set rollback_from "$PRIMARY"; TARGET="$old"; ARGS=(); 
   cmd_preflight || { [ "$FORCE" = 1 ] || die "preflight for the switchover back failed; fix it or --force"; }
   cmd_switchover || die "switchover back failed - see $LOG_FILE"
-  cmd_verify; state_set rollback ok
+  if cmd_verify; then state_set rollback ok; else state_set rollback failed; die "rolled back (switchover to $old done) but verify FAILED - see $LOG_FILE"; fi
 }
 
 cmd_cleanup() {

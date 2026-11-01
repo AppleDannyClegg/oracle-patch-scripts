@@ -277,12 +277,15 @@ cmd_rollback() {
   reuse_or_init rollback
   [ -f "$RUN_DIR/old_hashes.txt" ] || die "no old_hashes.txt in $RUN_DIR (nothing from a reset to roll back)"
   confirm "Restore the previous password hashes of $(wc -l <"$RUN_DIR/old_hashes.txt" | tr -d ' ') account(s) and the backed-up ORDS/WebLogic/GoldenGate files?" || die "aborted"
-  while IFS='|' read -r sid pdb u hash; do usql "$sid" "$pdb" "restore old password of $u" "alter user \"$u\" identified by $hash;" || true; done <"$RUN_DIR/old_hashes.txt"
+  local nfail=0 nok=0
+  while IFS='|' read -r sid pdb u hash; do if usql "$sid" "$pdb" "restore old password of $u" "alter user \"$u\" identified by $hash;"; then nok=$((nok+1)); else nfail=$((nfail+1)); fi; done <"$RUN_DIR/old_hashes.txt"
   local p; for p in $(state_get ords_pools_changed || true); do [ -f "$RUN_DIR/pool.xml.$p.bak" ] && { log "ORDS pool $p: restoring pool.xml and wallet"; [ "$DRY_RUN" = 1 ] || { cp -p "$RUN_DIR/pool.xml.$p.bak" "$ORDS_CONFIG/databases/$p/pool.xml"; [ -f "$RUN_DIR/cwallet.sso.$p.bak" ] && cp -p "$RUN_DIR/cwallet.sso.$p.bak" "$ORDS_CONFIG/databases/$p/wallet/cwallet.sso"; }; }; done
   [ -n "$(state_get ords_pools_changed || true)" ] && ords_restart
   local b; for b in "$RUN_DIR"/*_config_jdbc_*.bak "$RUN_DIR"/*.xml.bak; do [ -f "$b" ] || continue; warn "WebLogic: $b is the previous JDBC module - the password inside is encrypted for that domain; copy it back over config/jdbc/ with the servers down, or set the old password in the console"; done
   [ -d "$RUN_DIR/dircrd.bak" ] && { log "GoldenGate: restoring dircrd"; [ "$DRY_RUN" = 1 ] || cp -rp "$RUN_DIR/dircrd.bak/." "$OGG_HOME/dircrd/"; }
-  state_set rollback ok; log "rolled back; run verify"
+  # a rollback that could not restore a hash is not "ok": say so, leave the state failed, exit non-zero
+  [ "$nfail" = 0 ] || { state_set rollback failed; err "rollback incomplete: $nfail of $((nok+nfail)) password hash(es) NOT restored (see $LOG_FILE); the config files above were restored"; exit 1; }
+  state_set rollback ok; log "rolled back ($nok hash(es) restored); run verify"
 }
 
 cmd_heal() {

@@ -239,8 +239,10 @@ sql() {
   [ -z "$home" ] && home="${ORACLE_HOME:-}"
   local cmd="${SQL_CMD:-$home/bin/sqlplus -S}"
   [ -x "${cmd%% *}" ] || command -v "${cmd%% *}" >/dev/null 2>&1 || { echo "no sqlplus for $sid ($cmd)"; return 1; }
-  ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_DATE_FORMAT='YYYY-MM-DD HH24:MI:SS' NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" \
-    to "$SQL_TIMEOUT" bash -c "printf 'set pagesize 500 linesize 250 trimspool on tab off feedback off verify off echo off colsep \"  \"\nset numwidth 14\nalter session set nls_date_format=\"YYYY-MM-DD HH24:MI:SS\";\n%s\n%s\nexit\n' \"\${PDB_SET:-}\" \"\$1\" | $cmd \"\${SQL_CONNECT:-/ as sysdba}\" 2>&1" _ "$q"
+  # connect string and SQL on stdin (/nolog): never on a command line
+  # shellcheck disable=SC2086
+  printf 'connect %s\nset pagesize 500 linesize 250 trimspool on tab off feedback off verify off echo off colsep "  "\nset numwidth 14\nalter session set nls_date_format="YYYY-MM-DD HH24:MI:SS";\n%s\n%s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$q" \
+    | ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_DATE_FORMAT='YYYY-MM-DD HH24:MI:SS' NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" to "$SQL_TIMEOUT" $cmd -L /nolog 2>&1
 }
 # sqlsec <sid> <name> <title> <sql>: a titled, fenced block in the report; full output in raw/
 sqlsec() {
