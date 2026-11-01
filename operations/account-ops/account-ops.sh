@@ -170,7 +170,9 @@ ords_set_secret() { # <pool> <password>
   local pool="$1" pw="$2"
   [ -x "${ORDS_HOME:-}/bin/ords" ] || { warn "ords binary not found (ORDS_HOME); set db.password for pool $pool by hand: ords --config $ORDS_CONFIG config --db-pool $pool secret db.password"; return 1; }
   log "ORDS: ords --config $ORDS_CONFIG config --db-pool $pool secret --password-stdin db.password"; [ "$DRY_RUN" = 1 ] && return 0
-  cp -p "$ORDS_CONFIG/databases/$pool/pool.xml" "$RUN_DIR/pool.xml.$pool.bak" 2>/dev/null; cp -p "$ORDS_CONFIG/databases/$pool/wallet/cwallet.sso" "$RUN_DIR/cwallet.sso.$pool.bak" 2>/dev/null
+  # the copies are what rollback restores: if either cannot be taken the pool is not changed (their status used to be dropped)
+  cp -p "$ORDS_CONFIG/databases/$pool/pool.xml" "$RUN_DIR/pool.xml.$pool.bak" 2>>"$LOG_FILE" || { err "cannot back up $ORDS_CONFIG/databases/$pool/pool.xml into the run dir: pool $pool left unchanged (rollback would have nothing to restore)"; return 1; }
+  if [ -f "$ORDS_CONFIG/databases/$pool/wallet/cwallet.sso" ]; then cp -p "$ORDS_CONFIG/databases/$pool/wallet/cwallet.sso" "$RUN_DIR/cwallet.sso.$pool.bak" 2>>"$LOG_FILE" || { err "cannot back up pool $pool's cwallet.sso: pool left unchanged"; return 1; }; fi
   printf '%s\n' "$pw" | to 120 "$ORDS_HOME/bin/ords" --config "$ORDS_CONFIG" config --db-pool "$pool" secret --password-stdin db.password >>"$LOG_FILE" 2>&1 || { err "ords config secret failed for pool $pool (see $LOG_FILE)"; return 1; }
   state_append ords_pools_changed "$pool"
 }
@@ -209,7 +211,8 @@ activate()" && state_append wls_ds_changed "$dom:$ds" || { err "WLST update of $
 }
 gg_set_alias() { # <alias> <user> <password>
   log "GoldenGate: alter credentialstore replace user $2 alias $1 (password on stdin)"; [ "$DRY_RUN" = 1 ] && return 0
-  cp -rp "$OGG_HOME/dircrd" "$RUN_DIR/dircrd.bak" 2>/dev/null
+  # dircrd.bak is what rollback restores: no copy, no change (its status used to be dropped)
+  [ -d "$RUN_DIR/dircrd.bak" ] || cp -rp "$OGG_HOME/dircrd" "$RUN_DIR/dircrd.bak" 2>>"$LOG_FILE" || { err "cannot back up $OGG_HOME/dircrd into the run dir: credential store alias $1 left unchanged"; return 1; }
   local out; out="$(ggsci "alter credentialstore replace user $2 password $3 alias $1")"; printf '%s\n' "$out" | redact >>"$LOG_FILE"
   printf '%s' "$out" | grep -qiE 'successfully|Credential store altered' && state_append gg_alias_changed "$1" || { err "ggsci alter credentialstore failed: $(printf '%s' "$out" | tail -1)"; return 1; }
 }
@@ -304,7 +307,8 @@ cmd_cleanup() {
   echo "Kept for rollback in $RUN_DIR:"; for p in "${keep[@]}"; do echo "  $(basename "$p")  ($(file_age "$p") old)"; done
   confirm "Shred these ${#keep[@]} item(s)? rollback will refuse afterwards" || die "aborted"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: would shred ${keep[*]}"; return 0; }
-  for p in "${keep[@]}"; do shred_path "$p"; log "shredded $(basename "$p")"; done
+  local sfail=0; for p in "${keep[@]}"; do if shred_path "$p"; then log "shredded $(basename "$p")"; else err "could not remove $p (permissions?) - it is STILL THERE"; sfail=1; fi; done
+  [ "$sfail" = 0 ] || { state_set cleanup failed; return 1; }   # hashes_removed is not recorded: rollback stays possible and the material is still to be removed
   state_set hashes_removed "$(ts)"; log "cleaned up: the previous password verifiers and credential backups are gone; rollback is no longer possible for this run"
 }
 
@@ -317,12 +321,18 @@ cmd_rollback() {
   confirm "Restore the previous password hashes of $(wc -l <"$RUN_DIR/old_hashes.txt" | tr -d ' ') account(s) and the backed-up ORDS/WebLogic/GoldenGate files?" || die "aborted"
   local nfail=0 nok=0
   while IFS='|' read -r sid pdb u hash; do if usql "$sid" "$pdb" "restore old password of $u" "alter user \"$u\" identified by $hash;"; then nok=$((nok+1)); else nfail=$((nfail+1)); fi; done <"$RUN_DIR/old_hashes.txt"
-  local p; for p in $(state_get ords_pools_changed || true); do [ -f "$RUN_DIR/pool.xml.$p.bak" ] && { log "ORDS pool $p: restoring pool.xml and wallet"; [ "$DRY_RUN" = 1 ] || { cp -p "$RUN_DIR/pool.xml.$p.bak" "$ORDS_CONFIG/databases/$p/pool.xml"; [ -f "$RUN_DIR/cwallet.sso.$p.bak" ] && cp -p "$RUN_DIR/cwallet.sso.$p.bak" "$ORDS_CONFIG/databases/$p/wallet/cwallet.sso"; }; }; done
+  # the config restores count too: a copy that failed used to vanish into 'rollback ok'
+  local p cfail=0; for p in $(state_get ords_pools_changed || true); do
+    [ -f "$RUN_DIR/pool.xml.$p.bak" ] || { err "ORDS pool $p: no pool.xml.$p.bak in $RUN_DIR - its password stays as reset"; cfail=$((cfail+1)); continue; }
+    log "ORDS pool $p: restoring pool.xml and wallet"; [ "$DRY_RUN" = 1 ] && continue
+    cp -p "$RUN_DIR/pool.xml.$p.bak" "$ORDS_CONFIG/databases/$p/pool.xml" 2>>"$LOG_FILE" || { err "ORDS pool $p: restoring pool.xml failed (see $LOG_FILE)"; cfail=$((cfail+1)); }
+    [ -f "$RUN_DIR/cwallet.sso.$p.bak" ] && { cp -p "$RUN_DIR/cwallet.sso.$p.bak" "$ORDS_CONFIG/databases/$p/wallet/cwallet.sso" 2>>"$LOG_FILE" || { err "ORDS pool $p: restoring cwallet.sso failed (see $LOG_FILE)"; cfail=$((cfail+1)); }; }
+  done
   [ -n "$(state_get ords_pools_changed || true)" ] && ords_restart
   local b; for b in "$RUN_DIR"/*_config_jdbc_*.bak "$RUN_DIR"/*.xml.bak; do [ -f "$b" ] || continue; warn "WebLogic: $b is the previous JDBC module - the password inside is encrypted for that domain; copy it back over config/jdbc/ with the servers down, or set the old password in the console"; done
-  [ -d "$RUN_DIR/dircrd.bak" ] && { log "GoldenGate: restoring dircrd"; [ "$DRY_RUN" = 1 ] || cp -rp "$RUN_DIR/dircrd.bak/." "$OGG_HOME/dircrd/"; }
-  # a rollback that could not restore a hash is not "ok": say so, leave the state failed, exit non-zero
-  [ "$nfail" = 0 ] || { state_set rollback failed; err "rollback incomplete: $nfail of $((nok+nfail)) password hash(es) NOT restored (see $LOG_FILE); the config files above were restored"; exit 1; }
+  [ -d "$RUN_DIR/dircrd.bak" ] && { log "GoldenGate: restoring dircrd"; [ "$DRY_RUN" = 1 ] || cp -rp "$RUN_DIR/dircrd.bak/." "$OGG_HOME/dircrd/" 2>>"$LOG_FILE" || { err "GoldenGate: restoring dircrd failed (see $LOG_FILE) - the credential store keeps the new password"; cfail=$((cfail+1)); }; }
+  # a rollback that could not restore a hash or a config file is not "ok": say so, leave the state failed, exit non-zero
+  [ "$nfail" = 0 ] && [ "$cfail" = 0 ] || { state_set rollback failed; err "rollback incomplete: $nfail of $((nok+nfail)) password hash(es) and $cfail config restore(s) failed (see $LOG_FILE)"; exit 1; }
   state_set rollback ok; log "rolled back ($nok hash(es) restored); run verify"
 }
 
