@@ -175,15 +175,31 @@ wls_discover() {
 }
 # wls_deployer <args>: java weblogic.Deployer with the domain's environment and admin credentials
 wls_deployer() {
-  local creds=()
+  local creds=() tmp="" rc
   if [ -n "${WLS_USERCONFIG:-}" ] && [ -n "${WLS_USERKEY:-}" ]; then creds=(-userconfigfile "$WLS_USERCONFIG" -userkeyfile "$WLS_USERKEY")
-  elif [ -n "${WLS_ADMIN_USER:-}" ] && [ -n "${WLS_ADMIN_PASSWORD:-}" ]; then creds=(-username "$WLS_ADMIN_USER" -password "$WLS_ADMIN_PASSWORD")
+  elif [ -n "${WLS_ADMIN_USER:-}" ] && [ -n "${WLS_ADMIN_PASSWORD:-}" ]; then
+    # weblogic.Deployer takes a password only as -password on its command line (visible in ps for the whole run), so the
+    # pair is turned into a userconfig/userkey file pair first (WLST storeUserConfig; the password goes to WLST in a
+    # 600-mode script, never on argv or in the environment) and removed again after the call
+    log "CMD: wlst storeUserConfig for $WLS_ADMIN_USER (temporary userconfig/userkey for weblogic.Deployer)"
+    if [ "$DRY_RUN" = 0 ]; then
+      tmp="$(mktemp -d "${TMPDIR:-/tmp}/wlsuc.XXXXXX")" || { err "mktemp failed"; return 1; }; chmod 700 "$tmp"
+      printf "connect('%s','%s','%s')\nstoreUserConfig('%s/cfg','%s/key')\nexit()\n" "$WLS_ADMIN_USER" "$WLS_ADMIN_PASSWORD" "$WLS_ADMIN_URL" "$tmp" "$tmp" >"$tmp/store.py"; chmod 600 "$tmp/store.py"
+      ( # shellcheck disable=SC1091
+        . "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" >/dev/null 2>&1
+        echo y | WLST_PROPERTIES="-Dwlst.offline.log=/dev/null" "$WLS_ORACLE_HOME/oracle_common/common/bin/wlst.sh" -skipWLSModuleScanning "$tmp/store.py" ) >>"$LOG_FILE" 2>&1
+      rm -f "$tmp/store.py"
+      [ -s "$tmp/cfg" ] && [ -s "$tmp/key" ] || { rm -rf "$tmp"; err "WLST storeUserConfig failed (see $LOG_FILE): cannot call weblogic.Deployer without putting the password on its command line"; return 1; }
+    fi
+    creds=(-userconfigfile "$tmp/cfg" -userkeyfile "$tmp/key")
   else err "WebLogic admin credentials needed: set WLS_USERCONFIG+WLS_USERKEY (preferred) or WLS_ADMIN_USER+WLS_ADMIN_PASSWORD"; return 1; fi
   log "CMD: java weblogic.Deployer -adminurl $WLS_ADMIN_URL $*"
   [ "$DRY_RUN" = 1 ] && return 0
   ( # shellcheck disable=SC1091
     . "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" >/dev/null 2>&1
-    exec java weblogic.Deployer -adminurl "$WLS_ADMIN_URL" "${creds[@]}" -noexit "$@" ) >>"$LOG_FILE" 2>&1
+    exec java weblogic.Deployer -adminurl "$WLS_ADMIN_URL" "${creds[@]}" -noexit "$@" ) >>"$LOG_FILE" 2>&1; rc=$?
+  [ -n "$tmp" ] && rm -rf "$tmp"
+  return $rc
 }
 
 # ---------------------------------------------------------------------------

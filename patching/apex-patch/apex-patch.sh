@@ -98,13 +98,17 @@ version_ge() {
 state_set() { [ -z "$STATE_FILE" ] && return 0; touch "$STATE_FILE"; grep -v "^$1=" "$STATE_FILE" >"$STATE_FILE.tmp" 2>/dev/null || true; printf '%s=%s\n' "$1" "$2" >>"$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"; }
 state_get() { [ -f "$STATE_FILE" ] || return 1; sed -n "s/^$1=//p" "$STATE_FILE" | tail -1 | grep . ; }
 init_run_dir() {
-  [ -z "$RUN_DIR" ] && RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-${1:-run}"
+  local new=0; [ -z "$RUN_DIR" ] && { RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-${1:-run}"; new=1; }
   mkdir -p "$RUN_DIR" || die "Cannot create $RUN_DIR"
   LOG_FILE="$RUN_DIR/apex-patch.log"; STATE_FILE="$RUN_DIR/state"; ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
   log "apex-patch $VERSION  run dir: $RUN_DIR  dry-run=$DRY_RUN"
+  [ "$DRY_RUN" = 1 ] && [ "$new" = 1 ] && state_set dry_run 1   # a dir created by --dry-run; a dry-run reusing a real run's dir does not taint it
+  return 0
 }
 latest_run_dir() { [ -L "$RUN_BASE/latest" ] && readlink "$RUN_BASE/latest"; }
-reuse_or_init() { [ -n "$RUN_DIR" ] && return 0; RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir "$1"; }
+reuse_or_init() { [ -n "$RUN_DIR" ] && return 0; RUN_DIR="$(latest_run_dir)"; if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then init_run_dir; else RUN_DIR=""; init_run_dir "$1"; fi; }
+# refuse_dry_run_dir <command>: rollback/cleanup must not act on what a --dry-run run only pretended to do
+refuse_dry_run_dir() { [ "$(state_get dry_run || true)" = 1 ] && [ "$DRY_RUN" = 0 ] && die "$RUN_DIR is a --dry-run run (nothing in it happened): $1 needs the real run's dir (--run-dir)"; return 0; }
 load_config() {
   local f
   for f in "$SCRIPT_DIR/../../oracle.conf" "$HOME/.oracle.conf" "$SCRIPT_DIR/apex-patch.conf" ./apex-patch.conf "$HOME/.apex-patch.conf"; do
@@ -116,7 +120,8 @@ wait_for_url() {
   local url="$1" t="$2" code; command -v curl >/dev/null || return 0
   while [ "$t" -gt 0 ]; do
     code="$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)"
-    case "$code" in 200|30[1-3]|401|403) return 0;; esac; sleep 10; t=$((t - 10))
+    case "$code" in 200|30[1-3]|401|403) return 0;; esac
+    t=$((t - 5)); [ "$t" -gt 0 ] || return 1; sleep 5
   done; return 1
 }
 
@@ -136,6 +141,8 @@ run_sql() {
   # connect on stdin (/nolog): SQL_CONNECT may be user/pw@tns and must never sit on sqlplus's command line
   out="$(printf 'whenever sqlerror exit 1\nconnect %s\nset heading off feedback off pagesize 0 linesize 32767 trimspool on verify off echo off\n%s\n%s\nexit\n' \
           "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD -L /nolog 2>&1)" || { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
+  # a connect that failed (ORA-01017, ORA-12xxx) or a 'not connected' session must not come back as rows
+  printf '%s\n' "$out" | grep -qE '^ERROR:|SP2-0640|ORA-01017|ORA-12[0-9]{3}|ORA-65011|ORA-65019' && { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 sql_val() { run_sql "select $1 from dual;" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//'; }
@@ -144,7 +151,9 @@ run_sql_script() {
   local dir="$1" script="$2"; shift 2
   log "SQL: cd $dir && @$script $*  (this can take a long time; tail -f $LOG_FILE in another window)"
   [ "$DRY_RUN" = 1 ] && return 0
-  (cd "$dir" && printf 'whenever sqlerror exit 1\nconnect %s\nwhenever sqlerror continue\n%s\nalter session set "_ORACLE_SCRIPT"=true;\nset echo off\n@%s %s\nexit\n' \
+  # connect, the container switch and _ORACLE_SCRIPT are all fatal: with 'continue' before them a wrong or closed --pdb
+  # (ORA-65011/65019) ran apexins.sql in CDB$ROOT. The install script sets its own 'whenever' afterwards.
+  (cd "$dir" && printf 'whenever sqlerror exit 1\nconnect %s\n%s\nalter session set "_ORACLE_SCRIPT"=true;\nwhenever sqlerror continue\nset echo off\n@%s %s\nexit\n' \
      "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$script" "$*" | $SQL_CMD -L /nolog) >>"$LOG_FILE" 2>&1
 }
 
@@ -201,15 +210,31 @@ wls_discover() {
 }
 # wls_deployer <args>: java weblogic.Deployer with the domain's environment and admin credentials
 wls_deployer() {
-  local creds=()
+  local creds=() tmp="" rc
   if [ -n "${WLS_USERCONFIG:-}" ] && [ -n "${WLS_USERKEY:-}" ]; then creds=(-userconfigfile "$WLS_USERCONFIG" -userkeyfile "$WLS_USERKEY")
-  elif [ -n "${WLS_ADMIN_USER:-}" ] && [ -n "${WLS_ADMIN_PASSWORD:-}" ]; then creds=(-username "$WLS_ADMIN_USER" -password "$WLS_ADMIN_PASSWORD")
+  elif [ -n "${WLS_ADMIN_USER:-}" ] && [ -n "${WLS_ADMIN_PASSWORD:-}" ]; then
+    # weblogic.Deployer takes a password only as -password on its command line (visible in ps for the whole run), so the
+    # pair is turned into a userconfig/userkey file pair first (WLST storeUserConfig; the password goes to WLST in a
+    # 600-mode script, never on argv or in the environment) and removed again after the call
+    log "CMD: wlst storeUserConfig for $WLS_ADMIN_USER (temporary userconfig/userkey for weblogic.Deployer)"
+    if [ "$DRY_RUN" = 0 ]; then
+      tmp="$(mktemp -d "${TMPDIR:-/tmp}/wlsuc.XXXXXX")" || { err "mktemp failed"; return 1; }; chmod 700 "$tmp"
+      printf "connect('%s','%s','%s')\nstoreUserConfig('%s/cfg','%s/key')\nexit()\n" "$WLS_ADMIN_USER" "$WLS_ADMIN_PASSWORD" "$WLS_ADMIN_URL" "$tmp" "$tmp" >"$tmp/store.py"; chmod 600 "$tmp/store.py"
+      ( # shellcheck disable=SC1091
+        . "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" >/dev/null 2>&1
+        echo y | WLST_PROPERTIES="-Dwlst.offline.log=/dev/null" "$WLS_ORACLE_HOME/oracle_common/common/bin/wlst.sh" -skipWLSModuleScanning "$tmp/store.py" ) >>"$LOG_FILE" 2>&1
+      rm -f "$tmp/store.py"
+      [ -s "$tmp/cfg" ] && [ -s "$tmp/key" ] || { rm -rf "$tmp"; err "WLST storeUserConfig failed (see $LOG_FILE): cannot call weblogic.Deployer without putting the password on its command line"; return 1; }
+    fi
+    creds=(-userconfigfile "$tmp/cfg" -userkeyfile "$tmp/key")
   else err "WebLogic admin credentials needed: set WLS_USERCONFIG+WLS_USERKEY (preferred) or WLS_ADMIN_USER+WLS_ADMIN_PASSWORD"; return 1; fi
   log "CMD: java weblogic.Deployer -adminurl $WLS_ADMIN_URL $*"
   [ "$DRY_RUN" = 1 ] && return 0
   ( # shellcheck disable=SC1091
     . "$WLS_ORACLE_HOME/wlserver/server/bin/setWLSEnv.sh" >/dev/null 2>&1
-    exec java weblogic.Deployer -adminurl "$WLS_ADMIN_URL" "${creds[@]}" -noexit "$@" ) >>"$LOG_FILE" 2>&1
+    exec java weblogic.Deployer -adminurl "$WLS_ADMIN_URL" "${creds[@]}" -noexit "$@" ) >>"$LOG_FILE" 2>&1; rc=$?
+  [ -n "$tmp" ] && rm -rf "$tmp"
+  return $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -246,9 +271,9 @@ db_detect() {
   APEX_STATUS="$(sql_val "(select status from dba_registry where comp_id='APEX')")"
   APEX_VER="$(sql_val "(select version_no from apex_release)" 2>/dev/null)"
   if [ -n "$APEX_SCHEMA" ]; then
-    local n; n="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and object_name='WWV_FLOW_F4000_PLUGINS' and object_type='PACKAGE')" 2>/dev/null)"
-    # the App Builder (app 4000) packages exist only in a full development install
-    [ -z "$n" ] && n="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and object_name like 'WWV_FLOW_F4000%')" 2>/dev/null)"
+    # a runtime-only install is a full one with the App Builder applications (ids 4000-4999) removed by apxdevrm.sql
+    local n; n="$(sql_val "(select count(*) from $APEX_SCHEMA.wwv_flows where id between 4000 and 4999)" 2>/dev/null)"
+    [ -z "$n" ] && n="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and object_name='WWV_FLOW_F4000_PLUGINS' and object_type='PACKAGE')" 2>/dev/null)"
     if [ "${n:-0}" -gt 0 ]; then APEX_TYPE="full"; else APEX_TYPE="runtime"; fi
     [ -n "${APEX_INSTALL_TYPE:-}" ] && APEX_TYPE="$APEX_INSTALL_TYPE"
     APEX_PATCHES="$(run_sql "select patch_number||' '||patch_version from apex_patches order by 1;" 2>/dev/null)"
@@ -260,7 +285,8 @@ db_detect() {
 setup_env() {
   export ORACLE_HOME ORACLE_SID
   ords_detect
-  db_detect || warn "Cannot query the database (SQL_CMD='${SQL_CMD:-none}', SQL_CONNECT='${SQL_CONNECT:-/ as sysdba}'). Set ORACLE_HOME/ORACLE_SID or SQL_CONNECT in apex-patch.conf"
+  APEX_IMAGES_DIR="${APEX_IMAGES_DIR:-}"; APEX_IMAGES_DIR="${APEX_IMAGES_DIR%/}"   # 'images/' from settings.xml: -L is false on it and 'mv images/ aside' fails
+  db_detect || warn "Cannot query the database (SQL_CMD='${SQL_CMD:-none}', SQL_CONNECT='$([ -n "${SQL_CONNECT:-}" ] && echo "${SQL_CONNECT%%/*}/***" || echo '/ as sysdba')'). Set ORACLE_HOME/ORACLE_SID or SQL_CONNECT in apex-patch.conf"
 }
 
 apex_schema_for() { # 26.2 -> APEX_260200 ; 24.2.3 -> APEX_240203
@@ -352,7 +378,7 @@ cmd_download() {
   reuse_or_init download
   local dest="$APEX_BASE/apex_$ver"
   if [ -d "$dest/apex" ] && [ -f "$dest/apex/apexins.sql" ]; then log "APEX $ver already unpacked at $dest"; TARGET="$ver"; return 0; fi
-  mkdir -p "$APEX_BASE/downloads" "$dest" || die "Cannot create $APEX_BASE (set APEX_BASE to a writable directory)"
+  [ "$DRY_RUN" = 1 ] || mkdir -p "$APEX_BASE/downloads" "$dest" || die "Cannot create $APEX_BASE (set APEX_BASE to a writable directory)"
   local zip="$APEX_BASE/downloads/apex_$ver.zip"
   if [ ! -f "$zip" ]; then
     net_ok || die "apex_$ver.zip is not at $zip and this host has no internet: download it (public, no login) on a machine that has and copy it there"
@@ -381,7 +407,8 @@ cmd_preflight() {
   if [ -n "$APEX_VER" ]; then
     version_ge "$APEX_VER" 18.1 || { err "APEX $APEX_VER cannot upgrade directly; Oracle requires 18.1 or later first"; p=$((p + 1)); }
     version_ge "$ver" "$APEX_VER" || { err "Target $ver is older than installed $APEX_VER"; p=$((p + 1)); }
-    [ "$ver" = "${APEX_VER%.*}" ] || [ "$ver" = "$APEX_VER" ] && { log "APEX $APEX_VER already installed"; state_set uptodate 1; }
+    if [ "$ver" = "${APEX_VER%.*}" ] || [ "$ver" = "$APEX_VER" ]; then err "APEX $APEX_VER is already installed: nothing to do (re-running apexins on the installed release, and apxdwngrd on its failure, is not an upgrade)"; state_set uptodate 1; p=$((p + 1)); fi
+    log "install type: $APEX_TYPE ($([ "$APEX_TYPE" = runtime ] && echo apxrtins.sql || echo apexins.sql); set APEX_INSTALL_TYPE=full|runtime in apex-patch.conf if that is wrong)"
   fi
   [ "$APEX_STATUS" = VALID ] || warn "APEX registry status is '${APEX_STATUS:-?}' (expected VALID)"
   local inv; inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"
@@ -424,7 +451,7 @@ cmd_backup() {
   local prev="${APEX_VER%.*}" prev_src; prev_src="$(src_dir_for "$prev")"
   if [ ! -f "$prev_src/apxdwngrd.sql" ]; then
     log "Fetching previous release $prev so its apxdwngrd.sql is available for rollback"
-    TARGET="" ; cmd_download "$prev" || warn "Could not fetch previous release source; rollback will depend on the restore point"
+    TARGET="" ; (cmd_download "$prev") || warn "Could not fetch previous release source; rollback will depend on the restore point"
   fi
   state_set prev_version "$APEX_VER"; state_set prev_schema "$APEX_SCHEMA"; state_set prev_type "$APEX_TYPE"
   if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -d "$APEX_IMAGES_DIR" ]; then
@@ -435,7 +462,8 @@ cmd_backup() {
   elif [ "$DB_LOG_MODE" = ARCHIVELOG ]; then
     local rp; rp="APEXPATCH_$(date +%Y%m%d_%H%M)"
     log "Creating guaranteed restore point $rp"
-    if [ "$DRY_RUN" = 1 ] || run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Restore point $rp created (remember 'cleanup' afterwards, it holds flashback logs)"
+    if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: would create guaranteed restore point $rp"
+    elif run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Restore point $rp created (remember 'cleanup' afterwards, it holds flashback logs)"
     else warn "Could not create a restore point (see log); continuing with apxdwngrd.sql as the rollback"; fi
   else warn "NOARCHIVELOG - no restore point"; fi
 }
@@ -449,7 +477,8 @@ ords_stop() {
   elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
   else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING"; fi
   local t=60; while [ "$DRY_RUN" = 0 ] && [ $t -gt 0 ] && kill -0 "$ORDS_RUNNING" 2>/dev/null; do sleep 5; t=$((t - 5)); done
-  [ "$DRY_RUN" = 1 ] || ! kill -0 "$ORDS_RUNNING" 2>/dev/null || { [ "$FORCE" = 1 ] && kill -9 "$ORDS_RUNNING"; }
+  [ "$DRY_RUN" = 1 ] || ! kill -0 "$ORDS_RUNNING" 2>/dev/null || { [ "$FORCE" = 1 ] && kill -9 "$ORDS_RUNNING" && sleep 2; }
+  [ "$DRY_RUN" = 1 ] || ! kill -0 "$ORDS_RUNNING" 2>/dev/null || { err "ORDS (pid $ORDS_RUNNING) is still running after 60 s (--force sends kill -9)"; return 1; }
   ORDS_RUNNING=""
 }
 ords_start() {
@@ -499,17 +528,21 @@ cmd_apply() {
   [ "$WLS_MODE" = 1 ] && [ "$(state_get app_stopped || true)" = 1 ] && ORDS_RUNNING=""   # stopped via weblogic.Deployer in this run
   [ -z "$ORDS_RUNNING" ] || { [ "$DRY_RUN" = 1 ] || die "ORDS is still running - run 'stop' first (or use 'run')"; }
   local script="apexins.sql"; [ "$APEX_TYPE" = runtime ] && script="apxrtins.sql"
+  [ -n "$DB_VER" ] || die "no database access: apply needs the database"
+  [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: would run $script from $src and switch the images dir"; return 0; }
   state_set apply_started "$ver"
+  local off; off="$(wc -c <"$LOG_FILE" | tr -d ' ')"   # only this run's output counts: the run dir is reused ('latest') and may hold an earlier success
   run_sql_script "$src" "$script" "$APEX_TS" "$APEX_FILES_TS" "$APEX_TEMP_TS" "/i/" || true   # the script's own exit code is unreliable; verify by querying
-  [ "$DRY_RUN" = 1 ] && { state_set applied "$ver"; return 0; }
-  if grep -q 'Thank you for installing Oracle APEX' "$LOG_FILE" && [ "$(sql_val "(select version_no from apex_release)" | cut -d. -f1,2)" = "$ver" ]; then
-    log "APEX $ver installed in the database"
+  db_detect || true
+  if tail -c +$((off + 1)) "$LOG_FILE" | grep -q 'Thank you for installing Oracle APEX' && [ "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)" = "$ver" ] && [ "$APEX_STATUS" = VALID ] && [ "$APEX_SCHEMA" = "$(apex_schema_for "$ver")" ]; then
+    log "APEX $ver installed in the database (registry VALID, schema $APEX_SCHEMA)"
     state_set applied "$ver"
   else
-    err "APEX install did not complete. Last errors:"; grep -E 'ORA-|SP2-|PLS-' "$LOG_FILE" | tail -10 >&2
+    err "APEX install did not complete (apex_release $APEX_VER, registry ${APEX_STATUS:-?}, schema ${APEX_SCHEMA:-?}). Last errors:"; tail -c +$((off + 1)) "$LOG_FILE" | grep -E 'ORA-|SP2-|PLS-' | tail -10 >&2
     return 1
   fi
-  images_switch "$src/images"
+  # the database is upgraded from here: an images problem is not a reason to downgrade it (rc 2: 'heal' re-switches the images)
+  images_switch "$src/images" || { err "images dir not switched: the database is on $ver, run 'heal' after fixing APEX_IMAGES_DIR"; state_set images_failed 1; return 2; }
 }
 
 # ---------------------------------------------------------------------------
@@ -524,7 +557,8 @@ cmd_verify() {
     inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"; [ "${inv:-0}" -eq 0 ] || { err "$inv objects still invalid"; ok=0; }
   fi
   if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -n "$want" ]; then
-    [ -f "$APEX_IMAGES_DIR/apex_version.txt" ] && ! grep -q "$want" "$APEX_IMAGES_DIR/apex_version.txt" && { err "images dir still holds $IMAGES_VER, not $want"; ok=0; }
+    if [ ! -f "$APEX_IMAGES_DIR/apex_version.txt" ]; then err "$APEX_IMAGES_DIR has no apex_version.txt: not an APEX images directory"; ok=0
+    elif [ "$(printf '%s' "$IMAGES_VER" | cut -d. -f1,2)" != "$want" ]; then err "images dir still holds $IMAGES_VER, not $want"; ok=0; fi
   fi
   if [ -n "${ORDS_HOME:-}" ] || [ -n "${ORDS_START_CMD:-}" ] || [ "$WLS_MODE" = 1 ]; then
     wait_for_url "$ORDS_URL" 30 && log "ORDS answers at $ORDS_URL" || { err "ORDS not answering at $ORDS_URL"; ok=0; }
@@ -535,7 +569,7 @@ cmd_verify() {
 
 # ---------------------------------------------------------------------------
 cmd_rollback() {
-  setup_env; reuse_or_init rollback
+  setup_env; reuse_or_init rollback; refuse_dry_run_dir rollback
   local prev prev_schema new_schema; prev="$(state_get prev_version || true)"; prev_schema="$(state_get prev_schema || true)"
   [ -n "$prev" ] || die "No record of the previous version in $RUN_DIR (use --run-dir <dir of the upgrade run>)"
   new_schema="$(apex_schema_for "$(state_get target || state_get applied)")"
@@ -573,20 +607,25 @@ alter pluggable database $pdb open resetlogs;" >/dev/null && { done=1; log "Flas
   state_set rolled_back 1
   ords_start || true
   if [ "$DRY_RUN" = 0 ] && [ "$(sql_val "(select count(*) from dba_users where username='$new_schema')")" = 1 ] && confirm "Drop the abandoned schema $new_schema now? (Oracle docs: 'DROP USER $new_schema CASCADE')"; then
-    run_sql "drop user $new_schema cascade;" >/dev/null && log "$new_schema dropped" || warn "drop failed (see log); drop it later with 'cleanup'"
+    run_sql "alter session set \"_ORACLE_SCRIPT\"=true;\ndrop user $new_schema cascade;" >/dev/null && log "$new_schema dropped" || warn "drop failed (see log); drop it later with 'cleanup'"
   fi
   log "Rollback complete: APEX $prev"
 }
 
 cmd_cleanup() {
-  setup_env; reuse_or_init cleanup
-  local rp; rp="$(state_get restore_point || true)"
-  [ -n "$rp" ] && confirm "Drop restore point $rp (no more whole-database rollback)?" && run_sql "drop restore point $rp;" >/dev/null && log "$rp dropped"
+  setup_env; reuse_or_init cleanup; refuse_dry_run_dir cleanup
+  local rc=0 rp; rp="$(state_get restore_point || true)"
+  if [ -n "$rp" ] && confirm "Drop restore point $rp (no more whole-database rollback)?"; then
+    if [ "$DRY_RUN" = 1 ] || run_sql "drop restore point $rp;" >/dev/null; then log "$rp dropped"; [ "$DRY_RUN" = 1 ] || state_set restore_point ""; else err "drop restore point $rp failed (see $LOG_FILE)"; rc=1; fi
+  fi
   local old; old="$(state_get prev_schema || true)"
   if [ -n "$old" ] && [ "$old" != "$APEX_SCHEMA" ] && [ "$(sql_val "(select count(*) from dba_users where username='$old')")" = 1 ]; then
-    confirm "Drop old APEX schema $old (Oracle suggests keeping it a few weeks first)?" && run_sql "drop user $old cascade;" >/dev/null && log "$old dropped"
+    # the schema is Oracle-maintained (installed with _ORACLE_SCRIPT): a plain 'drop user' is ORA-28014
+    if confirm "Drop old APEX schema $old (Oracle suggests keeping it a few weeks first)?"; then
+      if [ "$DRY_RUN" = 1 ] || run_sql "alter session set \"_ORACLE_SCRIPT\"=true;\ndrop user $old cascade;" >/dev/null; then log "$old dropped"; else err "drop user $old failed (see $LOG_FILE)"; rc=1; fi
+    fi
   fi
-  return 0
+  return $rc
 }
 
 cmd_heal() {
@@ -596,8 +635,8 @@ cmd_heal() {
     inv="$(sql_val "(select count(*) from dba_objects where owner='$APEX_SCHEMA' and status='INVALID')")"
     if [ "${inv:-0}" -gt 0 ]; then found=$((found + 1)); log "Recompiling $inv invalid objects in $APEX_SCHEMA"; run_sql "exec sys.utl_recomp.recomp_parallel(4,'$APEX_SCHEMA')" >/dev/null 2>&1 && fixed=$((fixed + 1)); fi
   fi
-  if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -n "$IMAGES_VER" ] && [ -n "$APEX_VER" ] && [ "${IMAGES_VER%.*}" != "${APEX_VER%.*}" ]; then
-    found=$((found + 1)); local src; src="$(src_dir_for "${APEX_VER%.*}")"
+  if [ -n "${APEX_IMAGES_DIR:-}" ] && [ -n "$IMAGES_VER" ] && [ -n "$APEX_VER" ] && [ "$(printf '%s' "$IMAGES_VER" | cut -d. -f1,2)" != "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)" ]; then
+    found=$((found + 1)); local src; src="$(src_dir_for "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)")"
     if [ -d "$src/images" ]; then log "Images dir is $IMAGES_VER but APEX is $APEX_VER - switching"; images_switch "$src/images" && fixed=$((fixed + 1)); else warn "Images mismatch ($IMAGES_VER vs $APEX_VER) and no $src/images on disk: run 'download ${APEX_VER%.*}' then heal"; fi
   fi
   if [ -n "${ORDS_HOME:-}" ] && [ -z "$ORDS_RUNNING" ]; then found=$((found + 1)); warn "ORDS is not running"; confirm "Start ORDS?" && ords_start && fixed=$((fixed + 1)); fi
@@ -618,7 +657,9 @@ cmd_run() {
   log "=== 5/8 backup"; cmd_backup
   log "=== 6/8 stop ORDS"; ords_stop
   log "=== 7/8 apply"
-  if ! cmd_apply "$ver"; then
+  local arc=0; cmd_apply "$ver" || arc=$?
+  if [ "$arc" = 2 ]; then err "database upgraded to $ver but the images dir was not switched: fix APEX_IMAGES_DIR and run 'heal', then 'verify' (no rollback for this)"; ords_start || true; return 1
+  elif [ "$arc" != 0 ]; then
     err "Upgrade failed - reverting"; ASSUME_YES=1 cmd_rollback || err "Rollback incomplete - see $LOG_FILE and Oracle's 'Reverting after a failed upgrade' doc"
     return 1
   fi
