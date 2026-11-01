@@ -61,7 +61,7 @@ args_of() { case "$1" in
   incident-pack)    echo "GATE --sid FREE --out $T/out --no-diag --no-tfa --hours 1 --yes";;
   *) return 1;; esac; }
 scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(reports/*/*.sh patching/patch-status/patch-status.sh operations/incident-pack/incident-pack.sh operations/sr-draft/sr-draft.sh)
-pass=0; fail=0; nx=0; nxlist=""
+pass=0; fail=0; nx=0; nxlist=""; fverdict=0; frc=0   # a FAIL is counted once; 'verdict' when the report did not own up, '[rc]' when it only exited 0
 for s in "${scripts[@]}"; do
   tool="$(basename "$s" .sh)"; extra="$(args_of "$tool")" || { echo "skip $tool: not a read-only report this gate knows"; continue; }
   for mode in connect statement; do
@@ -78,17 +78,17 @@ for s in "${scripts[@]}"; do
       incident-pack) verdict="$(grep -E '\[(WARN |ERROR)\]|INCOMPLETE' "$T/stdout")";;
       *) verdict="$(sed -n '/^# FINDINGS/,/^---$/p' "$T"/out/*/REPORT.md 2>/dev/null)";;
     esac
-    reason=""
+    reason=""; vfail=0
     if [ "$failed" -gt 0 ]; then
-      printf '%s\n' "$verdict" | owns_up || reason="$failed of $calls statements failed and nothing in the verdict says so: $(printf '%s\n' "$verdict" | grep -vE '^\s*$|^#|^---' | head -2 | tr '\n' ' ' | cut -c1-200)"
-      [ "$tool" = patch-status ] && ! grep -qE '^(Database|datapatch) FREE' "$T/stdout" && reason="${reason:+$reason; }no row for FREE although ps shows ora_pmon_FREE"
+      printf '%s\n' "$verdict" | owns_up || { vfail=1; reason="$failed of $calls statements failed and nothing in the verdict says so: $(printf '%s\n' "$verdict" | grep -vE '^\s*$|^#|^---' | head -2 | tr '\n' ' ' | cut -c1-200)"; }
+      [ "$tool" = patch-status ] && ! grep -qE '^(Database|datapatch) FREE' "$T/stdout" && { vfail=1; reason="${reason:+$reason; }no row for FREE although ps shows ora_pmon_FREE"; }
       # the exit code is the whole interface under cron (db-health-daily and space-forecast install themselves with >/dev/null 2>&1):
       # a report that could not read its database must not exit 0, whatever it printed (Colossus 23:43, findings_rc = 2 CRIT, 1 WARN, 0 clean)
-      case "$tool" in db-health-daily|security-posture|perf-snapshot|space-forecast|oracle-diag|patch-status) [ $rc = 0 ] && reason="${reason:+$reason; }exit 0 after $failed failed statements (a cron caller reads this as clean)";; esac
+      case "$tool" in db-health-daily|security-posture|perf-snapshot|space-forecast|oracle-diag|patch-status) [ $rc = 0 ] && reason="${reason:+$reason; }[rc] exit 0 after $failed failed statements (a cron caller reads this as clean)";; esac
     fi
-    if [ -n "$reason" ]; then echo "FAIL $tool $mode: rc=$rc; $reason"; fail=$((fail+1))
+    if [ -n "$reason" ]; then echo "FAIL $tool $mode: rc=$rc; $reason"; fail=$((fail+1)); if [ $vfail = 1 ]; then fverdict=$((fverdict+1)); else frc=$((frc+1)); fi
     else pass=$((pass+1)); echo "ok   $tool $mode: rc=$rc, $failed of $calls statements failed, verdict: $(printf '%s\n' "$verdict" | own_up_line)"; fi
   done
 done
-echo "unreadable gate: $pass passed, $fail failed, $nx NOT-EXERCISED (no sqlplus call reached):$nxlist"
+echo "unreadable gate: $pass passed, $fail failed ($fverdict verdict, $frc exit-code only), $nx NOT-EXERCISED (no sqlplus call reached):$nxlist"
 [ $fail = 0 ]
