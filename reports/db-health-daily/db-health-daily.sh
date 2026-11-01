@@ -192,8 +192,10 @@ select 'CHECK|CRIT|alert: '||substr(reason,1,100) from cdb_outstanding_alerts wh
 select 'CHECK|WARN|'||count(*)||' datafile(s) in hot backup mode' from v\$backup where status='ACTIVE' having count(*)>0;
 select 'CHECK|WARN|guaranteed restore point '||name||' is '||round(sysdate-time)||' days old' from v\$restore_point where guarantee_flashback_database='YES' and time<sysdate-7;"
   # invalid-object delta
-  local inv; inv="$(sql_val "$sid" "(select count(*) from cdb_objects where status<>'VALID')" 2>/dev/null)"; printf '%s' "$inv" >"$OUT/invalid_${sid}.txt"
-  if [ -n "$PREV" ] && [ -f "$PREV/invalid_${sid}.txt" ]; then local pinv; pinv="$(cat "$PREV/invalid_${sid}.txt")"; [ "${inv:-0}" -gt "$((${pinv:-0}+10))" ] && finding WARN db "$sid: invalid objects went from $pinv to $inv"; fi
+  local inv; inv="$(sql_val "$sid" "(select count(*) from cdb_objects where status<>'VALID')" 2>/dev/null)"
+  # an unreadable count is a finding, not 0, and is not written as today's history (tomorrow would compare with an empty file)
+  if [ -z "$inv" ]; then finding WARN db "$sid: cannot count invalid objects (cdb_objects query returned nothing)"; else printf '%s' "$inv" >"$OUT/invalid_${sid}.txt"; fi
+  if [ -n "$inv" ] && [ -n "$PREV" ] && [ -f "$PREV/invalid_${sid}.txt" ]; then local pinv; pinv="$(cat "$PREV/invalid_${sid}.txt")"; [ "${inv:-0}" -gt "$((${pinv:-0}+10))" ] && finding WARN db "$sid: invalid objects went from $pinv to $inv"; fi
   check_alert_log "$sid"
   # per PDB: accounts + tablespaces
   if db_is_cdb "$sid"; then

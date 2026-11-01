@@ -212,8 +212,10 @@ middleware_threads() {
     { echo "threads: $(grep -c '^"' "$RAW/threads_${name}_${p}_3.txt")"; grep -oE 'java.lang.Thread.State: [A-Z_]+' "$RAW/threads_${name}_${p}_3.txt" | sort | uniq -c
       echo; echo "top stack frames across the 3 dumps (what threads are doing):"; cat "$RAW/threads_${name}_${p}_"*.txt | grep -E '^\s+at ' | sed 's/^\s*at //; s/(.*//' | sort | uniq -c | sort -rn | head -15
       echo; echo "STUCK / blocked:"; grep -cE 'STUCK|BLOCKED' "$RAW/threads_${name}_${p}_3.txt"; echo; cat "$RAW/heap_${name}_$p.txt"; } >>"$REPORT"; fence_end
-    local blocked; blocked="$(grep -c 'java.lang.Thread.State: BLOCKED' "$RAW/threads_${name}_${p}_3.txt")"; [ "${blocked:-0}" -gt 20 ] && finding WARN wls "$name: $blocked threads BLOCKED in the last dump (lock contention)"
-    grep -q 'STUCK' "$RAW/threads_${name}_${p}_3.txt" && finding WARN wls "$name: STUCK threads in the dump"
+    if grep -q '^"' "$RAW/threads_${name}_${p}_3.txt"; then
+      local blocked; blocked="$(grep -c 'java.lang.Thread.State: BLOCKED' "$RAW/threads_${name}_${p}_3.txt")"; [ "${blocked:-0}" -gt 20 ] && finding WARN wls "$name: $blocked threads BLOCKED in the last dump (lock contention)"
+      grep -q 'STUCK' "$RAW/threads_${name}_${p}_3.txt" && finding WARN wls "$name: STUCK threads in the dump"
+    else finding WARN wls "$name (pid $p): jcmd Thread.print returned no threads - $(head -1 "$RAW/threads_${name}_${p}_3.txt" | cut -c1-120); STUCK/BLOCKED unknown, not 0 (same user as the JVM? jcmd from the same JDK?)"; fi
   done
 }
 

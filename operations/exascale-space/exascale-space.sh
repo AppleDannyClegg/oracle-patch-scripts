@@ -530,8 +530,9 @@ cmd_rollback() {
 cmd_purge() {
   local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"; [ -n "$sids" ] || die "no running database (use --sid)"
   init_run_dir purge-archivelogs
+  local fail=0
   for s in $sids; do
-    sql_ok "$s" || { warn "$s: cannot connect"; continue; }
+    sql_ok "$s" || { warn "$s: cannot connect"; fail=1; continue; }
     local n; n="$(sql_val "$s" "(select count(*)||' files '||round(nvl(sum(blocks*block_size),0)/1073741824,1)||' GB' from v\$archived_log where dest_id=1 and deleted='NO' and standby_dest='NO' and backup_count>=$EXA_ARCH_BACKED_UP and completion_time<sysdate-${ARCH_DAYS:-$EXA_ARCH_DAYS})" 2>/dev/null)"
     local nb; nb="$(sql_val "$s" "(select count(*) from v\$archived_log where dest_id=1 and deleted='NO' and standby_dest='NO' and backup_count=0 and completion_time<sysdate-${ARCH_DAYS:-$EXA_ARCH_DAYS})" 2>/dev/null)"
     log "$s: archivelogs backed up $EXA_ARCH_BACKED_UP+ times and older than ${ARCH_DAYS:-$EXA_ARCH_DAYS} day(s): ${n:-?}; not backed up at all: ${nb:-?} (those stay)"
@@ -542,10 +543,17 @@ cmd_purge() {
     log "RMAN on $s (output: $RUN_DIR/rman_$s.txt)"
     rman_run "$s" "$RMAN_TIMEOUT" "$q" >"$RUN_DIR/rman_$s.txt" 2>&1; local rc=$?
     grep -E 'RMAN-|ORA-' "$RUN_DIR/rman_$s.txt" | grep -vE 'RMAN-08120|RMAN-06157' | head -5 | while read -r l; do warn "$s: $l"; done
-    [ "$rc" = 0 ] && log "SUCCESS purge-archivelogs $s: $(grep -c 'deleted archived log' "$RUN_DIR/rman_$s.txt") archivelog(s) deleted" || err "$s: rman exit $rc"
+    if [ "$rc" = 0 ]; then
+      local deleted; deleted="$(grep -c 'deleted archived log' "$RUN_DIR/rman_$s.txt")"
+      # the outcome, not the exit code: RMAN exits 0 when the 'backed up N times to device type D' clause matches nothing
+      # (backups go to SBT_TAPE, EXA_ARCH_DEVICE says DISK) - the database counted eligible logs, RMAN deleted none, and that used to be SUCCESS
+      if [ "$deleted" = 0 ] && [ "${n%% *}" != "${n%% *//[0-9]/}" ] && [ "${n%% *}" -gt 0 ] 2>/dev/null; then
+        warn "$s: RMAN deleted nothing although the database counts ${n%% *} archivelog(s) backed up $EXA_ARCH_BACKED_UP+ times and old enough - the clause 'backed up $EXA_ARCH_BACKED_UP times to device type $EXA_ARCH_DEVICE' matched none: check where the backups go (EXA_ARCH_DEVICE) and $RUN_DIR/rman_$s.txt"
+      else log "SUCCESS purge-archivelogs $s: $deleted archivelog(s) deleted (database counted ${n:-?} eligible before)"; fi
+    else err "$s: rman exit $rc (see $RUN_DIR/rman_$s.txt)"; fail=1; fi
   done
   [ -n "$ESCLI" ] || escli_find || true; [ -n "$ESCLI" ] && es_ok 2>/dev/null && es lsvault -l 2>/dev/null | sed 's/^/  /' >&2
-  return 0
+  return "$fail"
 }
 
 # ---------------------------------------------------------------------------
@@ -578,10 +586,14 @@ cmd_release() {
 
 cmd_heal() {
   cmd_inspect || true
+  # an inspect that could not read the vaults knows nothing about their fill: that is a refusal, not 'nothing to do'
+  [ -n "${ESCLI:-}" ] || die "heal needs the vault view and escli is not available on this host (inspect ran database-side only): nothing is known about vault fill - run it where escli is, or purge-archivelogs --sid SID by hand"
+  printf '%s' "$FINDINGS" | grep -qE '\[escli\] (escli cannot reach|lsvault failed|lsstoragepool failed)' && die "inspect could not read the vaults: $(printf '%s' "$FINDINGS" | grep -E '\[escli\]' | head -1 | cut -c1-200) - nothing is known about vault fill, so nothing is purged"
   local hot; hot="$(printf '%s' "$FINDINGS" | grep -E '^\- \*\*(CRIT|WARN)\*\* \[(vault|pool)\]' | wc -l | tr -d ' ')"
   [ "$hot" = 0 ] && { log "no vault or pool over ${EXA_WARN_PCT}%: nothing to do"; return 0; }
   log "$hot space finding(s): purging archivelogs RMAN has already backed up (the only automatic step)"
-  cmd_purge
+  local prc=0; cmd_purge || prc=$?
+  [ "$prc" = 0 ] || err "purge-archivelogs did not complete on every database (see above): the vault is still as full as inspect found it"
   log "next: $TOOL.sh plan  (grow / release are never automatic)"
 }
 
