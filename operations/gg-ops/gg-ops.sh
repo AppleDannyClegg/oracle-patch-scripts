@@ -72,8 +72,11 @@ gg() {
     printf 'connect %s deployment %s as %s\n%s\n%s\nexit\n' "$GG_MA_URL" "$GG_MA_DEPLOYMENT" "$GG_MA_USER" "$GG_MA_PASSWORD" "$q" | to "$CMD_TIMEOUT" "$ADMINCLIENT" 2>&1 | grep -vE '^OGG \(|^Password|^$' | redact
   else ggsci "$@"; fi
 }
-# gg_change <what> <commands>: logged, dry-run aware
-gg_change() { log "GG: ${2//\\n/; }"; [ "$DRY_RUN" = 1 ] && return 0; local o; o="$(gg "$2")"; printf '%s\n' "$o" >>"$LOG_FILE"; printf '%s\n' "$o" | grep -E 'OGG-|ERROR|error' | head -3 | sed 's/^/  /' >&2; ! printf '%s' "$o" | grep -qE '(^|[[:space:]])ERROR([[:space:]:]|$)'; }
+# gg_change <what> <commands>: logged, dry-run aware. Fails on an ERROR line (ggsci's own refusals exit 0 and say 'ERROR:') AND on a
+# non-zero exit - a ggsci that could not run at all (missing libraries, wrong ORACLE_HOME, killed by the timeout) prints no 'ERROR'
+# and used to count as success (false-success gate, 1 Nov 2026)
+gg_change() { log "GG: ${2//\\n/; }"; [ "$DRY_RUN" = 1 ] && return 0; local o rc=0; o="$(gg "$2")" || rc=$?; printf '%s\n' "$o" >>"$LOG_FILE"; printf '%s\n' "$o" | grep -E 'OGG-|ERROR|error|failed' | head -3 | sed 's/^/  /' >&2
+  [ "$rc" = 0 ] || { err "ggsci exited $rc for '${2//\\n/; }' (see $LOG_FILE)"; return 1; }; ! printf '%s' "$o" | grep -qE '(^|[[:space:]])ERROR([[:space:]:]|$)'; }
 dblogin() { [ -n "$GG_ALIAS" ] || die "GG_ALIAS (useridalias) is required for database commands"; printf 'dblogin useridalias %s%s' "$GG_ALIAS" "${GG_DOMAIN:+ domain $GG_DOMAIN}"; }
 hms_to_min() { local h m s; IFS=: read -r h m s <<<"${1:-0:0:0}"; echo $(( 10#${h:-0}*60 + 10#${m:-0} + (10#${s:-0}>=30 ? 1 : 0) )); }
 # load_procs: PROCS from info all
@@ -229,9 +232,14 @@ stop_one() { local g="$1" p; p="$(proc_program "$g")"; [ -n "$p" ] || die "unkno
   [ "$(proc_status "$g")" = RUNNING ] || { log "$g is not running ($(proc_status "$g"))"; return 0; }
   gg_change stop "stop $p $g"; [ "$DRY_RUN" = 1 ] && return 0; sleep 3; load_procs; [ "$(proc_status "$g")" = RUNNING ] || return 0
   [ "$FORCE" = 1 ] && { warn "$g still running: kill $p $g (--force)"; gg_change kill "kill $p $g"; return; }; warn "$g still running (a long transaction is being rolled back / applied); wait, or --force to kill"; return 1; }
-cmd_start() { local t="${ARGS[0]:-}"; [ -n "$t" ] || die "start <group|all>"; init_run_dir start; gg_detect; load_procs; local g; for g in $(targets_of "$t"); do confirm "start $g?" || continue; start_one "$g"; done; sleep 2; load_procs; print_procs; }
-cmd_stop() { local t="${ARGS[0]:-}"; [ -n "$t" ] || die "stop <group|all>"; init_run_dir stop; gg_detect; load_procs; local g; for g in $(targets_of "$t" | sort -r); do confirm "stop $g?" || continue; stop_one "$g" || true; done; load_procs; print_procs; }
-cmd_restart() { local t="${ARGS[0]:-}"; [ -n "$t" ] || die "restart <group|all>"; init_run_dir restart; gg_detect; load_procs; local g; for g in $(targets_of "$t"); do confirm "restart $g?" || continue; stop_one "$g" || { warn "$g not stopped: not started again"; continue; }; start_one "$g"; done; sleep 2; load_procs; print_procs; }
+# started means RUNNING when re-read two seconds later, not 'the start request was sent': a process that abends on its first record,
+# or a ggsci that failed, is not started - start/restart/stop exit 1 for every group that is not where the command said (they exited 0 whatever happened)
+started_check() { local g fail=0; for g in "$@"; do [ "$(proc_status "$g")" = RUNNING ] || { err "$g is $(proc_status "$g") after start (report: $(report_file "$g"))"; fail=1; }; done; return "$fail"; }
+cmd_start() { local t="${ARGS[0]:-}"; [ -n "$t" ] || die "start <group|all>"; init_run_dir start; gg_detect; load_procs; local g fail=0 asked=""; for g in $(targets_of "$t"); do confirm "start $g?" || continue; start_one "$g" || fail=1; asked="$asked $g"; done; sleep 2; load_procs; print_procs
+  [ "$DRY_RUN" = 1 ] || started_check $asked || fail=1; return "$fail"; }
+cmd_stop() { local t="${ARGS[0]:-}"; [ -n "$t" ] || die "stop <group|all>"; init_run_dir stop; gg_detect; load_procs; local g fail=0; for g in $(targets_of "$t" | sort -r); do confirm "stop $g?" || continue; stop_one "$g" || fail=1; done; load_procs; print_procs; return "$fail"; }
+cmd_restart() { local t="${ARGS[0]:-}"; [ -n "$t" ] || die "restart <group|all>"; init_run_dir restart; gg_detect; load_procs; local g fail=0 asked=""; for g in $(targets_of "$t"); do confirm "restart $g?" || continue; stop_one "$g" || { warn "$g not stopped: not started again"; fail=1; continue; }; start_one "$g" || fail=1; asked="$asked $g"; done; sleep 2; load_procs; print_procs
+  [ "$DRY_RUN" = 1 ] || started_check $asked || fail=1; return "$fail"; }
 show_failing_txn() { # <replicat>
   local g="$1" r; r="$(report_file "$g")"
   echo "--- last errors in ${r:-no report}:"; last_error_of "$g" | cut -c1-200
@@ -246,6 +254,7 @@ cmd_skip() {
   echo; echo "Alternatives: fix the target row and start normally; REPERROR (DEFAULT, DISCARD) for a rule; handlecollisions for an initial-load overlap."
   confirm_typed "Skip this transaction on $g" "$g" || die "aborted"
   gg_change skip "start replicat $g skiptransaction" || die "start ... skiptransaction failed (see $LOG_FILE)"; sleep 3; load_procs; GROUP="$g" print_procs; state_set skipped "$g"
+  started_check "$g" || die "the transaction was skipped but $g is not running - the next one may have the same problem (report: $(report_file "$g"))"
 }
 cmd_resync() {
   local g="${ARGS[0]:-}"; [ -n "$g" ] || die "resync <replicat> --from SEQNO [--rba N | --atcsn SCN]"; [ -n "$FROM" ] || [ -n "$ATCSN" ] || die "--from SEQNO (trail sequence) or --atcsn SCN is required"
@@ -253,9 +262,10 @@ cmd_resync() {
   echo "current position:"; gg "info $g, detail" | grep -aE 'Log Read Checkpoint|Sequence|RBA|Timestamp' | head -4 | tee "$RUN_DIR/position_before.txt"
   [ "$(proc_status "$g")" = RUNNING ] && { confirm "$g is running: stop it first?" || die "aborted"; stop_one "$g" || die "could not stop $g"; }
   if [ -n "$FROM" ]; then confirm_typed "alter replicat $g, extseqno $FROM, extrba ${RBA:-0} (every transaction between the old and the new position is applied twice or never)" "$g" || die "aborted"
-    gg_change alter "alter replicat $g, extseqno $FROM, extrba ${RBA:-0}" || die "alter failed"; gg_change start "start replicat $g"
-  else confirm_typed "start replicat $g atcsn $ATCSN (transactions committed before that CSN are skipped)" "$g" || die "aborted"; gg_change start "start replicat $g atcsn $ATCSN"; fi
+    gg_change alter "alter replicat $g, extseqno $FROM, extrba ${RBA:-0}" || die "alter failed"; gg_change start "start replicat $g" || die "$g was repositioned but did not start (see $LOG_FILE)"
+  else confirm_typed "start replicat $g atcsn $ATCSN (transactions committed before that CSN are skipped)" "$g" || die "aborted"; gg_change start "start replicat $g atcsn $ATCSN" || die "start replicat $g atcsn failed (see $LOG_FILE)"; fi
   sleep 3; load_procs; GROUP="$g" print_procs; gg "info $g, detail" | grep -aE 'Log Read Checkpoint|Sequence|RBA' | head -3
+  started_check "$g"
 }
 cmd_handlecollisions() {
   local g="${ARGS[0]:-}" onoff="${ARGS[1]:-}"; [ -n "$g" ] && [[ "$onoff" =~ ^(on|off)$ ]] || die "handlecollisions <replicat> on|off"

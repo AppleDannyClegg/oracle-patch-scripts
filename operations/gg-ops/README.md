@@ -68,7 +68,11 @@ down.
 
 `skip-transaction` and `resync` need the group name typed (non-interactive: `--force`), after the
 transaction/position is printed and saved in the run dir. `stop` waits 3 s and refuses to kill
-unless `--force`. `trail-cleanup` only deletes with `--apply`, only files below the oldest
+unless `--force`. `start`, `restart`, `resync` and `skip-transaction` re-read `info all` two
+seconds after the start and exit 1 for a group that is not RUNNING (a process that abends on its
+first record was "started" before); `stop` and `restart` exit 1 for a group still running. A
+`ggsci` that exits non-zero (missing libraries, wrong `ORACLE_HOME`, timeout) is a failure even
+when its output has no `ERROR` line. `trail-cleanup` only deletes with `--apply`, only files below the oldest
 checkpoint minus `GG_TRAIL_KEEP`, and says that `PURGEOLDEXTRACTS` is the right fix. It refuses
 `--group` and refuses to run when any extract or replicat's `info detail` shows no checkpoint
 line, naming the group: the oldest position must come from every reader, read successfully, or a
