@@ -146,7 +146,8 @@ load_config() {
 # unexport_secrets: set -a above exported every config variable, secrets included, into the environment of every child
 # process for its whole life (ps eww, /proc/<pid>/environ, support packs). Nothing a script starts reads a secret from
 # the environment - they all get it on stdin or from a 600-mode file - so the secret-looking names lose the export flag
-unexport_secrets() { local v; for v in $(compgen -A variable | grep -E 'PASSWORD|PASSWD|SECRET|_PASS($|_)|TOKEN|PWD|_CONNECT$' || true); do export -n "${v?}" 2>/dev/null; done; }
+# (the shell's own PWD/OLDPWD match 'PWD' and must stay exported - Fable-2's catch)
+unexport_secrets() { local v; for v in $(compgen -A variable | grep -E 'PASSWORD|PASSWD|SECRET|_PASS($|_)|TOKEN|PWD|_CONNECT$' | grep -vxE 'PWD|OLDPWD' || true); do export -n "${v?}" 2>/dev/null; done; }
 
 # ---------------------------------------------------------------------------
 # SQL*Plus. Every function takes the SID first; ORACLE_HOME comes from /etc/oratab for that SID,

@@ -854,8 +854,13 @@ diag_goldengate() {
   h1 "GoldenGate"
   if [ -n "$gg" ]; then
     kv "OGG_HOME (classic)" "$gg"; kv "mgr running" "$(pgrep -f "$gg/mgr" >/dev/null && echo yes || echo NO)"; kv_end
-    section_sh ogg_info "cd '$gg' && ORACLE_HOME=\${ORACLE_HOME:-$(oratab_home "$(db_instances | head -1)")} LD_LIBRARY_PATH='$gg:'\${ORACLE_HOME:-}/lib printf 'info all\ninfo mgr\nversions\n' | timeout 60 ./ggsci 2>&1 | grep -vE '^$|^GGSCI'; echo; echo 'lag detail:'; cd '$gg' && printf 'lag er *\n' | timeout 60 ./ggsci 2>&1 | grep -E 'Lag|Sending|No' | head -20; echo; echo 'trail dirdat size:'; du -sh '$gg'/dirdat 2>/dev/null; ls -t '$gg'/dirdat 2>/dev/null | wc -l | sed 's/^/trail files: /'; echo 'dirrpt newest:'; ls -t '$gg'/dirrpt/*.rpt 2>/dev/null | head -5"
+    # export, not a prefix: a prefix on printf (the left side of the pipe) left ggsci without ORACLE_HOME/LD_LIBRARY_PATH,
+    # so on a host whose shell lacks them it died loading libnnz and the section held the loader error - no EXTRACT/REPLICAT
+    # line, so the ABENDED/STOPPED check below saw nothing and the report came out clean
+    section_sh ogg_info "cd '$gg' && export ORACLE_HOME=\${ORACLE_HOME:-$(oratab_home "$(db_instances | head -1)")} && export LD_LIBRARY_PATH='$gg:'\$ORACLE_HOME/lib:\${LD_LIBRARY_PATH:-} && printf 'info all\ninfo mgr\nversions\n' | timeout 60 ./ggsci 2>&1 | grep -vE '^$|^GGSCI'; echo; echo 'lag detail:'; printf 'lag er *\n' | timeout 60 ./ggsci 2>&1 | grep -E 'Lag|Sending|No' | head -20; echo; echo 'trail dirdat size:'; du -sh '$gg'/dirdat 2>/dev/null; ls -t '$gg'/dirdat 2>/dev/null | wc -l | sed 's/^/trail files: /'; echo 'dirrpt newest:'; ls -t '$gg'/dirrpt/*.rpt 2>/dev/null | head -5"
     pgrep -f "$gg/mgr" >/dev/null || finding CRIT ogg "GoldenGate Manager is not running"
+    # an unreadable ggsci is a WARN, never a clean report: 'info all' always lists MANAGER when ggsci ran at all
+    grep -q '^MANAGER' "$RAW/ogg_info.txt" 2>/dev/null || finding WARN ogg "ggsci 'info all' gave no process list - GoldenGate status unknown (see raw/ogg_info.txt: $(grep -vE '^$' "$RAW/ogg_info.txt" 2>/dev/null | head -1 | cut -c1-120))"
     grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg_info.txt" | grep -qE 'ABENDED|STOPPED' && finding CRIT ogg "GoldenGate processes not running: $(grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg_info.txt" | grep -E 'ABENDED|STOPPED' | awk '{print $2, $3}' | tr '\n' ';')"
     grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg_info.txt" | awk '$3=="RUNNING" && $4 ~ /^[0-9]+:[0-9]+:[0-9]+$/ { split($4,a,":"); if (a[1]*60+a[2] >= 15) print $2, $4 }' | while read -r n l; do finding WARN ogg "GoldenGate $n lag at checkpoint is $l"; done
     [ -f "$gg/ggserr.log" ] && { h2 "ggserr.log"; recent_errors ogg_ggserr "$gg/ggserr.log" 'ERROR|WARNING|OGG-[0-9]+.*(ERROR|abend)|ORA-[0-9]+' >/dev/null; tail_file ogg_ggserr_tail "$gg/ggserr.log"; }
