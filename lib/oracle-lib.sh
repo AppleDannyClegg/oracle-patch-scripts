@@ -173,6 +173,7 @@ expire_run_material() {
   for d in "$RUN_BASE"/*/; do
     [ -f "$d$marker" ] || continue
     file_older_than "$d$marker" "$hours" || continue
+    if [ "${DRY_RUN:-0}" = 1 ]; then log "dry-run: would remove expired rollback material from ${d%/} (older than ${hours}h)"; continue; fi
     # shellcheck disable=SC2231  # $g is a glob on purpose
     for g in "$@"; do for p in "$d"$g; do [ -e "$p" ] && shred_path "$p"; done; done
     printf '%s=%s (expired after %sh)\n' "$key" "$(ts)" "$hours" >>"${d}state" 2>/dev/null
@@ -681,6 +682,7 @@ lib_selftest() {
   t "sql_run: SQL and connect string on stdin, not argv" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "echo \"ARGV:\$*\"; cat" >"$d/sqlplus"; chmod +x "$d/sqlplus"; o=$(SQL_CMD="$d/sqlplus -S" SQL_CONNECT="u/CANARYpw@t" sql_run X "alter user a identified by CANARYsql;"); rm -f "$d/sqlplus"; rmdir "$d"; printf "%s" "$o" | grep -q "^ARGV:-S -L /nolog$" && printf "%s" "$o" | grep -q "^connect u/CANARYpw@t$" && printf "%s" "$o" | grep -q "identified by CANARYsql"'
   t "mos_login keeps the caller EXIT trap" 'o=$(bash -c "source $0 2>/dev/null; trap \"echo CALLER-TRAP\" EXIT; RUN_DIR=\$(mktemp -d); OFFLINE=0; mos_cleanup(){ echo MOS-CLEANUP; }; MOS_TRAP_SET=\"\"; eval \"set -- \$(trap -p EXIT)\"; MOS_PREV_EXIT_TRAP=\"\${3:-}\"; trap \"mos_cleanup; eval \\\"\\\$MOS_PREV_EXIT_TRAP\\\"\" EXIT; rm -rf \"\$RUN_DIR\"" 2>/dev/null | tr "\n" " "); [ "$o" = "MOS-CLEANUP CALLER-TRAP " ]'
   t "expire_run_material shreds only the old run" 'b=$(mktemp -d); mkdir -p $b/old $b/new; echo h >$b/old/m; echo k >$b/old/x.bak; echo h >$b/new/m; echo k >$b/new/x.bak; touch -t 202001010000 $b/old/m; (RUN_BASE=$b; LOG_FILE=/dev/null; expire_run_material 72 m gone m "*.bak"); r=0; [ ! -e $b/old/m ] && [ ! -e $b/old/x.bak ] && [ -e $b/new/m ] && [ -e $b/new/x.bak ] && grep -q "^gone=" $b/old/state && [ ! -e $b/new/state ] || r=1; rm -rf "$b"; [ $r = 0 ]'
+  t "expire_run_material under DRY_RUN=1 shreds nothing" 'b=$(mktemp -d); mkdir -p $b/old; echo h >$b/old/m; echo k >$b/old/x.bak; touch -t 202001010000 $b/old/m; (RUN_BASE=$b; LOG_FILE=/dev/null; DRY_RUN=1; expire_run_material 72 m gone m "*.bak" >/dev/null); r=0; [ -e $b/old/m ] && [ -e $b/old/x.bak ] && [ ! -e $b/old/state ] || r=1; rm -rf "$b"; [ $r = 0 ]'
   t "load_config does not export secrets" 'd=$(mktemp -d); printf "MY_PASSWORD=s3cret\nSQL_CONNECT=u/p@t\nMY_HOME=/x\n" >"$d/t.conf"; (TOOL=t; SCRIPT_DIR=$d; HOME=$d; load_config "$d/t.conf"; e="$(env)"; printf "%s" "$e" | grep -q "^MY_HOME=/x$" && ! printf "%s" "$e" | grep -q "s3cret" && ! printf "%s" "$e" | grep -q "^SQL_CONNECT=" && [ "$MY_PASSWORD" = s3cret ]); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
