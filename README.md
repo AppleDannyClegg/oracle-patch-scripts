@@ -260,8 +260,11 @@ switch or GoldenGate verb that reached a tool; `tests/false-success-gate.sh` run
 for real, makes the first changing call and every later one fail, and fails on exit 0 or on a state
 line that claims success (`applied=`, `verified=1`, `rolled_back=1`, `<step>=ok` and the rest). Both
 read `tests/dry-run-env/<script>.sh` for the world a script needs (fake homes, run dirs, answers,
-`ARGS_<cmd>`, `FAIL_<cmd>`, `OK_<cmd>`); a command that ended before any tool, or before any changing
-call, is listed as NOT-EXERCISED, which is not a pass - it says the gate could not see that command.
+`ARGS_<cmd>`, `FAIL_<cmd>`, `OK_<cmd>`); the stub answers a query from the first `pattern|answer` line
+that matches it, so an unanswered or empty answer must be written as an explicit `pattern|` line - deleting
+a line only lets a more general one (`count\(\*\)|0`) answer instead. A command that ended before any
+tool, or before any changing call, is listed as NOT-EXERCISED, which is not a pass - it says the gate could
+not see that command.
 What a tool cannot see (ln, mv, rm, cp outcomes) is proved by hand with the same env and a read-only
 directory, and the commit says so. `lib/oracle-lib.sh selftest` covers the library's own helpers. Secrets never go on a command line:
 sqlplus and SQLcl are started with `/nolog` and get `connect` on stdin, Data Pump reads `userid=`
