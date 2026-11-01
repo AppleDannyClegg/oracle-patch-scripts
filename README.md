@@ -246,14 +246,24 @@ the PDB; `--as-new-id` is honoured). oracle-diag now reports the Oracle Key Vaul
 certificate state per `okvclient.ora` (rotated or not, node last talked to, wallet age or real
 expiry with `OKV_WALLET_PASSWORD`), written from the first production rotation.
 
-Three gates need no database and run anywhere with bash: `tests/check-parse.sh` (every value
-option's `case` arm calls `optchk`), `tests/optchk-gate.sh` (every documented value option run as
-the last argument and followed by `--dry-run`: none may hang or swallow the flag) and
+Five gates need no database and run anywhere with bash. Three read the scripts: `tests/check-parse.sh`
+(every value option's `case` arm calls `optchk`), `tests/optchk-gate.sh` (every documented value
+option run as the last argument and followed by `--dry-run`: none may hang or swallow the flag) and
 `tests/secret-argv-gate.sh` (every function that hands a credential to sqlplus, SQLcl, expdp/impdp
 or ggsci, run against a stub that records its argv, environment and stdin with a canary password:
 the canary must be absent from argv and environ and present on the route the function claims, plus
 the `--verbose` log and the run directory must not hold it, and the java APEX export must refuse).
-`lib/oracle-lib.sh selftest` covers the library's own helpers. Secrets never go on a command line:
+Two run the scripts against stub tools (sqlplus, rman, opatch, srvctl, dgmgrl, ggsci, escli and the
+rest log their argv and stdin and answer from a canned table): `tests/dry-run-gate.sh` runs every
+command of every script with `--dry-run` and fails on any DDL, DML, flashback, PL/SQL, patch, restart,
+switch or GoldenGate verb that reached a tool; `tests/false-success-gate.sh` runs every change command
+for real, makes the first changing call and every later one fail, and fails on exit 0 or on a state
+line that claims success (`applied=`, `verified=1`, `rolled_back=1`, `<step>=ok` and the rest). Both
+read `tests/dry-run-env/<script>.sh` for the world a script needs (fake homes, run dirs, answers,
+`ARGS_<cmd>`, `FAIL_<cmd>`, `OK_<cmd>`); a command that ended before any tool, or before any changing
+call, is listed as NOT-EXERCISED, which is not a pass - it says the gate could not see that command.
+What a tool cannot see (ln, mv, rm, cp outcomes) is proved by hand with the same env and a read-only
+directory, and the commit says so. `lib/oracle-lib.sh selftest` covers the library's own helpers. Secrets never go on a command line:
 sqlplus and SQLcl are started with `/nolog` and get `connect` on stdin, Data Pump reads `userid=`
 from a 600-mode parfile under `$TMPDIR` that is removed when the tool exits, ggsci reads its
 commands on stdin, `read_secret` no longer exports what it read, and `dbg`/`redact` mask
