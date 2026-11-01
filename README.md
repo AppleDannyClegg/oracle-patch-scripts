@@ -201,21 +201,28 @@ upgrade, failed apply, failed verify, rollback, flashback gating, already-curren
 wrong-Java paths. Do `inspect`, `plan` and `preflight` on a test box first.
 
 What has run against a real database (Oracle Database Free 26ai in a local container, with ORDS
-26.3 standalone on https in front of it):
+standalone on https in front of it; rman-ops against the full image, which has `rman`):
 
 - the read-only reports: db-health-daily, perf-snapshot (with `--awr`), space-forecast,
-  security-posture, patch-status, oracle-diag, incident-pack and sr-draft
-- operations: account-ops inspect/expiring/unlock/reset/verify/rollback/heal (heal restarted a
-  killed ORDS and unlocked its pool user), db-refresh pdb-clone end to end (PDB cloned over a
-  database link), rman-ops (the SQL views; the slim image has no `rman` binary)
-- patching: ords-patch inspect/plan/run (already current), java-patch inspect, cert-renew
-  inspect/plan/apply/verify/rollback on the ORDS certificate (new certificate served after the
-  restart, rollback put the old one back)
+  security-posture, patch-status, oracle-diag, incident-pack and sr-draft, also against a
+  deliberately broken database (full tablespace, ORA-1652, blocking session, invalid objects,
+  failed job, default password, DBA role and PUBLIC grants) to see that the findings appear
+- operations: account-ops inspect/expiring/unlock/reset/verify/rollback/heal (the ORDS pool user's
+  password rotated into the pool and back), db-refresh pdb-clone end to end with `--keep-old`,
+  a preserved schema (expdp/impdp), relock, fix-dblinks (also another user's link), fix-scheduler,
+  fix-directories, rollback and cleanup; rman-ops inspect/validate/recovery-window/crosscheck/
+  delete-obsolete/evidence/restore-test on a database with a real backup
+- patching: ords-patch run as a real upgrade (26.2.3 to 26.3.0: schema upgrade, symlink switch,
+  verify, rollback, run again, cleanup), java-patch run with restart (same build with `--force`,
+  and 17 to 21 with `--force`, ORDS moved and moved back), cert-renew on the ORDS certificate
+  (CA-signed cert with chain, `run`, verify, rollback) and the cacerts trust import, plus the
+  refusal paths (key does not match, expired, failed restart, read-only cacerts)
 
 `tests/oracle-free-container.sh` repeats the six reports on any machine with docker (pulls
 `gvenzl/oracle-free:23-slim`, about 700 MB, runs the scripts inside as `oracle`, copies the
 reports to `tests/out/`). `--trace` records every SQL statement and answer so errors the scripts
 swallow still show up; `--keep` leaves the container running for the next run. No WebLogic, APEX,
 Data Guard, RAC, Exadata, ZDLRA or OKV there, and no `rman`, OPatch or `orapki` in the slim image,
-so db-patch and java-patch apply, the listener wallet path and everything WebLogic are still
-mock-tested only.
+so db-patch apply, the listener wallet path and everything WebLogic are still mock-tested only.
+None of the scripts takes a lock on its run directory, so two change runs started at the same
+time do not stop each other.
