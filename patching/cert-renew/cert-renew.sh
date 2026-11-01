@@ -591,7 +591,13 @@ cmd_cleanup() {
   echo "Kept for rollback in $RUN_DIR/backup ($(file_age "$RUN_DIR/backup/.kept" 2>/dev/null || echo '?') old):"; find "$RUN_DIR/backup" -type f | sed 's/^/  /'
   confirm "Shred the backup of $(state_get target || echo '?')? rollback will refuse afterwards" || die "aborted"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: would shred $RUN_DIR/backup"; return 0; }
-  shred_path "$RUN_DIR/backup"; state_set backup_removed "$(ts)"; log "cleaned up: the previous keystore/wallet and its password are gone; rollback is no longer possible for this run"
+  # backup_removed was written on the call, not the outcome (DeepSeek, 1 Nov 22:18): a shred that could not unlink (read-only
+  # dir) left the keystore and .old_ks_pass on disk while this said "gone" and rollback was refused for ever after
+  if shred_path "$RUN_DIR/backup" && [ ! -e "$RUN_DIR/backup" ]; then
+    state_set backup_removed "$(ts)"; log "cleaned up: the previous keystore/wallet and its password are gone; rollback is no longer possible for this run"
+  else
+    err "cleanup INCOMPLETE: $RUN_DIR/backup could not be removed entirely - what is left: $(find "$RUN_DIR/backup" -type f 2>/dev/null | wc -l | tr -d ' ') file(s); the old keystore material may still be on disk, backup_removed NOT recorded"; return 1
+  fi
 }
 
 wls_apply_one() {
