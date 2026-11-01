@@ -81,7 +81,10 @@ discover() {
   DB_ROLES=""; local s; for s in $SIDS; do db_instances | grep -qx "$s" || { DB_ROLES="${DB_ROLES}$s:DOWN "; continue; }; local r; r="$(sql_val "$s" "(select database_role||'/'||open_mode from v\$database)" 2>/dev/null)"; DB_ROLES="${DB_ROLES}$s:${r:-?} "; done
 }
 setup_env() { discover; export ORACLE_HOME="$HOME_DIR"; export PATH="$HOME_DIR/bin:$HOME_DIR/OPatch:$PATH"; }
-opatch() { env ORACLE_HOME="$HOME_DIR" "$HOME_DIR/OPatch/opatch" "$@"; }
+# opatch owns its timeout: 'to N opatch ...' reached this function only on a host WITHOUT timeout(1) - with it, to() execs 'opatch'
+# from PATH (none -> rc 127; a sibling home's OPatch on a multi-home box -> the wrong inventory). Wintermute, 1 Nov 23:10.
+# OPATCH_TIMEOUT=N opatch ... sets the limit for one call (default 600 s)
+opatch() { to "${OPATCH_TIMEOUT:-600}" env ORACLE_HOME="$HOME_DIR" "$HOME_DIR/OPatch/opatch" "$@"; }
 srvctl_db_name() { [ -n "$GRID_HOME" ] || return 1; "$GRID_HOME/bin/srvctl" config database 2>/dev/null | while read -r d; do [ "$("$GRID_HOME/bin/srvctl" config database -d "$d" 2>/dev/null | sed -n 's/^Oracle home: *//p')" = "$HOME_DIR" ] && echo "$d"; done; }
 # opatch lock
 opatch_locked() { [ -f "$HOME_DIR/.patch_storage/patch_locked" ]; }
@@ -182,7 +185,7 @@ cmd_preflight() {
     local id; id="$(basename "$p")"
     if printf '%s\n' "$INSTALLED" | grep -q "^$id;"; then log "$id already installed: $(patch_desc "$p")"; continue; fi
     log "$id: $(patch_desc "$p") $(patch_is_rolling "$p" && echo '[rolling]' || echo '[NOT rolling]')"
-    local out; out="$(to 600 opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
+    local out; out="$(opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
     if printf '%s' "$out" | grep -q 'Prereq "checkConflictAgainstOHWithDetail" passed'; then log "  no conflicts"
     elif printf '%s' "$out" | grep -qiE 'conflict'; then err "  CONFLICT: $(printf '%s' "$out" | grep -iE 'conflict|superset|subset' | head -3 | tr '\n' ' ')"; fail=1
     else warn "  prereq check gave no verdict (see log)"; fi
@@ -406,7 +409,7 @@ cmd_datapatch() {
 cmd_verify() {
   setup_env; reuse_or_init verify
   local oop; oop="$(state_get oop_home || true)"; [ -n "$oop" ] && HOME_DIR="$oop"
-  local fail=0 id; INSTALLED="$(to 180 opatch lspatches 2>/dev/null)"
+  local fail=0 id; INSTALLED="$(OPATCH_TIMEOUT=180 opatch lspatches 2>/dev/null)"
   for id in $(state_get applied || true); do printf '%s\n' "$INSTALLED" | grep -q "^$id;" && log "$id in inventory" || { err "$id missing from inventory"; fail=1; }; done
   local s; for s in $SIDS; do
     db_instances | grep -qx "$s" || { err "$s not running"; fail=1; continue; }
@@ -443,11 +446,11 @@ cmd_rollback() {
     [ "$DRY_RUN" = 1 ] || { cp "$RUN_DIR/oratab.bak" /etc/oratab 2>>"$LOG_FILE" || { err "cannot write /etc/oratab (restore $RUN_DIR/oratab.bak by hand)"; rfail=1; }; local dbn; for dbn in $(srvctl_db_name); do "$GRID_HOME/bin/srvctl" modify database -d "$dbn" -oraclehome "$oldhome" >>"$LOG_FILE" 2>&1 || { err "srvctl modify database -d $dbn -oraclehome $oldhome failed (see $LOG_FILE)"; rfail=1; }; done; }
   else
     cmd_stop || { state_set rollback failed; err "rollback NOT started: the databases of $HOME_DIR did not all stop and opatch rollback needs the home idle - fix the stop, then 'rollback' again"; return 1; }
-    local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || to 3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
+    local id; for id in $ids; do log "opatch rollback -id $id"; confirm "Roll back $id?" || die "aborted"; [ "$DRY_RUN" = 1 ] || OPATCH_TIMEOUT=3600 opatch rollback -silent -id "$id" >>"$LOG_FILE" 2>&1 || { err "opatch rollback of $id reported errors (see $LOG_FILE)"; rfail=1; }; done
     # the inventory, not opatch's exit status, says whether a patch is gone (apply re-reads it the same way, :331; wls-patch 5f8a038);
     # and an inventory that could not be read says nothing - empty is 'gone' only when lspatches itself succeeded (Multivac, 1 Nov 23:01)
     if [ "$DRY_RUN" != 1 ]; then
-      local inv rci=0; inv="$(to 180 opatch lspatches 2>/dev/null)" || rci=$?
+      local inv rci=0; inv="$(OPATCH_TIMEOUT=180 opatch lspatches 2>/dev/null)" || rci=$?
       if [ "$rci" != 0 ]; then err "could not read the inventory after the rollback (opatch lspatches rc $rci): cannot confirm $ids are gone - not recorded as rolled back"; rfail=1
       else for id in $ids; do printf '%s\n' "$inv" | grep -q "^$id;" && { err "$id is still in the inventory after opatch rollback (opatch lspatches) - not rolled back"; rfail=1; }; done; fi
     fi
