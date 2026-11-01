@@ -754,6 +754,10 @@ cmd_stop() {
   if [ -n "$nm" ] && ! wait_for_gone "$nm" 60; then
     if [ "$FORCE" = 1 ]; then kill "$nm" 2>/dev/null; else warn "Node manager still running"; ok=0; fi
   fi
+  # second proof, from ps by name: a server the NodeManager restarted under a new pid while we waited, or a stop script that
+  # returned with its server still up, is not stopped even though the pid we noted is gone
+  local still; still="$(running_servers | awk '{print $1}' | tr '\n' ' ')"
+  [ -n "$still" ] && { err "still running after stop: $still"; ok=0; }
   if [ $ok = 0 ]; then err "Some processes still running. Re-run with --force to kill them."; return 1; fi
   log "All WebLogic processes stopped"
 }
@@ -944,7 +948,10 @@ cmd_rollback() {
   for id in $ids; do
     log "Rolling back $id"
     if opatch rollback -silent -id "$id"; then
-      state_append rolled_back "$id"
+      # as for apply: the inventory says whether the patch is gone, not the exit status
+      if [ "$DRY_RUN" != 1 ] && "$ORACLE_HOME/OPatch/opatch" lspatches 2>/dev/null | grep -q "^$id;"; then
+        err "opatch rollback exited 0 but $id is still in 'opatch lspatches' - not recorded as rolled back. See $ORACLE_HOME/cfgtoollogs/opatch/"; fail=1
+      else state_append rolled_back "$id"; fi
     else
       err "opatch rollback FAILED for $id"; fail=1
     fi

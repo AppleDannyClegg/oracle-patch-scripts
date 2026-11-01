@@ -114,7 +114,8 @@ Support token in `~/.mos-token` (see the file). The detail is below.
 | Stale OPatch lock from a previous crash | Removes it (only if no OPatch is actually running) |
 | Leftover `.lok` files stopping a server starting | Removes them (only for servers that are not running) |
 | Missing `oraInst.loc` | Creates one next to the Oracle home |
-| A server will not stop | Stops and tells you; `--force` kills it |
+| A server will not stop | Stops and tells you; `--force` kills it. Stopped means the pid is gone **and** no JVM with that `-Dweblogic.Name` is in `ps` any more (a stop script that returned with its server up, or a server NodeManager restarted under a new pid while the script waited, is "still running after stop", exit 1) |
+| `opatch rollback` exits 0 but the patch is still in `opatch lspatches` | Not recorded as rolled back; rollback exits 1 and points at `restore` (same re-read as apply, which trusts the inventory, not the exit status) |
 
 Everything it runs is logged under `~/wls-patch/runs/<timestamp>/wls-patch.log`
 (`~/wls-patch/runs/latest` points at the most recent run). OPatch's own logs are in
