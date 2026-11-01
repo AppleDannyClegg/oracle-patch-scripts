@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behavioural gate for false success: every change command of every script is run for real (--yes, no --dry-run) on a
-# PATH of stub tools, with HOME and every path the script touches under a temp dir, and the FIRST changing call
-# fails - the stub logs 'FAILED <tool> <argv>', prints an error (ORA-00600 for sqlplus/sql) and exits 1; every later
+# PATH of stub tools, with HOME and every path the script touches under a temp dir, and the FIRST call that could
+# change something (DDL, DML, flashback, a PL/SQL block - exec/begin, whatever it does - a changing tool verb) fails - the stub logs 'FAILED <tool> <argv>', prints an error (ORA-00600 for sqlplus/sql) and exits 1; every later
 # changing call fails the same way (the tool is broken), probes (select, --version, config get ...) keep answering.
 # A script that then exits 0, or records success in its run dir (applied*=, verified=1, rolled_back=1, restored*=,
 # opatch_upgraded=1, deleted=, <step>=ok, pool_<p>=ok, exported_<c>=N ok, 0 failed) claimed a change that did not happen: FAIL. NOT-EXERCISED:
