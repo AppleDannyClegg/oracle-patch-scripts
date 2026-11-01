@@ -3,7 +3,7 @@
 "Who changed page 12 yesterday and can we have it back" has no answer unless the applications are
 exported somewhere with history. This script exports every application (one file per component,
 export dates stripped so unchanged apps make no diff), the workspace definitions, the workspace
-users (no passwords) and the instance parameters (secrets masked) into a git repository laid out
+users (their web password hashes replaced by a placeholder: a hash in a remote is a credential) and the instance parameters (secrets masked) into a git repository laid out
 `<repo>/<db>/<pdb>/<WORKSPACE>/f<ID>/`, commits only when something changed with the changed apps
 and their last editor in the message, pushes if asked, reports the changes, and restores an
 application from any commit or date, into the same id or a new one, after committing the current
