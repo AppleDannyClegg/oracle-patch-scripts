@@ -662,13 +662,13 @@ java_apply() { local pw; pw="$(ks_pass "$T_FILE" JKS)" || die "cacerts password 
 
 cmd_apply() {
   local t="${ARGS[0]:-}"; [ -n "$t" ] || die "apply <target> --cert --key [--chain]"; [ -n "$RUN_DIR" ] || init_run_dir apply; find_tools
-  local one rc=0; for one in $(expand_targets "$t"); do
+  local one rc=0 arc; for one in $(expand_targets "$t"); do   # arc: this target's own apply; rc: the command's (DeepSeek 21:32: one rc made apply_<t2>=partial after t1's restart failed)
     resolve_target "$one"; check_material
     [ -d "$RUN_DIR/backup/$(printf '%s' "$one" | tr ':/' '__')" ] || { ARGS=("$one"); cmd_backup; ARGS=("$t"); }
     confirm "Switch $one to CN=$NEW_CN (serial $NEW_SERIAL, expires $NEW_END)?" || die "aborted"
     state_set new_serial "$NEW_SERIAL"; state_set target "$one"
-    case "$T_KIND" in wls) wls_apply_one;; nm) nm_apply;; ords) ords_apply;; listener|ohs) wallet_apply;; java) java_apply;; esac || rc=1
-    state_set "apply_$one" "$([ "$rc" = 0 ] && echo ok || echo partial)"
+    arc=0; case "$T_KIND" in wls) wls_apply_one;; nm) nm_apply;; ords) ords_apply;; listener|ohs) wallet_apply;; java) java_apply;; esac || { arc=1; rc=1; }
+    state_set "apply_$one" "$([ "$arc" = 0 ] && echo ok || echo partial)"
     if [ "$DO_RESTART" = 1 ] || [ "$T_KIND" = listener ] || [ -n "$(restart_cmd_for "$T_NAME")" ]; then restart_target; case $? in 0) ;; 2) state_set "restart_$one" pending;; *) rc=1; state_set "restart_$one" failed; [ "$T_KIND" = listener ] || err "$one: the config now names the new certificate but the running process still serves the old one until it restarts - fix the restart and run 'verify $one', or 'rollback --yes'";; esac; fi
   done; return "$rc"
 }
