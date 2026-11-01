@@ -216,8 +216,8 @@ collect_vaults() {
   if [ "$ES_MULTIPOOL" = 1 ]; then
     h2 "Provisioning per storage pool (lsvault --provision)"
     local v; for v in $(vault_names); do es_raw "vault_${v}_provision" lsvault "@$v" --provision || continue; fence_start; cat "$RAW/vault_${v}_provision.txt" >>"$REPORT"; fence_end
-      [ "$(records_tab "$RAW/vault_${v}_provision.txt" | wc -l | tr -d ' ')" -gt 1 ] && records_tab "$RAW/vault_${v}_provision.txt" | while IFS='|' read -r pool sp su rest; do
-        [ -n "$pool" ] && [ "$sp" != unlimited ] && [ "$(pct "$(to_bytes "$su")" "$(to_bytes "$sp")")" != "-" ] && [ "$(pct "$(to_bytes "$su")" "$(to_bytes "$sp")")" -ge "$EXA_WARN_PCT" ] && finding WARN vault "@$v on pool $pool: $su of $sp used"; done
+      [ "$(records_tab "$RAW/vault_${v}_provision.txt" | wc -l | tr -d ' ')" -gt 1 ] && while IFS='|' read -r pool sp su rest; do   # no pipe: finding() must run in this shell
+        [ -n "$pool" ] && [ "$sp" != unlimited ] && [ "$(pct "$(to_bytes "$su")" "$(to_bytes "$sp")")" != "-" ] && [ "$(pct "$(to_bytes "$su")" "$(to_bytes "$sp")")" -ge "$EXA_WARN_PCT" ] && finding WARN vault "@$v on pool $pool: $su of $sp used"; done < <(records_tab "$RAW/vault_${v}_provision.txt")
     done
   fi
   return 0
@@ -326,7 +326,7 @@ select 'CHECK|WARN|'||count(*)||' archivelog(s) on disk not backed up ('||round(
 select 'CHECK|INFO|'||count(*)||' archivelog(s) backed up '||$EXA_ARCH_BACKED_UP||'+ times still on the vault ('||round(sum(blocks*block_size)/1073741824)||' GB): purge-archivelogs frees them' from v\$archived_log where dest_id=1 and deleted='NO' and standby_dest='NO' and backup_count>=$EXA_ARCH_BACKED_UP having sum(blocks*block_size)>10737418240;
 select 'CHECK|WARN|guaranteed restore point '||name||' from '||to_char(time,'YYYY-MM-DD')||' holds '||round(storage_size/1073741824)||' GB of flashback logs that can never be reclaimed while it exists' from v\$restore_point where guarantee_flashback_database='YES' and time<sysdate-7;
 select 'CHECK|INFO|'||count(*)||' PDB snapshot copies (thin clones) exist - Oracle sizes 20-25% of the parent per updateable clone' from v\$pdbs where snapshot_parent_con_id is not null having count(*)>0;
-select 'CHECK|WARN|'||count(*)||' datafile(s) at their autoextend maximum' from dba_data_files where autoextensible='YES' and bytes>=maxbytes*0.99 having count(*)>0;
+select 'CHECK|WARN|'||count(*)||' datafile(s) at their autoextend maximum' from dba_data_files where autoextensible='YES' and maxbytes>0 and bytes>=maxbytes*0.99 having count(*)>0;
 select 'CHECK|WARN|'||count(*)||' datafile(s) with autoextend OFF in '||listagg(distinct tablespace_name, ',') within group (order by tablespace_name) from dba_data_files where autoextensible='NO' having count(*)>0;"
   return 0
 }
@@ -467,7 +467,7 @@ cmd_grow() {
       local prow0; prow0="$(printf '%s\n' "$provrows" | awk -F'|' -v p="$pool" '$1==p' | head -1)"
       [ -n "$prow0" ] && { mode=provision; cur="$(to_bytes "$(echo "$prow0" | cut -d'|' -f2)")"; }
     fi
-    [ "$mode" = attributes ] && cur="$(to_bytes "$(vault_attr "$v" "$a")")"
+    if [ "$mode" = attributes ]; then local curtxt; curtxt="$(vault_attr "$v" "$a")"; [ -n "$curtxt" ] || die "cannot read $a of @$v from escli: refusing to compute a new size from 0 (a '+2T' request would become 2T)"; cur="$(to_bytes "$curtxt")"; fi
     [ -n "$pool" ] || pool="$(printf '%s' "$POOLS" | awk -F'|' -v m="$m" '$2==m {print $1; exit}')"
     new="$(size_arg "$cur" "$spec")"
     # preflight: the pool must have the delta
@@ -558,10 +558,14 @@ cmd_release() {
   local total=0 f; echo "files to delete:"
   for f in "${files[@]}"; do
     [ "${f:0:1}" = "@" ] || die "$f: paths must start with @vault/"
-    local r; r="$(es lsfile "$f" --detail 2>/dev/null | records /dev/stdin)"; [ -n "$r" ] || die "$f: escli does not list it"
+    # escli's exit status and error text are checked first: es() merges stderr, so a wallet/ctrl error used to be
+    # parsed as "a record with no usedBy" and the ownership guard below let the delete through
+    local o r; o="$(es lsfile "$f" --detail)" || die "$f: escli lsfile failed: $(printf '%s' "$o" | head -2 | tr '\n' ' ')"
+    printf '%s' "$o" | grep -qiE 'ESCLI-|error|not found' && die "$f: escli lsfile: $(printf '%s' "$o" | grep -iE 'ESCLI-|error|not found' | head -1)"
+    r="$(printf '%s\n' "$o" | records /dev/stdin)"; [ -n "$r" ] || die "$f: escli does not list it"
     local su ub ft; su="$(to_bytes "$(attr "$r" spaceUsed)")"; ub="$(attr "$r" usedBy)"; ft="$(attr "$r" fileType)"; total=$((total + su))
     printf '  %-10s %-12s usedBy=%-20s %s\n' "$(human "$su")" "${ft:-?}" "${ub:-(none)}" "$f"
-    [ -n "$ub" ] && [ "$FORCE" != 1 ] && die "$f is claimed by database '$ub' - refusing (remove it from the database first; --force overrides)"
+    [ -n "$ub" ] && die "$f is claimed by database '$ub' - refusing: drop it from the database first (alter tablespace/database ... drop) and release it afterwards; --force does not override this"
   done
   echo "  total $(human "$total") in ${#files[@]} file(s)"; log "release: ${#files[@]} files, $(human "$total")"
   [ "$DRY_RUN" = 1 ] && { log "dry-run: nothing deleted"; return 0; }

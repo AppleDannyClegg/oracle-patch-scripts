@@ -15,12 +15,15 @@ APEX_EXPORT_CONNECT="apexexp/change_me@//dbhost:1521/pdb1"
 #GIT_AUTHOR_NAME=apex-export
 #GIT_AUTHOR_EMAIL=apex-export@dbhost
 
-# SQLcl (preferred: "apex export" built in). Without it the APEXExport java class is used (needs APEX_HOME, JAVA_HOME,
-# OJDBC_JAR) and the password is visible in the process list while an export runs.
+# SQLcl (preferred: "apex export" built in, password on stdin). Without it the APEXExport java class is used (needs
+# APEX_HOME, JAVA_HOME, OJDBC_JAR) - but it takes the password only on its command line, where every user on the host
+# can read it from ps for the whole export, so java mode is refused unless APEX_JAVA_PASSWORD_ON_ARGV=yes says you
+# accept that.
 #SQLCL=/opt/oracle/sqlcl/bin/sql
 #APEX_HOME=/opt/oracle/apex
 #JAVA_HOME=/usr/lib/jvm/java-17
 #OJDBC_JAR=/u01/app/oracle/product/19/dbhome_1/jdbc/lib/ojdbc8.jar
+#APEX_JAVA_PASSWORD_ON_ARGV=no
 #EXPORT_TIMEOUT=1800
 
 # Export options (apex export / APEXExport flags). -split one file per component, -skipExportDate stable diffs,

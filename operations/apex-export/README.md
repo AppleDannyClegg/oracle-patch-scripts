@@ -8,7 +8,9 @@ users (no passwords) and the instance parameters (secrets masked) into a git rep
 and their last editor in the message, pushes if asked, reports the changes, and restores an
 application from any commit or date, into the same id or a new one, after committing the current
 state first. SQLcl `apex export` with the password on stdin; the `APEXExport` java class as a
-fallback. Runs anywhere SQLcl can reach the database.
+fallback, refused by default because it takes the password on its command line (visible in `ps`
+to every user while the export runs; `APEX_JAVA_PASSWORD_ON_ARGV=yes` accepts that). Runs anywhere
+SQLcl can reach the database.
 
 ## Quick start
 

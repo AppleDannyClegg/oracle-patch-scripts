@@ -86,7 +86,7 @@ ords_pools_for() { # <user>: pool names whose db.username matches
 }
 wls_ds_for() { # <user>: "domain|file|jndi" for JDBC modules using it
   local h d f; for h in $(wls_homes); do for d in $(wls_domains "$h"); do for f in "$d"/config/jdbc/*.xml; do [ -f "$f" ] || continue
-    grep -qiE "<name>user</name>[[:space:]]*<value>$1</value>" "$f" && printf '%s|%s|%s\n' "$d" "$f" "$(grep -oE '<jndi-name>[^<]*' "$f" | head -1 | sed 's/<[^>]*>//')"; done; done; done
+    tr -d '\n' <"$f" | grep -qiE "<name>[[:space:]]*user[[:space:]]*</name>[[:space:]]*<value>[[:space:]]*$1[[:space:]]*</value>" && printf '%s|%s|%s\n' "$d" "$f" "$(grep -oE '<jndi-name>[^<]*' "$f" | head -1 | sed 's/<[^>]*>//')"; done; done; done
 }
 gg_alias_for() { # <user>: credential store aliases whose userid is this user
   ogg_detect >/dev/null 2>&1 || return 0; local m; for m in ${GG_ALIAS_MAP//,/ }; do [ "$(printf '%s' "${m%%=*}" | tr '[:lower:]' '[:upper:]')" = "$1" ] && { echo "${m#*=}"; return; }; done
@@ -172,7 +172,10 @@ ords_set_secret() { # <pool> <password>
 }
 ords_restart() {
   [ "$NO_RESTART" = 1 ] && { warn "ORDS not restarted (--no-restart): it keeps using the old password until restarted"; return 0; }
-  if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"; sleep 5; run_sh "${ORDS_START_CMD:?ORDS_START_CMD needed with ORDS_STOP_CMD}"
+  if [ -n "${ORDS_STOP_CMD:-}" ]; then
+    # both commands checked before anything is stopped: ':?' on the start command used to abort with ORDS already down
+    [ -n "${ORDS_START_CMD:-}" ] || { err "ORDS_START_CMD is not set (needed with ORDS_STOP_CMD): ORDS NOT restarted, it keeps the old password until you restart it"; return 1; }
+    run_sh "$ORDS_STOP_CMD" || warn "ORDS stop command returned non-zero"; sleep 5; run_sh "$ORDS_START_CMD" || { err "ORDS start command failed: see $LOG_FILE"; return 1; }
   elif [ -n "${ORDS_SERVICE:-$(ords_service)}" ]; then run_sh "$SUDO systemctl restart ${ORDS_SERVICE:-$(ords_service)}"
   elif [ -n "${ORDS_PID:-}" ]; then warn "ORDS runs as pid $ORDS_PID without a service; restart it yourself (or set ORDS_STOP_CMD/ORDS_START_CMD)"; return 0
   else warn "ORDS not running here or deployed in WebLogic: restart the ords application / managed server"; return 0; fi
@@ -213,6 +216,8 @@ cmd_reset() {
   echo "Accounts to reset:"; printf '%s\n' "$tg" | awk -F'|' '{printf "  %s%s %s (%s)\n", $1, ($2==""?"":"/"$2), $3, $4}'
   local pw="$NEW_PASSWORD"
   if [ -z "$pw" ]; then if [ "$GENERATE" = 1 ]; then pw="$(gen_password)"; echo; echo "  NEW PASSWORD (shown once, store it in your vault now): $pw"; echo; else read_secret NEW_PASSWORD "new password for the account(s) above"; pw="$NEW_PASSWORD"; local again; read -r -s -p "again: " again; echo; [ "$again" = "$pw" ] || die "passwords differ"; fi; fi
+  [ -n "$pw" ] || die "empty password"
+  case "$pw" in *\"*|*$'\n'*) die "the password may not contain a double quote or a newline (it goes inside identified by \"...\")";; esac
   [ "${#pw}" -ge 12 ] || warn "password shorter than 12 characters; profiles with a verify function may reject it"
   confirm "Reset the password of the account(s) above in the database$([ "$NO_PROPAGATE" = 1 ] || echo ' and propagate to ORDS / WebLogic / GoldenGate')?" || die "aborted"
   local fail=0
@@ -221,6 +226,8 @@ cmd_reset() {
     # sys.user$.spare4 holds the verifiers ("S:...;T:..."); dbms_metadata's CLOB is cut at "set long" and wrapped at linesize
     local hash; hash="$(wp "$pdb" sql_lines "$sid" "set linesize 4000\nselect 'VALUES '''||spare4||'''' from sys.user\$ where name='$u' and spare4 is not null;" 2>/dev/null | head -1)"
     [ -n "$hash" ] && { printf '%s|%s|%s|%s\n' "$sid" "$pdb" "$u" "$hash" >>"$RUN_DIR/old_hashes.txt"; chmod 600 "$RUN_DIR/old_hashes.txt"; } || warn "$u: could not read the old password hash (rollback will not be able to restore it)"
+    # a common user is reset once, in the root with container=all; the same row inside a PDB would raise ORA-65066
+    [ "$cm" = YES ] && [ "$pdb" != - ] && { log "$pdb/$u: common user, reset in the root"; continue; }
     local cont=""; [ "$cm" = YES ] && [ "$pdb" = - ] && cont=" container=all"
     usql "$sid" "$pdb" "alter user $u identified by *** account unlock$cont" "alter user \"$u\" identified by \"$pw\" account unlock$cont;" || { fail=1; continue; }
     state_append reset_done "$sid:$pdb:$u"

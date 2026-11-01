@@ -73,7 +73,7 @@ gg() {
   else ggsci "$@"; fi
 }
 # gg_change <what> <commands>: logged, dry-run aware
-gg_change() { log "GG: ${2//\\n/; }"; [ "$DRY_RUN" = 1 ] && return 0; local o; o="$(gg "$2")"; printf '%s\n' "$o" >>"$LOG_FILE"; printf '%s\n' "$o" | grep -E 'OGG-|ERROR|error' | head -3 | sed 's/^/  /' >&2; ! printf '%s' "$o" | grep -qE '^ERROR|OGG-0[0-9]{4}.*(ERROR|error)'; }
+gg_change() { log "GG: ${2//\\n/; }"; [ "$DRY_RUN" = 1 ] && return 0; local o; o="$(gg "$2")"; printf '%s\n' "$o" >>"$LOG_FILE"; printf '%s\n' "$o" | grep -E 'OGG-|ERROR|error' | head -3 | sed 's/^/  /' >&2; ! printf '%s' "$o" | grep -qE '(^|[[:space:]])ERROR([[:space:]:]|$)'; }
 dblogin() { [ -n "$GG_ALIAS" ] || die "GG_ALIAS (useridalias) is required for database commands"; printf 'dblogin useridalias %s%s' "$GG_ALIAS" "${GG_DOMAIN:+ domain $GG_DOMAIN}"; }
 hms_to_min() { local h m s; IFS=: read -r h m s <<<"${1:-0:0:0}"; echo $(( 10#${h:-0}*60 + 10#${m:-0} + (10#${s:-0}>=30 ? 1 : 0) )); }
 # load_procs: PROCS from info all
@@ -315,7 +315,9 @@ heal_one() { # <group> <status>: decide from the report's last error
 }
 rman_restore() { # <sid> <rman command>: through the lib wrapper (database home environment, RMAN_CMD honoured)
   local sid="$1"; log "RMAN ($sid): $2"; [ "$DRY_RUN" = 1 ] && return 0
-  printf 'connect target /\n%s\nexit\n' "$2" | rman_script "$sid" 3600 >>"$LOG_FILE" 2>&1 && log "RMAN restore done"
+  # through the lib: RMAN_TARGET_CONNECT (set it in gg-ops.conf when this does not run as the oracle OS user, "/" needs
+  # OS authentication) and RMAN_CATALOG_CONNECT are honoured; the exit status is RMAN's
+  rman_run "$sid" 3600 "$2" >>"$LOG_FILE" 2>&1 && log "RMAN restore done"
 }
 cmd_heal() {
   init_run_dir heal; gg_detect; load_procs; local prog st g lag since any=0
@@ -328,7 +330,8 @@ cmd_heal() {
   done < <(proc_rows)
   [ "$any" = 0 ] && echo "nothing to heal: every process is RUNNING within GG_MAX_LAG_MIN=$GG_MAX_LAG_MIN min"
   sleep 2; load_procs; echo; proc_rows | awk -F'|' '{printf "%-9s %-8s %-12s %-8s %s\n",$1,$2,$3,$4,$5}'
-  printf '%s\n' "$PROCS" | grep -qE '\|(ABENDED|STOPPED)\|' && { echo "still down: $(printf '%s\n' "$PROCS" | awk -F'|' '$2=="ABENDED"||$2=="STOPPED"{print $3}' | tr '\n' ' ') - see the reports and gg-ops.sh inspect --report"; return 1; }
+  local down="" dg; for dg in $(printf '%s\n' "$PROCS" | awk -F'|' '$2=="ABENDED"||$2=="STOPPED"{print $3}'); do expected_stopped "$dg" && continue; down="$down$dg "; done   # GG_EXPECTED_STOPPED is not "down"
+  [ -n "$down" ] && { echo "still down: $down - see the reports and gg-ops.sh inspect --report"; return 1; }
   return 0
 }
 cmd_plan() { DRY_RUN=1; ASSUME_YES=1; cmd_heal; }
