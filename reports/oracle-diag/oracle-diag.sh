@@ -943,6 +943,12 @@ diag_exascale() {
 # SSL_WALLET_LOC in okvclient.ora at it, on an 'okvutil list' that reaches the node that generated the certificate
 # (OKV_HOSTNAME shows the node last talked to). Until that line changes the endpoint still runs on the old certificate.
 # $OKV_HOME/conf/ewallet.p12 is the TDE secret store, not the endpoint certificate: it is never touched here.
+# okv_age_finding <wallet> <age days> <okvclient.ora>: the age heuristic, one copy for every path that cannot read the date
+okv_age_finding() {
+  local wal="$1" age="$2" f="$3"
+  if [ "$age" -ge 365 ]; then finding CRIT okv "endpoint wallet $wal is $age days old and endpoint certificates live 1 year: unless it was rotated in place the certificate has EXPIRED and TDE cannot reach Key Vault at the next keystore open (set OKV_WALLET_PASSWORD to read the real date; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC in $f moves to a subfolder of ssl/)"
+  elif [ "$age" -ge 300 ]; then finding WARN okv "endpoint wallet $wal is $age days old: endpoint certificates live 1 year, so about $((365 - age)) days remain unless it was rotated (set OKV_WALLET_PASSWORD to read the real date; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC in $f moves to a subfolder of ssl/)"; fi
+}
 okv_endpoint_cert() {
   local f="$1" loc host upd d wal age exp
   loc="$(grep -iE '^SSL_WALLET_LOC=' "$f" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"; host="$(grep -iE '^OKV_HOSTNAME=' "$f" | tail -1 | cut -d= -f2-)"; upd="$(grep -iE '^UPDATE_TIMESTAMP=' "$f" | tail -1 | cut -d= -f2-)"
@@ -951,16 +957,23 @@ okv_endpoint_cert() {
   kv "OKV_HOSTNAME (node last talked to)" "${host:-?}"; kv "UPDATE_TIMESTAMP" "${upd:-?}"
   [ -f "$wal" ] || { finding CRIT okv "SSL_WALLET_LOC in $f points at $loc but $wal does not exist - the endpoint cannot present a certificate to Key Vault"; kv_end; return 0; }
   age="$(( ( $(date +%s) - $(stat -c %Y "$wal" 2>/dev/null || stat -f %m "$wal") ) / 86400 ))"; kv "ewallet.p12 age" "$age days"
-  # expiry needs the endpoint wallet password: OKV_WALLET_PASSWORD (env) when given; otherwise the file age stands in for it
+  # expiry needs the endpoint wallet password: OKV_WALLET_PASSWORD (env) when given; otherwise, and whenever the
+  # wallet or the date cannot be read, the file age stands in - an unreadable read is a WARN plus the age, never silence
   if [ -n "${OKV_WALLET_PASSWORD:-}" ] && command -v openssl >/dev/null 2>&1; then
     # the password reaches openssl through a 600-mode file, not its environment or command line (the tree's rule)
-    local pf; pf="$(mktemp "${TMPDIR:-/tmp}/okv.XXXXXX")"; chmod 600 "$pf"; printf '%s' "$OKV_WALLET_PASSWORD" >"$pf"
-    exp="$( { openssl pkcs12 -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null || openssl pkcs12 -legacy -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null; } | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"; rm -f "$pf"
-    [ -n "$exp" ] && { kv "endpoint certificate notAfter" "$exp"; local es; es="$(date -d "$exp" +%s 2>/dev/null || date -j -f '%b %d %T %Y %Z' "$exp" +%s 2>/dev/null)"; [ -n "$es" ] && { local dl=$(( (es - $(date +%s)) / 86400 )); [ "$dl" -lt 0 ] && finding CRIT okv "endpoint certificate in $wal EXPIRED on $exp - TDE cannot reach Key Vault after the next keystore open"; [ "$dl" -ge 0 ] && [ "$dl" -lt 30 ] && finding CRIT okv "endpoint certificate in $wal expires in $dl days ($exp): rotate it in the Key Vault console and run okvutil list until SSL_WALLET_LOC changes"; [ "$dl" -ge 30 ] && [ "$dl" -lt 90 ] && finding WARN okv "endpoint certificate in $wal expires in $dl days ($exp): plan the rotation"; }; }
-  else
-    if [ "$age" -ge 365 ]; then finding CRIT okv "endpoint wallet $wal is $age days old and endpoint certificates live 1 year: unless it was rotated in place the certificate has EXPIRED and TDE cannot reach Key Vault at the next keystore open (set OKV_WALLET_PASSWORD to read the real date; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC in $f moves to a subfolder of ssl/)"
-    elif [ "$age" -ge 300 ]; then finding WARN okv "endpoint wallet $wal is $age days old: endpoint certificates live 1 year, so about $((365 - age)) days remain unless it was rotated (set OKV_WALLET_PASSWORD to read the real date; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC in $f moves to a subfolder of ssl/)"; fi
-  fi
+    local pf; pf="$(mktemp "${TMPDIR:-/tmp}/okv.XXXXXX" 2>/dev/null)"; [ -n "$pf" ] && { chmod 600 "$pf"; printf '%s' "$OKV_WALLET_PASSWORD" >"$pf"; }
+    [ -n "$pf" ] && exp="$( { openssl pkcs12 -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null || openssl pkcs12 -legacy -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null; } | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"; rm -f "$pf"
+    if [ -z "$exp" ]; then finding WARN okv "could not read $wal with OKV_WALLET_PASSWORD (wrong password, or an openssl that cannot open this p12) - endpoint certificate expiry unknown, file age $age days"; okv_age_finding "$wal" "$age" "$f"
+    else
+      kv "endpoint certificate notAfter" "$exp"; local es; es="$(date -d "$exp" +%s 2>/dev/null || date -j -f '%b %d %T %Y %Z' "$exp" +%s 2>/dev/null)"
+      if [ -z "$es" ]; then finding WARN okv "endpoint certificate notAfter '$exp' in $wal could not be parsed by date - check it by hand; file age $age days"; okv_age_finding "$wal" "$age" "$f"
+      else local dl=$(( (es - $(date +%s)) / 86400 ))
+        if [ "$dl" -lt 0 ]; then finding CRIT okv "endpoint certificate in $wal EXPIRED on $exp - TDE cannot reach Key Vault after the next keystore open"
+        elif [ "$dl" -lt 30 ]; then finding CRIT okv "endpoint certificate in $wal expires in $dl days ($exp): rotate it in the Key Vault console and run okvutil list until SSL_WALLET_LOC changes"
+        elif [ "$dl" -lt 90 ]; then finding WARN okv "endpoint certificate in $wal expires in $dl days ($exp): plan the rotation"; fi
+      fi
+    fi
+  else okv_age_finding "$wal" "$age" "$f"; fi
   kv_end
 }
 # keytool_pwfile: a 600-mode file with the cacerts password (CACERTS_PASSWORD, else the JDK default) for -storepass:file,
