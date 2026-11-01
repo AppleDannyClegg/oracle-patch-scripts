@@ -191,6 +191,13 @@ load_config() {
       set +a
     fi
   done
+  # set -a exported every conf variable to every child (java, curl, tar, opatch): a secret in the environment sits in
+  # /proc/<pid>/environ and 'ps eww' for the life of each child. Take the secrets back out; the children never read them from there.
+  # The name pattern is lib/oracle-lib.sh unexport_secrets, verbatim (one pattern in the tree, not three); the shell's own PWD stays exported
+  local v; for v in $(compgen -A variable | grep -E 'PASSWORD|PASSWD|SECRET|_PASS($|_)|TOKEN|PWD|_CONNECT$' | grep -vxE 'PWD|OLDPWD'); do
+    # shellcheck disable=SC2163  # the variable NAMED by $v is un-exported, which is the point
+    export -n "$v" 2>/dev/null || true
+  done
 }
 
 discover_oracle_home() {

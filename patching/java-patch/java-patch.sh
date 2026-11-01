@@ -133,7 +133,9 @@ cmd_inspect() {
   ogg_detect >/dev/null 2>&1 && [ "$OGG_MA" = 1 ] && echo "GoldenGate MA   : running on $(running_on "$OLD_REAL" | grep -E 'ServiceManager|adminsrvr' | head -1 | awk '{print $1}' | xargs -I{} readlink -f /proc/{}/exe 2>/dev/null) (note only: GG MA ships its own JRE under its home; patch it with GG patches)"
   pgrep -f 'emagent|oracle.sysman.gcagent' >/dev/null 2>&1 && echo "EM agent        : present (note only: the agent uses its own JDK under the agent home; it is patched with agent patches, not here)"
   local cnt; cnt="$(running_on "$OLD_REAL" | grep -c .)"; echo "Running on target: $cnt JVM(s)$([ "$cnt" != 0 ] && echo " - they need a restart after the switch (RESTART_CMDS / --restart)")"
-  echo "cacerts         : $OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts) $(to 60 "$OLD_JH/bin/keytool" -list -keystore "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" -storepass "$CACERTS_PASSWORD" 2>/dev/null | grep -c trustedCertEntry) trusted certs"
+  local oc pf nca="(not counted)"; oc="$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"
+  if pf="$(cacerts_pw_file)"; then if cacerts_aliases "$OLD_JH/bin/keytool" "$oc" "$pf" >"$pf.lst" 2>/dev/null; then nca="$(grep -c . "$pf.lst") trusted certs"; else nca="UNREADABLE with CACERTS_PASSWORD (apply will refuse the CA carry-over)"; fi; rm -f "$pf" "$pf.lst"; fi
+  echo "cacerts         : $oc $nca"
 }
 
 cmd_latest() {

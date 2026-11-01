@@ -381,20 +381,25 @@ listener_services_wait() {
     [ "$i" = 3 ] && for s in $(db_instances); do log "alter system register on $s (LREG otherwise re-registers within 60 s)"; sql_run "$s" "alter system register;" >>"$LOG_FILE" 2>&1 || true; done; sleep 1; done
   warn "listener $T_INST shows no registered services after ${LSNR_REG_WAIT:-70}s: connections get ORA-12514 until LREG re-registers (alter system register; on each instance hurries it)"; return 0
 }
+# restart_target: 0 = restarted (or dry-run), 1 = a restart was attempted and FAILED, 2 = nothing was restarted and the operator
+# was told to do it (no command known, or the listener stop/start declined). Callers must not read 2 as "done": the process
+# still serves the previous certificate until someone restarts it (board review, 1 Nov 2026: every warn-only path returned 0)
 restart_target() {
   local cmd; cmd="$(restart_cmd_for "$T_NAME")"; [ -z "$cmd" ] && [ "$T_KIND" = wls ] && cmd="$(restart_cmd_for "wls:$(basename "$T_DOMAIN")")"
   if [ -n "$cmd" ]; then log "restart $T_NAME: $cmd"; run_sh "$cmd" || { err "restart command failed (see $LOG_FILE)"; return 1; }; return 0; fi
   case "$T_KIND" in
-    ords) if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"; sleep 5; run_sh "${ORDS_START_CMD:?ORDS_START_CMD needed with ORDS_STOP_CMD}"; elif [ -n "${ORDS_SERVICE:-$(ords_service)}" ]; then run_sh "$SUDO systemctl restart ${ORDS_SERVICE:-$(ords_service)}"; else warn "no ORDS service/RESTART_CMDS: restart ORDS yourself"; return 0; fi;;
-    listener) local l="${T_HOME:+$T_HOME/bin/}lsnrctl"; log "lsnrctl reload $T_INST (the wallet is read at listener start: a full restart follows if the port still serves the old cert)"; run_sh "$l reload $T_INST" || true
+    ords) if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD" || { err "ORDS_STOP_CMD failed (see $LOG_FILE)"; return 1; }; sleep 5; run_sh "${ORDS_START_CMD:?ORDS_START_CMD needed with ORDS_STOP_CMD}" || { err "ORDS_START_CMD failed (see $LOG_FILE)"; return 1; }
+      elif [ -n "${ORDS_SERVICE:-$(ords_service)}" ]; then run_sh "$SUDO systemctl restart ${ORDS_SERVICE:-$(ords_service)}" || { err "systemctl restart ${ORDS_SERVICE:-$(ords_service)} failed (see $LOG_FILE)"; return 1; }
+      else warn "no ORDS service/RESTART_CMDS: restart ORDS yourself"; return 2; fi;;
+    listener) local l="${T_HOME:+$T_HOME/bin/}lsnrctl"; log "lsnrctl reload $T_INST (the wallet is read at listener start: a full restart follows if the port still serves the old cert)"; run_sh "$l reload $T_INST" || warn "lsnrctl reload $T_INST failed (see $LOG_FILE): checking what the port serves"
       [ "$DRY_RUN" = 1 ] && return 0; sleep 3; listener_services_wait "$l"; local s; s="$(live_pem "127.0.0.1:$T_PORT" "$RUN_DIR/after_reload.pem" && x509_facts "$RUN_DIR/after_reload.pem" && printf '%s' "$X_SERIAL")"
       [ "$s" = "$(state_get new_serial || true)" ] && return 0
-      confirm "Still the old certificate on $T_PORT. lsnrctl stop/start $T_INST (new connections fail for a few seconds)?" || { warn "listener not restarted: the old certificate stays live until it is"; return 0; }
-      run_sh "$l stop $T_INST"; run_sh "$l start $T_INST"; listener_services_wait "$l";;
-    ohs) if [ -x "$T_DOMAIN/bin/restartComponent.sh" ]; then log "restartComponent.sh $T_INST (NodeManager credentials from WLS_ADMIN_USER/WLS_ADMIN_PASSWORD)"; read_secret WLS_ADMIN_PASSWORD "NodeManager/WebLogic admin password"; [ "$DRY_RUN" = 1 ] || printf '%s\n%s\n' "${WLS_ADMIN_USER:-weblogic}" "$WLS_ADMIN_PASSWORD" | to 300 "$T_DOMAIN/bin/restartComponent.sh" "$T_INST" >>"$LOG_FILE" 2>&1 || { err "restartComponent.sh failed"; return 1; }; else warn "no restartComponent.sh: restart OHS $T_INST yourself (RESTART_CMDS ohs:$T_INST=...)"; fi;;
-    wls) warn "no RESTART_CMDS entry for $T_NAME: if verify shows the old certificate, restart $T_SERVER (console or the domain's start scripts)";;
-    nm) warn "restart the NodeManager of $(basename "$T_DOMAIN") so it reads the new keystore (stopNodeManager.sh / startNodeManager.sh)";;
-    java) warn "JVMs read cacerts at start: restart the servers that must trust the new CA";;
+      confirm "Still the old certificate on $T_PORT. lsnrctl stop/start $T_INST (new connections fail for a few seconds)?" || { warn "listener not restarted: the old certificate stays live until it is"; return 2; }
+      run_sh "$l stop $T_INST"; run_sh "$l start $T_INST" || { err "lsnrctl start $T_INST failed (see $LOG_FILE)"; return 1; }; listener_services_wait "$l";;
+    ohs) if [ -x "$T_DOMAIN/bin/restartComponent.sh" ]; then log "restartComponent.sh $T_INST (NodeManager credentials from WLS_ADMIN_USER/WLS_ADMIN_PASSWORD)"; read_secret WLS_ADMIN_PASSWORD "NodeManager/WebLogic admin password"; [ "$DRY_RUN" = 1 ] || printf '%s\n%s\n' "${WLS_ADMIN_USER:-weblogic}" "$WLS_ADMIN_PASSWORD" | to 300 "$T_DOMAIN/bin/restartComponent.sh" "$T_INST" >>"$LOG_FILE" 2>&1 || { err "restartComponent.sh failed"; return 1; }; else warn "no restartComponent.sh: restart OHS $T_INST yourself (RESTART_CMDS ohs:$T_INST=...)"; return 2; fi;;
+    wls) warn "no RESTART_CMDS entry for $T_NAME: if verify shows the old certificate, restart $T_SERVER (console or the domain's start scripts)"; return 2;;
+    nm) warn "restart the NodeManager of $(basename "$T_DOMAIN") so it reads the new keystore (stopNodeManager.sh / startNodeManager.sh)"; return 2;;
+    java) warn "JVMs read cacerts at start: restart the servers that must trust the new CA"; return 2;;
   esac
 }
 
@@ -454,8 +459,11 @@ build_wallet() {
   [ "$DRY_RUN" = 1 ] && { log "orapki wallet create/import_pkcs12/add -trusted_cert in $d"; return 0; }
   rm -rf "$d"; mkdir -p "$d"
   printf '%s\n%s\n' "$WALLET_PASSWORD" "$WALLET_PASSWORD" | to 120 "$ORAPKI" wallet create -wallet "$d" -auto_login >>"$LOG_FILE" 2>&1 || die "orapki wallet create failed (see $LOG_FILE)"
-  to 120 "$ORAPKI" wallet import_pkcs12 -wallet "$d" -pwd "$WALLET_PASSWORD" -pkcs12file "$p12" -pkcs12pwd "$p12pw" >>"$LOG_FILE" 2>&1 || die "orapki wallet import_pkcs12 failed (needs 18c+ orapki; on older releases create the CSR inside the wallet: orapki wallet add -dn ... -keysize, then add -user_cert)"
-  for f in $(chain_cas "$RUN_DIR/chain"); do to 60 "$ORAPKI" wallet add -wallet "$d" -pwd "$WALLET_PASSWORD" -trusted_cert -cert "$f" >>"$LOG_FILE" 2>&1 || dbg "trusted cert $f already in the wallet or rejected"; done
+  # the wallet password goes to orapki on stdin (without -pwd it prompts 'Enter wallet password:'), as for 'wallet create' above - never on
+  # its command line (verified on PKI 23 in the container, board review 1 Nov 2026). -pkcs12pwd is the random one-off password of the
+  # temporary p12 that build_wallet's caller removes straight after: ephemeral, and the only argv value here
+  printf '%s\n' "$WALLET_PASSWORD" | to 120 "$ORAPKI" wallet import_pkcs12 -wallet "$d" -pkcs12file "$p12" -pkcs12pwd "$p12pw" >>"$LOG_FILE" 2>&1 || die "orapki wallet import_pkcs12 failed (needs 18c+ orapki; on older releases create the CSR inside the wallet: orapki wallet add -dn ... -keysize, then add -user_cert)"
+  for f in $(chain_cas "$RUN_DIR/chain"); do printf '%s\n' "$WALLET_PASSWORD" | to 60 "$ORAPKI" wallet add -wallet "$d" -trusted_cert -cert "$f" >>"$LOG_FILE" 2>&1 || dbg "trusted cert $f already in the wallet or rejected"; done
   [ -f "$d/cwallet.sso" ] || die "$d/cwallet.sso was not created"
 }
 new_ks_pass() { [ -n "$WLS_KS_PASS" ] || { if [ "$ASSUME_YES" = 1 ] && [ ! -t 0 ]; then die "WLS_KS_PASS not set"; fi; read_secret WLS_KS_PASS "password for the new identity keystore"; }; [ "${#WLS_KS_PASS}" -ge 6 ] || die "keystore password must be at least 6 characters"; }
@@ -642,7 +650,7 @@ cmd_apply() {
     state_set new_serial "$NEW_SERIAL"; state_set target "$one"
     case "$T_KIND" in wls) wls_apply_one;; nm) nm_apply;; ords) ords_apply;; listener|ohs) wallet_apply;; java) java_apply;; esac || rc=1
     state_set "apply_$one" "$([ "$rc" = 0 ] && echo ok || echo partial)"
-    if [ "$DO_RESTART" = 1 ] || [ "$T_KIND" = listener ] || [ -n "$(restart_cmd_for "$T_NAME")" ]; then restart_target || { rc=1; [ "$T_KIND" = listener ] || err "$one: the config now names the new certificate but the running process still serves the old one until it restarts - fix the restart and run 'verify $one', or 'rollback --yes'"; }; fi
+    if [ "$DO_RESTART" = 1 ] || [ "$T_KIND" = listener ] || [ -n "$(restart_cmd_for "$T_NAME")" ]; then restart_target; case $? in 0) ;; 2) state_set "restart_$one" pending;; *) rc=1; state_set "restart_$one" failed; [ "$T_KIND" = listener ] || err "$one: the config now names the new certificate but the running process still serves the old one until it restarts - fix the restart and run 'verify $one', or 'rollback --yes'";; esac; fi
   done; return "$rc"
 }
 
@@ -714,9 +722,14 @@ print 'CERT_RENEW_OK'";; esac && log "WebLogic $T_SERVER: previous keystore sett
     java) log "restoring $T_FILE"; [ "$DRY_RUN" = 1 ] || cp -p "$b/cacerts" "$T_FILE";;
   esac
   state_set new_serial ""
-  # the previous files are back; the rollback is only "ok" once the target has been restarted onto them
-  if restart_target; then state_set rollback ok; log "rollback done"
-  else state_set rollback failed; err "rollback incomplete: the previous files are back in place but the restart of $T_NAME FAILED - it may still serve the new certificate or be down (see $LOG_FILE)"; return 1; fi
+  # the previous files are back; the rollback is "ok" only once the target has been restarted onto them. restart_target: 0 restarted,
+  # 2 nothing restarted and the operator told, 1 failed - the state says which, "ok" is never written for 1 or 2
+  restart_target; local rrc=$?
+  case "$rrc" in
+    0) state_set rollback ok; log "rollback done";;
+    2) state_set rollback restart-pending; err "rollback NOT complete: the previous files are back in place but $T_NAME was not restarted by this script (see the line above for how) - it serves the new certificate until you restart it; then run 'verify $t'. Exit 2."; return 2;;
+    *) state_set rollback failed; err "rollback incomplete: the previous files are back in place but the restart of $T_NAME FAILED - it may still serve the new certificate or be down (see $LOG_FILE)"; return 1;;
+  esac
 }
 
 cmd_run() {
