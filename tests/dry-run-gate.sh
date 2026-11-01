@@ -17,9 +17,10 @@ alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
-me="$(basename "$0")"; { echo "TOOL $me $*"; if [ ! -t 0 ]; then sed 's/^/  > /'; fi; } >>"$DRY_LOG"
-case "$me" in sqlplus|sql)   # canned answers so scripts reach their change steps: sql_ok, then the env file's regex|answer lines
-  q="$(tail -40 "$DRY_LOG")"; printf '%s' "$q" | grep -q "'ok'" && echo ok
+me="$(basename "$0")"; q=""; [ -t 0 ] || q="$(cat)"
+{ echo "TOOL $me $*"; [ -n "$q" ] && printf '%s\n' "$q" | sed 's/^/  > /'; } >>"$DRY_LOG"
+case "$me" in sqlplus|sql)   # canned answers so scripts reach their change steps: sql_ok, then the env file's regex|answer lines, matched on THIS call's stdin only
+  printf '%s' "$q" | grep -q "'ok'" && echo ok
   while IFS='|' read -r re ans; do [ -n "$re" ] && printf '%s' "$q" | grep -qiE -- "$re" && { echo "$ans"; break; }; done <"$ANSWERS";;
 esac
 exit 0
