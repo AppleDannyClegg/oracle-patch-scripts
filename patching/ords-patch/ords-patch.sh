@@ -14,7 +14,8 @@
 #   latest                  Download ords-latest.zip to ORDS_BASE/downloads and read its version
 #   download                Same as latest (kept for symmetry with the other scripts)
 #   preflight               Java/ORDS pairing, config dir sane, admin password available, disk, URL
-#   backup                  Tar the config dir; create a guaranteed restore point if SQL access exists
+#   backup                  Tar the config dir; create a guaranteed restore point if SQL access exists (fails if it cannot:
+#                           --no-restore-point to upgrade without one)
 #   stop | start            Stop / start ORDS (systemd unit, ORDS_STOP_CMD/ORDS_START_CMD, or direct)
 #   apply                   For each pool: ords install --db-only (schema upgrade); switch ORDS_HOME
 #                           symlink to the new release
@@ -378,7 +379,7 @@ cmd_backup() {
   elif sql_available && [ "$(sql_val "(select log_mode from v\$database)")" = ARCHIVELOG ]; then
     local rp; rp="ORDSPATCH_$(date +%Y%m%d_%H%M)"
     if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: would create guaranteed restore point $rp"
-    elif run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Guaranteed restore point $rp created ('cleanup' drops it later)"; else warn "Could not create restore point (see log)"; fi
+    elif run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Guaranteed restore point $rp created ('cleanup' drops it later)"; else err "Could not create restore point $rp (see $LOG_FILE): nothing changed. Fix the cause, or run again with --no-restore-point to upgrade with no way back for the schema"; return 1; fi
   else warn "No restore point (no SQL access or NOARCHIVELOG): the ORDS schema upgrade cannot be undone, only the binaries"; fi
 }
 
@@ -540,7 +541,7 @@ cmd_run() {
   [ "$(state_get latest || true)" = uptodate ] && { log "Already current. Nothing to do."; return 0; }
   log "=== 3/7 preflight"; cmd_preflight || { err "Preflight failed. Nothing changed."; return 1; }
   confirm "Upgrade ORDS $ORDS_VER -> $(state_get new_version) now? ORDS will be stopped." || return 1
-  log "=== 4/7 backup"; cmd_backup
+  log "=== 4/7 backup"; cmd_backup || { err "Backup failed. Nothing changed."; return 1; }
   log "=== 5/7 stop"; ords_stop || die "Could not stop ORDS. The schema is untouched; the guaranteed restore point $(state_get restore_point || echo '(none)') stays until 'cleanup'."
   log "=== 6/7 apply"
   if ! cmd_apply; then err "Upgrade failed - rolling back"; ASSUME_YES=1 cmd_rollback || err "Rollback incomplete - see $LOG_FILE"; return 1; fi

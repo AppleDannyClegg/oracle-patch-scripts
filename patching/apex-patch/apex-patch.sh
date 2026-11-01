@@ -14,8 +14,8 @@
 #   download [version]      Fetch apex_<version>.zip (public, no login) and unpack it under APEX_BASE
 #   preflight [version]     Checks: SQL access, DB/ORDS versions, upgrade path, invalid objects,
 #                           tablespaces, previous-release source for rollback, restore-point ability
-#   backup                  Keep previous-release source, guaranteed restore point (if ARCHIVELOG),
-#                           tar of the images directory
+#   backup                  Keep previous-release source, guaranteed restore point (if ARCHIVELOG; fails if it
+#                           cannot be created, --no-restore-point to go without), tar of the images directory
 #   stop | start            Stop / start ORDS (systemd unit, ORDS_STOP_CMD/ORDS_START_CMD, or direct)
 #   apply [version]         Run apexins.sql / apxrtins.sql from the new source; switch the images dir
 #   verify                  apex_release matches, registry VALID, no invalid objects, ORDS answers
@@ -466,7 +466,7 @@ cmd_backup() {
     log "Creating guaranteed restore point $rp"
     if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: would create guaranteed restore point $rp"
     elif run_sql "create restore point $rp guarantee flashback database;" >/dev/null; then state_set restore_point "$rp"; log "Restore point $rp created (remember 'cleanup' afterwards, it holds flashback logs)"
-    else warn "Could not create a restore point (see log); continuing with apxdwngrd.sql as the rollback"; fi
+    else err "Could not create restore point $rp (see $LOG_FILE): nothing changed. Fix the cause, or run again with --no-restore-point to upgrade with apxdwngrd.sql as the only way back"; return 1; fi
   else warn "NOARCHIVELOG - no restore point"; fi
 }
 
@@ -656,7 +656,7 @@ cmd_run() {
   log "=== 3/8 download"; cmd_download "$ver" || die "Download failed. Nothing changed."
   log "=== 4/8 preflight"; cmd_preflight "$ver" || { err "Preflight failed. Nothing changed."; return 1; }
   confirm "Upgrade APEX $APEX_VER -> $ver now? ORDS will be stopped and APEX unavailable while it runs." || return 1
-  log "=== 5/8 backup"; cmd_backup
+  log "=== 5/8 backup"; cmd_backup || { err "Backup failed. Nothing changed."; return 1; }
   log "=== 6/8 stop ORDS"; ords_stop
   log "=== 7/8 apply"
   local arc=0; cmd_apply "$ver" || arc=$?

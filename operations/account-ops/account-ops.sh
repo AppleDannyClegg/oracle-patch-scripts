@@ -154,14 +154,15 @@ targets() { # "sid|pdb|user|status|common" for the requested users (or every kno
 usql() { local sid="$1" pdb="$2" desc="$3" q="$4" out; log "SQL $sid$(cs "$pdb"): $desc"; [ "$DRY_RUN" = 1 ] && return 0; out="$(wp "$pdb" sql_run "$sid" "whenever sqlerror exit 1\n$q")"; printf '%s\n' "$out" | redact >>"$LOG_FILE"; printf '%s' "$out" | grep -qE 'ORA-' && { err "  $(printf '%s' "$out" | grep -E 'ORA-' | head -1)"; return 1; }; return 0; }
 
 cmd_unlock() {
-  init_run_dir unlock; local n=0
+  init_run_dir unlock; local n=0 fail=0
   while IFS='|' read -r sid pdb u st cm; do [ -z "$u" ] && continue
     case "$st" in *LOCKED*) ;; *) log "$sid$(cs "$pdb") $u is $st - nothing to unlock"; continue;; esac
     confirm "Unlock $u in $sid$(cs "$pdb") ($st)?" || continue
-    usql "$sid" "$pdb" "unlock $u" "alter user \"$u\" account unlock;" && n=$((n+1))
+    usql "$sid" "$pdb" "unlock $u" "alter user \"$u\" account unlock;" && n=$((n+1)) || fail=$((fail+1))
     case "$st" in *EXPIRED*) warn "$u was also EXPIRED: unlock does not fix that - run 'reset' (the password is needed everywhere it is stored) or 'profile' first";; esac
   done < <(targets)
-  log "unlocked $n account(s)"
+  state_set unlock "$([ "$fail" = 0 ] && echo ok || echo failed)"
+  [ "$fail" = 0 ] && log "unlocked $n account(s)" || { err "unlocked $n account(s), $fail NOT unlocked (see $LOG_FILE)"; return 1; }
 }
 
 gen_password() { LC_ALL=C tr -dc 'A-Za-z0-9#_' </dev/urandom | head -c 18; printf '%s' "$(LC_ALL=C tr -dc 'A-Za-z' </dev/urandom | head -c 1)1"; }
@@ -247,21 +248,24 @@ cmd_reset() {
 }
 
 cmd_profile() {
-  init_run_dir profile
+  init_run_dir profile; local fail=0
   local sid pdb; for sid in $(sids); do sql_ok "$sid" || continue
     for pdb in $(containers "$sid"); do
       local have; have="$(wp "$pdb" sql_val "$sid" "(select count(*) from dba_profiles where profile='$SA_PROFILE')")"
       if [ "${have:-0}" = 0 ]; then
         confirm "Create profile $SA_PROFILE in $sid$(cs "$pdb") (PASSWORD_LIFE_TIME UNLIMITED, FAILED_LOGIN_ATTEMPTS $SA_FAILED_LOGINS, PASSWORD_GRACE_TIME UNLIMITED)?" || continue
-        usql "$sid" "$pdb" "create profile $SA_PROFILE" "create profile \"$SA_PROFILE\" limit password_life_time unlimited failed_login_attempts $SA_FAILED_LOGINS password_grace_time unlimited password_lock_time 1/24 password_reuse_time unlimited password_reuse_max unlimited$([ "$pdb" = - ] && db_is_cdb "$sid" && echo ' container=all');" || continue
+        usql "$sid" "$pdb" "create profile $SA_PROFILE" "create profile \"$SA_PROFILE\" limit password_life_time unlimited failed_login_attempts $SA_FAILED_LOGINS password_grace_time unlimited password_lock_time 1/24 password_reuse_time unlimited password_reuse_max unlimited$([ "$pdb" = - ] && db_is_cdb "$sid" && echo ' container=all');" || { fail=$((fail+1)); continue; }
       fi
       local u; for u in $(printf '%s\n' "$(targets)" | awk -F'|' -v s="$sid" -v p="$pdb" '$1==s && $2==p {print $3}'); do
         local cur; cur="$(wp "$pdb" sql_val "$sid" "(select profile from dba_users where username='$u')")"; [ "$cur" = "$SA_PROFILE" ] && continue
-        confirm "$sid$(cs "$pdb"): move $u from profile $cur to $SA_PROFILE?" && usql "$sid" "$pdb" "profile $u" "alter user \"$u\" profile \"$SA_PROFILE\";"
+        confirm "$sid$(cs "$pdb"): move $u from profile $cur to $SA_PROFILE?" || continue
+        usql "$sid" "$pdb" "profile $u" "alter user \"$u\" profile \"$SA_PROFILE\";" || fail=$((fail+1))
       done
     done
   done
   log "note: a profile change does not un-expire an already EXPIRED account; that needs a password reset"
+  state_set profile "$([ "$fail" = 0 ] && echo ok || echo failed)"
+  [ "$fail" = 0 ] || { err "$fail profile statement(s) failed (see $LOG_FILE)"; return 1; }
 }
 
 cmd_verify() {
