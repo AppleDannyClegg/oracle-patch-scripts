@@ -10,7 +10,7 @@
 # FAIL_<cmd> (the call to fail instead of the first changing one, a regex on 'tool argv | stdin') and OK / OK_<cmd>
 # (the success lines to forbid in state, a regex). Only lines ADDED to a state file by the run count, so a seeded
 # state may carry applied= or pool_x=ok. Needs no database.
-# Usage: tests/false-success-gate.sh [script...]
+# Usage: tests/false-success-gate.sh [script...] | --selftest (the success-line regex against the lines it must and must not catch)
 cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
 T="$(mktemp -d)"; STUB="$T/stub"; export DRY_LOG="$T/log" ANSWERS="$T/answers" FAIL_RE=""; mkdir -p "$STUB"; : >"$ANSWERS"
@@ -42,7 +42,15 @@ readonly_cmds='inspect plan latest preflight verify expiring diff validate recov
 # success lines a run may not add after its change failed. Prefixes, not exact keys: applied_spaceProvHC=1 (exascale-space),
 # restored_from= and opatch_upgraded=1 (wls-patch), deleted= (exascale-space release) are change claims too (DeepSeek 21:00);
 # not a blanket '=1' - app_stopped=1 and dry_run=1 are sub-states written before the change
-default_ok='^(applied[^=]*=|verified=1|rolled_back=1|restored[^=]*=|opatch_upgraded=1|deleted=|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
+default_ok='^(applied[^=]*=[^0[:space:]]|verified=1|rolled_back=1|restored[^=]*=[^[:space:]]|opatch_upgraded=1|deleted=[^[:space:]]|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
+# --selftest: the regex against the state lines it must catch (DeepSeek 21:00's four, one of each older form) and must not
+if [ "${1:-}" = --selftest ]; then f=0
+  for l in 'applied=26.3.0' 'applied_spaceProvHC=1' 'verified=1' 'rolled_back=1' 'restored=100 -> 100 from HEAD' 'restored_from=/u01/app/backup' 'opatch_upgraded=1' 'deleted=/vault/f1' 'backup=ok' 'pool_default=ok' 'exported_default=3 ok, 0 failed'; do
+    if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "ok   caught   $l"; else echo "FAIL missed   $l"; f=1; fi; done
+  for l in 'app_stopped=1' 'dry_run=1' 'apply_started=26.2' 'verified=0' 'rolled_back=0' 'reset=failed' 'exported_default=2 ok, 1 failed' 'restore_point=X' 'applied_spaceProvHC=0' 'preflight_problems=0'; do
+    if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "FAIL caught   $l (not a success claim)"; f=1; else echo "ok   ignored  $l"; fi; done
+  echo "false-success gate selftest: $([ $f = 0 ] && echo passed || echo FAILED)"; exit $f
+fi
 states() { find "$T/home" -name state -type f 2>/dev/null | sort | while read -r f; do sed "s|^|$f:|" "$f"; done; }
 scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(patching/*/*.sh operations/*/*.sh)
 pass=0; fail=0; nx=0; nxlist=""
