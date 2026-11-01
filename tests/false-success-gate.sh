@@ -4,7 +4,7 @@
 # change something (DDL, DML, flashback, a PL/SQL block - exec/begin, whatever it does - a changing tool verb) fails - the stub logs 'FAILED <tool> <argv>', prints an error (ORA-00600 for sqlplus/sql) and exits 1; every later
 # changing call fails the same way (the tool is broken), probes (select, --version, config get ...) keep answering.
 # A script that then exits 0, or records success in its run dir (applied*=, verified=1, rolled_back=1, restored*=,
-# opatch_upgraded=1, deleted=, <step>=ok, pool_<p>=ok, exported_<c>=N ok, 0 failed) claimed a change that did not happen: FAIL. NOT-EXERCISED:
+# opatch_upgraded=1, deleted=, downloaded=, <step>=ok, pool_<p>=ok, exported_<c>=N ok, 0 failed) claimed a change that did not happen: FAIL. NOT-EXERCISED:
 # no changing call was reached (the command only reads, or ended before it): counted and listed, never a pass.
 # tests/dry-run-env/<tool>.sh (shared with tests/dry-run-gate.sh) is sourced first, with CMD set to the command; it may set
 # FAIL_<cmd> (the call to fail instead of the first changing one, a regex on 'tool argv | stdin') and OK / OK_<cmd>
@@ -18,8 +18,8 @@ T="$(mktemp -d)"; STUB="$T/stub"; export DRY_LOG="$T/log" ANSWERS="$T/answers" F
 trap 'rm -rf "$T"' EXIT
 alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 # a changing call, on one line 'tool argv | stdin': the same verbs tests/dry-run-gate.sh forbids under --dry-run
-CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add)|^dgmgrl .*\| *(.*; *)?(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)'
-for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl crontab pgrep ps; do
+CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add|crosscheck|change|catalog|kill|send .*(handlecollisions|nohandlecollisions|forcestop))|^escli .*(chvault|rmfile|mkvault|rmvault|chfile|mkfile|chpool)|^dgmgrl .*\| *(.*; *)?(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)'
+for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl escli crontab pgrep ps; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
 me="$(basename "$0")"
@@ -29,7 +29,9 @@ q=""; [ -t 0 ] || q="$(cat)"
 { echo "TOOL $me $*"; [ -n "$q" ] && printf '%s\n' "$q" | sed 's/^/  > /'; } >>"$DRY_LOG"
 [ "$me" = pgrep ] && exit 1                       # nothing is running on this box
 line="$me $* | $(printf '%s' "$q" | tr '\n' ';')"
-if [ -n "$FAIL_RE" ] && printf '%s' "$line" | grep -qiE -- "$FAIL_RE"; then
+# RMAN's 'restore ... preview' and 'restore ... validate' read the backup pieces and write nothing (rman-ops validate/run): not a change
+ro="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | sed -E 's/restore [^;{}]*(preview|validate)[^;{}]*;?//g; s/set until[^;]*;//g; s/run *\{ *\}//g')"
+if [ -n "$FAIL_RE" ] && printf '%s' "$ro" | grep -qiE -- "$FAIL_RE"; then
   echo "FAILED $me $*" >>"$DRY_LOG"
   case "$me" in sqlplus|sql) echo "ERROR at line 1:"; echo "ORA-00600: internal error code (false-success gate)";; *) echo "$me: failed (false-success gate)" >&2;; esac
   exit 1
@@ -46,10 +48,10 @@ readonly_cmds='inspect plan latest preflight verify expiring diff validate recov
 # success lines a run may not add after its change failed. Prefixes, not exact keys: applied_spaceProvHC=1 (exascale-space),
 # restored_from= and opatch_upgraded=1 (wls-patch), deleted= (exascale-space release) are change claims too (DeepSeek 21:00);
 # not a blanket '=1' - app_stopped=1 and dry_run=1 are sub-states written before the change
-default_ok='^(applied[^=]*=[^0[:space:]]|verified=1|rolled_back=1|restored[^=]*=[^[:space:]]|opatch_upgraded=1|deleted=[^[:space:]]|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
+default_ok='^(applied[^=]*=[^0[:space:]]|downloaded=[^[:space:]]|verified=1|rolled_back=1|restored[^=]*=[^[:space:]]|opatch_upgraded=1|deleted=[^[:space:]]|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
 # --selftest: the regex against the state lines it must catch (DeepSeek 21:00's four, one of each older form) and must not
 if [ "${1:-}" = --selftest ]; then f=0
-  for l in 'applied=26.3.0' 'applied_spaceProvHC=1' 'verified=1' 'rolled_back=1' 'restored=100 -> 100 from HEAD' 'restored_from=/u01/app/backup' 'opatch_upgraded=1' 'deleted=/vault/f1' 'backup=ok' 'pool_default=ok' 'exported_default=3 ok, 0 failed'; do
+  for l in 'applied=26.3.0' 'applied_spaceProvHC=1' 'downloaded=39000000' 'verified=1' 'rolled_back=1' 'restored=100 -> 100 from HEAD' 'restored_from=/u01/app/backup' 'opatch_upgraded=1' 'deleted=/vault/f1' 'backup=ok' 'pool_default=ok' 'exported_default=3 ok, 0 failed'; do
     if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "ok   caught   $l"; else echo "FAIL missed   $l"; f=1; fi; done
   for l in 'app_stopped=1' 'dry_run=1' 'apply_started=26.2' 'verified=0' 'rolled_back=0' 'reset=failed' 'exported_default=2 ok, 1 failed' 'restore_point=X' 'applied_spaceProvHC=0' 'preflight_problems=0'; do
     if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "FAIL caught   $l (not a success claim)"; f=1; else echo "ok   ignored  $l"; fi; done
@@ -61,13 +63,14 @@ scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(patching/*/*.sh operations/
 pass=0; fail=0; nx=0; nxlist=""
 for s in "${scripts[@]}"; do
   tool="$(basename "$s" .sh)"
-  cmds="$(sed -n '2,60p' "$s" | awk '/^# Commands/{p=1;next} /^# Options|^#$/{if(p)exit} p && /^#   [a-z]/{print $2}' | tr '|' '\n')"
+  # the header may hold several '# Commands' blocks parted by blank '#' lines (rman-ops): a blank line pauses, the next '# Commands' resumes; 'a | b' and 'a|b' list both
+  cmds="$(sed -n '2,80p' "$s" | awk '/^# Commands/{p=1;next} /^# Options/{exit} /^#$/{p=0;next} p && /^#   [a-z]/{sub(/^#   /,""); n=split($0,w," "); for(i=1;i<=n;i++){ if(w[i]=="|") continue; if(i>1 && w[i-1]!="|") break; m=split(w[i],v,"|"); for(j=1;j<=m;j++) print v[j] } }')"
   for c in $cmds; do
     case " $readonly_cmds " in *" $c "*) continue;; esac
     : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/home" "$T/env.ok"; mkdir -p "$T/env" "$T/home"
     # the per-script environment: sourced in a subshell that then runs the command, so nothing leaks between cases
     # shellcheck disable=SC1090,SC2034
-    ( CMD="$c"; readonly CMD; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"; a="ARGS_${CMD//-/_}"; extra="${!a:-$ARGS}"
+    ( CMD="$c"; readonly CMD; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"; a="ARGS_${CMD//-/_}"; extra="${!a-$ARGS}"
       f="FAIL_${CMD//-/_}"; o="OK_${CMD//-/_}"; printf '%s\n%s\n' "${!f:-$CHANGE_RE}" "${!o:-${OK:-$default_ok}}" >"$T/case"
       states >"$T/state.before"
       # shellcheck disable=SC2086
