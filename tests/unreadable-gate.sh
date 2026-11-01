@@ -9,7 +9,8 @@
 # A report that then names what it could not read is ok: a CRIT/WARN finding, a table row or a fact saying cannot connect /
 # unknown / not evaluated / could not / did not complete. A report whose FINDINGS say 'nothing tripped the built-in
 # rules', whose scorecard or table simply omits the database, or whose facts are blank, claimed a clean read that never
-# happened: FAIL. db-health-daily must also exit non-zero (its contract: 2 CRIT, 1 WARN, 0 clean). NOT-EXERCISED: the run
+# happened: FAIL. The six reports must also exit non-zero (findings_rc: 2 CRIT, 1 WARN, 0 clean - under cron the exit code is the
+# whole interface; db-health-daily and space-forecast install themselves with >/dev/null 2>&1). NOT-EXERCISED: the run
 # made no sqlplus call at all (the mode was not reached): counted and listed, never a pass. Needs no database.
 # Usage: tests/unreadable-gate.sh [script...]
 cd "$(dirname "$0")/.." || exit 1
@@ -81,7 +82,9 @@ for s in "${scripts[@]}"; do
     if [ "$failed" -gt 0 ]; then
       printf '%s\n' "$verdict" | owns_up || reason="$failed of $calls statements failed and nothing in the verdict says so: $(printf '%s\n' "$verdict" | grep -vE '^\s*$|^#|^---' | head -2 | tr '\n' ' ' | cut -c1-200)"
       [ "$tool" = patch-status ] && ! grep -qE '^(Database|datapatch) FREE' "$T/stdout" && reason="${reason:+$reason; }no row for FREE although ps shows ora_pmon_FREE"
-      [ "$tool" = db-health-daily ] && [ $rc = 0 ] && reason="${reason:+$reason; }exit 0 after $failed failed statements (contract: 2 CRIT, 1 WARN, 0 clean)"
+      # the exit code is the whole interface under cron (db-health-daily and space-forecast install themselves with >/dev/null 2>&1):
+      # a report that could not read its database must not exit 0, whatever it printed (Colossus 23:43, findings_rc = 2 CRIT, 1 WARN, 0 clean)
+      case "$tool" in db-health-daily|security-posture|perf-snapshot|space-forecast|oracle-diag|patch-status) [ $rc = 0 ] && reason="${reason:+$reason; }exit 0 after $failed failed statements (a cron caller reads this as clean)";; esac
     fi
     if [ -n "$reason" ]; then echo "FAIL $tool $mode: rc=$rc; $reason"; fail=$((fail+1))
     else pass=$((pass+1)); echo "ok   $tool $mode: rc=$rc, $failed of $calls statements failed, verdict: $(printf '%s\n' "$verdict" | own_up_line)"; fi
