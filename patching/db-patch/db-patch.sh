@@ -334,9 +334,23 @@ cmd_start() {
   done
   local s; for s in $(state_get was_running || echo "$SIDS"); do
     db_instances | grep -qx "$s" && continue
-    log "startup $s"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to "$START_TIMEOUT" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"startup" >>"$LOG_FILE" 2>&1
-    [ "$DRY_RUN" = 1 ] || sql_ok "$s" || { err "$s did not start"; return 1; }
-    [ "$DRY_RUN" = 1 ] || sql_run "$s" "alter pluggable database all open;" >>"$LOG_FILE" 2>&1
+    log "startup $s"; [ "$DRY_RUN" = 1 ] && continue
+    # the outcome is the open mode, not 'sqlplus connects': a startup that stopped at MOUNT (ORA-01157, a missing datafile) or
+    # NOMOUNT still answers '/ as sysdba', and used to be started=ok
+    local sout; sout="$(ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to "$START_TIMEOUT" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"startup" 2>&1)"; printf '%s\n' "$sout" >>"$LOG_FILE"
+    printf '%s\n' "$sout" | grep -E 'ORA-[0-9]+' | grep -v 'ORA-01081' | head -3 | while IFS= read -r l; do warn "$s: startup: $l"; done
+    sql_ok "$s" || { err "$s did not start (see $LOG_FILE)"; state_set started failed; return 1; }
+    local om; om="$(sql_val "$s" "(select database_role||'/'||open_mode from v\$database)" 2>/dev/null)"
+    case "$om" in
+      "PRIMARY/READ WRITE"|"LOGICAL STANDBY/READ WRITE"|"PHYSICAL STANDBY/MOUNTED"|"PHYSICAL STANDBY/READ ONLY"*|"SNAPSHOT STANDBY/READ WRITE") log "$s: $om";;
+      "") err "$s: cannot read the open mode after startup - not recording it as started"; state_set started failed; return 1;;
+      *) err "$s is up but $om - not open read write (startup errors above / $LOG_FILE)"; state_set started failed; return 1;;
+    esac
+    case "$om" in PRIMARY/*|"LOGICAL STANDBY"/*) local pout; pout="$(sql_run "$s" "alter pluggable database all open;" 2>&1)"; printf '%s\n' "$pout" >>"$LOG_FILE"
+      printf '%s' "$pout" | grep -qE 'ORA-[0-9]+' && warn "$s: alter pluggable database all open: $(printf '%s\n' "$pout" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"
+      local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"
+      [ -n "$closed" ] && [ "$closed" != 0 ] && warn "$s: $closed PDB(s) still not READ WRITE after 'all open'";;
+    esac
   done
   state_set started ok
 }
@@ -427,9 +441,17 @@ cmd_restore() {
 
 cmd_cleanup() {
   setup_env; reuse_or_init cleanup
-  local rp; for rp in $(state_get restore_points || true); do local s="${rp%%:*}" name="${rp#*:}"; confirm "Drop restore point $name in $s?" && { [ "$DRY_RUN" = 1 ] || sql_run "$s" "drop restore point $name;" >>"$LOG_FILE" 2>&1; log "$s: dropped $name"; }; done
+  # a drop whose output carried ORA- used to be logged as 'dropped' and the command exited 0 - the restore point (and the
+  # flashback logs it pins in the FRA) stayed; now the output is read, the point must be gone, and the command returns 1 otherwise
+  local rc=0 rp; for rp in $(state_get restore_points || true); do local s="${rp%%:*}" name="${rp#*:}"; confirm "Drop restore point $name in $s?" || continue
+    [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: drop restore point $name in $s"; continue; }
+    local dout; dout="$(sql_run "$s" "drop restore point $name;" 2>&1)"; printf '%s\n' "$dout" >>"$LOG_FILE"
+    if printf '%s' "$dout" | grep -qE 'ORA-[0-9]+'; then err "$s: drop restore point $name failed: $(printf '%s\n' "$dout" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"; rc=1; continue; fi
+    local left; left="$(sql_val "$s" "(select count(*) from v\$restore_point where name='$name')" 2>/dev/null)"
+    case "$left" in 0) log "$s: dropped $name";; "") warn "$s: drop restore point $name returned no error but v\$restore_point could not be read afterwards - check it";; *) err "$s: $name is still in v\$restore_point after the drop"; rc=1;; esac
+  done
   local keep="${KEEP_BACKUPS:-2}"; ls -t "$BACKUP_DIR"/oracle_home_*.tar.gz 2>/dev/null | tail -n +$((keep+1)) | while read -r f; do confirm "Delete old backup $f?" && rm -f "$f"; done
-  local b; for b in "$HOME_DIR".broken.*; do [ -d "$b" ] && confirm "Delete $b?" && rm -rf "$b"; done; return 0
+  local b; for b in "$HOME_DIR".broken.*; do [ -d "$b" ] && confirm "Delete $b?" && rm -rf "$b"; done; return "$rc"
 }
 
 cmd_heal() {
