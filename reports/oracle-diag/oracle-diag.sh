@@ -728,7 +728,9 @@ diag_wls_domain() {
   grep -qE 'soa-infra|service-bus|OBP|obp\.|OFSAA|ofsaa|oam_server|oim_server|FormsApp|analytics|bi_server' "$cfg" 2>/dev/null && finding INFO wls "$(basename "$d") hosts FMW products: $(grep -oE 'soa-infra|service-bus|OBP|OFSAA|oam_server|oim_server|FormsApp|analytics|bi_server' "$cfg" | sort -u | tr '\n' ' ')"
   # keystores / certs expiry
   h3 "Certificates"
-  section_sh "wls_$(basename "$d")_certs" "kt=\$(ls -d '$h'/../jdk*/bin/keytool '$h'/jdk/bin/keytool \$(sed -n 's/^JAVA_HOME=//p' '$h/oui/.globalEnv.properties' 2>/dev/null | head -1)/bin/keytool 2>/dev/null | head -1); [ -z \"\$kt\" ] && kt=\$(command -v keytool); for ks in \$(grep -ohE '<(custom-identity-keystore-file-name|custom-trust-keystore-file-name|key-store-file|keystore)>[^<]*' '$cfg' '$d'/config/fmwconfig/*.xml 2>/dev/null | sed 's/<[^>]*>//' | sort -u) '$d'/security/DemoIdentity.jks; do [ -f \"\$ks\" ] || continue; echo \"== \$ks\"; \$kt -list -v -keystore \"\$ks\" -storepass changeit 2>/dev/null | grep -E 'Alias|Valid|Owner' | head -12 || echo '(needs the keystore password; not tried)'; done; echo; echo 'listening TLS ports and their certs:'; for p in \$(grep -oE '<listen-port>[0-9]+' '$cfg' | sed 's/.*>//' | sort -u); do echo | timeout 5 openssl s_client -connect localhost:\$p 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null | sed \"s/^/  port \$p: /\"; done"
+  keytool_pwfile   # $KT_PWF is expanded into the section command below; removed right after it ran
+  section_sh "wls_$(basename "$d")_certs" "kt=\$(ls -d '$h'/../jdk*/bin/keytool '$h'/jdk/bin/keytool \$(sed -n 's/^JAVA_HOME=//p' '$h/oui/.globalEnv.properties' 2>/dev/null | head -1)/bin/keytool 2>/dev/null | head -1); [ -z \"\$kt\" ] && kt=\$(command -v keytool); for ks in \$(grep -ohE '<(custom-identity-keystore-file-name|custom-trust-keystore-file-name|key-store-file|keystore)>[^<]*' '$cfg' '$d'/config/fmwconfig/*.xml 2>/dev/null | sed 's/<[^>]*>//' | sort -u) '$d'/security/DemoIdentity.jks; do [ -f \"\$ks\" ] || continue; echo \"== \$ks\"; \$kt -list -v -keystore \"\$ks\" -storepass:file '$KT_PWF' 2>/dev/null | grep -E 'Alias|Valid|Owner' | head -12 || echo '(needs the keystore password; not tried)'; done; echo; echo 'listening TLS ports and their certs:'; for p in \$(grep -oE '<listen-port>[0-9]+' '$cfg' | sed 's/.*>//' | sort -u); do echo | timeout 5 openssl s_client -connect localhost:\$p 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null | sed \"s/^/  port \$p: /\"; done"
+  keytool_pwfile_rm
   grep -E 'port [0-9]+: notAfter' "$RAW/wls_$(basename "$d")_certs.txt" 2>/dev/null | while read -r line; do
     local exp; exp="$(printf '%s' "$line" | sed 's/.*notAfter=//')"; local es; es="$(date -d "$exp" +%s 2>/dev/null)"; [ -z "$es" ] && continue
     local days=$(( (es - $(date +%s)) / 86400 )); [ "$days" -lt 0 ] && finding CRIT wls "TLS certificate EXPIRED on $(printf '%s' "$line" | grep -oE 'port [0-9]+') ($exp)"; [ "$days" -ge 0 ] && [ "$days" -lt 30 ] && finding WARN wls "TLS certificate expires in $days days on $(printf '%s' "$line" | grep -oE 'port [0-9]+')"
@@ -959,6 +961,10 @@ okv_endpoint_cert() {
   fi
   kv_end
 }
+# keytool_pwfile: a 600-mode file with the cacerts password (CACERTS_PASSWORD, else the JDK default) for -storepass:file,
+# so no password literal, not even changeit, sits on a keytool command line in a report a pack can collect
+keytool_pwfile() { KT_PWF="$(mktemp "${TMPDIR:-/tmp}/kt.XXXXXX")"; chmod 600 "$KT_PWF"; printf '%s' "${CACERTS_PASSWORD:-changeit}" >"$KT_PWF"; }
+keytool_pwfile_rm() { [ -n "${KT_PWF:-}" ] && rm -f "$KT_PWF"; KT_PWF=""; }
 diag_okv() {
   local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora 2>/dev/null | sort -u | head -5)"
   [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
