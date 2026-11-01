@@ -9,7 +9,8 @@
 # tests/dry-run-env/<tool>.sh (shared with tests/dry-run-gate.sh) is sourced first, with CMD set to the command; it may set
 # FAIL_<cmd> (the call to fail instead of the first changing one, a regex on 'tool argv | stdin') and OK / OK_<cmd>
 # (the success lines to forbid in state, a regex). Only lines ADDED to a state file by the run count, so a seeded
-# state may carry applied= or pool_x=ok. Needs no database.
+# state may carry applied= or pool_x=ok. The env file may write $T/ps.txt (one process per line) for the ps stub to
+# print, and cannot change CMD. Needs no database.
 # Usage: tests/false-success-gate.sh [script...] | --selftest (the success-line regex against the lines it must and must not catch)
 cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
@@ -18,10 +19,13 @@ trap 'rm -rf "$T"' EXIT
 alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 # a changing call, on one line 'tool argv | stdin': the same verbs tests/dry-run-gate.sh forbids under --dry-run
 CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add)|^dgmgrl .*\| *(.*; *)?(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)'
-for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl crontab pgrep; do
+for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl crontab pgrep ps; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
-me="$(basename "$0")"; q=""; [ -t 0 ] || q="$(cat)"
+me="$(basename "$0")"
+# ps: what the env file wrote to $T/ps.txt (one process per line, e.g. '1234 ora_pmon_FREE'), else the real ps; never logged
+[ "$me" = ps ] && { f="$(dirname "$DRY_LOG")/ps.txt"; if [ -s "$f" ]; then cat "$f"; else exec /bin/ps "$@"; fi; exit 0; }
+q=""; [ -t 0 ] || q="$(cat)"
 { echo "TOOL $me $*"; [ -n "$q" ] && printf '%s\n' "$q" | sed 's/^/  > /'; } >>"$DRY_LOG"
 [ "$me" = pgrep ] && exit 1                       # nothing is running on this box
 line="$me $* | $(printf '%s' "$q" | tr '\n' ';')"
@@ -51,7 +55,8 @@ if [ "${1:-}" = --selftest ]; then f=0
     if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "FAIL caught   $l (not a success claim)"; f=1; else echo "ok   ignored  $l"; fi; done
   echo "false-success gate selftest: $([ $f = 0 ] && echo passed || echo FAILED)"; exit $f
 fi
-states() { find "$T/home" -name state -type f 2>/dev/null | sort | while read -r f; do sed "s|^|$f:|" "$f"; done; }
+# sorted: comm needs it, and state_set rewrites a file (grep -v + append) so an untouched seeded line moves (Fable 21:22)
+states() { find "$T/home" -name state -type f 2>/dev/null | while read -r f; do sed "s|^|$f:|" "$f"; done | sort; }
 scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(patching/*/*.sh operations/*/*.sh)
 pass=0; fail=0; nx=0; nxlist=""
 for s in "${scripts[@]}"; do
@@ -59,16 +64,17 @@ for s in "${scripts[@]}"; do
   cmds="$(sed -n '2,60p' "$s" | awk '/^# Commands/{p=1;next} /^# Options|^#$/{if(p)exit} p && /^#   [a-z]/{print $2}' | tr '|' '\n')"
   for c in $cmds; do
     case " $readonly_cmds " in *" $c "*) continue;; esac
-    : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/home"; mkdir -p "$T/env" "$T/home"
+    : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/home" "$T/env.ok"; mkdir -p "$T/env" "$T/home"
     # the per-script environment: sourced in a subshell that then runs the command, so nothing leaks between cases
     # shellcheck disable=SC1090,SC2034
-    ( CMD="$c"; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; a="ARGS_${c//-/_}"; extra="${!a:-$ARGS}"
-      f="FAIL_${c//-/_}"; o="OK_${c//-/_}"; printf '%s\n%s\n' "${!f:-$CHANGE_RE}" "${!o:-${OK:-$default_ok}}" >"$T/case"
+    ( CMD="$c"; readonly CMD; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"; a="ARGS_${CMD//-/_}"; extra="${!a:-$ARGS}"
+      f="FAIL_${CMD//-/_}"; o="OK_${CMD//-/_}"; printf '%s\n%s\n' "${!f:-$CHANGE_RE}" "${!o:-${OK:-$default_ok}}" >"$T/case"
       states >"$T/state.before"
       # shellcheck disable=SC2086
-      FAIL_RE="$(sed -n 1p "$T/case")" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 alarm 120 bash "$s" "$c" $extra --yes ) >"$T/out" 2>&1; rc=$?
-    ok_re="$(sed -n 2p "$T/case")"
+      FAIL_RE="$(sed -n 1p "$T/case")" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 alarm 120 bash "$s" "$CMD" $extra --yes ) >"$T/out" 2>&1; rc=$?
     if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $c: hung (120 s)"; fail=$((fail+1)); continue; fi
+    if [ ! -f "$T/env.ok" ]; then echo "FAIL $tool $c: tests/dry-run-env/$tool.sh did not source to the end: $(grep -v '^$' "$T/out" | tail -1 | cut -c1-160)"; fail=$((fail+1)); continue; fi
+    ok_re="$(sed -n 2p "$T/case")"
     if ! grep -q '^FAILED ' "$DRY_LOG"; then nx=$((nx+1)); nxlist="$nxlist $tool:$c"; continue; fi
     failed="$(grep -m1 '^FAILED ' "$DRY_LOG" | cut -c8- | cut -c1-90)"
     states >"$T/state.after"; added="$(comm -13 "$T/state.before" "$T/state.after" | sed 's|^.*/runs/||')"
