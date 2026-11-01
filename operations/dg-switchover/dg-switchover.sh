@@ -298,9 +298,12 @@ finish_restarts() {
     if is_local "$m"; then
       log "$m is not running - starting it (mount; the broker opens it if the role says so)"
       if [ "$DRY_RUN" = 0 ]; then
-        if [ -n "$GRID_HOME" ]; then run_cmd "$GRID_HOME/bin/srvctl" start database -d "$m" || warn "srvctl start failed"
+        # srvctl first (CRS keeps the resource state right); when it fails (database not registered, CRS down) fall back
+        # to sqlplus, and in every case check that the instance is actually up afterwards instead of assuming it
+        if [ -n "$GRID_HOME" ]; then run_cmd "$GRID_HOME/bin/srvctl" start database -d "$m" || { warn "srvctl start database -d $m failed (see $LOG_FILE): trying sqlplus startup mount"; ORACLE_SID="$SID" ORACLE_HOME="$DB_HOME" to 600 "$DB_HOME/bin/sqlplus" -S / as sysdba <<<"startup mount" >>"$LOG_FILE" 2>&1; }
         else ORACLE_SID="$SID" ORACLE_HOME="$DB_HOME" to 600 "$DB_HOME/bin/sqlplus" -S / as sysdba <<<"startup mount" >>"$LOG_FILE" 2>&1; fi
         sleep 10
+        sql_ok "$SID" || err "$m ($SID) is still not up after the start attempt - start it by hand (startup mount), then 'verify'; the broker finishes the role change once it is up"
       fi
     else
       warn "$m is not running and is not on this host: start it there (srvctl start database -d $m, or sqlplus 'startup mount'); the broker finishes the role change once it is up"
