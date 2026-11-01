@@ -127,6 +127,9 @@ discover() {
     PROD_PDB="$(printf '%s' "$PROD_PDB" | uc)"; TEST_PDB="$(printf '%s' "$TEST_PDB" | uc)"; GOLD_PDB="${TEST_PDB}_GOLD"
   else
     [ -n "$PROD_TNS" ] || [ -n "$FROM_BACKUP" ] || die "PROD_TNS needed for an active duplicate (or --from-backup DIR)"
+    # the hygiene steps (relock, fix-dblinks, fix-apex, fix-scheduler, fix-directories, reimport, verify) run in
+    # $TEST_PDB; on a CDB without one they would run in the root and leave every PDB of the copy untouched
+    if [ "$IS_CDB" = 1 ]; then [ -n "$TEST_PDB" ] || die "$SID is a CDB: --test-pdb NAME (TEST_PDB) says which PDB of the duplicate the re-securing steps run in; repeat them with another --test-pdb for each further PDB"; TEST_PDB="$(printf '%s' "$TEST_PDB" | uc)"; fi
   fi
 }
 refuse_prod() { # never run this against something that looks like production
