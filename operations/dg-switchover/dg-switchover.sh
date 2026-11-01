@@ -274,11 +274,17 @@ cmd_plan() {
 cmd_backup() {
   discover; reuse_or_init backup
   log "backing up broker configuration and local files into $RUN_DIR"
-  dgm "show configuration verbose" >"$RUN_DIR/dg_configuration.txt" 2>&1
-  local m; for m in $(members); do dgm "show database verbose $m" >"$RUN_DIR/dg_database_$m.txt" 2>&1; done
-  dgm "show fast_start failover" >"$RUN_DIR/dg_fsfo.txt" 2>&1
-  sql_run "$SID" "create pfile='$RUN_DIR/init$SID.ora.bak' from spfile;" >>"$LOG_FILE" 2>&1
-  sql_run "$SID" "alter database backup controlfile to trace as '$RUN_DIR/control.trc' reuse;" >>"$LOG_FILE" 2>&1
+  # --dry-run writes nothing on the server (pfile, controlfile trace, restore point) and records no backup=ok
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would dump the broker configuration, write init$SID.ora.bak and control.trc, copy tnsnames/sqlnet/listener.ora and the broker config file$([ "$WANT_RP" = 1 ] && echo ', and create a guaranteed restore point')"; state_set old_primary "$PRIMARY"; [ -n "$TARGET" ] && state_set target "$TARGET"; return 0; fi
+  # every write is checked: a backup that exited 0 with an ORA- in the log claimed a copy it does not have (false-success gate)
+  local fail=0 out
+  bk_dgm() { local f="$RUN_DIR/$1"; shift; dgm "$@" >"$f" 2>&1; grep -qE 'ORA-|DGM-' "$f" && { err "backup: dgmgrl $*: $(grep -E 'ORA-|DGM-' "$f" | head -1)"; return 1; }; [ -s "$f" ] || { err "backup: dgmgrl $* gave no output"; return 1; }; return 0; }
+  bk_sql() { out="$(sql_run "$SID" "whenever sqlerror exit 1\n$1")"; printf '%s\n' "$out" >>"$LOG_FILE"; printf '%s' "$out" | grep -qE 'ORA-[0-9]+|SP2-[0-9]+' && { err "backup: $(printf '%s' "$out" | grep -E 'ORA-|SP2-' | head -1)"; return 1; }; return 0; }
+  bk_dgm dg_configuration.txt "show configuration verbose" || fail=1
+  local m; for m in $(members); do bk_dgm "dg_database_$m.txt" "show database verbose $m" || fail=1; done
+  bk_dgm dg_fsfo.txt "show fast_start failover" || fail=1
+  bk_sql "create pfile='$RUN_DIR/init$SID.ora.bak' from spfile;" || fail=1
+  bk_sql "alter database backup controlfile to trace as '$RUN_DIR/control.trc' reuse;" || fail=1
   sql_run "$SID" "select name, value from v\$parameter where name in ('log_archive_config','log_archive_dest_1','log_archive_dest_2','log_archive_dest_3','fal_server','fal_client','standby_file_management','db_file_name_convert','log_file_name_convert','dg_broker_config_file1','dg_broker_config_file2') order by 1;" >"$RUN_DIR/dg_parameters.txt" 2>&1
   sql_run "$SID" "select name, network_name, pdb from dba_services order by 1;" >"$RUN_DIR/services.txt" 2>&1
   local d; d="$(tnsnames_dir)"; [ -n "$d" ] && cp -p "$d"/tnsnames.ora "$d"/sqlnet.ora "$RUN_DIR"/ 2>/dev/null
@@ -287,10 +293,11 @@ cmd_backup() {
   if [ "$WANT_RP" = 1 ]; then
     if [ "$LOCAL_ROLE" = PRIMARY ] && [ "$(sql_val "$SID" "(select log_mode from v\$database)")" = ARCHIVELOG ]; then
       local rp; rp="DGSWITCH_$(date +%Y%m%d%H%M%S)"; log "$LOCAL_DBUN: creating guaranteed restore point $rp (drop it with cleanup; it is also on the standby if flashback is on there)"
-      [ "$DRY_RUN" = 1 ] || { if sql_run "$SID" "create restore point $rp guarantee flashback database;" | grep -q 'ORA-'; then warn "restore point failed"; else state_append restore_points "$SID:$rp"; fi; }
+      if sql_run "$SID" "create restore point $rp guarantee flashback database;" | grep -q 'ORA-'; then err "restore point $rp failed (asked for with --restore-point)"; fail=1; else state_append restore_points "$SID:$rp"; fi
     else warn "--restore-point: only done on an ARCHIVELOG primary (this is $LOCAL_ROLE)"; fi
   fi
   state_set old_primary "$PRIMARY"; [ -n "$TARGET" ] && state_set target "$TARGET"
+  [ "$fail" = 0 ] || { state_set backup failed; err "backup incomplete (see $LOG_FILE): nothing changed on the databases"; return 1; }
   state_set backup ok
 }
 
@@ -334,7 +341,7 @@ cmd_switchover() {
   discover; reuse_or_init switchover; need_target
   [ "$(state_get preflight || true)" = ok ] || [ "$FORCE" = 1 ] || warn "preflight has not passed in this run dir (run 'preflight' first, or --force to skip the reminder)"
   state_set old_primary "$PRIMARY"; state_set target "$TARGET"
-  local conn; conn="$(dg_conn "$TARGET")"
+  local conn; conn="$(dg_conn "$TARGET")" || die "no credentials for $TARGET (DG_PASSWORD unset and no terminal to ask): nothing changed"
   log "switchover $PRIMARY -> $TARGET via dgmgrl $(conn_shown "$conn") (protection $PROT_MODE, timeout ${DG_SWITCH_TIMEOUT}s)"
   confirm "Switch over now? $PRIMARY becomes a physical standby, $TARGET becomes primary; user sessions on $PRIMARY are disconnected." || die "aborted"
   if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: dgmgrl> switchover to $TARGET"; state_set switchover ok; return 0; fi
@@ -362,7 +369,7 @@ cmd_failover() {
   log "$TARGET: transport lag $(dbfield "$sd" 'Transport Lag'), apply lag $(dbfield "$sd" 'Apply Lag'); $PROT_MODE. $([ "$IMMEDIATE" = 1 ] && echo 'IMMEDIATE: redo received but not yet applied is DISCARDED' || echo 'the broker applies what it received first; data loss = the transport lag')"
   [ -n "$FSFO" ] && [ "$FSFO" = Enabled ] && warn "Fast-Start Failover is enabled: the observer may already have failed over or may fight this; check 'show fast_start failover'"
   local oldp="$PRIMARY"; state_set old_primary "$oldp"; state_set target "$TARGET"
-  local conn; conn="$(dg_conn "$TARGET")"
+  local conn; conn="$(dg_conn "$TARGET")" || die "no credentials for $TARGET (DG_PASSWORD unset and no terminal to ask): nothing changed"
   confirm_typed "FAILOVER to $TARGET: $PRIMARY becomes a failed primary that must be reinstated or rebuilt; possible data loss" "$TARGET" || die "aborted (no typed confirmation)"
   if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: dgmgrl> failover to $TARGET$([ "$IMMEDIATE" = 1 ] && echo ' immediate')"; state_set failover ok; return 0; fi
   local out; out="$(dgm_as "$conn" "$DG_SWITCH_TIMEOUT" "failover to $TARGET$([ "$IMMEDIATE" = 1 ] && echo ' immediate')")"; printf '%s\n' "$out" | redact >>"$LOG_FILE"
@@ -388,7 +395,7 @@ cmd_reinstate() {
   else
     log "$old is not on this host: it must be started MOUNTED there before reinstate (srvctl start database -d $old -o mount)"; confirm "Is $old mounted on its host now?" || die "aborted"
   fi
-  local conn; conn="$(dg_conn "$PRIMARY")"
+  local conn; conn="$(dg_conn "$PRIMARY")" || die "no credentials for $PRIMARY (DG_PASSWORD unset and no terminal to ask): nothing changed"
   log "reinstate database $old via dgmgrl $(conn_shown "$conn") (the broker flashes it back to the failover SCN and converts it to a physical standby)"
   confirm "Reinstate $old as a standby of $PRIMARY?" || die "aborted"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: dgmgrl> reinstate database $old"; return 0; }

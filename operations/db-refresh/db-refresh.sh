@@ -277,22 +277,28 @@ cmd_preflight() {
 # ---------------------------------------------------------------------------
 cmd_backup() {
   discover; reuse_or_init backup; local d="$RUN_DIR/preserve"; mkdir -p "$d"
-  rsql "create pfile='$RUN_DIR/init$SID.ora.bak' from spfile;" >>"$LOG_FILE" 2>&1
-  cp -p "${TNS_ADMIN:-$DB_HOME/network/admin}"/tnsnames.ora "$RUN_DIR/" 2>/dev/null
   if [ "$METHOD" = pdb-clone ] && ! pdb_exists "$TEST_PDB"; then log "no $TEST_PDB yet: nothing to preserve"; state_set backup ok; return 0; fi
+  # --dry-run touches nothing on the server, the pfile write included (the dry-run gate caught 'create pfile ... from spfile' here)
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would write init$SID.ora.bak from the spfile and preserve profiles, roles, users, grants, db links, directories, account states, services, jobs and APEX parameters of ${TEST_PDB:-$SID} into $d$([ -n "$PRESERVE_SCHEMAS" ] && echo "; expdp schemas=$PRESERVE_SCHEMAS")"; return 0; fi
+  # every statement is checked: a preservation that exited 0 with an ORA- in the log loses the TEST-only users at reimport
+  # (false-success gate: backup said ok after the first sqlplus failed)
+  local fail=0 out
+  bk() { out="$("$1" "whenever sqlerror exit 1\n$2" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"; printf '%s' "$out" | grep -qE 'ORA-[0-9]+|SP2-[0-9]+' && { err "preserve: $(printf '%s' "$out" | grep -E 'ORA-|SP2-' | head -1)"; return 1; }; return 0; }
+  bk rsql "create pfile='$RUN_DIR/init$SID.ora.bak' from spfile;" || fail=1
+  cp -p "${TNS_ADMIN:-$DB_HOME/network/admin}"/tnsnames.ora "$RUN_DIR/" 2>/dev/null
   if [ "$METHOD" = pdb-clone ]; then log "preserving the TEST-only definitions of $TEST_PDB into $d"; else log "preserving the TEST-only definitions of $SID into $d"; fi
   local sq="set long 1000000 longchunksize 32767 pagesize 0 linesize 32767 trimspool on feedback off heading off\nexec dbms_metadata.set_transform_param(dbms_metadata.session_transform,'SQLTERMINATOR',true);\nexec dbms_metadata.set_transform_param(dbms_metadata.session_transform,'PRETTY',true);\n"
   local who="username not in (select username from dba_users where oracle_maintained='Y')"
-  psql "${sq}spool $d/01_profiles.sql\nselect dbms_metadata.get_ddl('PROFILE',profile) from (select distinct profile from dba_profiles where profile<>'DEFAULT');\nspool off" >>"$LOG_FILE" 2>&1
-  psql "${sq}spool $d/02_roles.sql\nselect dbms_metadata.get_ddl('ROLE',role) from dba_roles where oracle_maintained='N';\nspool off" >>"$LOG_FILE" 2>&1
-  psql "${sq}spool $d/03_users.sql\nselect dbms_metadata.get_ddl('USER',username) from dba_users where $who;\nspool off" >>"$LOG_FILE" 2>&1
-  psql "${sq}spool $d/04_grants.sql\nselect dbms_metadata.get_granted_ddl('SYSTEM_GRANT',username) from dba_users where $who and username in (select grantee from dba_sys_privs);\nselect dbms_metadata.get_granted_ddl('ROLE_GRANT',username) from dba_users where $who and username in (select grantee from dba_role_privs);\nselect dbms_metadata.get_granted_ddl('OBJECT_GRANT',username) from dba_users where $who and username in (select grantee from dba_tab_privs);\nselect dbms_metadata.get_granted_ddl('TABLESPACE_QUOTA',username) from dba_users where $who and username in (select username from dba_ts_quotas);\nspool off" >>"$LOG_FILE" 2>&1
-  psql "${sq}spool $d/05_dblinks.sql\nselect dbms_metadata.get_ddl('DB_LINK',db_link,owner) from dba_db_links;\nspool off" >>"$LOG_FILE" 2>&1
-  psql "${sq}spool $d/06_directories.sql\nselect dbms_metadata.get_ddl('DIRECTORY',directory_name) from dba_directories;\nspool off" >>"$LOG_FILE" 2>&1
-  psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/accounts.txt\nselect username||'|'||account_status||'|'||profile from dba_users where oracle_maintained='N' order by 1;\nspool off" >>"$LOG_FILE" 2>&1
-  psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/services.txt\nselect name||'|'||network_name from dba_services;\nspool off" >>"$LOG_FILE" 2>&1
-  psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/jobs.txt\nselect owner||'.'||job_name||'|'||enabled from dba_scheduler_jobs where owner not in (select username from dba_users where oracle_maintained='Y');\nspool off" >>"$LOG_FILE" 2>&1
-  psql "set pagesize 0 linesize 4000 feedback off heading off\nspool $d/apex_params.txt\nselect name||'='||value from apex_instance_parameters where name in ('SMTP_HOST_ADDRESS','SMTP_HOST_PORT','SMTP_USERNAME','SMTP_TLS_MODE','SMTP_FROM','WALLET_PATH','PRINT_BIB_LICENSED','PRINT_SVR_HOST','PRINT_SVR_PORT','PRINT_SVR_PROTOCOL','PRINT_SVR_SCRIPT','ALLOW_PUBLIC_FILE_UPLOAD','RESTRICT_IP_RANGE','EMAIL_INSTANCE_URL','EMAIL_IMAGES_URL','IMAGE_PREFIX','DISABLE_WORKSPACE_LOGIN','DISABLE_ADMIN_LOGIN','APEX_BUILDER_AUTHENTICATION') order by 1;\nspool off" >>"$LOG_FILE" 2>&1
+  bk psql "${sq}spool $d/01_profiles.sql\nselect dbms_metadata.get_ddl('PROFILE',profile) from (select distinct profile from dba_profiles where profile<>'DEFAULT');\nspool off" || fail=1
+  bk psql "${sq}spool $d/02_roles.sql\nselect dbms_metadata.get_ddl('ROLE',role) from dba_roles where oracle_maintained='N';\nspool off" || fail=1
+  bk psql "${sq}spool $d/03_users.sql\nselect dbms_metadata.get_ddl('USER',username) from dba_users where $who;\nspool off" || fail=1
+  bk psql "${sq}spool $d/04_grants.sql\nselect dbms_metadata.get_granted_ddl('SYSTEM_GRANT',username) from dba_users where $who and username in (select grantee from dba_sys_privs);\nselect dbms_metadata.get_granted_ddl('ROLE_GRANT',username) from dba_users where $who and username in (select grantee from dba_role_privs);\nselect dbms_metadata.get_granted_ddl('OBJECT_GRANT',username) from dba_users where $who and username in (select grantee from dba_tab_privs);\nselect dbms_metadata.get_granted_ddl('TABLESPACE_QUOTA',username) from dba_users where $who and username in (select username from dba_ts_quotas);\nspool off" || fail=1
+  bk psql "${sq}spool $d/05_dblinks.sql\nselect dbms_metadata.get_ddl('DB_LINK',db_link,owner) from dba_db_links;\nspool off" || fail=1
+  bk psql "${sq}spool $d/06_directories.sql\nselect dbms_metadata.get_ddl('DIRECTORY',directory_name) from dba_directories;\nspool off" || fail=1
+  bk psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/accounts.txt\nselect username||'|'||account_status||'|'||profile from dba_users where oracle_maintained='N' order by 1;\nspool off" || fail=1
+  bk psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/services.txt\nselect name||'|'||network_name from dba_services;\nspool off" || fail=1
+  bk psql "set pagesize 0 linesize 400 feedback off heading off\nspool $d/jobs.txt\nselect owner||'.'||job_name||'|'||enabled from dba_scheduler_jobs where owner not in (select username from dba_users where oracle_maintained='Y');\nspool off" || fail=1
+  bk psql "set pagesize 0 linesize 4000 feedback off heading off\nspool $d/apex_params.txt\nselect name||'='||value from apex_instance_parameters where name in ('SMTP_HOST_ADDRESS','SMTP_HOST_PORT','SMTP_USERNAME','SMTP_TLS_MODE','SMTP_FROM','WALLET_PATH','PRINT_BIB_LICENSED','PRINT_SVR_HOST','PRINT_SVR_PORT','PRINT_SVR_PROTOCOL','PRINT_SVR_SCRIPT','ALLOW_PUBLIC_FILE_UPLOAD','RESTRICT_IP_RANGE','EMAIL_INSTANCE_URL','EMAIL_IMAGES_URL','IMAGE_PREFIX','DISABLE_WORKSPACE_LOGIN','DISABLE_ADMIN_LOGIN','APEX_BUILDER_AUTHENTICATION') order by 1;\nspool off" || fail=1
   # dbms_metadata emits "BEGIN NULL; END;" placeholders without a terminating "/": sqlplus then stays in PL/SQL mode and silently
   # swallows every statement after it (the role grants never ran). Drop them and terminate any real block with "/".
   local f; for f in "$d"/*.sql; do [ -f "$f" ] && sed -i -e '/^[[:space:]]*BEGIN NULL; END;[[:space:]]*$/d' -e 's#^\(.*END;\)[[:space:]]*$#\1\n/#' "$f"; done
@@ -304,6 +310,7 @@ cmd_backup() {
       [ "$DRY_RUN" = 1 ] || { dp_run expdp schemas="$PRESERVE_SCHEMAS" directory="$DATA_PUMP_DIR" dumpfile="$dump" logfile="${dump%.dmp}.log" reuse_dumpfiles=y && state_set preserve_dump "$dump" || { err "expdp failed (see $LOG_FILE)"; return 1; }; }
     else err "PRESERVE_SCHEMAS set but no EXP_CONNECT (user/pw@TESTPDB with DATAPUMP_EXP_FULL_DATABASE): cannot export"; return 1; fi
   fi
+  [ "$fail" = 0 ] || { state_set backup failed; err "preservation incomplete (see $LOG_FILE): nothing changed in $SID"; return 1; }
   state_set backup ok
 }
 
@@ -562,9 +569,18 @@ cmd_rollback() {
 
 cmd_cleanup() {
   discover; reuse_or_init cleanup
-  local old="${TEST_PDB}_OLD"; pdb_exists "$old" && confirm "Drop $old including datafiles?" && { [ "$(rval "(select open_mode from v\$pdbs where name=upper('$old'))")" = MOUNTED ] || do_sql root "close $old" "alter pluggable database $old close immediate instances=all;" || true; do_sql root "drop $old" "drop pluggable database $old including datafiles;"; }
-  [ "${ALL:-0}" = 1 ] && pdb_exists "$GOLD_PDB" && confirm "Drop the golden copy $GOLD_PDB (next --refreshable run does a full copy again)?" && { do_sql root "close $GOLD_PDB" "alter pluggable database $GOLD_PDB close immediate instances=all;" || true; do_sql root "drop $GOLD_PDB" "drop pluggable database $GOLD_PDB including datafiles;"; }
-  return 0
+  local old="${TEST_PDB}_OLD" fail=0
+  # a failed drop is a failure (false-success gate: cleanup exited 0 with the PDB still there)
+  if pdb_exists "$old" && confirm "Drop $old including datafiles?"; then
+    [ "$(rval "(select open_mode from v\$pdbs where name=upper('$old'))")" = MOUNTED ] || do_sql root "close $old" "alter pluggable database $old close immediate instances=all;" || true
+    do_sql root "drop $old" "drop pluggable database $old including datafiles;" || fail=1
+  fi
+  if [ "${ALL:-0}" = 1 ] && pdb_exists "$GOLD_PDB" && confirm "Drop the golden copy $GOLD_PDB (next --refreshable run does a full copy again)?"; then
+    do_sql root "close $GOLD_PDB" "alter pluggable database $GOLD_PDB close immediate instances=all;" || true
+    do_sql root "drop $GOLD_PDB" "drop pluggable database $GOLD_PDB including datafiles;" || fail=1
+  fi
+  [ "$fail" = 0 ] || { state_set cleanup failed; err "cleanup incomplete: a drop failed (see $LOG_FILE)"; return 1; }
+  state_set cleanup ok
 }
 
 cmd_run() {
