@@ -89,7 +89,7 @@ if [ -z "$hits" ]; then pass=$((pass+1)); else echo "FAIL static: connect string
 # (one documented, gated exception) carries the marker '# secret-on-argv: accepted' and is listed, not failed ---------------
 # any value at all ('changeit', "MyPass1", "$VAR", env:, pass:) minus the file forms (-storepass:file F, -passin file:F) - Pi's cases
 pwopt='-(storepass|keypass|srcstorepass|deststorepass|passin|passout|pwd|pkcs12pwd|password)'
-hits="$(grep -rnE --include='*.sh' -e "${pwopt}[[:space:]=]+[^[:space:]]" "$ROOT/lib" "$ROOT/operations" "$ROOT/patching" "$ROOT/reports" | grep -vE "${pwopt}[[:space:]=]+\"?(file:|:file)" | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' || true)"
+hits="$(grep -rnE --include='*.sh' -e "${pwopt}[[:space:]=]+[^[:space:]]" "$ROOT/lib" "$ROOT/operations" "$ROOT/patching" "$ROOT/reports" | grep -vE -e "${pwopt}[[:space:]=]+\"?(file:|:file)" | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' || true)"
 accepted="$(printf '%s\n' "$hits" | grep 'secret-on-argv: accepted' || true)"; hits="$(printf '%s\n' "$hits" | grep -v 'secret-on-argv: accepted' || true)"
 [ -n "$accepted" ] && echo "accepted (documented, gated): $(printf '%s\n' "$accepted" | cut -d: -f1,2 | sed "s#$ROOT/##" | tr '\n' ' ')"
 if [ -z "$hits" ]; then pass=$((pass+1)); else echo "FAIL static: a password word on a keytool/orapki/openssl command line:"; printf '%s\n' "$hits" | sed "s#$ROOT/##" | cut -c1-160; fail=$((fail+1)); fi
