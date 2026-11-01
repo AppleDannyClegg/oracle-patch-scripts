@@ -38,9 +38,9 @@ FACTS_FILE=""; STATS=""; HEADLINE=""; HEAD_CODE=""; HEAD_ARG=""; PROBLEM_KEYS=""
 usage() { usage_from_header "$0"; }
 parse_opts() {
   while [ $# -gt 0 ]; do case "$1" in
-    --pack) PACK="${2%/}"; shift 2;; --report) REPORT_DIR="${2%/}"; shift 2;; --error) ERRORS_GIVEN="${ERRORS_GIVEN:+$ERRORS_GIVEN$'\n'}$2"; shift 2;; --error-file) ERROR_FILE="$2"; shift 2;;
-    --sid) SID="$2"; shift 2;; --product) PRODUCT="$2"; shift 2;; --severity) SEVERITY="$2"; shift 2;; --prod) ENVTYPE=prod; shift;; --nonprod) ENVTYPE=nonprod; shift;;
-    --business-impact) IMPACT="$2"; shift 2;; --title) TITLE="$2"; shift 2;; --steps) STEPS="$2"; shift 2;; --contact) CONTACT="$2"; shift 2;; --out) OUTDIR="$2"; shift 2;;
+    --pack) optchk "$@"; PACK="${2%/}"; shift 2;; --report) optchk "$@"; REPORT_DIR="${2%/}"; shift 2;; --error) optchk "$@"; ERRORS_GIVEN="${ERRORS_GIVEN:+$ERRORS_GIVEN$'\n'}$2"; shift 2;; --error-file) optchk "$@"; ERROR_FILE="$2"; shift 2;;
+    --sid) optchk "$@"; SID="$2"; shift 2;; --product) optchk "$@"; PRODUCT="$2"; shift 2;; --severity) optchk "$@"; SEVERITY="$2"; shift 2;; --prod) ENVTYPE=prod; shift;; --nonprod) ENVTYPE=nonprod; shift;;
+    --business-impact) optchk "$@"; IMPACT="$2"; shift 2;; --title) optchk "$@"; TITLE="$2"; shift 2;; --steps) optchk "$@"; STEPS="$2"; shift 2;; --contact) optchk "$@"; CONTACT="$2"; shift 2;; --out) optchk "$@"; OUTDIR="$2"; shift 2;;
     --verbose) VERBOSE=1; shift;; -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
 fact() { [ -f "$FACTS_FILE" ] || return 1; sed -n "s/^$1=//p" "$FACTS_FILE" | head -1 | grep .; }

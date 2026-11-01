@@ -54,9 +54,9 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --sid) SID="$2"; shift 2;; --target) TARGET="$2"; shift 2;; --tns) APP_TNS="$2"; shift 2;; --connect) DG_CONNECT="$2"; shift 2;;
-    --restore-point) WANT_RP=1; shift;; --immediate) IMMEDIATE=1; shift;; --wait) DG_VERIFY_WAIT="$2"; shift 2;;
-    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --sid) optchk "$@"; SID="$2"; shift 2;; --target) optchk "$@"; TARGET="$2"; shift 2;; --tns) optchk "$@"; APP_TNS="$2"; shift 2;; --connect) optchk "$@"; DG_CONNECT="$2"; shift 2;;
+    --restore-point) WANT_RP=1; shift;; --immediate) IMMEDIATE=1; shift;; --wait) optchk "$@"; DG_VERIFY_WAIT="$2"; shift 2;;
+    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 

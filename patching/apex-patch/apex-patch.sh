@@ -69,6 +69,7 @@ warn() { printf '%s [WARN ] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}"
 err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}" >&2; }
 dbg()  { [ "$VERBOSE" = 1 ] && printf '%s [DEBUG] %s\n' "$(ts)" "$*" >&2; return 0; }
 die()  { err "$*"; exit 1; }
+optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 run_cmd() { log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0; "$@" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"; return "${PIPESTATUS[0]}"; }
 run_sh()  { log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0; bash -c "$*" </dev/null >>"${LOG_FILE:-/dev/null}" 2>&1; }
 confirm() {
@@ -632,8 +633,8 @@ main() {
   local cmd="" args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --apex-base) CLI_APEX_BASE="$2"; shift 2;; --images-dir) CLI_IMG="$2"; shift 2;; --pdb) CLI_PDB="$2"; shift 2;;
-      --runtime) CLI_TYPE=runtime; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+      --apex-base) optchk "$@"; CLI_APEX_BASE="$2"; shift 2;; --images-dir) optchk "$@"; CLI_IMG="$2"; shift 2;; --pdb) optchk "$@"; CLI_PDB="$2"; shift 2;;
+      --runtime) CLI_TYPE=runtime; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
       --dry-run) DRY_RUN=1; shift;; --yes|-y) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;;
       --verbose|-v) VERBOSE=1; shift;; --no-restore-point) NO_RP=1; shift;; --allow-flashback) ALLOW_FLASHBACK=1; shift;;
       -h|--help|help) usage; exit 0;; --version) echo "$VERSION"; exit 0;;

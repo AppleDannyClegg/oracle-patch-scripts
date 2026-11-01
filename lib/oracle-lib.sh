@@ -45,6 +45,10 @@ err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}"
 dbg()  { [ "$VERBOSE" = 1 ] && printf '%s [DEBUG] %s\n' "$(ts)" "$*" >&2; return 0; }
 say()  { [ "$QUIET" = 1 ] || printf '%s  %s\n' "$(ts)" "$*" >&2; [ -n "$LOG_FILE" ] && printf '%s  %s\n' "$(ts)" "$*" >>"$LOG_FILE"; return 0; }
 die()  { err "$*"; exit 1; }
+# optchk "$@": inside parse_opts, before taking "$2" as the value of option "$1". Without it "--sid" as the last word made
+# "shift 2" fail and the while loop spin forever, and "--sid --dry-run" took "--dry-run" as the SID. Values may start with a
+# digit after "-" (-1d), never with a letter or another dash.
+optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 
 # ---------------------------------------------------------------------------
 # execution
@@ -191,6 +195,30 @@ db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%
 with_pdb() { local p="$1"; shift; if [ -n "$p" ] && [ "$p" != CDB\$ROOT ]; then PDB_SET="alter session set container=$p;" "$@"; else PDB_SET="" "$@"; fi; }
 # sql_checks <sid> <label> <sql>: rows shaped CHECK|SEV|text become findings
 sql_checks() { sql_run "$1" "set heading off\n$3" 2>/dev/null | grep -a '^CHECK|' | while IFS='|' read -r _ sev txt; do finding "$sev" db "$2: $txt"; done; }
+
+# ---------------------------------------------------------------------------
+# RMAN: one wrapper for every script (rman-ops, exascale-space, gg-ops, db-refresh). Commands and connect strings go
+# on stdin, never on a command line. The environment is the database home's own: ORACLE_SID, ORACLE_HOME,
+# LD_LIBRARY_PATH, PATH and a fixed NLS_DATE_FORMAT (RMAN prints dates in that format; without it a two-digit year)
+# ---------------------------------------------------------------------------
+# rman_bin <sid>: RMAN_CMD if set, else <home>/bin/rman, else rman on PATH, else nothing
+rman_bin() { local h; h="$(db_home_of "$1")"; if [ -n "${RMAN_CMD:-}" ]; then printf '%s' "$RMAN_CMD"; elif [ -x "$h/bin/rman" ]; then printf '%s/bin/rman' "$h"; elif have rman; then printf 'rman'; fi; }
+# rman_script <sid> <secs>: the whole RMAN script (connect lines included) on stdin, RMAN's output (redacted) on stdout
+rman_script() {
+  local sid="$1" secs="$2" home bin; home="$(db_home_of "$sid")"; bin="$(rman_bin "$sid")"
+  [ -n "$bin" ] || { echo "no rman for $sid (no $home/bin/rman, RMAN_CMD not set)"; return 1; }
+  # subshell with pipefail: the caller gets RMAN's exit status, not redact's (gg-ops says "restore done" on it)
+  ( set -o pipefail; ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_DATE_FORMAT="YYYY-MM-DD HH24:MI:SS" to "$secs" "$bin" 2>&1 | redact )
+}
+# rman_run <sid> <secs> <commands...>: connect target (RMAN_TARGET_CONNECT, default /) and catalog (RMAN_CATALOG_CONNECT)
+# first, then the commands; "\n" in the text becomes a newline
+rman_run() {
+  local sid="$1" secs="$2"; shift 2
+  local nl q cat=""; nl=$'\n'; q="${*//\\n/$nl}"
+  [ -n "${RMAN_CATALOG_CONNECT:-}" ] && cat="connect catalog $RMAN_CATALOG_CONNECT"
+  dbg "RMAN($sid): $q"
+  printf 'connect target %s\n%s\nset echo on\n%s\nexit\n' "${RMAN_TARGET_CONNECT:-/}" "$cat" "$q" | rman_script "$sid" "$secs"
+}
 
 # ---------------------------------------------------------------------------
 # report: REPORT.md with FINDINGS first, raw/ for full output, optional tar.gz
@@ -586,6 +614,8 @@ lib_selftest() {
   t "redact jdbc url" '[ "$(echo "jdbc:oracle:thin:apex/Welcome1@//db:1521/svc" | redact)" = "jdbc:oracle:thin:apex/***REDACTED***@//db:1521/svc" ]'
   t "json_escape" '[ "$(json_escape "a\"b")" = "a\\\"b" ]'
   t "report roundtrip" 'd=$(mktemp -d); report_init "$d/r"; h1 T; finding WARN x "hello"; (finding CRIT y "from subshell"); f=$(report_finish "t" 0); grep -q "from subshell" "$f" && grep -q "1 critical, 1 warnings" "$f"; rc=$?; rm -rf "$d"; [ $rc = 0 ]'
+  t "rman_script env (SID HOME LD_LIBRARY_PATH PATH NLS_DATE_FORMAT)" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null" "echo \"\$ORACLE_SID|\$ORACLE_HOME|\$LD_LIBRARY_PATH|\$PATH|\$NLS_DATE_FORMAT\"" >"$d/rman"; chmod +x "$d/rman"; o=$(ORACLE_HOME=/h/x RMAN_CMD="$d/rman" rman_run XSID 5 "list backup" | tr -d "\n"); rm -rf "$d"; case "$o" in "XSID|/h/x|/h/x/lib:"*"|/h/x/bin:"*"|YYYY-MM-DD HH24:MI:SS") true;; *) echo "got: $o"; false;; esac'
+  t "rman_script returns rman exit status" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null; echo RMAN-00569; exit 1" >"$d/rman"; chmod +x "$d/rman"; ! (RMAN_CMD="$d/rman" rman_script X 5 </dev/null >/dev/null); r=$?; rm -rf "$d"; [ "$r" = 0 ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]

@@ -61,12 +61,12 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --vault) ONLY_VAULT="${2#@}"; shift 2;; --sid) ONLY_SID="$2"; shift 2;; --days) ARCH_DAYS="$2"; shift 2;; --top) TOP="$2"; shift 2;;
-    --hc) GROW_HC="$2"; shift 2;; --ef) GROW_EF="$2"; shift 2;; --xt) GROW_XT="$2"; shift 2;; --pool) GROW_POOL="$2"; shift 2;;
-    --obsolete) DO_OBSOLETE=1; shift;; --list) LIST_FILE="$2"; shift 2;;
+    --vault) optchk "$@"; ONLY_VAULT="${2#@}"; shift 2;; --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --days) optchk "$@"; ARCH_DAYS="$2"; shift 2;; --top) optchk "$@"; TOP="$2"; shift 2;;
+    --hc) optchk "$@"; GROW_HC="$2"; shift 2;; --ef) optchk "$@"; GROW_EF="$2"; shift 2;; --xt) optchk "$@"; GROW_XT="$2"; shift 2;; --pool) optchk "$@"; GROW_POOL="$2"; shift 2;;
+    --obsolete) DO_OBSOLETE=1; shift;; --list) optchk "$@"; LIST_FILE="$2"; shift 2;;
     --no-files) NO_FILES=1; shift;; --no-db) NO_DB=1; shift;; --no-escli) NO_ESCLI=1; shift;; --no-tar) MAKE_TAR=0; shift;;
-    --out) EXA_OUT="$2"; shift 2;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;;
-    --verbose) VERBOSE=1; shift;; --quiet) QUIET=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --out) optchk "$@"; EXA_OUT="$2"; shift 2;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;;
+    --verbose) VERBOSE=1; shift;; --quiet) QUIET=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -444,15 +444,7 @@ select 'thin clone PDB '||name||' from con_id '||snapshot_parent_con_id||' ('||r
 # grow: chvault with the old value saved for rollback
 # ---------------------------------------------------------------------------
 vault_attr() { local r; r="$(es lsvault "@$1" --detail 2>/dev/null | records -)"; attr "$r" "$2"; }
-# RMAN: commands on stdin, catalog connect on stdin too (same as rman-ops)
-rman_bin() { local h; h="$(db_home_of "$1")"; if [ -n "${RMAN_CMD:-}" ]; then printf '%s' "$RMAN_CMD"; elif [ -x "$h/bin/rman" ]; then printf '%s/bin/rman' "$h"; elif have rman; then printf 'rman'; fi; }
-rman_run() { # <sid> <secs> <commands...>: "\n" in the text becomes a newline
-  local sid="$1" secs="$2"; shift 2
-  local nl q home bin cat=""; nl=$'\n'; q="${*//\\n/$nl}"; home="$(db_home_of "$sid")"; bin="$(rman_bin "$sid")"
-  [ -n "$bin" ] || { echo "no rman for $sid"; return 1; }
-  [ -n "$RMAN_CATALOG_CONNECT" ] && cat="connect catalog $RMAN_CATALOG_CONNECT"
-  printf 'connect target %s\n%s\nset echo on\n%s\nexit\n' "${RMAN_TARGET_CONNECT:-/}" "$cat" "$q" | ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_DATE_FORMAT="YYYY-MM-DD HH24:MI:SS" to "$secs" "$bin" 2>&1 | redact
-}
+# rman_run comes from lib/oracle-lib.sh (same wrapper as rman-ops)
 size_arg() { # <current bytes|unlimited> <spec: 10T | +2T | 2000G> -> bytes
   local cur="$1" spec="$2"
   case "$spec" in +*) [ "$cur" = unlimited ] && die "the vault is unlimited: give an absolute size, not +$spec"; echo $((cur + $(to_bytes "${spec#+}")));; unlimited) echo unlimited;; *) to_bytes "$spec";; esac

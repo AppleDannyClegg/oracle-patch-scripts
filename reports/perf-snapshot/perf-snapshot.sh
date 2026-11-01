@@ -33,10 +33,10 @@ PACK_OK=0
 usage() { usage_from_header "$0"; }
 parse_args() {
   while [ $# -gt 0 ]; do case "$1" in
-    --from) FROM="$2"; shift 2;; --to) TO="$2"; shift 2;; --last) LAST="$2"; shift 2;;
-    --sid) ONLY_SID="$2"; shift 2;; --pdb) PDB="$2"; shift 2;; --sql-id) SQL_ID="$2"; shift 2;;
-    --awr) WANT_AWR=1; shift;; --no-pack) NO_PACK=1; shift;; --threads) THREADS=1; shift;; --samples) SAMPLES="$2"; shift 2;;
-    --out) PERF_OUT="$2"; shift 2;; --lines) DIAG_LINES="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
+    --from) optchk "$@"; FROM="$2"; shift 2;; --to) optchk "$@"; TO="$2"; shift 2;; --last) optchk "$@"; LAST="$2"; shift 2;;
+    --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --pdb) optchk "$@"; PDB="$2"; shift 2;; --sql-id) optchk "$@"; SQL_ID="$2"; shift 2;;
+    --awr) WANT_AWR=1; shift;; --no-pack) NO_PACK=1; shift;; --threads) THREADS=1; shift;; --samples) optchk "$@"; SAMPLES="$2"; shift 2;;
+    --out) optchk "$@"; PERF_OUT="$2"; shift 2;; --lines) optchk "$@"; DIAG_LINES="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
 # window: FROM/TO as 'YYYY-MM-DD HH24:MI'

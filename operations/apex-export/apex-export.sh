@@ -48,8 +48,8 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --app) APPS+=("$2"); shift 2;; --workspace) WS="$2"; shift 2;; --since) SINCE="$2"; shift 2;; --pdb) PDB_NAME="$2"; shift 2;; --all) ALL=1; shift;; --push) PUSH=1; shift;; --rev) REV="$2"; shift 2;; --to) TO="$2"; shift 2;; --as-new-id) NEW_ID="$2"; shift 2;;
-    --repo) APEX_REPO="$2"; shift 2;; --out) APEX_OUT="$2"; shift 2;; --report) REPORT_OUT=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --app) optchk "$@"; APPS+=("$2"); shift 2;; --workspace) optchk "$@"; WS="$2"; shift 2;; --since) optchk "$@"; SINCE="$2"; shift 2;; --pdb) optchk "$@"; PDB_NAME="$2"; shift 2;; --all) ALL=1; shift;; --push) PUSH=1; shift;; --rev) optchk "$@"; REV="$2"; shift 2;; --to) optchk "$@"; TO="$2"; shift 2;; --as-new-id) optchk "$@"; NEW_ID="$2"; shift 2;;
+    --repo) optchk "$@"; APEX_REPO="$2"; shift 2;; --out) optchk "$@"; APEX_OUT="$2"; shift 2;; --report) REPORT_OUT=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -87,12 +87,14 @@ ax_export() {
   local dir="$1"; shift; mkdir -p "$dir"
   if [ "$TOOL_MODE" = sqlcl ]; then
     log "apex export $* -dir $dir"; [ "$DRY_RUN" = 1 ] && return 0
-    local out; out="$(cd "$dir" && printf 'connect %s\napex export %s -dir %s\nexit\n' "$CONNECT" "$*" "$dir" | to "${EXPORT_TIMEOUT:-1800}" "$SQLCL" -S /nolog 2>&1)"; printf '%s\n' "$out" | redact >>"$LOG_FILE"
-    printf '%s' "$out" | grep -qiE 'ORA-[0-9]+|error|exception' && { printf '%s\n' "$out" | redact | grep -iE 'ORA-|error|exception' | head -3 >&2; return 1; }
+    local out rc=1; out="$(cd "$dir" && printf 'connect %s\napex export %s -dir %s\nexit\n' "$CONNECT" "$*" "$dir" | to "${EXPORT_TIMEOUT:-1800}" "$SQLCL" -S /nolog 2>&1)"; rc=$?; printf '%s\n' "$out" | redact >>"$LOG_FILE"
+    [ "$rc" = 0 ] || { printf '%s\n' "$out" | redact | grep -E 'ORA-[0-9]+|SP2-[0-9]+|PLS-[0-9]+|Exception' | head -3 >&2; err "sqlcl export exited with status $rc"; return 1; }
+    printf '%s' "$out" | grep -qE 'ORA-[0-9]+|SP2-[0-9]+|PLS-[0-9]+|Exception' && { printf '%s\n' "$out" | redact | grep -E 'ORA-[0-9]+|SP2-[0-9]+|PLS-[0-9]+|Exception' | head -3 >&2; return 1; }
   else
     warn "java APEXExport: the password is visible in the process list while it runs (install SQLcl to avoid that)"
     log "java oracle.apex.APEXExport -db $(conn_db) -user $(conn_user) $* -dir $dir"; [ "$DRY_RUN" = 1 ] && return 0
-    (cd "$dir" && to "${EXPORT_TIMEOUT:-1800}" "$JAVA" -cp "$APEX_HOME/utilities:$OJDBC_JAR" oracle.apex.APEXExport -db "$(conn_db | sed 's#^//##')" -user "$(conn_user)" -password "$(conn_pass)" "$@" -dir "$dir") 2>&1 | redact >>"$LOG_FILE" || return 1
+    (cd "$dir" && to "${EXPORT_TIMEOUT:-1800}" "$JAVA" -cp "$APEX_HOME/utilities:$OJDBC_JAR" oracle.apex.APEXExport -db "$(conn_db | sed 's#^//##')" -user "$(conn_user)" -password "$(conn_pass)" "$@" -dir "$dir") 2>&1 | redact >>"$LOG_FILE"
+    local -a ps=("${PIPESTATUS[@]}"); [ "${ps[0]:-1}" = 0 ] && [ "${ps[1]:-1}" = 0 ] || { err "java APEXExport failed (status ${ps[0]:-unknown})"; return 1; }
   fi
   return 0
 }
@@ -227,7 +229,7 @@ cmd_restore() {
   [ "$tgt" = "$id" ] && warn "application $id is REPLACED in $DBN/$PDBN: sessions end, every change since that commit is lost (it is exported and committed first)"
   confirm_typed "Import application $tgt into $DBN/$PDBN from $rev" "$tgt" || die "aborted"
   # 1. current state into the repo
-  APPS=("$id"); do_export || warn "current export failed; continuing with the restore"; [ "$DRY_RUN" = 1 ] || { g add -A . >/dev/null; [ -n "$(g status --porcelain)" ] && g commit -q -m "apex-export: state of f$id before restore from $rev" && say "current state committed $(g rev-parse --short HEAD)"; }
+  APPS=("$id"); do_export || die "export of the current state of f$id failed; refusing the restore (nothing committed or imported)"; [ "$DRY_RUN" = 1 ] || { g add -A . >/dev/null; [ -n "$(g status --porcelain)" ] && g commit -q -m "apex-export: state of f$id before restore from $rev" && say "current state committed $(g rev-parse --short HEAD)"; }
   # 2. the files from the revision
   local src="$RUN_DIR/restore_f$id"; mkdir -p "$src"; g archive "$rev" "$(dirname "$path")" | tar -x -C "$src" || die "git archive failed"
   local app_dir; app_dir="$(find "$src" -type d -name "f$id" | head -1)"; local install; if [ -n "$app_dir" ]; then install="$app_dir/install.sql"; else install="$(find "$src" -name "f$id.sql" | head -1)"; app_dir="$(dirname "$install")"; fi

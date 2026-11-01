@@ -35,10 +35,10 @@ ONLY_SID=""; CSV=0; NO_PACK=0; MAKE_TAR=1; TODAY="$(date +%Y-%m-%d)"
 usage() { usage_from_header "$0"; }
 parse_args() {
   while [ $# -gt 0 ]; do case "$1" in
-    --window) SPACE_WINDOW="$2"; shift 2;; --sid) ONLY_SID="$2"; shift 2;; --pdb) PDB="$2"; shift 2;; --csv) CSV=1; QUIET=1; shift;;
-    --history) SPACE_HISTORY="$2"; shift 2;; --out) SPACE_OUT="$2"; shift 2;; --no-pack) NO_PACK=1; shift;;
+    --window) optchk "$@"; SPACE_WINDOW="$2"; shift 2;; --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --pdb) optchk "$@"; PDB="$2"; shift 2;; --csv) CSV=1; QUIET=1; shift;;
+    --history) optchk "$@"; SPACE_HISTORY="$2"; shift 2;; --out) optchk "$@"; SPACE_OUT="$2"; shift 2;; --no-pack) NO_PACK=1; shift;;
     --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
-    --install-cron) printf '%s %s * * * %s --quiet --no-tar >/dev/null 2>&1\n' "${2#*:}" "${2%%:*}" "$SCRIPT_DIR/$TOOL.sh"; exit 0;;
+    --install-cron) optchk "$@"; printf '%s %s * * * %s --quiet --no-tar >/dev/null 2>&1\n' "${2#*:}" "${2%%:*}" "$SCRIPT_DIR/$TOOL.sh"; exit 0;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
 

@@ -61,10 +61,10 @@ GOLD_PDB=""; DB_HOME=""; GRID_HOME=""; IS_CDB=0; TEST_DBUN=""; ALL=0
 usage() { usage_from_header "$0"; }
 parse_opts() {
   while [ $# -gt 0 ]; do case "$1" in
-    --method) METHOD="$2"; shift 2;; --sid) SID="$2"; shift 2;; --prod-pdb) PROD_PDB="$2"; shift 2;; --test-pdb) TEST_PDB="$2"; shift 2;; --link) PROD_LINK="$2"; shift 2;;
-    --refreshable) REFRESHABLE=1; shift;; --snapshot) SNAPSHOT=1; shift;; --from-backup) FROM_BACKUP="$2"; shift 2;; --no-drop) NO_DROP=1; shift;; --keep-old) KEEP_OLD=1; shift;;
-    --preserve-schemas) PRESERVE_SCHEMAS="$2"; shift 2;; --require-mask) REQUIRE_MASK=yes; shift;; --noarchivelog) NOARCHIVELOG=yes; shift;; --skip) SKIP=",$2,"; shift 2;; --all) ALL=1; shift;;
-    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --method) optchk "$@"; METHOD="$2"; shift 2;; --sid) optchk "$@"; SID="$2"; shift 2;; --prod-pdb) optchk "$@"; PROD_PDB="$2"; shift 2;; --test-pdb) optchk "$@"; TEST_PDB="$2"; shift 2;; --link) optchk "$@"; PROD_LINK="$2"; shift 2;;
+    --refreshable) REFRESHABLE=1; shift;; --snapshot) SNAPSHOT=1; shift;; --from-backup) optchk "$@"; FROM_BACKUP="$2"; shift 2;; --no-drop) NO_DROP=1; shift;; --keep-old) KEEP_OLD=1; shift;;
+    --preserve-schemas) optchk "$@"; PRESERVE_SCHEMAS="$2"; shift 2;; --require-mask) REQUIRE_MASK=yes; shift;; --noarchivelog) NOARCHIVELOG=yes; shift;; --skip) optchk "$@"; SKIP=",$2,"; shift 2;; --all) ALL=1; shift;;
+    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
   case "$METHOD" in pdb-clone|rman-duplicate) ;; *) die "--method must be pdb-clone or rman-duplicate";; esac
   [ -n "$TEST_PDB" ] && GOLD_PDB="${TEST_PDB}_GOLD"
@@ -95,7 +95,18 @@ pdb_exists() { [ "$(pdb_mode "$1")" != ABSENT ]; }
 pdb_refresh_mode() { rval "(select nvl(max(refresh_mode),'-') from dba_pdbs where pdb_name=upper('$1'))"; }
 # prod_val "(select x from t ...)": the scalar from PROD. "@link" goes on every table in the expression ("from t" -> "from t@link");
 # an expression cannot carry the link itself ("(select ...)@link" is not SQL)
-prod_val() { [ -n "$PROD_LINK" ] || return 1; local q; q="$(printf '%s' "$1" | sed -E "s/ from ([A-Za-z_][A-Za-z0-9_\$#.]*)/ from \1@$PROD_LINK/g")"; rval "$q" 2>/dev/null; }
+prod_val() {
+  [ -n "$PROD_LINK" ] || return 1; local q n m k
+  # case-insensitive, and every FROM must end up linked: a FROM the rewrite did not reach (uppercase before this
+  # fix, an unexpected shape) would run that clause on TEST and compare PROD with itself, silently; a FROM inside a
+  # string literal would get the link bolted into the literal, so that is refused as well
+  q="$(printf '%s' "$1" | sed -E "s/([[:space:]])([Ff][Rr][Oo][Mm])([[:space:]]+)([A-Za-z_][A-Za-z0-9_\$#.]*)/\1\2\3\4@$PROD_LINK/g")"
+  n="$(printf '%s' "$1" | grep -oiE '[[:space:]]from[[:space:]]' | grep -c .)"; m="$(printf '%s' "$q" | grep -oF "@$PROD_LINK" | grep -c .)"
+  k="$(printf '%s' "$1" | sed "s/'[^']*'//g" | grep -oiE '[[:space:]]from[[:space:]]' | grep -c .)"
+  [ "$n" = "$k" ] || die "prod_val: a FROM inside a string literal in: $1"
+  [ "$n" = "$m" ] || die "prod_val: $n FROM but $m linked to $PROD_LINK in: $1"
+  rval "$q" 2>/dev/null
+}
 discover() {
   [ -z "$SID" ] && { local n; n="$(db_instances | grep -vE '^\+' | grep -c .)"; [ "$n" = 1 ] && SID="$(db_instances | grep -vE '^\+')"; }
   [ -n "$SID" ] || die "Which TEST instance? --sid SID / TEST_SID (running: $(db_instances | tr '\n' ' '))"
@@ -350,7 +361,7 @@ startup nomount pfile='$pfile'" >>"$LOG_FILE" 2>&1
   log "rman: $dup  (allocate ${RMAN_CHANNELS:-4} channels; output: $RUN_DIR/rman_duplicate.log)"
   [ "$DRY_RUN" = 1 ] && return 0
   local chans="" i; for ((i=1;i<=${RMAN_CHANNELS:-4};i++)); do chans="$chans allocate channel c$i device type disk;"; [ -z "$FROM_BACKUP" ] && chans="$chans allocate auxiliary channel a$i device type disk;"; done
-  printf '%s\nconnect auxiliary %s\nrun {%s\n%s\n}\nexit\n' "$conn_t" "$conn_a" "$chans" "$dup" | ORACLE_SID="$SID" ORACLE_HOME="$DB_HOME" PATH="$DB_HOME/bin:$PATH" NLS_DATE_FORMAT="YYYY-MM-DD HH24:MI:SS" to "${RMAN_TIMEOUT:-43200}" "${RMAN_CMD:-$DB_HOME/bin/rman}" 2>&1 | redact >"$RUN_DIR/rman_duplicate.log"
+  printf '%s\nconnect auxiliary %s\nrun {%s\n%s\n}\nexit\n' "$conn_t" "$conn_a" "$chans" "$dup" | rman_script "$SID" "${RMAN_TIMEOUT:-43200}" >"$RUN_DIR/rman_duplicate.log"
   grep -q 'Finished Duplicate Db' "$RUN_DIR/rman_duplicate.log" || { err "duplicate did not finish: $(grep -E 'RMAN-0[0-9]{4}|ORA-' "$RUN_DIR/rman_duplicate.log" | grep -vE 'RMAN-08' | head -3 | tr '\n' ';')"; return 1; }
   sql_ok "$SID" || { err "$SID not reachable after duplicate"; return 1; }
   [ "$NOARCHIVELOG" = yes ] && { log "switching $SID to NOARCHIVELOG"; ORACLE_SID="$SID" ORACLE_HOME="$DB_HOME" "$DB_HOME/bin/sqlplus" -S / as sysdba <<<"shutdown immediate
@@ -459,7 +470,7 @@ cmd_fix_scheduler() {
   case "$(printf '%s' "$DISABLE_JOBS" | uc)" in
     NONE) log "DISABLE_JOBS=NONE: scheduler jobs left as they came from PROD (they WILL run here)";;
     ALL) local jobs; jobs="$(plines "select owner||'.'||job_name from dba_scheduler_jobs where enabled='TRUE' and owner not in (select username from dba_users where oracle_maintained='Y');" | tr '\n' ' ')"
-      log "disabling $(printf '%s' "$jobs" | wc -w | tr -d ' ') enabled job(s)"; local j; for j in $jobs; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('\"${j%%.*}\".\"${j#*.}\"', force=>true); end;\n/" || true; done
+      log "disabling $(printf '%s' "$jobs" | wc -w | tr -d ' ') enabled job(s)"; local j; for j in $jobs; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('\"${j%%.*}\".\"$(printf '%s' "${j#*.}" | sed "s/'/''/g")\"', force=>true); end;\n/" || true; done
       local saved="$RUN_DIR/preserve/jobs.txt"; [ -s "$saved" ] && { log "re-enabling what the old TEST had enabled"; grep '|TRUE$' "$saved" | cut -d'|' -f1 | while read -r j; do do_sql pdb "enable $j (was enabled on the old TEST)" "begin dbms_scheduler.enable('\"${j%%.*}\".\"${j#*.}\"'); end;\n/" >/dev/null 2>&1 || true; done; };;
     *) local j; for j in ${DISABLE_JOBS//,/ }; do do_sql pdb "disable $j" "begin dbms_scheduler.disable('$j', force=>true); end;\n/" || true; done;;
   esac

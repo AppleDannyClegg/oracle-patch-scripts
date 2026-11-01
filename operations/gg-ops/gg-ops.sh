@@ -50,8 +50,8 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --group) GROUP="$2"; shift 2;; --sid) SID_OPT="$2"; shift 2;; --from) FROM="$2"; shift 2;; --rba) RBA="$2"; shift 2;; --atcsn) ATCSN="$2"; shift 2;; --schema) SCHEMA_MODE=1; shift;; --mgr) WITH_MGR=1; shift;; --apply) APPLY=1; shift;;
-    --report) REPORT_OUT=1; shift;; --out) GG_OUT="$2"; shift 2;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --group) optchk "$@"; GROUP="$2"; shift 2;; --sid) optchk "$@"; SID_OPT="$2"; shift 2;; --from) optchk "$@"; FROM="$2"; shift 2;; --rba) optchk "$@"; RBA="$2"; shift 2;; --atcsn) optchk "$@"; ATCSN="$2"; shift 2;; --schema) SCHEMA_MODE=1; shift;; --mgr) WITH_MGR=1; shift;; --apply) APPLY=1; shift;;
+    --report) REPORT_OUT=1; shift;; --out) optchk "$@"; GG_OUT="$2"; shift 2;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -313,9 +313,9 @@ heal_one() { # <group> <status>: decide from the report's last error
     *) echo "   -> not a pattern this script knows; the report is $(report_file "$g")"; confirm "start $p $g anyway?" && start_one "$g";;
   esac
 }
-rman_restore() { # <sid> <rman command>
-  local sid="$1" home; home="$(db_home_of "$sid")"; log "RMAN ($sid): $2"; [ "$DRY_RUN" = 1 ] && return 0
-  printf 'connect target /\n%s\nexit\n' "$2" | ORACLE_SID="$sid" ORACLE_HOME="$home" PATH="$home/bin:$PATH" to 3600 "${RMAN_CMD:-$home/bin/rman}" >>"$LOG_FILE" 2>&1 && log "RMAN restore done"
+rman_restore() { # <sid> <rman command>: through the lib wrapper (database home environment, RMAN_CMD honoured)
+  local sid="$1"; log "RMAN ($sid): $2"; [ "$DRY_RUN" = 1 ] && return 0
+  printf 'connect target /\n%s\nexit\n' "$2" | rman_script "$sid" 3600 >>"$LOG_FILE" 2>&1 && log "RMAN restore done"
 }
 cmd_heal() {
   init_run_dir heal; gg_detect; load_procs; local prog st g lag since any=0

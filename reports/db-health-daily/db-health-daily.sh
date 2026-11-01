@@ -36,9 +36,9 @@ STATUS_LINES=""   # one line per database for the summary
 usage() { usage_from_header "$0"; }
 parse_args() {
   while [ $# -gt 0 ]; do case "$1" in
-    --out) HEALTH_OUT="$2"; shift 2;; --sid) ONLY_SID="$2"; shift 2;; --pdb) PDB="$2"; shift 2;;
-    --mail) MAIL_TO="$2"; shift 2;; --always-mail) ALWAYS_MAIL=1; shift;; --cron) CRON=1; QUIET=1; shift;;
-    --install-cron) printf '%s %s * * * %s --cron --mail %s >/dev/null 2>&1\n' "${2#*:}" "${2%%:*}" "$SCRIPT_DIR/$TOOL.sh" "${MAIL_TO:-dba@example.com}"; exit 0;;
+    --out) optchk "$@"; HEALTH_OUT="$2"; shift 2;; --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --pdb) optchk "$@"; PDB="$2"; shift 2;;
+    --mail) optchk "$@"; MAIL_TO="$2"; shift 2;; --always-mail) ALWAYS_MAIL=1; shift;; --cron) CRON=1; QUIET=1; shift;;
+    --install-cron) optchk "$@"; printf '%s %s * * * %s --cron --mail %s >/dev/null 2>&1\n' "${2#*:}" "${2%%:*}" "$SCRIPT_DIR/$TOOL.sh" "${MAIL_TO:-dba@example.com}"; exit 0;;
     --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }

@@ -51,9 +51,9 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --home) HOME_DIR="$2"; shift 2;; --sid) SIDS="${2//,/ }"; shift 2;; --grid) GRID=1; shift;; --oop) OOP="$2"; shift 2;; --rolling) ROLLING=1; shift;;
-    --no-restore-point) NO_RP=1; shift;; --no-backup) NO_BACKUP=1; shift;; --patches) PATCHES="$2"; shift 2;; --release) PICK_RELEASE="$2"; shift 2;; --latest) USE_LATEST=1; shift;;
-    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --home) optchk "$@"; HOME_DIR="$2"; shift 2;; --sid) optchk "$@"; SIDS="${2//,/ }"; shift 2;; --grid) GRID=1; shift;; --oop) optchk "$@"; OOP="$2"; shift 2;; --rolling) ROLLING=1; shift;;
+    --no-restore-point) NO_RP=1; shift;; --no-backup) NO_BACKUP=1; shift;; --patches) optchk "$@"; PATCHES="$2"; shift 2;; --release) optchk "$@"; PICK_RELEASE="$2"; shift 2;; --latest) USE_LATEST=1; shift;;
+    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 

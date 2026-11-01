@@ -44,9 +44,9 @@ PACK=""; SINCE_EP=""; UNTIL_EP=""; SINCE_ISO=""; UNTIL_ISO=""; TFA_DONE=0; FACTS
 usage() { usage_from_header "$0"; }
 parse_opts() {
   while [ $# -gt 0 ]; do case "$1" in
-    --since) SINCE="$2"; shift 2;; --until) UNTIL="$2"; shift 2;; --hours) HOURS="$2"; shift 2;; --sid) ONLY_SID="$2"; shift 2;; --component) COMPONENTS="$COMPONENTS,$2"; shift 2;;
+    --since) optchk "$@"; SINCE="$2"; shift 2;; --until) optchk "$@"; UNTIL="$2"; shift 2;; --hours) optchk "$@"; HOURS="$2"; shift 2;; --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --component) optchk "$@"; COMPONENTS="$COMPONENTS,$2"; shift 2;;
     --awr) DO_AWR=1; shift;; --threads) DO_THREADS=1; shift;; --heap-dump) DO_HEAP=1; shift;; --hang) DO_HANG=1; shift;; --no-diag) NO_DIAG=1; shift;; --no-tfa) NO_TFA=1; shift;; --split) DO_SPLIT=1; shift;;
-    --out) PACK_OUT="$2"; shift 2;; --cap-mb) CAP_MB="$2"; shift 2;; --no-redact) REDACT=0; shift;;
+    --out) optchk "$@"; PACK_OUT="$2"; shift 2;; --cap-mb) optchk "$@"; CAP_MB="$2"; shift 2;; --no-redact) REDACT=0; shift;;
     --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --verbose) VERBOSE=1; shift;; -h|--help) usage; exit 0;; --*) die "Unknown option: $1";;
     *) [ -z "$SR" ] && SR="$1" || die "unexpected argument $1"; shift;; esac; done
 }

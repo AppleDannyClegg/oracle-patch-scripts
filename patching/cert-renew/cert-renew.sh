@@ -67,10 +67,10 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --cert) CERT="$2"; shift 2;; --key) KEY="$2"; shift 2;; --chain) CHAIN="$2"; shift 2;; --cn) CN="$2"; shift 2;; --san) SAN="$2"; shift 2;; --bits) BITS="$2"; shift 2;;
-    --alias) CERT_ALIAS="$2"; shift 2;; --wallet) WALLET_OPT="$2"; shift 2;; --trust-mode) TRUST_MODE_OPT="$2"; shift 2;; --out) CERT_OUT="$2"; shift 2;;
+    --cert) optchk "$@"; CERT="$2"; shift 2;; --key) optchk "$@"; KEY="$2"; shift 2;; --chain) optchk "$@"; CHAIN="$2"; shift 2;; --cn) optchk "$@"; CN="$2"; shift 2;; --san) optchk "$@"; SAN="$2"; shift 2;; --bits) optchk "$@"; BITS="$2"; shift 2;;
+    --alias) optchk "$@"; CERT_ALIAS="$2"; shift 2;; --wallet) optchk "$@"; WALLET_OPT="$2"; shift 2;; --trust-mode) optchk "$@"; TRUST_MODE_OPT="$2"; shift 2;; --out) optchk "$@"; CERT_OUT="$2"; shift 2;;
     --restart) DO_RESTART=1; shift;; --no-scan) NO_SCAN=1; shift;; --report) REPORT_OUT=1; shift;;
-    --force) FORCE=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --force) FORCE=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 

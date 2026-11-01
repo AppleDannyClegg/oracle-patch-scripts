@@ -53,9 +53,9 @@ NEW_PASSWORD="${NEW_PASSWORD:-}"
 usage() { usage_from_header "$0"; }
 parse_opts() {
   while [ $# -gt 0 ]; do case "$1" in
-    --user) USERS="$2"; shift 2;; --sid) ONLY_SID="$2"; shift 2;; --pdb) ONLY_PDB="$2"; shift 2;; --days) DAYS="$2"; shift 2;;
+    --user) optchk "$@"; USERS="$2"; shift 2;; --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --pdb) optchk "$@"; ONLY_PDB="$2"; shift 2;; --days) optchk "$@"; DAYS="$2"; shift 2;;
     --generate) GENERATE=1; shift;; --no-expiry) NO_EXPIRY=1; shift;; --no-propagate) NO_PROPAGATE=1; shift;; --no-restart) NO_RESTART=1; shift;;
-    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) RUN_DIR="$2"; shift 2;;
+    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
   USERS="$(printf '%s' "${USERS//,/ }" | tr '[:lower:]' '[:upper:]')"
 }

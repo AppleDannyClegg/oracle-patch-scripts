@@ -32,7 +32,7 @@ usage() { usage_from_header "$0"; }
 parse_args() {
   while [ $# -gt 0 ]; do case "$1" in
     --mos) USE_MOS=1; shift;; --no-net) NO_NET=1; shift;; --json) FMT=json; QUIET=1; shift;; --csv) FMT=csv; QUIET=1; shift;;
-    --report) DO_REPORT=1; shift;; --out) PATCH_OUT="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
+    --report) DO_REPORT=1; shift;; --out) optchk "$@"; PATCH_OUT="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
 # row <product> <home> <installed> <date YYYY-MM-DD|""> <latest> <note> ; status from the date

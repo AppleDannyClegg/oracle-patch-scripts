@@ -49,6 +49,7 @@ ts() { date '+%Y-%m-%d %H:%M:%S'; }
 say()  { [ "$QUIET" = 1 ] || printf '%s  %s\n' "$(ts)" "$*" >&2; }
 warn() { printf '%s  WARN %s\n' "$(ts)" "$*" >&2; }
 die()  { printf '%s  ERROR %s\n' "$(ts)" "$*" >&2; exit 1; }
+optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 skipped() { case "$SKIP" in *" $1 "*) return 0;; esac; return 1; }
 
 # to <secs> <cmd...>: run with a timeout when 'timeout' exists; never lets a hung tool hang the report
@@ -1043,12 +1044,12 @@ usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --out) DIAG_OUT="$2"; shift 2;;
-      --days) DIAG_DAYS="$2"; shift 2;;
-      --lines) DIAG_LINES="$2"; shift 2;;
-      --pdb) PDB="$2"; shift 2;;
-      --sid) ONLY_SID="$2"; shift 2;;
-      --skip) SKIP="$SKIP$2 "; shift 2;;
+      --out) optchk "$@"; DIAG_OUT="$2"; shift 2;;
+      --days) optchk "$@"; DIAG_DAYS="$2"; shift 2;;
+      --lines) optchk "$@"; DIAG_LINES="$2"; shift 2;;
+      --pdb) optchk "$@"; PDB="$2"; shift 2;;
+      --sid) optchk "$@"; ONLY_SID="$2"; shift 2;;
+      --skip) optchk "$@"; SKIP="$SKIP$2 "; shift 2;;
       --threads) THREADS=1; shift;;
       --no-redact) REDACT=0; shift;;
       --no-tar) MAKE_TAR=0; shift;;

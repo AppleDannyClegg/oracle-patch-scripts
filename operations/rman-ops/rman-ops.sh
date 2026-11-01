@@ -50,9 +50,9 @@ DBUN=""; SHOWALL=""; LOG_MODE=""; ROLE=""
 usage() { usage_from_header "$0"; }
 parse_opts() {
   while [ $# -gt 0 ]; do case "$1" in
-    --sid) ONLY_SID="$2"; shift 2;; --days) DAYS="$2"; shift 2;; --until) UNTIL="$2"; shift 2;; --full) FULL=1; shift;;
-    --datafile) DATAFILE="$2"; shift 2;; --tablespace) TABLESPACE="$2"; shift 2;; --scratch) RESTORE_SCRATCH_DIR="$2"; shift 2;; --keep) KEEP=1; shift;;
-    --window) RECOVERY_WINDOW_DAYS="$2"; shift 2;; --out) RMAN_OUT="$2"; shift 2;; --lines) DIAG_LINES="$2"; shift 2;; --no-tar) MAKE_TAR=0; shift;;
+    --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --days) optchk "$@"; DAYS="$2"; shift 2;; --until) optchk "$@"; UNTIL="$2"; shift 2;; --full) FULL=1; shift;;
+    --datafile) optchk "$@"; DATAFILE="$2"; shift 2;; --tablespace) optchk "$@"; TABLESPACE="$2"; shift 2;; --scratch) optchk "$@"; RESTORE_SCRATCH_DIR="$2"; shift 2;; --keep) KEEP=1; shift;;
+    --window) optchk "$@"; RECOVERY_WINDOW_DAYS="$2"; shift 2;; --out) optchk "$@"; RMAN_OUT="$2"; shift 2;; --lines) optchk "$@"; DIAG_LINES="$2"; shift 2;; --no-tar) MAKE_TAR=0; shift;;
     --quiet) QUIET=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
   [ -n "$UNTIL" ] && { [[ "$UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}$ ]] || die "--until must be 'YYYY-MM-DD HH:MI'"; }
@@ -61,16 +61,7 @@ parse_opts() {
 # ---------------------------------------------------------------------------
 # RMAN: commands on stdin, catalog connect on stdin too (never on a command line); full output to a file
 # ---------------------------------------------------------------------------
-rman_bin() { local h; h="$(db_home_of "$1")"; if [ -n "${RMAN_CMD:-}" ]; then printf '%s' "$RMAN_CMD"; elif [ -x "$h/bin/rman" ]; then printf '%s/bin/rman' "$h"; elif have rman; then printf 'rman'; fi; }
-# rman_run <sid> <secs> <commands...>: "\n" in the text becomes a newline; prints RMAN's output
-rman_run() {
-  local sid="$1" secs="$2"; shift 2
-  local nl q home bin cat=""; nl=$'\n'; q="${*//\\n/$nl}"; home="$(db_home_of "$sid")"; bin="$(rman_bin "$sid")"
-  [ -n "$bin" ] || { echo "no rman for $sid"; return 1; }
-  [ -n "$RMAN_CATALOG_CONNECT" ] && cat="connect catalog $RMAN_CATALOG_CONNECT"
-  dbg "RMAN($sid): $q"
-  printf 'connect target %s\n%s\nset echo on\n%s\nexit\n' "${RMAN_TARGET_CONNECT:-/}" "$cat" "$q" | ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_DATE_FORMAT="YYYY-MM-DD HH24:MI:SS" to "$secs" "$bin" 2>&1 | redact
-}
+# rman_bin / rman_run come from lib/oracle-lib.sh (RMAN_CMD, RMAN_TARGET_CONNECT, RMAN_CATALOG_CONNECT honoured)
 # rmansec <sid> <name> <title> <secs> <commands>: titled fenced block in the report, full output in raw/
 rmansec() {
   local sid="$1" name="$2" title="$3" secs="$4" q="$5" f; f="$RAW/rman_${sid}_${name}.txt"

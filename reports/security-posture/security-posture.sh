@@ -27,8 +27,8 @@ ONLY_SID=""; CIS=0; MAKE_TAR=1; SCORE=""; NPASS=0; NFAIL=0
 usage() { usage_from_header "$0"; }
 parse_args() {
   while [ $# -gt 0 ]; do case "$1" in
-    --sid) ONLY_SID="$2"; shift 2;; --pdb) PDB="$2"; shift 2;; --cis) CIS=1; shift;;
-    --out) SEC_OUT="$2"; shift 2;; --lines) DIAG_LINES="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
+    --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --pdb) optchk "$@"; PDB="$2"; shift 2;; --cis) CIS=1; shift;;
+    --out) optchk "$@"; SEC_OUT="$2"; shift 2;; --lines) optchk "$@"; DIAG_LINES="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
 # control <scope> <cis-ref> <control text> <PASS|FAIL|INFO> <evidence>  (FAIL also becomes a WARN finding; "CRIT:" prefix in evidence -> CRIT)

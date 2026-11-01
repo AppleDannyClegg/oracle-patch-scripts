@@ -91,6 +91,7 @@ warn() { printf '%s [WARN ] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}"
 err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}" >&2; }
 dbg()  { [ "$VERBOSE" = 1 ] && printf '%s [DEBUG] %s\n' "$(ts)" "$*" >&2; return 0; }
 die()  { err "$*"; exit 1; }
+optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 
 # run_cmd: execute (or print under --dry-run), tee output to log, return exit code
 run_cmd() {
@@ -1407,18 +1408,18 @@ main() {
   local cmd="" args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --oracle-home) CLI_ORACLE_HOME="$2"; shift 2 ;;
-      --domain-home) CLI_DOMAIN_HOME="$2"; shift 2 ;;
-      --java-home)   CLI_JAVA_HOME="$2"; shift 2 ;;
-      --admin-url)   CLI_ADMIN_URL="$2"; shift 2 ;;
-      --backup-dir)  CLI_BACKUP_DIR="$2"; shift 2 ;;
-      --run-dir)     RUN_DIR="$2"; shift 2 ;;
+      --oracle-home) optchk "$@"; CLI_ORACLE_HOME="$2"; shift 2 ;;
+      --domain-home) optchk "$@"; CLI_DOMAIN_HOME="$2"; shift 2 ;;
+      --java-home) optchk "$@";  optchk "$@";  optchk "$@"; CLI_JAVA_HOME="$2"; shift 2 ;;
+      --admin-url) optchk "$@";  optchk "$@";  optchk "$@"; CLI_ADMIN_URL="$2"; shift 2 ;;
+      --backup-dir) optchk "$@";  optchk "$@"; CLI_BACKUP_DIR="$2"; shift 2 ;;
+      --run-dir)   optchk "$@";  optchk "$@";  optchk "$@"; RUN_DIR="$2"; shift 2 ;;
       --dry-run)     DRY_RUN=1; shift ;;
       --yes|-y)      ASSUME_YES=1; shift ;;
       --no-backup)   NO_BACKUP=1; shift ;;
       --force)       FORCE=1; shift ;;
-      --patches)     CLI_PATCHES="$2"; shift 2 ;;
-      --release)     PICK_RELEASE="$2"; shift 2 ;;
+      --patches)   optchk "$@";  optchk "$@";  optchk "$@"; CLI_PATCHES="$2"; shift 2 ;;
+      --release)   optchk "$@";  optchk "$@";  optchk "$@"; PICK_RELEASE="$2"; shift 2 ;;
       --latest)      USE_LATEST=1; shift ;;
       --json)        JSON_OUT=1; shift ;;
       --verbose|-v)  VERBOSE=1; shift ;;
