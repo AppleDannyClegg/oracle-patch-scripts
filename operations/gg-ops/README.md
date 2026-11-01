@@ -21,7 +21,7 @@ cd operations/gg-ops && cp gg-ops.conf.example gg-ops.conf && vi gg-ops.conf    
 ./gg-ops.sh skip-transaction REPB        # shows the failing transaction (report, discard, checkpoint) and needs the group name typed
 ./gg-ops.sh resync REPB --from 12 --rba 0       # alter replicat extseqno/extrba, start; or --atcsn SCN
 ./gg-ops.sh handlecollisions REPB on     # send replicat ... handlecollisions (runtime; off again when the load is applied)
-./gg-ops.sh trail-cleanup                # trail files below every reader's checkpoint minus GG_TRAIL_KEEP; --apply removes them
+./gg-ops.sh trail-cleanup                # trail files below every reader's checkpoint minus GG_TRAIL_KEEP; --apply removes them (exit 1 when one could not be removed)
 ./gg-ops.sh trandata APP.ORDERS          # dblogin useridalias + add trandata; --schema for add schematrandata
 ```
 

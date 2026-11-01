@@ -290,15 +290,24 @@ cmd_trail_cleanup() {
   [ -z "$missing" ] || die "no 'Log Read Checkpoint' in 'info detail' of:${missing} (output in $RUN_DIR/info_*_detail.txt) - cannot tell what they still read, so no trail file can be called unneeded; fix the read and run again"
   local readers; readers="$(trail_readers "$RUN_DIR")"; echo "readers: "; printf '%s\n' "$readers" | sed 's/^/  /'
   grep -iE '^ *PURGEOLDEXTRACTS' "$GG_PRM_DIR/mgr.prm" 2>/dev/null | sed 's/^/mgr.prm: /' || echo "mgr.prm: no PURGEOLDEXTRACTS (suggest: PURGEOLDEXTRACTS ./dirdat/*, USECHECKPOINTS, MINKEEPHOURS 48)"
-  local n=0 total=0 f prefix minseq
+  local n=0 total=0 failed=0 f prefix minseq
   for prefix in $(printf '%s\n' "$readers" | cut -d'|' -f2 | sed -E 's/[0-9]+$//' | sort -u); do
     minseq="$(printf '%s\n' "$readers" | awk -F'|' -v p="$prefix" 'index($2,p)==1{print $3+0}' | sort -n | head -1)"; [ -n "$minseq" ] || continue
     local keep=$((minseq - GG_TRAIL_KEEP)); echo "trail $prefix: oldest read sequence $minseq, files below $keep are not needed by any checkpoint"
     for f in "$OGG_HOME"/"${prefix#./}"[0-9]*; do [ -f "$f" ] || continue; local s; s="$(printf '%s' "$f" | grep -oE '[0-9]+$')"; [ "$((10#$s))" -lt "$keep" ] || continue
-      n=$((n+1)); total=$((total + $(file_size "$f")/1048576)); if [ "$APPLY" = 1 ]; then log "rm $f"; [ "$DRY_RUN" = 1 ] || rm -f "$f"; else echo "  would remove $f ($(du -h "$f" | cut -f1))"; fi; done
+      local sz; sz=$(( $(file_size "$f" || echo 0) / 1048576 ))
+      if [ "$APPLY" = 1 ]; then
+        # rm's status was dropped and n counted before it ran, so a read-only dirdat or a trail owned by another user still ended
+        # "N file(s) removed" exit 0 (DeepSeek, 1 Nov 22:17); only a file that is gone counts, and any failure fails the command
+        log "rm $f"
+        if [ "$DRY_RUN" = 1 ]; then n=$((n+1)); total=$((total + sz))
+        elif rm -f "$f" && [ ! -e "$f" ]; then n=$((n+1)); total=$((total + sz))
+        else err "could not remove $f (still there: $(ls -ld "$f" 2>&1 | cut -c1-120))"; failed=$((failed+1)); fi
+      else n=$((n+1)); total=$((total + sz)); echo "  would remove $f ($(du -h "$f" | cut -f1))"; fi; done
   done
-  echo "$n file(s), ${total} MB $([ "$APPLY" = 1 ] && echo removed || echo 'removable (--apply)')"
+  echo "$n file(s), ${total} MB $([ "$APPLY" = 1 ] && echo removed || echo 'removable (--apply)')$([ "$failed" -gt 0 ] && echo ", $failed NOT removed")"
   [ "$APPLY" = 0 ] && [ "$n" -gt 0 ] && echo "Better long-term: PURGEOLDEXTRACTS in mgr.prm so the manager does this with the checkpoints."
+  [ "$failed" -eq 0 ] || { err "trail-cleanup INCOMPLETE: $failed file(s) could not be removed - the space is not back"; return 1; }
   return 0
 }
 cmd_trandata() {
