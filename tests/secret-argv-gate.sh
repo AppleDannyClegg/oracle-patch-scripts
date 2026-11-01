@@ -53,7 +53,7 @@ RUN_DIR="$T/run"; LOG_FILE="$RUN_DIR/log"; mkdir -p "$RUN_DIR"; export RUN_DIR L
 . "$ROOT/lib/oracle-lib.sh"
 SQL_CMD="$STUB/bin/sqlplus -S"; SQL_CONNECT="u/CANARYpw@t"
 sql_run X "alter user a identified by CANARYpw;" >/dev/null 2>&1; check "lib sql_run" sqlplus stdin
-sql_script X "$T" x.sql a b >/dev/null 2>&1;             check "lib sql_script" sqlplus stdin
+touch "$T/x.sql"; sql_script X "$T" x.sql a b >/dev/null 2>&1;             check "lib sql_script" sqlplus stdin
 OGG_HOME="$STUB" ORACLE_HOME="$STUB" ggsci "alter credentialstore replace user ggadmin password CANARYpw alias ogg" >/dev/null 2>&1; check "lib ggsci" ggsci stdin
 # the run dir and the log must not hold the canary either (incident packs collect what operators point them at)
 VERBOSE=1 dbg "create database link L connect to U identified by \"CANARYpw\" using 'x'" 2>"$T/dbg.out"
@@ -85,5 +85,32 @@ dp_run impdp schemas=A directory=D dumpfile=x.dmp >/dev/null 2>&1; check "db-ref
 # ---- static: no sqlplus/sql invocation in the tree takes a connect variable as an argument --------------------------
 hits="$(grep -nE '(sqlplus|\$cmd|\$SQL_CMD|\$SQLCL|\$SQLPLUS)([^|#]*) +"?\$\{?[A-Z_]*CONNECT' --include='*.sh' -r "$ROOT/lib" "$ROOT/operations" "$ROOT/patching" "$ROOT/reports" | grep -v 'printf .connect ' || true)"
 if [ -z "$hits" ]; then pass=$((pass+1)); else echo "FAIL static: connect string on a sqlplus command line:"; echo "$hits"; fail=$((fail+1)); fi
+# ---- static: no keytool/orapki/openssl command line carries a password word (only :file / file: forms). A line that must
+# (one documented, gated exception) carries the marker '# secret-on-argv: accepted' and is listed, not failed ---------------
+hits="$(grep -rnE --include='*.sh' -e '-(storepass|keypass|srcstorepass|deststorepass|pwd|pkcs12pwd|password)[[:space:]]+"?\$|-pass(in|out)[[:space:]]+"?(env|pass):' "$ROOT/lib" "$ROOT/operations" "$ROOT/patching" "$ROOT/reports" | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' || true)"
+accepted="$(printf '%s\n' "$hits" | grep 'secret-on-argv: accepted' || true)"; hits="$(printf '%s\n' "$hits" | grep -v 'secret-on-argv: accepted' || true)"
+[ -n "$accepted" ] && echo "accepted (documented, gated): $(printf '%s\n' "$accepted" | cut -d: -f1,2 | sed "s#$ROOT/##" | tr '\n' ' ')"
+if [ -z "$hits" ]; then pass=$((pass+1)); else echo "FAIL static: a password word on a keytool/orapki/openssl command line:"; printf '%s\n' "$hits" | sed "s#$ROOT/##" | cut -c1-160; fail=$((fail+1)); fi
+# ---- conf loaders: a secret in a conf file must not be exported into the environment of the script's children -----------
+# every loader in the tree (the lib and the four self-contained copies), fed one conf holding five secret-shaped names and
+# one plain one: after load_config a child's environ must hold the plain one and none of the secrets
+H="$T/home"; mkdir -p "$H"; conf='WALLET_PWD=CANARY1
+KEY_PASS=CANARY2
+CACERTS_PASSWD=CANARY3
+ADMIN_PASSWORD=CANARY4
+SQL_CONNECT=u/CANARY5@t
+MY_TOKEN=CANARY6
+PLAIN_VAR=plainvalue'
+for f in .oracle.conf .apex-patch.conf .ords-patch.conf .wls-patch.conf .oracle-diag.conf; do printf '%s\n' "$conf" >"$H/$f"; done
+loader_case() { # <name> <bash snippet that defines and runs load_config>
+  local name="$1" out; out="$(cd "$T" && HOME="$H" bash -c "$2; load_config >/dev/null 2>&1; env" 2>&1)"
+  if printf '%s' "$out" | grep -q CANARY; then echo "FAIL loader $name: secrets exported [$(printf '%s' "$out" | grep -o '^[A-Z_]*=[^ ]*CANARY[0-9]*' | tr '\n' ' ')]"; fail=$((fail+1))
+  elif ! printf '%s' "$out" | grep -q '^PLAIN_VAR=plainvalue'; then echo "FAIL loader $name: PLAIN_VAR not exported (the loader must still export ordinary keys)"; fail=$((fail+1))
+  else pass=$((pass+1)); fi
+}
+loader_case "lib" "TOOL=x; . '$ROOT/lib/oracle-lib.sh'"
+for sc in patching/apex-patch/apex-patch.sh patching/ords-patch/ords-patch.sh patching/wls-patch/wls-patch.sh reports/oracle-diag/oracle-diag.sh; do
+  fn load_config "$sc" >"$T/loader.sh"; loader_case "$(basename "$sc" .sh)" "SCRIPT_DIR=$T/nowhere; . '$T/loader.sh'"
+done
 echo "secret-argv gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

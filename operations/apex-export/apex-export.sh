@@ -96,7 +96,7 @@ ax_export() {
     [ "${APEX_JAVA_PASSWORD_ON_ARGV:-no}" = yes ] || die "java APEXExport puts the export password on the java command line (visible in ps to every user for the whole export). Install SQLcl (SQLCL=/path/to/sql; 'apex export' takes the password on stdin), or set APEX_JAVA_PASSWORD_ON_ARGV=yes in apex-export.conf to accept the exposure"
     warn "java APEXExport: APEX_JAVA_PASSWORD_ON_ARGV=yes - the password is visible in the process list while the export runs"
     log "java oracle.apex.APEXExport -db $(conn_db) -user $(conn_user) $* -dir $dir"; [ "$DRY_RUN" = 1 ] && return 0
-    (cd "$dir" && to "${EXPORT_TIMEOUT:-1800}" "$JAVA" -cp "$APEX_HOME/utilities:$OJDBC_JAR" oracle.apex.APEXExport -db "$(conn_db | sed 's#^//##')" -user "$(conn_user)" -password "$(conn_pass)" "$@" -dir "$dir") 2>&1 | redact >>"$LOG_FILE"
+    (cd "$dir" && to "${EXPORT_TIMEOUT:-1800}" "$JAVA" -cp "$APEX_HOME/utilities:$OJDBC_JAR" oracle.apex.APEXExport -db "$(conn_db | sed 's#^//##')" -user "$(conn_user)" -password "$(conn_pass)" "$@" -dir "$dir") 2>&1 | redact >>"$LOG_FILE"   # secret-on-argv: accepted (APEX_JAVA_PASSWORD_ON_ARGV=yes only)
     local -a ps=("${PIPESTATUS[@]}"); [ "${ps[0]:-1}" = 0 ] && [ "${ps[1]:-1}" = 0 ] || { err "java APEXExport failed (status ${ps[0]:-unknown})"; return 1; }
   fi
   return 0
