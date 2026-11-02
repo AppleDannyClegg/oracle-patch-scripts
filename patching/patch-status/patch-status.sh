@@ -76,8 +76,12 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     [ -n "$ojvm" ] && row "OJVM ($(basename "$h"))" "$h" "$ojvm" "$ojvmdate" "" ""
     printf '%s\n' "$lsp" >"$RAW/lspatches_$(basename "$h").txt" 2>/dev/null
   done
-  # datapatch per running database
-  local sid; for sid in $(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX'); do
+  # datapatch per running database. The loop head tests db_instances' status (lib b728ff6): a process list that cannot be read
+  # is a row + CRIT, not an empty loop with no Database row (tests/unreadable-gate.sh ps mode, f7d2f83)
+  local sids="" sid; if sids="$(db_instances)"; then sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')" || true
+  else row "Database ?" "" "process list unreadable" "" "" "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked"
+    finding CRIT patch "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked"; fi
+  for sid in $sids; do
     sql_ok "$sid" || { row "Database $sid" "$(db_home_of "$sid")" "cannot connect" "" "" "sqlplus / as sysdba failed"; finding WARN patch "Database $sid: sqlplus / as sysdba failed - its datapatch level is unknown, not current"; continue; }
     # the registry read: cdb_registry_sqlpatch first (a non-CDB has no such view, so that read is allowed to fail), then
     # dba_registry_sqlpatch - and THAT read's status is kept: both used to be '2>/dev/null' with the status dropped, so a database

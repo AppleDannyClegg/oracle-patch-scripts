@@ -274,7 +274,11 @@ main() {
   h1 "Host"; host_controls
   h1 "Listener / Oracle Net"; network_controls
   okv_controls
-  local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
+  # the loop head tests db_instances' status (lib b728ff6): a process list that cannot be read is a CRIT, not an empty loop that
+  # ends '0 FAIL' with no database row at all (tests/unreadable-gate.sh ps mode, f7d2f83)
+  local sids="" s; if sids="$(db_instances)"; then sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')" || true
+  else finding CRIT db "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked; pass --sid to check one"; fi
+  [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
   for s in $sids; do
     h1 "Database $s"; say "database $s"
     sql_ok "$s" || { finding CRIT db "$s: cannot connect as sysdba"; continue; }
