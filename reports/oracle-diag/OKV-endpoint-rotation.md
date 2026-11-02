@@ -26,6 +26,7 @@ What it reads:
 - **endpoint certificate `notAfter`** — read when `OKV_WALLET_PASSWORD` is set (in the 600-mode conf or the environment; it reaches openssl through a 600-mode file, never a command line). Without it you get the wallet-age heuristic: **WARN ≥ 300 days, CRIT ≥ 365**.
 - **CRIT if `SSL_WALLET_LOC` points at a missing `ewallet.p12`.**
 - `gv$encryption_wallet` on every `inst_id` (any `OPEN*` passes; `OPEN_UNKNOWN_MASTER_KEY_STATUS` on a mounted standby's PDB rows is normal), and on a physical standby the `MRP` process and apply lag.
+- Those rows come from the database that **owns** this `okvclient.ora` (its `wallet_root` matches the file's path). With more than one instance on the node and no match you get a WARN naming the SID it used; `--sid` (or `OKV_SID`) picks it explicitly.
 
 Exit code: **2** CRIT, **1** WARN, **0** clean. The same facts appear as `okv/...` rows in `reports/oracle-diag/oracle-diag.sh` (`REPORT.md`) and as audit controls in `reports/security-posture/security-posture.sh --cis` (`SCORECARD.md`).
 
