@@ -214,11 +214,25 @@ oratab_home() { grep -hE "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null |
 oratab_sids() { grep -hvE '^\s*#|^\s*$' /etc/oratab /var/opt/oracle/oratab 2>/dev/null | cut -d: -f1 | grep -vE '^\+ASM|^-MGMTDB'; }
 # the process name can differ in case from the SID (26ai shows ora_pmon_free for SID FREE): prefer the oratab spelling
 # ps -eo args / pid,args with a /proc fallback for minimal containers without procps
-ps_args() { ps -eo args 2>/dev/null || { local f; for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; }
-ps_pid_args() { ps -eo pid,args 2>/dev/null || { local f p; for f in /proc/[0-9]*/cmdline; do p="${f#/proc/}"; printf '%s ' "${p%/cmdline}"; tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; }
+# ps_args / ps_pid_args: the process list, from ps or (ps missing, minimal containers) from /proc. A list that cannot be
+# read is NOT an empty list: it used to come back empty with status 0 (the /proc loop's last echo), and every caller that
+# tests 'db_instances | grep -qx SID' read that as 'not running' - the stop paths of the patch scripts then went on to
+# opatch with instances up (Durandal 1 Nov 23:36, the 3ab88b8 :717 class). Now both fail with status 1 and one ERROR line
+# per call; a process list is never empty (ps itself is in it), so 'nothing at all' is the unreadable case.
+PROC_DIR="${PROC_DIR:-/proc}"   # the selftest points this at an empty dir to prove the unreadable branch on a host that has /proc
+ps_read() { # <args|pid,args>
+  local out
+  out="$(ps -eo "$1" 2>/dev/null)" || out="$(local f p; for f in "$PROC_DIR"/[0-9]*/cmdline; do [ -r "$f" ] || continue; p="${f#"$PROC_DIR"/}"; [ "$1" = args ] || printf '%s ' "${p%/cmdline}"; tr '\0' ' ' <"$f" 2>/dev/null; echo; done)"
+  [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] || { err "cannot read the process list (ps failed and $PROC_DIR is unreadable) - 'nothing running' cannot be concluded"; return 1; }
+  printf '%s\n' "$out"
+}
+ps_args() { ps_read args; }
+ps_pid_args() { ps_read pid,args; }
+# db_instances: SIDs with a pmon; oratab spelling when the process name differs in case. Status 1 = the process list could
+# not be read (callers: that is 'unknown', not 'none running')
 db_instances() {
-  local p s
-  ps_args | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u |
+  local p s list; list="$(ps_args)" || return 1
+  printf '%s\n' "$list" | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u |
     while IFS= read -r p; do s="$(oratab_sids | grep -ixF -- "$p" | head -1)"; printf '%s\n' "${s:-$p}"; done
 }
 db_home_of() { local h; h="$(oratab_home "$1")"; [ -z "$h" ] && h="${ORACLE_HOME:-}"; [ -z "$h" ] && h="$(ps_args | grep -oE "^[^ ]*/bin/tnslsnr" | head -1 | sed 's#/bin/tnslsnr##')"; printf '%s' "$h"; }
@@ -244,7 +258,9 @@ sql_run() {
 }
 # sql_lines <sid> <sql>: rows only, no heading, trimmed, blank lines removed; fails on ORA-/SP2- errors
 sql_lines() {
-  local out; out="$(sql_run "$1" "set heading off\nwhenever sqlerror exit 1\n$2")" || { dbg "SQL failed: $out"; return 1; }
+  # a failed read echoes its ORA-/SP2- lines to stderr on BOTH exits (Jarvis 2 Nov 00:04: the first guard only dbg'd them, so a
+  # caller capturing stderr for the error code - patch-status:88 - got 0 bytes unless --verbose)
+  local out; out="$(sql_run "$1" "set heading off\nwhenever sqlerror exit 1\n$2")" || { dbg "SQL failed: $out"; printf '%s\n' "$out" | grep -E 'ORA-|SP2-' | head -3 >&2; return 1; }
   printf '%s\n' "$out" | grep -vE '^[[:space:]]*$' | grep -qE 'ORA-[0-9]+|SP2-[0-9]+' && { dbg "SQL error: $out"; printf '%s\n' "$out" | grep -E 'ORA-|SP2-' | head -3 >&2; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d; s/^ *//; s/ *$//'
 }
@@ -271,8 +287,22 @@ db_is_cdb() { [ "$(sql_val "$1" "(select cdb from v\$database)" 2>/dev/null)" = 
 db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null; }
 # with_pdb <pdb> <function> [args]: run a function with PDB_SET exported (empty pdb = root)
 with_pdb() { local p="$1"; shift; if [ -n "$p" ] && [ "$p" != CDB\$ROOT ]; then PDB_SET="alter session set container=$p;" "$@"; else PDB_SET="" "$@"; fi; }
-# sql_checks <sid> <label> <sql>: rows shaped CHECK|SEV|text become findings
-sql_checks() { sql_run "$1" "set heading off\n$3" 2>/dev/null | grep -a '^CHECK|' | while IFS='|' read -r _ sev txt; do finding "$sev" db "$2: $txt"; done; }
+# sql_checks <sid> <label> <sql>: rows shaped CHECK|SEV|text become findings. The batch's outcome is kept: a statement that
+# errors (a view this edition lacks, ORA-65011 on a closed PDB under with_pdb, ORA-01031) or a batch killed by SQL_TIMEOUT
+# used to leave its checks silently unevaluated while the report said 'nothing tripped the built-in rules' (Bishop 1 Nov
+# 23:39, 19 call sites); now it is a WARN naming the status, the rows that did arrive and the first error, and status 1.
+# No 'whenever sqlerror' on purpose: sqlplus carries on past the failed statement, so the checks after it still run.
+sql_checks() {
+  local rc=0 out rows; out="$(sql_run "$1" "set heading off\n$3" 2>/dev/null)" || rc=$?
+  rows="$(printf '%s\n' "$out" | grep -a '^CHECK|')"
+  [ -n "$rows" ] && printf '%s\n' "$rows" | while IFS='|' read -r _ sev txt; do finding "$sev" db "$2: $txt"; done
+  local errs; errs="$(printf '%s\n' "$out" | grep -acE '(ORA|SP2)-[0-9]+')"
+  if [ "$rc" != 0 ] || [ "$errs" != 0 ]; then
+    finding WARN db "$2: checks batch did not complete (sqlplus status $rc, $errs error line(s), $(printf '%s\n' "$rows" | grep -ac '^CHECK|') check row(s) arrived: $(printf '%s\n' "$out" | grep -aoE '(ORA|SP2)-[0-9]+[^|]{0,70}' | head -1 | tr -d '\n')) - the checks that did not answer were not evaluated"
+    return 1
+  fi
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # RMAN: one wrapper for every script (rman-ops, exascale-space, gg-ops, db-refresh). Commands and connect strings go
@@ -713,6 +743,10 @@ lib_selftest() {
   t "init_run_dir warns when latest cannot be relinked" 'b=$(mktemp -d); mkdir -p $b/old $b/new; ln -s $b/old $b/latest; chmod 555 $b; o=$( (RUN_BASE=$b; RUN_DIR=$b/new; TOOL=t; VERSION=0; init_run_dir x 2>&1) ); chmod 755 $b; r=0; printf "%s" "$o" | grep -q "could not point $b/latest" && [ "$(readlink $b/latest)" = "$b/old" ] || r=1; rm -rf "$b"; [ $r = 0 ]'
   t "to runs a shell function, not a PATH binary of the same name" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "shift 3; exec \"\$@\"" >"$d/timeout"; printf "%s\n" "#!/bin/sh" "echo BIN" >"$d/samename"; chmod +x "$d/timeout" "$d/samename"; samename(){ echo FUNC; }; o=$(PATH="$d:$PATH" HAVE_TIMEOUT=1 to 5 samename); b=$(PATH="$d:$PATH" HAVE_TIMEOUT=1 to 5 "$d/samename"); unset -f samename; rm -rf "$d"; [ "$o" = FUNC ] && [ "$b" = BIN ]'
   t "quarters_behind recent = 0" '[ "$(quarters_behind "$(latest_cpu_date)")" = 0 ]'
+  t "ps_args: ps failing and an empty /proc is status 1 with an ERROR, not an empty list" 'd=$(mktemp -d); mkdir -p $d/bin $d/proc; printf "%s\n" "#!/bin/sh" "exit 1" >"$d/bin/ps"; chmod +x "$d/bin/ps"; o=$( (PATH="$d/bin:$PATH" PROC_DIR=$d/proc ps_args) 2>&1 >/dev/null); rc=$?; [ "$rc" = 1 ] && printf "%s" "$o" | grep -q "cannot read the process list"'
+  t "db_instances: unreadable process list is status 1, not no-instances" 'd=$(mktemp -d); mkdir -p $d/bin $d/proc; printf "%s\n" "#!/bin/sh" "exit 1" >"$d/bin/ps"; chmod +x "$d/bin/ps"; ! (PATH="$d/bin:$PATH" PROC_DIR=$d/proc db_instances >/dev/null 2>&1)'
+  t "sql_lines: a failed read puts its ORA- line on stderr without --verbose" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null; echo \"ORA-00942: table or view does not exist\"; exit 1" >"$d/sqlplus"; chmod +x "$d/sqlplus"; e=$( (VERBOSE=0 SQL_CMD="$d/sqlplus" sql_lines X "select 1 from dual;" 2>&1 >/dev/null) ); printf "%s" "$e" | grep -q "^ORA-00942"'
+  t "sql_checks: a batch that errors mid-way keeps the rows that arrived and adds a WARN naming it, status 1" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null; echo \"CHECK|CRIT|FRA 95% full\"; echo \"ORA-00942: table or view does not exist\"; exit 1" >"$d/sqlplus"; chmod +x "$d/sqlplus"; f=$d/f; o=$( (FINDINGS_FILE=$f SQL_CMD="$d/sqlplus" sql_checks X lbl "select 1 from dual;"; echo "rc=$?") 2>/dev/null); printf "%s" "$o" | grep -q "rc=1" && grep -q "^CRIT|db|lbl: FRA 95% full" $f && grep -q "^WARN|db|lbl: checks batch did not complete (sqlplus status 1, 1 error line(s), 1 check row(s) arrived: ORA-00942" $f'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
 }
