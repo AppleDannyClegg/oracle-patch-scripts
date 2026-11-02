@@ -147,5 +147,16 @@ write_ora "$OKV/ssl"; : >"$OKV/ssl/ewallet.p12"; : >"$OKVUTIL_LOG"
 OKVUTIL_FAIL=1 run wait --timeout 1 --interval 0; expect_rc 1 "wait okvutil-failed and unswitched is 1"
 unset OKVUTIL_FAIL
 
+# backup positive path: the snapshot exists and backup_ora is recorded (Unicron 13:35:26)
+write_ora "$OKV/ssl"; : >"$OKV/ssl/ewallet.p12"
+RUN_BASE="$T/run-bak" run backup
+bakdir="$(ls -d "$T"/run-bak/*-backup 2>/dev/null | tail -1)"
+if [ -n "$bakdir" ] && [ -f "$bakdir/okvclient.ora.bak" ] && grep -q '^backup_ora=' "$bakdir/state"; then ok "backup snapshots the ora and records backup_ora"; else bad "backup did not snapshot/record (bakdir=$bakdir)"; fi
+
+# rollback is a manual step: it must not write okvclient.ora (the non-goal)
+before="$(cat "$OKV/conf/okvclient.ora")"
+RUN_BASE="$T/run-bak" run rollback
+if [ "$(cat "$OKV/conf/okvclient.ora")" = "$before" ]; then ok "rollback leaves okvclient.ora untouched (manual)"; else bad "rollback wrote okvclient.ora"; fi
+
 printf '\nokv-rotate gate: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
