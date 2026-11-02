@@ -20,3 +20,11 @@ ln -sfn "$T/home/java-patch/runs/r1" "$T/home/java-patch/runs/latest"
 # run: preflight=ok and backup=ok are written before the first changing call (the cacerts import) and are true - preflight
 # passed, the files were copied; what must not appear once the import failed is a claim about the change itself
 OK_run='^(apply=ok|restart=ok|verify=ok|rollback=ok)$'
+# run:ps_unreadable - ps cannot run (the gate's $T/ps.fail) and PROC_DIR is an empty dir, so lib's /proc fallback finds nothing too
+# (5cc183f's lesson: on a Linux box the fallback would read the real list and prove nothing). No stub call is meant to fail, so
+# FAIL_* matches nothing and the ps stub's own FAILED lines are what the gate counts. 638cf52: before it running_on dropped ps'
+# status, preflight read 'no JVM runs on the old JDK', said Preflight OK and run went on to apply and restart - rc 0 with 13 failed
+# ps calls; now preflight refuses and run stops 'nothing changed', rc 1. download/backup never read the list; apply/restart/rollback
+# do not call running_on (apply trusts the run dir's preflight=ok, which the gate's seeded r1 state carries), so run is the case.
+CASES_run='ps_unreadable'; FAIL_run__ps_unreadable='^never matches$'
+case "$CMD:${CASE:-}" in run:ps_unreadable) : >"$T/ps.fail"; mkdir -p "$T/env/noproc"; export PROC_DIR="$T/env/noproc";; esac
