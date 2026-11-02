@@ -60,6 +60,7 @@ STUB
 cat >"$STUB/sqlplus" <<'STUB'
 #!/bin/sh
 q="$(cat)"
+[ -n "${STUB_SQL_LOG:-}" ] && printf '%s\n' "$q" >>"$STUB_SQL_LOG"
 if [ "${STUB_SQL_FAIL:-0}" = 1 ]; then echo "ORA-01017: invalid username/password; logon denied" >&2; exit 1; fi
 if printf '%s' "$q" | grep -q 'v\$database'; then [ -n "${STUB_DB_ROLE:-}" ] && echo "$STUB_DB_ROLE"; fi
 if printf '%s' "$q" | grep -q 'wallet_root'; then
@@ -179,6 +180,15 @@ if grep -qx ORCL "$T/tde.log" && ! grep -qx FREE "$T/tde.log"; then ok "owner-DB
 # two instances, neither wallet_root matches -> WARN naming the instance used
 STUB_INSTANCES="FREE ORCL" STUB_WR_FREE=/nonexistent STUB_WR_ORCL=/other run verify
 if printf '%s' "$out" | grep -q "not derived"; then ok "owner-DB: no match warns and names the instance used"; else bad "owner-DB: no-match WARN missing: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"; fi
+
+# --sid overrides: no wallet_root SQL at all, and the TDE read is made against the named instance
+: >"$T/sid-tde.log"; : >"$T/sid-sql.log"
+STUB_INSTANCES="FREE ORCL" STUB_TDE_LOG="$T/sid-tde.log" STUB_SQL_LOG="$T/sid-sql.log" run verify --sid ORCL
+if grep -qx ORCL "$T/sid-tde.log" && ! grep -qx FREE "$T/sid-tde.log" && ! grep -q wallet_root "$T/sid-sql.log"; then
+  ok "owner-DB: --sid wins with no wallet_root query"
+else
+  bad "owner-DB --sid not pinned (tde=[$(tr '\n' ' ' <"$T/sid-tde.log")], wallet_root queries=$(grep -c wallet_root "$T/sid-sql.log" || true))"
+fi
 
 printf '\nokv-rotate gate: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
