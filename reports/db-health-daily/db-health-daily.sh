@@ -231,8 +231,10 @@ select 'CHECK|WARN|APEX job '||job_name||' '||state||' failures '||failure_count
 check_middleware() {
   h2 "Middleware"
   if ords_detect; then
-    local code; code="$(url_code "$ORDS_URL")"; kv "ORDS" "pid ${ORDS_PID:-NOT RUNNING}, $ORDS_URL -> HTTP ${code:-none}"
-    [ -z "$ORDS_PID" ] && finding CRIT ords "ORDS not running"
+    # ORDS_PS_UNREADABLE (lib 487f88f): a process list that could not be read is 'ORDS NOT checked', not 'ORDS not running'
+    local code; code="$(url_code "$ORDS_URL")"; kv "ORDS" "pid ${ORDS_PID:-$([ "${ORDS_PS_UNREADABLE:-0}" = 1 ] && echo 'UNKNOWN (process list unreadable)' || echo 'NOT RUNNING')}, $ORDS_URL -> HTTP ${code:-none}"
+    if [ "${ORDS_PS_UNREADABLE:-0}" = 1 ]; then finding CRIT ords "cannot read the process list (ps failed, $PROC_DIR unreadable) - whether ORDS runs is NOT checked (HTTP ${code:-none} at $ORDS_URL is the only evidence)"
+    elif [ -z "$ORDS_PID" ]; then finding CRIT ords "ORDS not running"; fi
     case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS 503 at $ORDS_URL (pool down: locked user / DB / listener)";;
       400) if url_sni_rejected "$ORDS_URL"; then finding WARN ords "ORDS rejects $ORDS_URL with 400 Invalid SNI: the host in the URL is not in its certificate - set ORDS_URL to the certificate's hostname (ORDS itself is up)"; else [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP 400 at $ORDS_URL"; fi;;
       *) [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP ${code:-none} at $ORDS_URL";; esac
