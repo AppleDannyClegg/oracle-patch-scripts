@@ -60,10 +60,12 @@ STUB
 cat >"$STUB/sqlplus" <<'STUB'
 #!/bin/sh
 q="$(cat)"
+if [ "${STUB_SQL_FAIL:-0}" = 1 ]; then echo "ORA-01017: invalid username/password; logon denied" >&2; exit 1; fi
+if printf '%s' "$q" | grep -q 'v\$database'; then [ -n "${STUB_DB_ROLE:-}" ] && echo "$STUB_DB_ROLE"; fi
 if printf '%s' "$q" | grep -q 'gv\$encryption_wallet'; then
   printf '1|%s|OKV\n' "${STUB_TDE_STATUS:-OPEN}"
 fi
-if printf '%s' "$q" | grep -q 'gv\$managed_standby'; then printf 'MRP0|%s\n' "${STUB_MRP:-APPLYING_LOG}"; fi
+if printf '%s' "$q" | grep -q 'gv\$managed_standby'; then [ "${STUB_NO_MRP:-0}" = 1 ] || printf 'MRP0|%s\n' "${STUB_MRP:-APPLYING_LOG}"; fi
 if printf '%s' "$q" | grep -q 'v\$dataguard_stats'; then printf 'apply lag|+00 00:00:05\n'; fi
 STUB
 chmod +x "$STUB"/*
@@ -122,6 +124,15 @@ new_wallet; write_ora "$OKV/ssl/19700101000000000000"; : >"$OKVUTIL_LOG"
 OKVUTIL_FAIL=1 run wait --max-runs 2 --interval 0
 if [ "$RC" != 0 ]; then ok "wait does not call a failed-read switch clean (rc=$RC)"; else bad "wait returned 0 after a failed okvutil read (Unicron 13:27:32)"; fi
 unset OKVUTIL_FAIL
+
+# standby with no MRP row -> CRIT (Landru 13:22:29 P2)
+new_wallet; write_ora "$OKV/ssl/19700101000000000000"
+STUB_DB_ROLE=PHYSICAL_STANDBY STUB_NO_MRP=1 run verify; expect_rc 2 "verify PHYSICAL_STANDBY with no MRP row is CRIT (2)"
+
+# sqlplus failing -> verify must not be clean (Landru 13:22:29 P2)
+STUB_SQL_FAIL=1 run verify
+if [ "$RC" != 0 ]; then ok "verify does not pass when sqlplus fails (rc=$RC)"; else bad "verify returned 0 with sqlplus failing"; fi
+unset STUB_SQL_FAIL
 
 printf '\nokv-rotate gate: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
