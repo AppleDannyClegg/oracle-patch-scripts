@@ -731,6 +731,24 @@ read_secret() {
 tmp_secret_file() { local f="$RUN_DIR/.secret.$RANDOM"; ( umask 077; printf '%s' "$1" >"$f" ); printf '%s' "$f"; }
 
 # ---------------------------------------------------------------------------
+# Oracle Key Vault endpoint (okvclient.ora): ONE copy of the discovery, the field parse
+# and the rotated test. oracle-diag/security-posture inline these today; operations/okv-rotate
+# calls these so a third copy is not landed. A console rotation does not replace
+# ssl/ewallet.p12: the client writes a new wallet into a SUBFOLDER of ssl/ and repoints
+# SSL_WALLET_LOC at it - until that line moves the endpoint still runs the old certificate.
+# ---------------------------------------------------------------------------
+okv_ora_discover() {
+  local f
+  for f in "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora; do
+    [ -f "$f" ] && printf '%s\n' "$f"
+  done 2>/dev/null | sort -u
+}
+# okv_field <ora> <KEY>: last value of KEY= (case-insensitive), whitespace stripped
+okv_field() { grep -iE "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]'; }
+# okv_is_rotated <SSL_WALLET_LOC>: 1 when it ends at /ssl (not rotated), 0 when it points into a subfolder
+okv_is_rotated() { case "${1:-}" in ""|*/ssl|*/ssl/) return 1;; *) return 0;; esac; }
+
+# ---------------------------------------------------------------------------
 # usage from the script's comment header, and self test
 # ---------------------------------------------------------------------------
 usage_from_header() { sed -n '2,/^$/p' "${1:-$0}" | sed 's/^# \{0,1\}//'; }

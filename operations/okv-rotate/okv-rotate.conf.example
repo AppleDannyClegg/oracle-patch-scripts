@@ -1,0 +1,30 @@
+# okv-rotate.sh config - copy to okv-rotate.conf (chmod 600), or ~/.okv-rotate.conf, or put the
+# same keys in the shared oracle.conf. Every key is optional; the defaults are below (commented out).
+
+# --- where the OKV client lives on this node ---------------------------------
+# OKV_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1/flex_tde_wallet/okv
+# OKV_ORA=            # an explicit okvclient.ora (default: <OKV_HOME>/conf/okvclient.ora, else discovered)
+# OKV_NODE=           # label in the report (default: hostname -s)
+
+# The Key Vault node the console rotation for THIS node was started from. wait prints OKV_HOSTNAME each
+# pass and flags the run expected to switch; a mismatch is the usual reason the rotation hasn't landed.
+# OKV_ROTATED_FROM=okv01
+
+# --- wait: how hard to poll the console switch -------------------------------
+# OKV_TIMEOUT=120     # give up after this many seconds
+# OKV_INTERVAL=5      # seconds between okvutil list -v 4 runs
+# OKV_MAX_RUNS=20     # and after this many runs (whichever comes first). Gen saw it switch on run 5-6.
+
+# --- thresholds, in days (the runbook's certificate life is 1 year) -----------
+# OKV_CERT_WARN_DAYS=90   # cert notAfter within 90 days -> WARN
+# OKV_CERT_CRIT_DAYS=30   # cert notAfter within 30 days -> CRIT
+# OKV_AGE_WARN_DAYS=300   # no wallet password: ewallet.p12 older than 300 days -> WARN
+# OKV_AGE_CRIT_DAYS=365   # ... older than 365 days -> CRIT (the certificate has likely expired)
+
+# --- output ------------------------------------------------------------------
+# CERT_OUT=$HOME/okv-rotate   # --report writes <CERT_OUT>/<ts>-<node>/REPORT.md here
+
+# The endpoint wallet password. Set it to read the real certificate notAfter; without it you get the
+# wallet-age heuristic. It is read through a 600-mode file (-passin file:), never on a command line or in
+# the environment of a child process.
+# OKV_WALLET_PASSWORD=
