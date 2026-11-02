@@ -3,6 +3,8 @@
 # "It was slow between 09:00 and 10:30": this collects what a tuning DBA (or Claude) needs to say
 # why: top SQL, plan changes, waits, blocking, I/O latency, memory, OS stats, and - with the
 # Diagnostics Pack - the AWR, ASH and ADDM reports for the window.
+# Exit: 2 with a CRIT finding, 1 with a WARN, 0 clean. A read that failed (a sample that got ORA-00020, a dba_hist view this
+# edition lacks, a section whose SQL errored) is a finding that says NOT measured / NOT collected - never a quiet 0.
 #
 # Usage: perf-snapshot.sh [options]
 #   --from "YYYY-MM-DD HH:MI" --to "YYYY-MM-DD HH:MI"   the window (default: the last 60 minutes)
@@ -57,8 +59,14 @@ pack_check() { # per database: may we read dba_hist / ASH?
   local sid="$1" v
   [ "$NO_PACK" = 1 ] && { PACK_OK=0; return; }
   case "${PERF_PACK,,}" in yes) PACK_OK=1; return;; no) PACK_OK=0; return;; esac
-  v="$(sql_val "$sid" "(select upper(value) from v\$parameter where name='control_management_pack_access')" 2>/dev/null)"
-  case "$v" in *DIAGNOSTIC*) PACK_OK=1;; *) PACK_OK=0;; esac
+  # a read that failed used to be 'no pack' and the AWR sections were skipped without a word. sql_lines, not sql_val: sql_val
+  # drops stderr itself, so a '2>&1' at this call site captured nothing and the ORA- code never reached the finding (Ultron 00:29)
+  local err="$RAW/db_${sid}_pack.err" e
+  v="$(sql_lines "$sid" "select upper(value) from v\$parameter where name='control_management_pack_access';" 2>"$err" | head -1)"
+  if [ -n "$v" ] && ! [ -s "$err" ]; then
+    case "$v" in *DIAGNOSTIC*) PACK_OK=1;; *) PACK_OK=0;; esac
+  else PACK_OK=0; e="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$err" 2>/dev/null | cut -c1-80)"
+    finding WARN db "$sid: control_management_pack_access could not be read (${e:-no answer}) - AWR/ASH/ADDM sections NOT collected; PERF_PACK=yes forces them"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -82,14 +90,19 @@ host_stats() {
 }
 
 live_samples() { # sample v$session N times: who is active, on what, waiting for what
-  local sid="$1" i f; f="$RAW/db_${sid}_samples.txt"; : >"$f"
+  local sid="$1" i f failed=0 ferr=""; f="$RAW/db_${sid}_samples.txt"; : >"$f"
   for ((i=1; i<=SAMPLES; i++)); do
-    sql_run "$sid" "set heading off\nselect to_char(sysdate,'HH24:MI:SS')||'|'||sid||'|'||nvl(username,'bg')||'|'||nvl(sql_id,'-')||'|'||event||'|'||wait_class||'|'||nvl(blocking_session,0)||'|'||substr(nvl(module,'-'),1,30)||'|'||seconds_in_wait from v\$session where status='ACTIVE' and type='USER' and (wait_class<>'Idle' or sql_id is not null);" 2>/dev/null | grep -E '^[0-9]{2}:' >>"$f"
+    # each sample's outcome is kept: 'sql_run | grep ^HH:' counted a sample that got ORA-00020 / ORA-01034 / a timeout as an idle
+    # one, so a database too busy to answer read as 'avg active sessions ~ 0.0' with no finding (Bishop 23:39)
+    local out; if ! out="$(sql_run "$sid" "set heading off\nselect to_char(sysdate,'HH24:MI:SS')||'|'||sid||'|'||nvl(username,'bg')||'|'||nvl(sql_id,'-')||'|'||event||'|'||wait_class||'|'||nvl(blocking_session,0)||'|'||substr(nvl(module,'-'),1,30)||'|'||seconds_in_wait from v\$session where status='ACTIVE' and type='USER' and (wait_class<>'Idle' or sql_id is not null);" 2>&1)" || printf '%s\n' "$out" | grep -qE 'ORA-|SP2-'; then
+      failed=$((failed+1)); [ -n "$ferr" ] || ferr="$(printf '%s\n' "$out" | grep -oE '(ORA|SP2)-[0-9]+[^|]*' | head -1 | cut -c1-80)"; printf '%s\n' "$out" >>"$RAW/db_${sid}_samples.err"
+    else printf '%s\n' "$out" | grep -E '^[0-9]{2}:' >>"$f"; fi
     sleep 2
   done
+  [ "$failed" = 0 ] || finding CRIT db "$sid: $failed of $SAMPLES live samples failed (${ferr:-no ORA- line, see raw/db_${sid}_samples.err}) - live activity NOT measured; the averages below are from the $((SAMPLES-failed)) that answered"
   h3 "Live sampling of v\$session ($SAMPLES samples, 2 s apart) - ASH without the pack"
   fence_start
-  { echo "samples: $SAMPLES   active-session lines: $(wc -l <"$f" | tr -d ' ')   (avg active sessions ~ $(awk -v s="$SAMPLES" 'END{printf "%.1f", NR/s}' "$f"))"; echo
+  { echo "samples: $SAMPLES ($failed failed)   active-session lines: $(wc -l <"$f" | tr -d ' ')   (avg active sessions ~ $(awk -v s="$SAMPLES" 'END{printf "%.1f", NR/s}' "$f"))"; echo
     echo "top sql_id (samples):"; cut -d'|' -f4 "$f" | sort | uniq -c | sort -rn | head -10; echo
     echo "top events:"; cut -d'|' -f5 "$f" | sort | uniq -c | sort -rn | head -10; echo
     echo "top wait classes:"; cut -d'|' -f6 "$f" | sort | uniq -c | sort -rn; echo
@@ -100,6 +113,17 @@ live_samples() { # sample v$session N times: who is active, on what, waiting for
   local cls; cls="$(cut -d'|' -f6 "$f" | sort | uniq -c | sort -rn | head -1 | awk '{print $2, $1}')"
   [ "$tot" -gt 0 ] && [ -n "$cls" ] && awk -v c="${cls#* }" -v t="$tot" 'BEGIN{exit !(c*100/t > 60)}' && [ "${cls% *}" != "" ] && finding WARN db "$sid: live samples dominated by wait class '${cls% *}' ($(pct_of "${cls#* }" "$tot")%)"
   local blk; blk="$(awk -F'|' '$7>0' "$f" | wc -l | tr -d ' ')"; [ "$blk" -gt "$((tot/4))" ] && [ "$blk" -gt 2 ] && finding CRIT db "$sid: $blk of $tot sampled active sessions were blocked"
+}
+
+# sql_section_audit <sid>: lib's sqlsec writes a section's SQL output verbatim, errors included, and adds no finding - so a report
+# whose every section is 'ORA-00942: table or view does not exist' read as a clean report with odd content (unreadable gate
+# statement mode, f7d2f83). Count the sections that hold an error and say they are not evidence.
+sql_section_audit() {
+  local sid="$1" f bad=0 n=0 first=""
+  for f in "$RAW"/db_"${sid}"_*.txt; do [ -f "$f" ] || continue; case "$f" in *_samples.txt) continue;; esac; n=$((n+1))
+    if grep -qE '^(ORA|SP2)-[0-9]+' "$f"; then bad=$((bad+1)); [ -n "$first" ] || first="$(basename "$f" .txt | sed "s/^db_${sid}_//"): $(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$f" | cut -c1-70)"; fi
+  done
+  [ "$bad" = 0 ] || finding WARN db "$sid: $bad of $n SQL sections hold an ORA-/SP2- error (first: $first) - those sections are NOT evidence, the query did not complete"
 }
 
 db_live() { # v$ only - always available
@@ -147,7 +171,9 @@ select 'CHECK|INFO|control_management_pack_access='||value||' - AWR/ASH not used
 db_hist() { # dba_hist: needs the Diagnostics Pack
   local sid="$1"
   h3 "AWR window"
-  local snaps; snaps="$(sql_lines "$sid" "select min(snap_id)||' '||max(snap_id)||' '||dbid||' '||instance_number from dba_hist_snapshot where end_interval_time>=$WFROM and begin_interval_time<=$WTO and dbid=(select dbid from v\$database) and instance_number=(select instance_number from v\$instance) group by dbid, instance_number;" 2>/dev/null | head -1)"
+  local snaps; snaps="$(sql_lines "$sid" "select min(snap_id)||' '||max(snap_id)||' '||dbid||' '||instance_number from dba_hist_snapshot where end_interval_time>=$WFROM and begin_interval_time<=$WTO and dbid=(select dbid from v\$database) and instance_number=(select instance_number from v\$instance) group by dbid, instance_number;" 2>"$RAW/db_${sid}_hist.err" | head -1)"
+  # the snapshot read's status: a dba_hist_snapshot that could not be read was 'no AWR snapshots at all' and a quiet return
+  [ -s "$RAW/db_${sid}_hist.err" ] && { finding WARN db "$sid: dba_hist_snapshot could not be read ($(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$RAW/db_${sid}_hist.err" | cut -c1-80)) - AWR window NOT collected"; para "_dba_hist_snapshot could not be read_"; return; }
   local bsnap esnap dbid inst; read -r bsnap esnap dbid inst <<<"$snaps"
   if [ -z "$bsnap" ] || [ "$bsnap" = "$esnap" ]; then para "_no two AWR snapshots cover $FROM .. $TO (interval too long or snapshots stopped); dba_hist queries below use the nearest snapshots_"; finding INFO db "$sid: window has fewer than two AWR snapshots"; snaps="$(sql_lines "$sid" "select min(snap_id)||' '||max(snap_id)||' '||dbid||' '||instance_number from (select * from dba_hist_snapshot where dbid=(select dbid from v\$database) and instance_number=(select instance_number from v\$instance) and end_interval_time>=$WFROM-1/12 order by snap_id) group by dbid, instance_number;" 2>/dev/null | head -1)"; read -r bsnap esnap dbid inst <<<"$snaps"; fi
   [ -z "$bsnap" ] && { para "_no AWR snapshots at all_"; return; }
@@ -225,7 +251,10 @@ main() {
   say "perf-snapshot $VERSION window $FROM .. $TO -> $OUT"
   h1 "Window"; kv "from" "$FROM"; kv "to" "$TO"; kv "live samples" "$SAMPLES x 2 s"; kv_end
   host_stats
-  local sids; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
+  # the loop head tests db_instances' status (lib b728ff6): a process list that cannot be read is a CRIT, not an empty loop
+  local sids=""; if sids="$(db_instances)"; then sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')" || true
+  else finding CRIT db "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked; pass --sid to check one"; fi
+  [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
   [ -z "$sids" ] && { h1 "Databases"; para "_no running database instance on this host_"; }
   local s; for s in $sids; do
     h1 "Database $s"
@@ -235,15 +264,17 @@ main() {
     db_live "$s"; live_samples "$s"
     [ "$PACK_OK" = 1 ] && db_hist "$s"
     [ -n "$SQL_ID" ] && sql_deep_dive "$s" "$SQL_ID"
-    if db_is_cdb "$s"; then local p; for p in $(db_pdbs "$s" | head -8); do
+    if db_is_cdb "$s"; then local p pdbs; pdbs="$(db_pdbs "$s")" || finding WARN db "$s: v\$pdbs could not be read - the per-PDB sections were NOT collected"; for p in $(printf '%s\n' "$pdbs" | head -8); do
       with_pdb "$p" sqlsec "$s" "pdb_${p}_top" "$s/$p: top SQL and sessions in this PDB now" "select * from (select sql_id, plan_hash_value, executions, round(elapsed_time/1e6) elapsed_s, round(elapsed_time/greatest(executions,1)/1000) avg_ms, buffer_gets, substr(regexp_replace(sql_text,'\s+',' '),1,60) sql_text from v\$sqlstats where con_id=sys_context('userenv','con_id') order by elapsed_time desc) where rownum<=10;
 select nvl(username,'bg') username, count(*) sessions, sum(decode(status,'ACTIVE',1,0)) active from v\$session where type='USER' and con_id=sys_context('userenv','con_id') group by nvl(username,'bg') order by 2 desc fetch first 10 rows only;"
     done; fi
+    sql_section_audit "$s"
   done
   middleware_threads
   findings_sync
   report_finish "perf-snapshot: $HOST $FROM .. $TO" "$MAKE_TAR" >/dev/null
   [ "$QUIET" = 1 ] || { echo; print_findings; }
   printf '\n%s\n' "$OUT/REPORT.md"
+  findings_rc   # until now main returned the printf's 0 whatever the findings said
 }
 main "$@"
