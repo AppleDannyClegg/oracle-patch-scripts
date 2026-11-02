@@ -63,7 +63,8 @@ date_from_desc() { local d; d="$(printf '%s' "$1" | grep -oE '\.[0-9]{6}\b' | ta
 db_ru_date_from_desc() {
   local d ym; d="$(date_from_desc "$1")"
   [ -n "$d" ] && { printf '%s' "$d"; return; }
-  ym="$(printf '%s' "$1" | grep -oE '[0-9]{2}\.[0-9]{2}$' | tail -1)"
+  # the description ends in the patch id, so pull the 5-part version token out first, then take its YY.MM tail
+  ym="$(printf '%s' "$1" | grep -oE '[0-9]+(\.[0-9]+){4}' | tail -1 | grep -oE '[0-9]{2}\.[0-9]{2}$')"
   case "${ym#*.}" in 0[1-9]|1[0-2]) cpu_date "20${ym%%.*}" "$((10#${ym#*.}))";; esac
 }
 
