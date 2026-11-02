@@ -56,6 +56,10 @@ FAIL_heal='dgmgrl .*edit database'; FAIL_switchover='dgmgrl .*switchover to'; FA
 export DG_PASSWORD=stub   # dgmgrl connects as sys@STBYDB for a remote target; the gate has no terminal to ask
 # the forbidden claim is the command's own step (the seeded run carries backup=ok/switchover=ok from the earlier switchover, and
 # inspect/preflight/backup rightly record ok before the dgmgrl call of a run fails)
+# backup is run twice (CASES_backup): the default case fails the first changing call (create pfile), so bk_sql's rc path is what stops
+# it; rp_unreadable lets every write succeed and fails only the read-back of the restore point (count(*) from v$restore_point), so
+# the create 'succeeded' and the confirm answered nothing - the point must not be recorded and backup must not end ok (c7a9a19 :309-311)
+CASES_backup='rp_unreadable'; FAIL_backup__rp_unreadable='from v\$restore_point where name'
 OK_backup='^(backup=ok|restore_points=.*)$'; OK_switchover='^switchover=ok$'; OK_failover='^failover=ok$'; OK_reinstate='^reinstate=ok$'; OK_cleanup='^cleanup=ok$'
 OK_heal='^heal=ok$'; OK_run='^(switchover|verify|run)=ok$'; OK_rollback='^(rollback|switchover_back)=ok$'
 ARGS="--sid FREE STBYDB"; ARGS_failover="--sid FREE STBYDB --force"; ARGS_backup="--sid FREE --restore-point"; ARGS_cleanup="--sid FREE"; ARGS_rollback="--sid FREE"; ARGS_reinstate="--sid FREE PRIMDB"; ARGS_heal="--sid FREE"

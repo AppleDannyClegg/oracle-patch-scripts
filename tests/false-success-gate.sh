@@ -8,7 +8,9 @@
 # no changing call was reached (the command only reads, or ended before it): counted and listed, never a pass.
 # tests/dry-run-env/<tool>.sh (shared with tests/dry-run-gate.sh) is sourced first, with CMD set to the command; it may set
 # FAIL_<cmd> (the call to fail instead of the first changing one, a regex on 'tool argv | stdin') and OK / OK_<cmd>
-# (the success lines to forbid in state, a regex). Only lines ADDED to a state file by the run count, so a seeded
+# (the success lines to forbid in state, a regex). CASES_<cmd> names extra runs of the same command ('rp_unreadable ...'):
+# each is run with FAIL_<cmd>__<case> / OK_<cmd>__<case> / ARGS_<cmd>__<case> (falling back to the command's own), with CASE set
+# while the env file is sourced, so one command can be failed at two different calls. Only lines ADDED to a state file by the run count, so a seeded
 # state may carry applied= or pool_x=ok. The env file may write $T/ps.txt (one process per line) for the ps stub to
 # print, and cannot change CMD. Needs no database.
 # Usage: tests/false-success-gate.sh [script...] | --selftest (the success-line regex against the lines it must and must not catch)
@@ -67,26 +69,33 @@ for s in "${scripts[@]}"; do
   cmds="$(sed -n '2,80p' "$s" | awk '/^# Commands/{p=1;next} /^# Options/{exit} /^#$/{p=0;next} p && /^#   [a-z]/{sub(/^#   /,""); n=split($0,w," "); for(i=1;i<=n;i++){ if(w[i]=="|") continue; if(i>1 && w[i-1]!="|") break; m=split(w[i],v,"|"); for(j=1;j<=m;j++) print v[j] } }')"
   for c in $cmds; do
     case " $readonly_cmds " in *" $c "*) continue;; esac
+    # extra named cases of this command, from the env file's CASES_<cmd> (sourced once more to read it; CASE is empty then)
+    # shellcheck disable=SC1090,SC2034
+    cases="$( ( CMD="$c"; readonly CMD; CASE=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; v="CASES_${CMD//-/_}"; printf '%s' "${!v-}" ) 2>/dev/null )"
+    for k in "" $cases; do
+    label="$c${k:+:$k}"
     : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/home" "$T/env.ok"; mkdir -p "$T/env" "$T/home"
     # the per-script environment: sourced in a subshell that then runs the command, so nothing leaks between cases
     # shellcheck disable=SC1090,SC2034
-    ( CMD="$c"; readonly CMD; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"; a="ARGS_${CMD//-/_}"; extra="${!a-$ARGS}"
-      f="FAIL_${CMD//-/_}"; o="OK_${CMD//-/_}"; printf '%s\n%s\n' "${!f:-$CHANGE_RE}" "${!o:-${OK:-$default_ok}}" >"$T/case"
+    ( CMD="$c"; readonly CMD; CASE="$k"; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"
+      b="${CMD//-/_}"; sfx="${k:+__$k}"; a="ARGS_$b$sfx"; a0="ARGS_$b"; extra="${!a-${!a0-$ARGS}}"
+      f="FAIL_$b$sfx"; f0="FAIL_$b"; o="OK_$b$sfx"; o0="OK_$b"; printf '%s\n%s\n' "${!f:-${!f0:-$CHANGE_RE}}" "${!o:-${!o0:-${OK:-$default_ok}}}" >"$T/case"
       states >"$T/state.before"
       # shellcheck disable=SC2086
       FAIL_RE="$(sed -n 1p "$T/case")" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 alarm 120 bash "$s" "$CMD" $extra --yes ) >"$T/out" 2>&1; rc=$?
-    if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $c: hung (120 s)"; fail=$((fail+1)); continue; fi
-    if [ ! -f "$T/env.ok" ]; then echo "FAIL $tool $c: tests/dry-run-env/$tool.sh did not source to the end: $(grep -v '^$' "$T/out" | tail -1 | cut -c1-160)"; fail=$((fail+1)); continue; fi
+    if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $label: hung (120 s)"; fail=$((fail+1)); continue; fi
+    if [ ! -f "$T/env.ok" ]; then echo "FAIL $tool $label: tests/dry-run-env/$tool.sh did not source to the end: $(grep -v '^$' "$T/out" | tail -1 | cut -c1-160)"; fail=$((fail+1)); continue; fi
     ok_re="$(sed -n 2p "$T/case")"
-    if ! grep -q '^FAILED ' "$DRY_LOG"; then nx=$((nx+1)); nxlist="$nxlist $tool:$c"; continue; fi
+    if ! grep -q '^FAILED ' "$DRY_LOG"; then nx=$((nx+1)); nxlist="$nxlist $tool:$label"; continue; fi
     failed="$(grep -m1 '^FAILED ' "$DRY_LOG" | cut -c8- | cut -c1-90)"
     states >"$T/state.after"; added="$(comm -13 "$T/state.before" "$T/state.after" | sed 's|^.*/runs/||')"
     bad=""
     [ $rc = 0 ] && bad="exit 0 after '$failed' failed"
     claimed="$(printf '%s\n' "$added" | sed 's|^[^:]*:||' | grep -E -- "$ok_re" | head -3 | tr '\n' ' ')"
     [ -n "$claimed" ] && bad="$bad${bad:+; }state claims $claimed after '$failed' failed"
-    if [ -n "$bad" ]; then echo "FAIL $tool $c: $bad"; grep -E 'ERROR|FAIL|error|failed' "$T/out" | tail -3 | sed 's/^/    out: /'; fail=$((fail+1))
-    else pass=$((pass+1)); echo "ok   $tool $c: rc=$rc after '$failed' failed; $(grep -c '^FAILED ' "$DRY_LOG") failed call(s) of $(grep -c '^TOOL ' "$DRY_LOG"); state added: $(printf '%s' "$added" | sed 's|^[^:]*:||' | tr '\n' ' ' | cut -c1-120)"; fi
+    if [ -n "$bad" ]; then echo "FAIL $tool $label: $bad"; grep -E 'ERROR|FAIL|error|failed' "$T/out" | tail -3 | sed 's/^/    out: /'; fail=$((fail+1))
+    else pass=$((pass+1)); echo "ok   $tool $label: rc=$rc after '$failed' failed; $(grep -c '^FAILED ' "$DRY_LOG") failed call(s) of $(grep -c '^TOOL ' "$DRY_LOG"); state added: $(printf '%s' "$added" | sed 's|^[^:]*:||' | tr '\n' ' ' | cut -c1-120)"; fi
+    done
   done
 done
 echo "false-success gate: $pass passed, $fail failed, $nx NOT-EXERCISED (no changing call reached):$nxlist"
