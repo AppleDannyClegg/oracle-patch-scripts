@@ -201,7 +201,7 @@ okv_age_control() {
 okv_controls() {
   local confs; confs="$(okv_confs)"; [ -n "$confs" ] || return 0
   h1 "Oracle Key Vault endpoints"
-  local f; for f in $confs; do
+  local f; while IFS= read -r f; do  # not "for f in $confs": a space in an OKV path word-split it (Mother 13:46:44)
     local d sc loc host upd wal age; d="$(dirname "$(dirname "$f")")"; sc="okv/$(basename "$d")"
     loc="$(okv_field "$f" SSL_WALLET_LOC)"; host="$(okv_field "$f" OKV_HOSTNAME)"; upd="$(okv_field "$f" UPDATE_TIMESTAMP)"
     [ -n "$loc" ] || loc="$d/ssl"; wal="$loc/ewallet.p12"
@@ -232,7 +232,7 @@ okv_controls() {
       fi
     else okv_age_control "$sc" "$wal" "$age"; fi
     local ss="$d/conf/ewallet.p12"; [ -f "$ss" ] && { local m; m="$(file_mode "$ss")"; control "$sc" "" "TDE secret store $ss (NOT the endpoint certificate - never touch, never re-enrol around it) not world-readable" "$([ -n "$m" ] && [ "${m: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${m:-unknown}"; }
-  done
+  done <<<"$confs"
 }
 
 wls_controls() {
