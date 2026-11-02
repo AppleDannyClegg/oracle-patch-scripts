@@ -74,7 +74,7 @@ printf 'Patch 37000001: WLS PATCH SET UPDATE 14.1.1.0.241015\nThis patch is for 
 case "$CMD" in rollback|verify|restore|start) touch "$T/env/installed";; esac
 export ORACLE_HOME="$OH" DOMAIN_HOME="$DOM" JAVA_HOME="$JH" BACKUP_DIR="$T/env/backups" STOP_TIMEOUT=1 START_TIMEOUT=1
 # an empty ARGS_<cmd> falls back to ARGS in the gates (${!a:-$ARGS}), so rollback names its id: without it the patch DIR arrived as the id
-ARGS="$T/env/patches"; ARGS_rollback="37000001"; ARGS_download="$T/env/patches 37000001"
+ARGS="$T/env/patches"; ARGS_rollback="37000001"; ARGS_download="$T/env/patches 37000001"; ARGS_restore="$T/env/backups/latest"   # restore takes the backup dir: with the fallback it looked in the patch dir and never ran
 # a run dir as 'apply' left it, and the backup it took: for rollback, restore, start and verify
 B="$T/env/backups/b1"; mkdir -p "$B"; tar -czf "$B/oracle_home.tar.gz" -C "$T/env" fmw; tar -czf "$B/domain-1.tar.gz" -C "$T/env/domains" base_domain
 printf '%s\n' "$OH" >"$B/oracle_home.txt"; printf '%s\n' "$DOM" >"$B/domains.txt"; ln -sfn "$B" "$T/env/backups/latest"
@@ -85,3 +85,11 @@ ln -sfn "$R" "$T/home/wls-patch/runs/latest"
 # (wlst.sh, the servers leave ps) before it are real, the fake opatch leaves the failed PSU out of lspatches (failed_patch=37000001),
 # nothing is recorded as applied so rollback has nothing to do, and start's wlst.sh succeeds but no port answers, rc 1
 FAIL_rollback='^opatch rollback'; FAIL_run='^opatch apply'
+# <cmd>:ps_unreadable - ps cannot run (the gate's $T/ps.fail; needs the gate that honours it). Every command that acts on 'nothing
+# running' must stop with rc 1 and no state line, not go on as if the domain were down (Durandal 2 Nov 00:21 / Fable-4 00:31: before,
+# restore replaced the home, apply and rollback ran OPatch, heal removed the .lok, inspect/preflight said nothing was running). No
+# stub call is meant to fail in these cases, so FAIL_* matches nothing and the ps stub's own FAILED line is what the gate counts. Not
+# here: inspect/preflight/verify (read-only commands the gates do not run; the commit's hand harness covers them), start (its node manager branch is reached only with nm_was_running=1 and a startNodeManager.sh; rc is 1 either way because
+# no port answers, so the gate could not see the second node manager - the hand harness in the commit does) and stop (3ab88b8).
+for c in apply rollback restore heal; do eval "CASES_$c='ps_unreadable'; FAIL_${c}__ps_unreadable='^never matches\$'"; done
+case "${CASE:-}" in ps_unreadable) : >"$T/ps.fail"; [ "$CMD" = heal ] && touch "$DOM/servers/ms1/tmp/ms1.lok";; esac

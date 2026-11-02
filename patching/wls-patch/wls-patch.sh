@@ -312,12 +312,34 @@ parse_domain_servers() {
   ' "$cfg")"
 }
 
-running_servers() { # prints "name pid" - only real JVMs (first arg ends in java), not shells mentioning the words
-  ps -eo pid,args 2>/dev/null | grep -E '^ *[0-9]+ +[^ ]*java .*-Dweblogic\.Name=[^ ]+ .*weblogic\.Server' \
-    | sed -n 's/^ *\([0-9]*\) .*-Dweblogic\.Name=\([^ ]*\).*/\2 \1/p'
+# the process list, status kept: a ps that cannot run is NOT an empty list. Both readers used to be 'ps 2>/dev/null | grep', so a ps
+# that failed was 'nothing running' with status 0 - restore replaced the home under live JVMs, apply and rollback went ahead on a
+# running domain, start spawned a second node manager, inspect/preflight reported nothing running (Durandal 2 Nov 00:21, the
+# 3ab88b8 :717 class for every other caller). Now running_servers / nodemanager_pid return 1 with one ERROR line and every caller
+# that acts on 'nothing running' stops there (same contract as lib ps_read / db_instances; this script stays self-contained)
+ps_list() {
+  local l; l="$(ps -eo pid,args 2>/dev/null)" && [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] \
+    || { err "cannot read the process list (ps failed) - 'nothing running' cannot be concluded"; return 1; }
+  printf '%s\n' "$l"
 }
-nodemanager_pid() { ps -eo pid,args 2>/dev/null | grep -E '^ *[0-9]+ +[^ ]*java .*weblogic\.NodeManager' | awk '{print $1}' | head -1; }
-opatch_running() { pgrep -f 'oracle.opatch.OPatch|OPatch/opatch' >/dev/null 2>&1; }
+PS_UNREADABLE="cannot tell whether a WebLogic server is running; refusing to go on"
+running_servers() { # prints "name pid" - only real JVMs (first arg ends in java), not shells mentioning the words; status 1 = list unreadable
+  local l; l="$(ps_list)" || return 1
+  printf '%s\n' "$l" | grep -E '^ *[0-9]+ +[^ ]*java .*-Dweblogic\.Name=[^ ]+ .*weblogic\.Server' \
+    | sed -n 's/^ *\([0-9]*\) .*-Dweblogic\.Name=\([^ ]*\).*/\2 \1/p' || :
+}
+nodemanager_pid() { # status 1 = list unreadable
+  local l; l="$(ps_list)" || return 1
+  printf '%s\n' "$l" | grep -E '^ *[0-9]+ +[^ ]*java .*weblogic\.NodeManager' | awk '{print $1}' | head -1 || :
+}
+# opatch_running: 0 = an OPatch process exists, 1 = none, 2 = pgrep could not run (not on PATH, or failed) - pgrep's 'no match' is
+# status 1 and 'could not run' is anything else; '>/dev/null 2>&1' alone used to erase the difference, so a pgrep that failed was
+# 'no opatch process' and heal removed a lock that may have been a live OPatch's (GLaDOS 2 Nov 00:31). Callers treat 2 as unknown
+opatch_running() {
+  pgrep -f 'oracle.opatch.OPatch|OPatch/opatch' >/dev/null 2>&1; local rc=$?
+  [ $rc -le 1 ] && return $rc
+  err "cannot read the process list (pgrep rc $rc) - cannot tell whether an OPatch process is running"; return 2
+}
 
 setup_env() {
   discover_oracle_home || die "Cannot find ORACLE_HOME. Pass --oracle-home or set ORACLE_HOME in wls-patch.conf"
@@ -346,8 +368,8 @@ opatch() {
 cmd_inspect() {
   setup_env
   local running nm
-  running="$(running_servers)"
-  nm="$(nodemanager_pid)"
+  running="$(running_servers)" || die "$PS_UNREADABLE - inspect cannot say whether it is safe to patch"
+  nm="$(nodemanager_pid)" || die "$PS_UNREADABLE"
   local lock="no"
   [ -e "$ORACLE_HOME/.patch_storage/patch_locked" ] && lock="yes"
   local free_kb
@@ -535,11 +557,12 @@ cmd_preflight() {
 
   # lock file
   if [ -e "$ORACLE_HOME/.patch_storage/patch_locked" ]; then
-    if opatch_running; then
-      err "Another OPatch is running - wait for it"; problems=$((problems + 1))
-    else
-      warn "Stale OPatch lock file present (no opatch process). 'heal' will remove it."
-    fi
+    local orc=0; opatch_running || orc=$?
+    case $orc in
+      0) err "Another OPatch is running - wait for it"; problems=$((problems + 1));;
+      1) warn "Stale OPatch lock file present (no opatch process). 'heal' will remove it.";;
+      *) err "OPatch lock file present and the process list is unreadable - cannot tell whether it is stale"; problems=$((problems + 1));;
+    esac
   fi
 
   # disk space: need roughly 3x the patch payload plus 2GB headroom
@@ -564,8 +587,8 @@ cmd_preflight() {
 
   # running servers
   local running nm
-  running="$(running_servers)"
-  nm="$(nodemanager_pid)"
+  running="$(running_servers)" || die "$PS_UNREADABLE - preflight cannot say whether the domain is down"
+  nm="$(nodemanager_pid)" || die "$PS_UNREADABLE"
   if [ -n "$running" ]; then
     warn "WebLogic servers are running - they must be stopped before apply:"
     printf '%s\n' "$running" | sed 's/^/  /' >&2
@@ -598,7 +621,7 @@ cmd_preflight() {
     echo
     echo "PLAN"
     echo "  Environment : WebLogic ${WLS_VERSION:-?}  PSU ${PSU_LEVEL:-none}  OPatch ${OPATCH_VERSION:-?}  JDK ${JDK_VERSION:-?}"
-    echo "  Will stop   : $(running_servers | awk '{print $1}' | tr '\n' ' ')${nm:+(+ node manager)}"
+    echo "  Will stop   : $(printf '%s\n' "$running" | awk 'NF {print $1}' | tr '\n' ' ')${nm:+(+ node manager)}"
     echo "  Patches     :"
     while IFS='|' read -r id path kind; do
       if [ "$kind" = opatch-upgrade ]; then echo "    OPatch upgrade kit            [install first]"; continue; fi
@@ -675,7 +698,8 @@ cmd_restore() {
   local oh
   oh="$(cat "$src/oracle_home.txt")"
   [ "$oh" = "$ORACLE_HOME" ] || die "Backup is for $oh but ORACLE_HOME is $ORACLE_HOME"
-  if [ -n "$(running_servers)" ]; then
+  local up; up="$(running_servers)" || die "$PS_UNREADABLE - restore refused: the home must not be replaced under a live JVM"
+  if [ -n "$up" ]; then
     warn "Servers running - stopping them first"; cmd_stop || die "Could not stop servers"
   fi
   confirm "Replace $ORACLE_HOME with backup $src?" || return 1
@@ -708,15 +732,13 @@ wait_for_gone() { # name pid timeout
 cmd_stop() {
   setup_env
   [ -n "$RUN_DIR" ] || init_run_dir stop
-  local running
-  running="$(running_servers)"
-  local nm
-  nm="$(nodemanager_pid)"
+  # an empty list is 'nothing running' only when ps itself answered: a ps that cannot run would otherwise prove the stop here,
+  # before the second proof after the waits ever runs (TARS / Multivac, 1 Nov 23:22); nothing is recorded in state then
+  local running nm
+  running="$(running_servers)" || { err "$PS_UNREADABLE - nothing stopped, nothing recorded"; return 1; }
+  nm="$(nodemanager_pid)" || { err "$PS_UNREADABLE - nothing stopped, nothing recorded"; return 1; }
   state_set servers_were_running "$(printf '%s\n' "$running" | awk '{print $1}' | tr '\n' ' ')"
   state_set nm_was_running "$([ -n "$nm" ] && echo 1 || echo 0)"
-  # an empty list is 'nothing running' only when ps itself answered: a ps that cannot run would otherwise prove the stop here,
-  # before the second proof after the waits ever runs (TARS / Multivac, 1 Nov 23:22)
-  ps -eo pid >/dev/null 2>&1 || { err "cannot read the process list (ps failed) - cannot tell whether anything is running"; return 1; }
   if [ -z "$running" ] && [ -z "$nm" ]; then log "Nothing running"; return 0; fi
 
   if [ -n "${STOP_CMD:-}" ]; then
@@ -759,10 +781,12 @@ cmd_stop() {
   fi
   # second proof, from ps by name: a server the NodeManager restarted under a new pid while we waited, or a stop script that
   # returned with its server still up, is not stopped even though the pid we noted is gone
-  local still; still="$(running_servers | awk '{print $1}' | tr '\n' ' ')"
-  [ -n "$still" ] && { err "still running after stop: $still"; ok=0; }
-  # and an empty list is only proof when ps itself answered (a ps that cannot run must not read as 'nothing running')
-  ps -eo pid >/dev/null 2>&1 || { err "cannot read the process list (ps failed) - the stop is not proven"; ok=0; }
+  # (and an empty list is only proof when ps itself answered: a ps that cannot run must not read as 'nothing running')
+  local still
+  if still="$(running_servers)"; then
+    still="$(printf '%s\n' "$still" | awk 'NF {print $1}' | tr '\n' ' ')"
+    [ -n "$still" ] && { err "still running after stop: $still"; ok=0; }
+  else err "$PS_UNREADABLE - the stop is not proven"; ok=0; fi
   if [ $ok = 0 ]; then err "Some processes still running. Re-run with --force to kill them."; return 1; fi
   log "All WebLogic processes stopped"
 }
@@ -796,9 +820,12 @@ cmd_start() {
     run_sh "$START_CMD" || warn "START_CMD returned non-zero"
   else
     local bin="$DOMAIN_HOME/bin"
-    if [ "$nm_want" = 1 ] && [ -x "$bin/startNodeManager.sh" ] && [ -z "$(nodemanager_pid)" ]; then
-      log "Starting node manager"
-      run_sh "cd '$bin' && nohup ./startNodeManager.sh >'$DOMAIN_HOME/nodemanager.out' 2>&1 &"
+    if [ "$nm_want" = 1 ] && [ -x "$bin/startNodeManager.sh" ]; then
+      local nm_now; nm_now="$(nodemanager_pid)" || die "$PS_UNREADABLE - cannot tell whether the node manager is up; not starting a second one"
+      if [ -z "$nm_now" ]; then
+        log "Starting node manager"
+        run_sh "cd '$bin' && nohup ./startNodeManager.sh >'$DOMAIN_HOME/nodemanager.out' 2>&1 &"
+      fi
     fi
     if printf ' %s ' "$want" | grep -q " $ADMIN_SERVER_NAME "; then
       log "Starting admin server $ADMIN_SERVER_NAME"
@@ -835,7 +862,8 @@ cmd_apply() {
   setup_env
   [ -n "$RUN_DIR" ] || init_run_dir apply
   [ "$WLS_FAMILY" = opatch ] || die "Not an OPatch home"
-  if [ -n "$(running_servers)" ]; then
+  local up; up="$(running_servers)" || die "$PS_UNREADABLE - apply refused: OPatch must not run under a live JVM"
+  if [ -n "$up" ]; then
     if [ "$DRY_RUN" = 1 ]; then
       warn "dry-run: servers are running; a real run stops them before this point"
     else
@@ -905,9 +933,10 @@ cmd_verify() {
   # servers
   local want n port
   want="$(state_get servers_were_running || true)"
-  [ -z "$want" ] && want="$(running_servers | awk '{print $1}' | tr '\n' ' ')"
+  local up; up="$(running_servers)" || { err "$PS_UNREADABLE - the servers are NOT verified"; return 1; }
+  [ -z "$want" ] && want="$(printf '%s\n' "$up" | awk '{print $1}' | tr '\n' ' ')"
   for n in $want; do
-    if running_servers | awk '{print $1}' | grep -qx "$n"; then
+    if printf '%s\n' "$up" | awk '{print $1}' | grep -qx "$n"; then
       port="$(printf '%s\n' "$MANAGED_SERVERS" | awk -v s="$n" '$1==s {print $2}')"
       if [ -n "$port" ] && ! port_open "$port"; then err "$n process exists but port $port closed"; ok=0; else log "$n running"; fi
     else
@@ -945,7 +974,8 @@ cmd_rollback() {
     ids="$(printf '%s\n' $ids | tac 2>/dev/null || printf '%s\n' $ids | tail -r)"
   fi
   [ -n "$ids" ] || { warn "Nothing to roll back"; return 0; }
-  if [ -n "$(running_servers)" ]; then
+  local up; up="$(running_servers)" || die "$PS_UNREADABLE - rollback refused: OPatch must not run under a live JVM"
+  if [ -n "$up" ]; then
     warn "Servers running - stopping"; cmd_stop || die "Cannot stop servers for rollback"
   fi
   confirm "Roll back patches: $(echo $ids)?" || return 1
@@ -989,8 +1019,11 @@ cmd_heal() {
   # 1. stale OPatch lock
   if [ -e "$ORACLE_HOME/.patch_storage/patch_locked" ]; then
     found=$((found + 1))
-    if opatch_running; then
+    local orc=0; opatch_running || orc=$?
+    if [ $orc = 0 ]; then
       warn "OPatch lock present and an OPatch process is running - leaving it alone"
+    elif [ $orc != 1 ]; then
+      die "OPatch lock present and the process list is unreadable - the lock is only stale when no OPatch runs; heal refused"
     else
       log "Removing stale OPatch lock (no opatch process)"
       run_cmd rm -f "$ORACLE_HOME/.patch_storage/patch_locked" && fixed=$((fixed + 1))
@@ -1013,11 +1046,12 @@ cmd_heal() {
   fi
 
   # 3. orphaned .lok files from a crashed server (block restart)
-  local lok n
+  local lok n up
+  up="$(running_servers)" || die "$PS_UNREADABLE - a .lok file is only orphaned when its server is provably down; heal refused"
   while read -r lok; do
     [ -z "$lok" ] && continue
     n="$(printf '%s' "$lok" | sed -n 's#.*/servers/\([^/]*\)/.*#\1#p')"
-    if [ -n "$n" ] && running_servers | awk '{print $1}' | grep -qx "$n"; then continue; fi
+    if [ -n "$n" ] && printf '%s\n' "$up" | awk '{print $1}' | grep -qx "$n"; then continue; fi
     found=$((found + 1))
     log "Removing orphaned lock $lok (server $n not running)"
     run_cmd rm -f "$lok" && fixed=$((fixed + 1))
