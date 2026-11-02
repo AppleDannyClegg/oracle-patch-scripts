@@ -81,10 +81,18 @@ cacerts_aliases() {
   # a store keytool listed with no trustedCertEntry is readable and empty, not unreadable (grep's 1 is not keytool's)
   printf '%s\n' "$out" | { grep trustedCertEntry || true; } | cut -d, -f1 | sort
 }
-running_on() { # <jdk real path>: "pid name" of JVMs whose exe lives under it
-  ps -eo pid,args 2>/dev/null | awk '$2 ~ /\/bin\/java$/ {print $1}' | while read -r p; do local exe; exe="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -z "$exe" ] && exe="$(readlink -f "$(ps -o args= -p "$p" | awk '{print $1}')" 2>/dev/null)"
+# running_on <jdk real path>: "pid name" of JVMs whose exe lives under it. Status 1 = the process list could not be read (lib
+# ps_pid_args, b728ff6): callers treat that as 'unknown', never as 'no JVM runs on it' - a restart gate that reads nothing to
+# restart, or a verify that says nothing is left on the old JDK, because ps failed, is the false success this guards
+ps_unreadable_msg() { printf '%s' "cannot read the process list (ps failed, $PROC_DIR unreadable)"; }
+running_on() {
+  local l; l="$(ps_pid_args)" || return 1
+  printf '%s\n' "$l" | awk '$2 ~ /\/bin\/java$/ {print $1}' | while read -r p; do local exe; exe="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -z "$exe" ] && exe="$(readlink -f "$(ps -o args= -p "$p" | awk '{print $1}')" 2>/dev/null)"
     case "$exe" in "$1"/*) printf '%s %s\n' "$p" "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -oE 'weblogic\.Name=[^ ]+|ords\.war|ords serve|oracle\.dbtools[^ ]*|NodeManager|ServiceManager|adminsrvr|distsrvr|recvsrvr|pmsrvr|emagent' | head -1 | sed 's/weblogic.Name=//')";; esac; done
 }
+jvm_count() { local l; l="$(running_on "$1")" || { printf 'null'; return 1; }; printf '%s' "$l" | grep -c .; return 0; }   # 'null' in the JSON, status 1, when the list is unreadable
+jvm_names() { local l; l="$(running_on "$1")" || { printf '? (%s)' "$(ps_unreadable_msg)"; return 1; }; printf '%s\n' "$l" | awk '{print $2}' | tr '\n' ' '; }
+gg_exe_on() { local l; l="$(running_on "$1")" || { printf '? (%s)' "$(ps_unreadable_msg)"; return 1; }; printf '%s\n' "$l" | grep -E 'ServiceManager|adminsrvr' | head -1 | awk '{print $1}' | xargs -I{} readlink -f /proc/{}/exe 2>/dev/null; }
 wls_major_ok() { # <wls version> <jdk major>: support matrix
   local w="$1" j="$2"
   case "$w" in 12.2.1.4*) [ "$j" = 8 ];; 14.1.1*) [ "$j" = 8 ] || [ "$j" = 11 ];; 14.1.2*) [ "$j" = 17 ] || [ "$j" = 21 ];; 15.*) [ "$j" = 17 ] || [ "$j" = 21 ];; *) return 2;; esac
@@ -122,18 +130,19 @@ cmd_inspect() {
   discover
   if [ "$JSON_OUT" = 1 ]; then
     printf '{"target":{"java_home":"%s","real":"%s","version":"%s","major":"%s","symlink":%s,"vendor":"%s"},"jdks":[' "$OLD_JH" "$OLD_REAL" "$OLD_VER" "$OLD_MAJOR" "$LINKED" "$(json_escape "$(jdk_vendor "$OLD_JH")")"
-    local first=1 j; for j in $(java_homes); do printf '%s{"path":"%s","version":"%s","running":%s}' "$([ $first = 1 ] || echo ,)" "$j" "$(jdk_version "$j")" "$(running_on "$j" | grep -c .)"; first=0; done
+    local first=1 j; for j in $(java_homes); do printf '%s{"path":"%s","version":"%s","running":%s}' "$([ $first = 1 ] || echo ,)" "$j" "$(jdk_version "$j")" "$(jvm_count "$j")"; first=0; done
     printf '],"references":['; first=1; printf '%s\n' "$REFS" | grep . | while IFS= read -r r; do printf '%s"%s"' "$([ $first = 1 ] || echo ,)" "$(json_escape "$r")"; first=0; done; echo ']}'; return
   fi
   echo "Target JDK      : $OLD_JH$([ "$LINKED" = 1 ] && echo " -> $OLD_REAL (symlink: switch = flip the link)") $OLD_VER ($(jdk_vendor "$OLD_JH")) major $OLD_MAJOR, base $JAVA_BASE"
-  echo "JDKs on host    :"; local j; for j in $(java_homes); do printf '  %-50s %-14s %s  running JVMs: %s\n' "$j" "$(jdk_version "$j")" "$([ "$j" = "$OLD_REAL" ] && echo '[target]' || echo '        ')" "$(running_on "$j" | awk '{print $2}' | tr '\n' ' ')"; done
+  echo "JDKs on host    :"; local j; for j in $(java_homes); do printf '  %-50s %-14s %s  running JVMs: %s\n' "$j" "$(jdk_version "$j")" "$([ "$j" = "$OLD_REAL" ] && echo '[target]' || echo '        ')" "$(jvm_names "$j")"; done
   echo "/usr/java       : $(ls -l /usr/java/latest /usr/java/default 2>/dev/null | awk '{print $9" -> "$11}' | tr '\n' ';' || true) alternatives: $(readlink -f "$(command -v java 2>/dev/null || echo /nonexistent)" 2>/dev/null)"
   echo "Referenced in   :"; printf '%s\n' "$REFS" | grep . | sed 's/^/  /' | cut -c1-200; [ -z "$REFS" ] && echo "  (nothing names $OLD_JH explicitly$([ "$LINKED" = 1 ] && echo '; everything goes through the symlink'))"
   local h; for h in $(wls_homes); do echo "WebLogic $h : $(wls_version "$h") uses $(wls_java_home "$h") ; supported JDK major: $(for m in 8 11 17 21; do wls_major_ok "$(wls_version "$h")" $m && printf '%s ' $m; done)"; done
   if ords_detect >/dev/null 2>&1; then local ej; ej="$([ -n "$ORDS_PID" ] && dirname "$(dirname "$(readlink -f "/proc/$ORDS_PID/exe" 2>/dev/null)")")"; echo "ORDS ${ORDS_VER:-?}      : ${ORDS_HOME:-?} service $(ords_service) running on ${ej:-not running} ; supported JDK major: $(for m in 8 11 17 21; do ords_major_ok "${ORDS_VER:-}" $m && printf '%s ' $m; done)"; fi
-  ogg_detect >/dev/null 2>&1 && [ "$OGG_MA" = 1 ] && echo "GoldenGate MA   : running on $(running_on "$OLD_REAL" | grep -E 'ServiceManager|adminsrvr' | head -1 | awk '{print $1}' | xargs -I{} readlink -f /proc/{}/exe 2>/dev/null) (note only: GG MA ships its own JRE under its home; patch it with GG patches)"
+  ogg_detect >/dev/null 2>&1 && [ "$OGG_MA" = 1 ] && echo "GoldenGate MA   : running on $(gg_exe_on "$OLD_REAL") (note only: GG MA ships its own JRE under its home; patch it with GG patches)"
   pgrep -f 'emagent|oracle.sysman.gcagent' >/dev/null 2>&1 && echo "EM agent        : present (note only: the agent uses its own JDK under the agent home; it is patched with agent patches, not here)"
-  local cnt; cnt="$(running_on "$OLD_REAL" | grep -c .)"; echo "Running on target: $cnt JVM(s)$([ "$cnt" != 0 ] && echo " - they need a restart after the switch (RESTART_CMDS / --restart)")"
+  local cnt; if cnt="$(jvm_count "$OLD_REAL")"; then echo "Running on target: $cnt JVM(s)$([ "$cnt" != 0 ] && echo " - they need a restart after the switch (RESTART_CMDS / --restart)")"
+  else echo "Running on target: UNKNOWN - $(ps_unreadable_msg); which JVMs need a restart after the switch is NOT known (preflight refuses until it is)"; fi
   local oc pf nca="(not counted)"; oc="$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"
   if pf="$(cacerts_pw_file)"; then if cacerts_aliases "$OLD_JH/bin/keytool" "$oc" "$pf" >"$pf.lst" 2>/dev/null; then nca="$(grep -c . "$pf.lst") trusted certs"; else nca="UNREADABLE with CACERTS_PASSWORD (apply will refuse the CA carry-over)"; fi; rm -f "$pf" "$pf.lst"; fi
   echo "cacerts         : $oc $nca"
@@ -170,7 +179,8 @@ cmd_preflight() {
   [ -w "$JAVA_BASE" ] || { err "$JAVA_BASE is not writable by $(id -un)"; fail=1; }
   [ "$LINKED" = 1 ] && { [ -w "$(dirname "$OLD_JH")" ] || { err "cannot replace the symlink $OLD_JH (parent not writable)"; fail=1; }; }
   local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do [ -w "$f" ] || { err "$f is not writable (reference must be edited)"; fail=1; }; done
-  local run; run="$(running_on "$OLD_REAL")"; [ -n "$run" ] && { log "running on the old JDK (restart needed): $(printf '%s\n' "$run" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; [ "$DO_RESTART" = 1 ] && [ -z "$RESTART_CMDS" ] && [ -z "$(ords_service)" ] && warn "--restart but no RESTART_CMDS and no ORDS service: restarts will have to be done by hand"; }
+  local run; if ! run="$(running_on "$OLD_REAL")"; then err "$(ps_unreadable_msg) - cannot tell which JVMs run on the old JDK and need a restart after the switch; preflight refuses"; fail=1; run=""; fi
+  [ -n "$run" ] && { log "running on the old JDK (restart needed): $(printf '%s\n' "$run" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; [ "$DO_RESTART" = 1 ] && [ -z "$RESTART_CMDS" ] && [ -z "$(ords_service)" ] && warn "--restart but no RESTART_CMDS and no ORDS service: restarts will have to be done by hand"; }
   [ "$NO_CACERTS" = 0 ] && { local pf; pf="$(cacerts_pw_file)" && { cacerts_aliases "$OLD_JH/bin/keytool" "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" "$pf" >/dev/null 2>&1 || { err "cannot open the old cacerts with CACERTS_PASSWORD: apply will refuse to continue without the CA carry-over (fix the password, or --no-cacerts)"; fail=1; }; rm -f "$pf"; }; }
   [ -f "$OLD_JH/jre/lib/security/local_policy.jar" ] && [ "$NEW_MAJOR" = 8 ] && log "JDK 8: unlimited crypto policy files - JDK 8u161+ has them unlimited by default (crypto.policy=unlimited)"
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"; state_set tarball "$TARBALL"; state_set old_jh "$OLD_JH"; state_set old_real "$OLD_REAL"; state_set new_jh "$NEW_JH"
@@ -259,8 +269,9 @@ cmd_verify() {
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
   if [ "$LINKED" = 1 ]; then [ "$(readlink -f "$OLD_JH")" = "$(readlink -f "$newjh")" ] && log "$OLD_JH -> $newjh" || { err "$OLD_JH points at $(readlink -f "$OLD_JH")"; fail=1; }
   else local left; left="$(refs_to "$(state_get old_real)" | grep -c .)"; [ "$left" = 0 ] && log "no reference to the old JDK left" || { err "$left reference(s) still name the old JDK: $(refs_to "$(state_get old_real)" | cut -c1-120 | tr '\n' ';')"; fail=1; }; fi
-  local oldrun; oldrun="$(running_on "$(state_get old_real)")"; [ -n "$oldrun" ] && warn "still running on the OLD JDK (restart them): $(printf '%s\n' "$oldrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')" || log "no JVM runs on the old JDK"
-  local newrun; newrun="$(running_on "$(readlink -f "$newjh")")"; [ -n "$newrun" ] && log "running on the new JDK: $(printf '%s\n' "$newrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"
+  local oldrun; if ! oldrun="$(running_on "$(state_get old_real)")"; then err "$(ps_unreadable_msg) - whether anything still runs on the old JDK is NOT known"; fail=1; oldrun=""
+  elif [ -n "$oldrun" ]; then warn "still running on the OLD JDK (restart them): $(printf '%s\n' "$oldrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; else log "no JVM runs on the old JDK"; fi
+  local newrun; newrun="$(running_on "$(readlink -f "$newjh")" 2>/dev/null)" || newrun=""; [ -n "$newrun" ] && log "running on the new JDK: $(printf '%s\n' "$newrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"
   local u; for u in ${CHECK_URLS//,/ } ${USER_ORDS_URL:-}; do local c; c="$(url_code "$u" 15)"; [[ "$c" =~ ^(200|30[0-9]|401|403)$ ]] && log "$u: HTTP $c" || { err "$u: HTTP ${c:-none}"; fail=1; }; done
   local h; for h in $(wls_homes); do [ -x "$h/oracle_common/common/bin/wlst.sh" ] && [ "$DRY_RUN" = 0 ] && { echo "print 'WLST_OK'" | to 120 "$h/oracle_common/common/bin/wlst.sh" -skipWLSModuleScanning /dev/stdin 2>>"$LOG_FILE" | grep -q WLST_OK && log "WLST starts on the new JDK ($h)" || warn "WLST did not start cleanly in $h (see log)"; }; done
   state_set verify "$([ "$fail" = 0 ] && echo ok || echo failed)"; [ "$fail" = 0 ] && log "Verify OK" || err "Verify FAILED"; return "$fail"
