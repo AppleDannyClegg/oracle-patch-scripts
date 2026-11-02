@@ -1,6 +1,6 @@
 # OKV endpoint certificate rotation — quickstart for Gen
 
-**Status (Gen, 1 Nov 2026 22:32):** every prod endpoint is on its new certificate (valid to Oct/Nov 2027) and the console's "rotation in progress" banner has cleared. The old certificates expire **9 Nov 2026 ~14:17–14:23 GMT**; keep the old `ssl/ewallet.p12` files until well after that. This page is the procedure for next time, with the script that now does the checking and waiting.
+**Status (Gen, 1 Nov 2026 22:32):** every prod endpoint is on its new certificate (valid to Oct/Nov 2027) and the console's "rotation in progress" banner has cleared. The old certificates expire **9 Nov 2026 ~14:17–14:23 GMT**; keep the old `ssl/ewallet.p12` files until well after that. To prove it, run `okv-rotate.sh verify` on each node before 9 Nov 14:23 GMT (exit 0 = new certificate, TDE `OPEN` everywhere). This page is the procedure for next time, with the script that now does the checking and waiting.
 
 Source of the procedure: your runbook (OKV 21.8, 4-node multi-master cluster, 19c RAC endpoints, TDE `KEYSTORE_CONFIGURATION=OKV|FILE`) and your follow-up of 1 Nov 22:32 (the client refreshes its config about **once an hour**, not on every `okvutil` run).
 
