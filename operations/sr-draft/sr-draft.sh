@@ -91,17 +91,41 @@ mine_errors() {
 # ---------------------------------------------------------------------------
 # facts from the sources
 # ---------------------------------------------------------------------------
+# live_val <sid> <what> <sql>: one fact with sql_lines' status kept. A fact used to be '$(sql_val ... 2>/dev/null)': a view this
+# edition lacks, a closed PDB or the SQL_TIMEOUT kill left 'DB_VERSION_FREE=' blank, the SR's Environment section read
+# '- FREE DB VERSION:' with nothing after it, and nobody was told a read had failed (tests/unreadable-gate.sh statement mode)
+live_val() {
+  local sid="$1" what="$2" v e err="$OUTDIR/.facts.err"
+  if v="$(sql_lines "$sid" "$3" 2>"$err" | head -1)" && [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  e="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$err" 2>/dev/null | cut -c1-80)"
+  warn "$sid: $what could not be read (${e:-no ORA- line: sqlplus failed or answered nothing}) - NOT collected; fill it in by hand"
+  printf 'NOT collected - could not be read (%s)' "${e:-sqlplus failed}"
+}
 live_facts() { # no pack/report: what sqlplus/opatch on this host say
   FACTS_FILE="$OUTDIR/.facts"; : >"$FACTS_FILE"
+  # discovery reads the process list (db_instances, wls_homes, ords_detect): a ps that cannot run used to be 'no database, no
+  # WebLogic, no ORDS' with no word - the SR went out with a thin Environment section and nothing saying why (unreadable gate ps mode)
+  local sids="" sid ps_ok=1; ps_args >/dev/null 2>&1 || ps_ok=0
+  if [ "$ps_ok" = 0 ]; then warn "cannot read the process list (ps failed, $PROC_DIR unreadable) - ${SID:+databases other than $SID, }WebLogic and ORDS were NOT discovered; the Environment section is incomplete${SID:+}${SID:-; pass --sid SID for the database facts}"
+    echo "DISCOVERY=NOT done - cannot read the process list (ps failed, $PROC_DIR unreadable)" >>"$FACTS_FILE"; fi
+  if [ -n "$SID" ]; then sids="$SID"; elif [ "$ps_ok" = 1 ]; then sids="$(db_instances)" || true; fi
   { echo "HOST=$HOST"; echo "FQDN=$(hostname -f 2>/dev/null || hostname)"; echo "OS=$(sed -n 's/^PRETTY_NAME="\(.*\)"/\1/p' /etc/os-release 2>/dev/null | head -1 || uname -sr) kernel $(uname -r)"
-    local sid; for sid in ${SID:-$(db_instances)}; do sql_ok "$sid" || continue
-      echo "DB_VERSION_$sid=$(sql_val "$sid" "(select version_full from v\$instance)" 2>/dev/null)"; echo "DB_NAME_$sid=$(sql_val "$sid" "(select name||' role='||database_role||' cdb='||cdb||' platform='||platform_name from v\$database)" 2>/dev/null)"
-      echo "DB_PATCHES_$sid=$(sql_lines "$sid" "select listagg(patch_id||':'||substr(description,1,60),' | ') within group (order by action_time) from (select * from (select patch_id, description, action_time from dba_registry_sqlpatch where status='SUCCESS' order by action_time desc) where rownum<=5);" 2>/dev/null | head -1)"
-      local h; h="$(db_home_of "$sid")"; [ -x "$h/OPatch/opatch" ] && echo "OPATCH_$sid=$(to 120 "$h/OPatch/opatch" lspatches -oh "$h" 2>/dev/null | grep -vE '^OPatch|^$|succeeded' | head -5 | cut -c1-70 | tr '\n' '|')"
+    for sid in $sids; do
+      # a failed sql_ok was a silent 'continue': the database vanished from the SR (unreadable gate connect mode)
+      if ! sql_ok "$sid"; then warn "$sid: sqlplus / as sysdba does not answer (instance down, no home for $sid in oratab, or SQL_CONNECT wrong) - version, name and patch facts NOT collected; fill them in by hand"
+        echo "DB_VERSION_$sid=NOT collected - cannot connect as sysdba"; echo "DB_PATCHES_$sid=NOT collected - cannot connect as sysdba"; continue; fi
+      echo "DB_VERSION_$sid=$(live_val "$sid" "version (v\$instance)" "select version_full from v\$instance;")"; echo "DB_NAME_$sid=$(live_val "$sid" "name and role (v\$database)" "select name||' role='||database_role||' cdb='||cdb||' platform='||platform_name from v\$database;")"
+      echo "DB_PATCHES_$sid=$(live_val "$sid" "patches (dba_registry_sqlpatch)" "select listagg(patch_id||':'||substr(description,1,60),' | ') within group (order by action_time) from (select * from (select patch_id, description, action_time from dba_registry_sqlpatch where status='SUCCESS' order by action_time desc) where rownum<=5);")"
+      local h o; h="$(db_home_of "$sid")"
+      if [ -x "$h/OPatch/opatch" ]; then
+        if o="$(to 120 "$h/OPatch/opatch" lspatches -oh "$h" 2>&1)"; then echo "OPATCH_$sid=$(printf '%s\n' "$o" | grep -vE '^OPatch|^$|succeeded' | head -5 | cut -c1-70 | tr '\n' '|')"
+        else warn "$sid: opatch lspatches failed (rc $?: $(printf '%s\n' "$o" | grep -v '^$' | tail -1 | cut -c1-80)) - the home's patch list is NOT collected"; echo "OPATCH_$sid=NOT collected - opatch lspatches failed"; fi
+      fi
     done
     local w; for w in $(wls_homes); do echo "WLS_VERSION=$(wls_version "$w") ($w)"; done
     ords_detect >/dev/null 2>&1 && echo "ORDS_VERSION=${ORDS_VER:-?} home=$ORDS_HOME"
-  } >>"$FACTS_FILE" 2>/dev/null
+  } >>"$FACTS_FILE"
+  rm -f "$OUTDIR/.facts.err"
 }
 report_facts() { # oracle-diag REPORT.md: host, versions it printed, its findings
   FACTS_FILE="$OUTDIR/.facts"; local r="$REPORT_DIR/REPORT.md"; [ -f "$r" ] || die "$r not found"
@@ -197,6 +221,7 @@ write_sr() {
     printf '## Business Impact and Severity\n\n%s\n\nRequested severity: **%s** - %s.\nEnvironment: **%s**.%s\n\n> Severity 1 needs a 24x7 contact and means you work it 24x7 too. Say so only when it is true. State a deadline if there is one.\n\n' "$impact" "$sev" "$(severity_text "$sev")" "$env" "${CONTACT:+ Contact: $CONTACT.}"
     printf '## Environment\n\n'
     printf -- '- Product: %s %s\n' "$pn" "${pv:-TODO version}"
+    [ -n "$(fact DISCOVERY)" ] && printf -- '- Discovery: %s\n' "$(fact DISCOVERY)"
     [ -n "$(facts_like DB_VERSION)" ] && facts_like 'DB_VERSION_|DB_NAME_|DB_PATCHES_|OPATCH_' | sed 's/^\([A-Z_]*\)_\([A-Za-z0-9]*\)=/- \2 \1: /; s/_/ /' | cut -c1-300
     [ -n "$(fact WLS_VERSION)" ] && printf -- '- WebLogic: %s; JDK: %s\n' "$(fact WLS_VERSION)" "$(fact WLS_JAVA || echo '?')"
     [ -n "$(fact ORDS_VERSION)" ] && printf -- '- ORDS: %s\n' "$(fact ORDS_VERSION)"; [ -n "$(facts_like APEX_)" ] && printf -- '- APEX: %s\n' "$(facts_like APEX_ | head -1 | cut -d= -f2)"
