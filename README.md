@@ -246,25 +246,37 @@ the PDB; `--as-new-id` is honoured). oracle-diag now reports the Oracle Key Vaul
 certificate state per `okvclient.ora` (rotated or not, node last talked to, wallet age or real
 expiry with `OKV_WALLET_PASSWORD`), written from the first production rotation.
 
-Five gates need no database and run anywhere with bash. Three read the scripts: `tests/check-parse.sh`
+Six gates need no database and run anywhere with bash. Three read the scripts: `tests/check-parse.sh`
 (every value option's `case` arm calls `optchk`), `tests/optchk-gate.sh` (every documented value
 option run as the last argument and followed by `--dry-run`: none may hang or swallow the flag) and
 `tests/secret-argv-gate.sh` (every function that hands a credential to sqlplus, SQLcl, expdp/impdp
 or ggsci, run against a stub that records its argv, environment and stdin with a canary password:
 the canary must be absent from argv and environ and present on the route the function claims, plus
 the `--verbose` log and the run directory must not hold it, and the java APEX export must refuse).
-Two run the scripts against stub tools (sqlplus, rman, opatch, srvctl, dgmgrl, ggsci, escli and the
+Three run the scripts against stub tools (sqlplus, rman, opatch, srvctl, dgmgrl, ggsci, escli and the
 rest log their argv and stdin and answer from a canned table): `tests/dry-run-gate.sh` runs every
 command of every script with `--dry-run` and fails on any DDL, DML, flashback, PL/SQL, patch, restart,
 switch or GoldenGate verb that reached a tool; `tests/false-success-gate.sh` runs every change command
 for real, makes the first changing call and every later one fail, and fails on exit 0 or on a state
-line that claims success (`applied=`, `verified=1`, `rolled_back=1`, `<step>=ok` and the rest). Both
-read `tests/dry-run-env/<script>.sh` for the world a script needs (fake homes, run dirs, answers,
+line that claims success (`applied=`, `verified=1`, `rolled_back=1`, `<step>=ok` and the rest);
+`tests/unreadable-gate.sh` runs the six read-only reports and the two collectors whole-script on a PATH
+whose domain tools fail - sqlplus cannot connect, or every statement but the probe answers ORA-00942,
+or `ps` exits 1 with `PROC_DIR` on an empty directory - and fails any script that read nothing and still
+printed a clean verdict or exited 0 (`incident-pack` and `sr-draft` are included; a run that makes no
+sqlplus call at all is NOT-EXERCISED). The first two read `tests/dry-run-env/<script>.sh` for the world a script needs (fake homes, run dirs, answers,
 `ARGS_<cmd>`, `FAIL_<cmd>`, `OK_<cmd>`); the stub answers a query from the first `pattern|answer` line
 that matches it, so an unanswered or empty answer must be written as an explicit `pattern|` line - deleting
 a line only lets a more general one (`count\(\*\)|0`) answer instead. A command that ended before any
 tool, or before any changing call, is listed as NOT-EXERCISED, which is not a pass - it says the gate could
-not see that command.
+not see that command. `tests/unreadable-gate.sh` uses its own stub world (failing domain tools, real coreutils).
+
+`PS_FAIL=1` (or a `$T/ps.fail` the env file creates) is a switch in both `tests/dry-run-gate.sh` and
+`tests/false-success-gate.sh`, but it means two different things and only one is a proof. In the dry-run
+gate it makes the command refuse *before any tool call*, which the gate reports as NOT-EXERCISED - it proves
+'the command stops on an unreadable process list', not 'the outcome changed'. The mutation proof for a
+ps-unreadable fix belongs in the false-success gate, where the pre-fix commit records a success state
+(`stopped=ok`, `applied=`, `verified=1`) and the fix does not; run it with the gate and env from HEAD against
+the pre-fix script, as `tests/dry-run-env/<script>.sh`'s `CASES_<cmd>='ps_unreadable'` cases do.
 What a tool cannot see (ln, mv, rm, cp outcomes) is proved by hand with the same env and a read-only
 directory, and the commit says so. `lib/oracle-lib.sh selftest` covers the library's own helpers. Secrets never go on a command line:
 sqlplus and SQLcl are started with `/nolog` and get `connect` on stdin, Data Pump reads `userid=`
