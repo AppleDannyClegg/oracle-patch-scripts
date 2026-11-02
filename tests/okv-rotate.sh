@@ -63,6 +63,7 @@ q="$(cat)"
 if [ "${STUB_SQL_FAIL:-0}" = 1 ]; then echo "ORA-01017: invalid username/password; logon denied" >&2; exit 1; fi
 if printf '%s' "$q" | grep -q 'v\$database'; then [ -n "${STUB_DB_ROLE:-}" ] && echo "$STUB_DB_ROLE"; fi
 if printf '%s' "$q" | grep -q 'gv\$encryption_wallet'; then
+  if [ "${STUB_TDE_FAIL:-0}" = 1 ]; then echo "ORA-00942: table or view does not exist" >&2; exit 1; fi
   printf '1|%s|OKV\n' "${STUB_TDE_STATUS:-OPEN}"
 fi
 if printf '%s' "$q" | grep -q 'gv\$managed_standby'; then [ "${STUB_NO_MRP:-0}" = 1 ] || printf 'MRP0|%s\n' "${STUB_MRP:-APPLYING_LOG}"; fi
@@ -135,10 +136,16 @@ unset OKVUTIL_FAIL
 new_wallet; write_ora "$OKV/ssl/19700101000000000000"
 STUB_DB_ROLE=PHYSICAL_STANDBY STUB_NO_MRP=1 run verify; expect_rc 2 "verify PHYSICAL_STANDBY with no MRP row is CRIT (2)"
 
-# sqlplus failing -> verify must not be clean (Landru 13:22:29 P2)
-STUB_SQL_FAIL=1 run verify
-if [ "$RC" != 0 ]; then ok "verify does not pass when sqlplus fails (rc=$RC)"; else bad "verify returned 0 with sqlplus failing"; fi
-unset STUB_SQL_FAIL
+# only the TDE read fails -> verify must WARN (1) and say the assertion was not evaluated
+# (Mother 13:34:12: a blanket sqlplus failure also trips the standby WARN, so it cannot pin the TDE fix)
+STUB_TDE_FAIL=1 run verify
+if [ "$RC" = 1 ] && printf '%s' "$out" | grep -q "NOT evaluated"; then ok "verify WARNs when only the TDE read fails (rc=1)"; else bad "TDE-only failure not pinned (rc=$RC): $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"; fi
+unset STUB_TDE_FAIL
+
+# wait: okvutil fails and the ora is still on the old wallet -> 1 (do not proceed)
+write_ora "$OKV/ssl"; : >"$OKV/ssl/ewallet.p12"; : >"$OKVUTIL_LOG"
+OKVUTIL_FAIL=1 run wait --timeout 1 --interval 0; expect_rc 1 "wait okvutil-failed and unswitched is 1"
+unset OKVUTIL_FAIL
 
 printf '\nokv-rotate gate: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
