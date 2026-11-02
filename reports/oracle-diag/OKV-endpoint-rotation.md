@@ -63,18 +63,18 @@ By hand, the same checks are: `openssl pkcs12 -in <SSL_WALLET_LOC>/ewallet.p12 -
 - Never move, edit or delete `$OKV_HOME/conf/ewallet.p12` — it is the TDE secret store, not the endpoint certificate.
 - Keep the old `$OKV_HOME/ssl/ewallet.p12` until well after 9 Nov as rollback.
 - Do not hand-edit `SERVER=` in `okvclient.ora`; no keystore close/reopen, instance restart or re-enrol as a workaround.
-- `okv-rotate.sh backup` copies `okvclient.ora` into its run dir; `rollback` copies that snapshot back over `okvclient.ora` (the only write the script makes under `$OKV_HOME`, and only when you ask for it). It never touches either `ewallet.p12`.
+- `okv-rotate.sh backup` snapshots `okvclient.ora` into its run dir; `rollback` is advisory: it prints the manual recovery steps and the backed-up `SSL_WALLET_LOC` and writes nothing. The script makes no write under `$OKV_HOME` and never touches either `ewallet.p12`.
 
 ## Which script does what
 
 | Script | Use |
 |---|---|
-| `operations/okv-rotate/okv-rotate.sh` | the per-node driver above: `inspect`/`plan`/`preflight` before, `wait` for the switch after the console click, `verify` and `report` after; `backup`/`rollback` of `okvclient.ora` |
+| `operations/okv-rotate/okv-rotate.sh` | the per-node driver above: `inspect`/`plan`/`preflight` before, `wait` for the switch after the console click, `verify` and `report` after; `backup` snapshots `okvclient.ora` into the run dir, `rollback` prints the recovery steps (writes nothing) |
 | `reports/oracle-diag/oracle-diag.sh` | the whole-host report; its `okv/...` rows (`okv_endpoint_cert`, `diag_okv`) are the same facts as `inspect`: `SSL_WALLET_LOC` rotated/not, `OKV_HOSTNAME`, cert `notAfter` or age, 5696, `okvutil list` |
 | `reports/security-posture/security-posture.sh --cis` | the same checks as audit PASS/FAIL controls, plus `$OKV_HOME/conf/ewallet.p12` listed as do-not-touch |
 | `patching/cert-renew/cert-renew.sh` | **`inspect okv` only**: the endpoint wallet's expiry/age in the host-wide certificate list. There is no `plan`/`preflight`/`apply`/`verify`/`rollback` for okv (`apply okv` exits with "unknown target"); the wallet is rewritten by the Key Vault client during the console rotation, not by cert-renew |
 
-All of these are read-only (sqlplus selects, file reads, `okvutil list`, TCP probes) except `okv-rotate.sh rollback`, and all redact passwords by default.
+All of these are read-only (sqlplus selects, file reads, `okvutil list`, TCP probes) and redact passwords by default; nothing here writes under `$OKV_HOME`.
 
 ## Gaps / notes
 
