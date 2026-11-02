@@ -65,8 +65,12 @@ args_of() { case "$1" in
   patch-status)     echo "--no-net --report --out $T/out";;
   sr-draft)         echo "--sid FREE --error ORA-00600 --out $T/out";;
   incident-pack)    echo "GATE --sid FREE --out $T/out --no-diag --no-tfa --hours 1 --yes";;
+  # the two change scripts whose read-only report commands take the same ps/SQL failure classes: one command each (inspect),
+  # so the ps mode proves the loop head (exascale 8d394c3, rman 8b36bdf) rather than only the hand harness
+  exascale-space)   echo "inspect --sid FREE --out $T/out --no-tar";;
+  rman-ops)         echo "inspect --sid FREE --out $T/out --no-tar";;
   *) return 1;; esac; }
-scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(reports/*/*.sh patching/patch-status/patch-status.sh operations/incident-pack/incident-pack.sh operations/sr-draft/sr-draft.sh)
+scripts=("$@"); [ ${#scripts[@]} -gt 0 ] || scripts=(reports/*/*.sh patching/patch-status/patch-status.sh operations/incident-pack/incident-pack.sh operations/sr-draft/sr-draft.sh operations/exascale-space/exascale-space.sh operations/rman-ops/rman-ops.sh)
 pass=0; fail=0; nx=0; nxlist=""; fverdict=0; frc=0   # a FAIL is counted once; 'verdict' when the report did not own up, '[rc]' when it only exited 0
 for s in "${scripts[@]}"; do
   tool="$(basename "$s" .sh)"; extra="$(args_of "$tool")" || { echo "skip $tool: not a read-only report this gate knows"; continue; }
@@ -96,7 +100,7 @@ for s in "${scripts[@]}"; do
       [ "$tool" = patch-status ] && [ "$mode" != ps ] && ! grep -qE '^(Database|datapatch) FREE' "$T/stdout" && { vfail=1; reason="${reason:+$reason; }no row for FREE although ps shows ora_pmon_FREE"; }
       # the exit code is the whole interface under cron (db-health-daily and space-forecast install themselves with >/dev/null 2>&1):
       # a report that could not read its database must not exit 0, whatever it printed (Colossus 23:43, findings_rc = 2 CRIT, 1 WARN, 0 clean)
-      case "$tool" in db-health-daily|security-posture|perf-snapshot|space-forecast|oracle-diag|patch-status) [ $rc = 0 ] && reason="${reason:+$reason; }[rc] exit 0 after $failed failed ${what%% (*} (a cron caller reads this as clean)";; esac
+      case "$tool" in db-health-daily|security-posture|perf-snapshot|space-forecast|oracle-diag|patch-status|exascale-space|rman-ops) [ $rc = 0 ] && reason="${reason:+$reason; }[rc] exit 0 after $failed failed ${what%% (*} (a cron caller reads this as clean)";; esac
     fi
     if [ -n "$reason" ]; then echo "FAIL $tool $mode: rc=$rc; $reason"; fail=$((fail+1)); if [ $vfail = 1 ]; then fverdict=$((fverdict+1)); else frc=$((frc+1)); fi
     else pass=$((pass+1)); echo "ok   $tool $mode: rc=$rc, $failed of $calls ${what:-statements} failed, verdict: $(printf '%s\n' "$verdict" | own_up_line)"; fi
