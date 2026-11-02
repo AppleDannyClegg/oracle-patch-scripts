@@ -1038,15 +1038,18 @@ diag_okv() {
   [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
   [ -z "$conf" ] && return 0
   say "key vault"; h1 "Oracle Key Vault client"
-  local f; while IFS= read -r f; do  # not "for f in $conf": a space in an OKV path word-split it (Mother 13:46:44)
+  # not "for f in $conf": a space in an OKV path word-split it (Mother 13:46:44). The list comes in on fd 3, not stdin:
+  # okvutil inside the loop prompts for the wallet password when there is no autologin and would read the next ora
+  # path as it (Mother 13:53:13), so it also gets </dev/null.
+  local f; while IFS= read -r f <&3; do
     h2 "$f"
-    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for s in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' ' | cut -d: -f1); do p=\$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' '\n' | grep \$s | cut -s -d: -f2); p=\${p:-5696}; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
+    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for s in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' ' | cut -d: -f1); do p=\$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' '\n' | grep \$s | cut -s -d: -f2); p=\${p:-5696}; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
     local raw; raw="$RAW/okv_$(printf '%s' "$f" | md5sum | cut -c1-8).txt"
     local nok nbad; nok="$(grep -cE '^  [^ ]+:[0-9]+ OK$' "$raw")"; nbad="$(grep -cE '^  [^ ]+:[0-9]+ UNREACHABLE$' "$raw")"   # only the server lines, not okvutil's text
     [ "$nbad" -gt 0 ] && { if [ "$nok" = 0 ]; then finding CRIT okv "No Oracle Key Vault server in $f is reachable on its port - TDE keystore cannot be opened after a restart"; else finding WARN okv "$nbad of $((nok + nbad)) Key Vault servers in $f unreachable (HA degraded)"; fi; }
     grep -qiE 'okvutil.*(error|fail|unable)|Cannot connect|Unable to connect|Connection refused' "$raw" && finding WARN okv "okvutil list failed against Key Vault (wallet password needed, endpoint not enrolled, or no server reachable)"
     okv_endpoint_cert "$f"
-  done <<<"$conf"
+  done 3<<<"$conf"
   local dbh; dbh="$(oratab_home "$(db_instances | head -1)")"; [ -f "$dbh/lib/liborapkcs.so" ] && kv "liborapkcs.so in ORACLE_HOME/lib" "$(ls -la "$dbh/lib/liborapkcs.so")" && kv_end
   [ -f /opt/oracle/extapi/64/hsm/oracle/1.0.0/liborapkcs.so ] && { kv "PKCS#11 library" "$(ls -la /opt/oracle/extapi/64/hsm/oracle/1.0.0/liborapkcs.so)"; kv_end; }
 }
