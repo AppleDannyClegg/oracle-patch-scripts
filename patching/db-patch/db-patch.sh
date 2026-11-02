@@ -68,7 +68,8 @@ discover() {
     [ -z "$HOME_DIR" ] && die "Cannot pick the database home: pass --home DIR (oratab homes: $(printf '%s' "$homes" | tr '\n' ' '))"
   fi
   [ -x "$HOME_DIR/OPatch/opatch" ] || die "$HOME_DIR has no OPatch/opatch - not an OPatch home"
-  [ -z "$SIDS" ] && SIDS="$(db_instances | while read -r s; do [ "$(oratab_home "$s")" = "$HOME_DIR" ] && echo "$s"; done | tr '\n' ' ')"
+  if [ -z "$SIDS" ]; then local il; il="$(db_instances)" || die "cannot read the process list (ps failed, /proc unreadable) - cannot tell which instances run from $HOME_DIR; pass --sid SID"
+    SIDS="$(printf '%s\n' "$il" | while read -r s; do [ "$(oratab_home "$s")" = "$HOME_DIR" ] && echo "$s"; done | tr '\n' ' ')"; fi
   [ -z "$SIDS" ] && SIDS="$(oratab_sids | while read -r s; do [ "$(oratab_home "$s")" = "$HOME_DIR" ] && echo "$s"; done | tr '\n' ' ')"
   DB_VERSION="$("$HOME_DIR/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | tail -1)"; [ -z "$DB_VERSION" ] && DB_VERSION="$("$HOME_DIR/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   OPATCH_VERSION="$("$HOME_DIR/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
@@ -78,8 +79,13 @@ discover() {
   RU_DESC="$(printf '%s\n' "$INSTALLED" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE' | grep -viE 'OJVM|MONTHLY' | sort -t';' -k2 | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
   RU_LEVEL="$(printf '%s' "$RU_DESC" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   GRID_HOME="$(grid_home)"; is_rac && IS_RAC=1
-  DB_ROLES=""; local s; for s in $SIDS; do db_instances | grep -qx "$s" || { DB_ROLES="${DB_ROLES}$s:DOWN "; continue; }; local r; r="$(sql_val "$s" "(select database_role||'/'||open_mode from v\$database)" 2>/dev/null)"; DB_ROLES="${DB_ROLES}$s:${r:-?} "; done
+  DB_ROLES=""; local s; for s in $SIDS; do up "$s" || { DB_ROLES="${DB_ROLES}$s:DOWN "; continue; }; local r; r="$(sql_val "$s" "(select database_role||'/'||open_mode from v\$database)" 2>/dev/null)"; DB_ROLES="${DB_ROLES}$s:${r:-?} "; done
 }
+# up <sid>: the instance has a pmon. An unreadable process list is a die, never 'down': every 'db_instances | grep -qx SID'
+# below read an empty list as not running - stop recorded nothing to stop and went on to opatch with instances up, restore
+# saw 'databases down', verify/datapatch skipped them (lib b728ff6 made db_instances fail closed; this is the caller's half)
+up() { local l; l="$(db_instances)" || die "cannot read the process list (ps failed, /proc unreadable) - cannot tell whether $1 is running; refusing to go on"; printf '%s\n' "$l" | grep -qx "$1"; }
+
 setup_env() { discover; export ORACLE_HOME="$HOME_DIR"; export PATH="$HOME_DIR/bin:$HOME_DIR/OPatch:$PATH"; }
 # opatch owns its timeout: 'to N opatch ...' reached this function only on a host WITHOUT timeout(1) - with it, to() execs 'opatch'
 # from PATH (none -> rc 127; a sibling home's OPatch on a multi-home box -> the wrong inventory). Wintermute, 1 Nov 23:10.
@@ -199,7 +205,7 @@ cmd_preflight() {
   [ "$NO_BACKUP" = 0 ] && { local hsz; hsz="$(du -sm "$HOME_DIR" | cut -f1)"; local bfree; bfree="$(df -Pm "$(mkdir -p "$BACKUP_DIR" && echo "$BACKUP_DIR")" | awk 'NR==2{print $4}')"; [ "$bfree" -lt "$((hsz+1024))" ] && { err "backup dir needs ${hsz} MB, has ${bfree} MB (--no-backup to skip)"; fail=1; }; }
   # databases: running, roles, standby-first, datapatch prereqs
   local s; for s in $SIDS; do
-    if ! db_instances | grep -qx "$s"; then warn "$s is not running (datapatch needs it open; start it or it will be skipped)"; continue; fi
+    if ! up "$s"; then warn "$s is not running (datapatch needs it open; start it or it will be skipped)"; continue; fi
     sql_ok "$s" || { err "$s: cannot connect as sysdba"; fail=1; continue; }
     local role mode; role="$(sql_val "$s" "(select database_role from v\$database)")"; mode="$(sql_val "$s" "(select open_mode from v\$database)")"
     log "$s: $role, $mode, $(sql_val "$s" "(select count(*) from v\$session where type='USER')") user sessions"
@@ -261,7 +267,7 @@ cmd_backup() {
     state_set home_backup "$tarf"
   fi
   local s; for s in $SIDS; do
-    db_instances | grep -qx "$s" || continue; sql_ok "$s" || continue
+    up "$s" || continue; sql_ok "$s" || continue
     mkdir -p "$RUN_DIR/$s"
     # each statement's output is read for ORA-: the pfile and controlfile copies went to the log unread and backup=ok followed
     # whatever they said (a run then stopped the database with no pfile backup and no controlfile copy, told the backup was fine)
@@ -286,21 +292,21 @@ cmd_backup() {
 
 cmd_stop() {
   setup_env; reuse_or_init stop
-  local running=""; local s; for s in $SIDS; do db_instances | grep -qx "$s" && running="$running $s"; done
+  local running=""; local s; for s in $SIDS; do up "$s" && running="$running $s"; done
   state_set was_running "${running# }"
   local dbn; for dbn in $(srvctl_db_name); do
     if [ "$ROLLING" = 1 ]; then local inst; inst="$(db_instances | grep -E "^${dbn}" | head -1)"; run_cmd "$GRID_HOME/bin/srvctl" stop instance -d "$dbn" -i "$inst" -o immediate; else run_cmd "$GRID_HOME/bin/srvctl" stop database -d "$dbn" -o immediate; fi
   done
   local fail=0
   for s in $running; do
-    db_instances | grep -qx "$s" || continue
+    up "$s" || continue
     log "shutdown immediate $s"; [ "$DRY_RUN" = 1 ] && continue
     ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to "$STOP_TIMEOUT" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown immediate" >>"$LOG_FILE" 2>&1
-    db_instances | grep -qx "$s" && { warn "$s still up after immediate; shutdown abort"; ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown abort" >>"$LOG_FILE" 2>&1; }
+    up "$s" && { warn "$s still up after immediate; shutdown abort"; ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" "$HOME_DIR/bin/sqlplus" -S / as sysdba <<<"shutdown abort" >>"$LOG_FILE" 2>&1; }
     # the proof is pmon gone (an abort's processes take a moment to go), not sqlplus's exit status: the shutdown output went to
     # the log unread and stopped=ok was written whatever ps said afterwards - 'run' then took opatch apply to a home with an instance up
-    local w=0; while db_instances | grep -qx "$s" && [ "$w" -lt 20 ]; do sleep 2; w=$((w + 2)); done
-    db_instances | grep -qx "$s" && { err "$s is STILL RUNNING after shutdown immediate and shutdown abort (see $LOG_FILE)"; fail=1; }
+    local w=0; while up "$s" && [ "$w" -lt 20 ]; do sleep 2; w=$((w + 2)); done
+    up "$s" && { err "$s is STILL RUNNING after shutdown immediate and shutdown abort (see $LOG_FILE)"; fail=1; }
   done
   # process substitution, not '| while': a listener that would not stop must reach fail (opatch refuses a home whose listener runs: files in use)
   local h lsn; while read -r h lsn; do [ "$h" = "$HOME_DIR" ] || continue
@@ -359,7 +365,7 @@ cmd_start() {
     if [ "$ROLLING" = 1 ]; then local inst; inst="$(state_get was_running | tr ' ' '\n' | grep -E "^${dbn}" | head -1)"; [ -n "$inst" ] && run_cmd "$GRID_HOME/bin/srvctl" start instance -d "$dbn" -i "$inst"; else run_cmd "$GRID_HOME/bin/srvctl" start database -d "$dbn"; fi
   done
   local s; for s in $(state_get was_running || echo "$SIDS"); do
-    db_instances | grep -qx "$s" && continue
+    up "$s" && continue
     log "startup $s"; [ "$DRY_RUN" = 1 ] && continue
     # the outcome is the open mode, not 'sqlplus connects': a startup that stopped at MOUNT (ORA-01157, a missing datafile) or
     # NOMOUNT still answers '/ as sysdba', and used to be started=ok
@@ -385,7 +391,7 @@ cmd_datapatch() {
   setup_env; reuse_or_init datapatch
   local oop; oop="$(state_get oop_home || true)"; [ -n "$oop" ] && HOME_DIR="$oop"
   local s rc=0; for s in $SIDS; do
-    db_instances | grep -qx "$s" || { warn "$s not running - datapatch skipped"; continue; }
+    up "$s" || { warn "$s not running - datapatch skipped"; continue; }
     sql_ok "$s" || { err "$s unreachable"; rc=1; continue; }
     [ "$(sql_val "$s" "(select database_role from v\$database)")" = "PHYSICAL STANDBY" ] && { log "$s is a physical standby - datapatch runs on the primary and ships over"; continue; }
     log "datapatch -verbose on $s (this can take 10-40 minutes; tail -f $LOG_FILE)"
@@ -412,7 +418,7 @@ cmd_verify() {
   local fail=0 id; INSTALLED="$(OPATCH_TIMEOUT=180 opatch lspatches 2>/dev/null)"
   for id in $(state_get applied || true); do printf '%s\n' "$INSTALLED" | grep -q "^$id;" && log "$id in inventory" || { err "$id missing from inventory"; fail=1; }; done
   local s; for s in $SIDS; do
-    db_instances | grep -qx "$s" || { err "$s not running"; fail=1; continue; }
+    up "$s" || { err "$s not running"; fail=1; continue; }
     sql_ok "$s" || { err "$s unreachable"; fail=1; continue; }
     local role; role="$(sql_val "$s" "(select database_role from v\$database)")"
     if [ "$role" = PRIMARY ] || [ "$role" = "LOGICAL STANDBY" ]; then
@@ -456,7 +462,7 @@ cmd_rollback() {
     fi
   fi
   cmd_start || rfail=1
-  local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" && { log "$s: datapatch after rollback (reverts the SQL side)"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch after the rollback had errors (see $LOG_FILE)"; rfail=1; }; }; done
+  local s; for s in $SIDS; do up "$s" && sql_ok "$s" && { log "$s: datapatch after rollback (reverts the SQL side)"; [ "$DRY_RUN" = 1 ] || ORACLE_SID="$s" ORACLE_HOME="$HOME_DIR" to 7200 "$HOME_DIR/OPatch/datapatch" -verbose >>"$LOG_FILE" 2>&1 || { err "$s: datapatch after the rollback had errors (see $LOG_FILE)"; rfail=1; }; }; done
   local rps; rps="$(state_get restore_points || true)"
   [ -n "$rps" ] && { echo; echo "Restore points from this run: $rps"; echo "If datapatch left a database in a bad state, flashback is the clean undo (this discards everything since the restore point):"; echo "  shutdown immediate; startup mount; flashback database to restore point <RP>; alter database open resetlogs;"; echo "  (RAC: on one instance with the others down; standby: flashback the standby too or rebuild it)"; }
   if [ "$rfail" = 0 ]; then state_set rollback ok
@@ -467,7 +473,8 @@ cmd_restore() {
   setup_env; reuse_or_init restore
   local tarf; tarf="$(state_get home_backup || true)"; [ -f "$tarf" ] || die "no home backup recorded in $RUN_DIR"
   confirm "Replace $HOME_DIR with $tarf? (databases must be down)" || die "aborted"
-  [ -n "$(db_instances)" ] && [ "$FORCE" = 0 ] && die "databases still running; stop first (or --force)"
+  local il; il="$(db_instances)" || die "cannot read the process list (ps failed, /proc unreadable) - cannot confirm the databases are down; restore refused"
+  [ -n "$il" ] && [ "$FORCE" = 0 ] && die "databases still running; stop first (or --force)"
   [ "$DRY_RUN" = 1 ] && return 0
   mv "$HOME_DIR" "$HOME_DIR.broken.$(date +%s)" && tar -xzf "$tarf" -C "$(dirname "$HOME_DIR")" || die "restore failed; the old home is at $HOME_DIR.broken.*"
   log "restored; run 'start' then 'verify'. Remove $HOME_DIR.broken.* when happy."
@@ -491,7 +498,7 @@ cmd_cleanup() {
 cmd_heal() {
   setup_env; reuse_or_init heal; local did=0
   if opatch_locked && ! pgrep -f 'OPatch/opatch|oracle.opatch' >/dev/null; then log "removing stale OPatch lock"; confirm "rm $HOME_DIR/.patch_storage/patch_locked ?" && { [ "$DRY_RUN" = 1 ] || rm -f "$HOME_DIR/.patch_storage/patch_locked"; did=1; }; fi
-  local s; for s in $SIDS; do db_instances | grep -qx "$s" && sql_ok "$s" || continue
+  local s; for s in $SIDS; do up "$s" && sql_ok "$s" || continue
     local bad; bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
     [ -z "$bad" ] && warn "$s: could not read dba_registry_sqlpatch - datapatch state unknown, not clean"
     [ -n "$bad" ] && [ "$bad" != 0 ] && { warn "$s: $bad datapatch rows not SUCCESS:"; sql_lines "$s" "select patch_id||' '||status||' '||substr(description,1,60)||' log: '||logfile from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED');" ; log "  usual fix: read the logfile, fix the invalid object / missing grant it names, re-run: datapatch -verbose"; confirm "re-run datapatch -verbose on $s now?" && { cmd_datapatch; did=1; }; }
