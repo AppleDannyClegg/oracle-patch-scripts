@@ -20,3 +20,7 @@ mkdir -p "$T/env/zipsrc/lib" "$T/env/zipsrc/bin"; : >"$T/env/zipsrc/lib/ords-plu
 # a Java that preflight accepts (the gate's java stub says nothing to -version)
 mkdir -p "$T/env/java/bin"; printf '#!/bin/sh\n[ "$1" = -version ] && { echo "openjdk version \\"17.0.12\\" 2024-07-16" >&2; exit 0; }\nexec "%s/java" "$@"\n' "$STUB" >"$T/env/java/bin/java"; chmod +x "$T/env/java/bin/java"; export JAVA_HOME="$T/env/java"
 ARGS_rollback="--allow-flashback"   # the flashback branch must be reached, and under --dry-run must send nothing
+# stop:ps_unreadable - ORDS is a process of ours (a sleep started here), pgrep finds it, kill works, and then ps cannot run: the stop
+# must not end 'ORDS stopped' rc 0 (bcb193e: before it pid_alive read a ps that failed as 'gone'). No sqlplus call fails in this case
+CASES_stop='ps_unreadable'; FAIL_stop__ps_unreadable='^never matches$'
+case "$CMD:${CASE:-}" in stop:ps_unreadable) sleep 300 & echo $! >"$T/pgrep.txt"; : >"$T/ps.fail";; esac

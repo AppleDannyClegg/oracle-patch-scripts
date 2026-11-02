@@ -27,3 +27,7 @@ esac
 # run: apply fails at apexins, the revert runs apxdwngrd (fails too) and then trusts the registry, which the answers say is on the old schema - rolled_back=1 is that query, not the tool's exit
 OK_run="^(applied=|verified=1)"
 export START_TIMEOUT=5   # ords_start after a rollback must not wait 300 s for a URL nothing answers
+# stop:ps_unreadable - ORDS is a process of ours (a sleep started here), pgrep finds it, kill works, and then ps cannot run: the stop
+# must not end 'ORDS stopped' rc 0 (bcb193e: before it pid_alive read a ps that failed as 'gone'). No sqlplus call fails in this case
+CASES_stop='ps_unreadable'; FAIL_stop__ps_unreadable='^never matches$'
+case "$CMD:${CASE:-}" in stop:ps_unreadable) sleep 300 & echo $! >"$T/pgrep.txt"; : >"$T/ps.fail";; esac

@@ -12,7 +12,8 @@
 # each is run with FAIL_<cmd>__<case> / OK_<cmd>__<case> / ARGS_<cmd>__<case> (falling back to the command's own), with CASE set
 # while the env file is sourced, so one command can be failed at two different calls. Only lines ADDED to a state file by the run count, so a seeded
 # state may carry applied= or pool_x=ok. The env file may write $T/ps.txt (one process per line) for the ps stub to
-# print, and cannot change CMD. Needs no database.
+# print, $T/pgrep.txt (pids) for pgrep to find, or create $T/ps.fail to make every ps call fail (logged as FAILED, so a stop that
+# then claims 'stopped' is a FAIL); it cannot change CMD. Needs no database.
 # Usage: tests/false-success-gate.sh [script...] | --selftest (the success-line regex against the lines it must and must not catch)
 cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
@@ -25,11 +26,13 @@ for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki ex
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
 me="$(basename "$0")"
-# ps: what the env file wrote to $T/ps.txt (one process per line, e.g. '1234 ora_pmon_FREE'), else the real ps; never logged
-[ "$me" = ps ] && { f="$(dirname "$DRY_LOG")/ps.txt"; if [ -s "$f" ]; then cat "$f"; else exec /bin/ps "$@"; fi; exit 0; }
+# ps: fails (exit 1, logged as FAILED) while the env file's $T/ps.fail exists; else what the env file wrote to $T/ps.txt (one process
+# per line, e.g. '1234 ora_pmon_FREE'), else the real ps; a ps that answers is never logged
+[ "$me" = ps ] && { d="$(dirname "$DRY_LOG")"; [ -e "$d/ps.fail" ] && { echo "ps: cannot read the process list (false-success gate)" >&2; echo "FAILED ps $*" >>"$DRY_LOG"; exit 1; }; if [ -s "$d/ps.txt" ]; then cat "$d/ps.txt"; else exec /bin/ps "$@"; fi; exit 0; }
+# pgrep: the pids the env file wrote to $T/pgrep.txt, else nothing is running on this box
+[ "$me" = pgrep ] && { f="$(dirname "$DRY_LOG")/pgrep.txt"; echo "TOOL pgrep $*" >>"$DRY_LOG"; if [ -s "$f" ]; then cat "$f"; exit 0; fi; exit 1; }
 q=""; [ -t 0 ] || q="$(cat)"
 { echo "TOOL $me $*"; [ -n "$q" ] && printf '%s\n' "$q" | sed 's/^/  > /'; } >>"$DRY_LOG"
-[ "$me" = pgrep ] && exit 1                       # nothing is running on this box
 line="$me $* | $(printf '%s' "$q" | tr '\n' ';')"
 # RMAN's 'restore ... preview', 'restore ... validate' and 'backup validate' read the pieces or the datafiles and write nothing (rman-ops validate/run): not a change
 ro="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | sed -E 's/(restore|backup) [^;{}]*(preview|validate)[^;{}]*;?//g; s/set until[^;]*;//g; s/run *\{ *\}//g')"
@@ -74,7 +77,9 @@ for s in "${scripts[@]}"; do
     cases="$( ( CMD="$c"; readonly CMD; CASE=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; v="CASES_${CMD//-/_}"; printf '%s' "${!v-}" ) 2>/dev/null )"
     for k in "" $cases; do
     label="$c${k:+:$k}"
-    : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/home" "$T/env.ok"; mkdir -p "$T/env" "$T/home"
+    # the ps world starts empty for every case: until now ps.txt written by one env file (exascale-space, rman-ops) was still there for
+    # the next script's cases, and the ps.fail / pgrep.txt switches must never outlive the case that set them
+    : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/home" "$T/env.ok" "$T/ps.txt" "$T/ps.fail" "$T/pgrep.txt"; mkdir -p "$T/env" "$T/home"
     # the per-script environment: sourced in a subshell that then runs the command, so nothing leaks between cases
     # shellcheck disable=SC1090,SC2034
     ( CMD="$c"; readonly CMD; CASE="$k"; ARGS=""; OK=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"
@@ -83,6 +88,8 @@ for s in "${scripts[@]}"; do
       states >"$T/state.before"
       # shellcheck disable=SC2086
       FAIL_RE="$(sed -n 1p "$T/case")" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 alarm 120 bash "$s" "$CMD" $extra --yes ) >"$T/out" 2>&1; rc=$?
+    # a process the env file started to stand in for ORDS (pgrep.txt) is ours: end it if the script did not
+    [ -s "$T/pgrep.txt" ] && while read -r pid; do kill "$pid" 2>/dev/null; done <"$T/pgrep.txt"
     if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $label: hung (120 s)"; fail=$((fail+1)); continue; fi
     if [ ! -f "$T/env.ok" ]; then echo "FAIL $tool $label: tests/dry-run-env/$tool.sh did not source to the end: $(grep -v '^$' "$T/out" | tail -1 | cut -c1-160)"; fail=$((fail+1)); continue; fi
     ok_re="$(sed -n 2p "$T/case")"
