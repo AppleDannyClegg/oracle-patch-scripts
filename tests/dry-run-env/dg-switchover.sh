@@ -56,9 +56,9 @@ FAIL_heal='dgmgrl .*edit database'; FAIL_switchover='dgmgrl .*switchover to'; FA
 export DG_PASSWORD=stub   # dgmgrl connects as sys@STBYDB for a remote target; the gate has no terminal to ask
 # the forbidden claim is the command's own step (the seeded run carries backup=ok/switchover=ok from the earlier switchover, and
 # inspect/preflight/backup rightly record ok before the dgmgrl call of a run fails)
-OK_backup='^backup=ok$'; OK_switchover='^switchover=ok$'; OK_failover='^failover=ok$'; OK_reinstate='^reinstate=ok$'; OK_cleanup='^cleanup=ok$'
+OK_backup='^(backup=ok|restore_points=.*)$'; OK_switchover='^switchover=ok$'; OK_failover='^failover=ok$'; OK_reinstate='^reinstate=ok$'; OK_cleanup='^cleanup=ok$'
 OK_heal='^heal=ok$'; OK_run='^(switchover|verify|run)=ok$'; OK_rollback='^(rollback|switchover_back)=ok$'
-ARGS="--sid FREE STBYDB"; ARGS_failover="--sid FREE STBYDB --force"; ARGS_backup="--sid FREE"; ARGS_cleanup="--sid FREE"; ARGS_rollback="--sid FREE"; ARGS_reinstate="--sid FREE PRIMDB"; ARGS_heal="--sid FREE"
+ARGS="--sid FREE STBYDB"; ARGS_failover="--sid FREE STBYDB --force"; ARGS_backup="--sid FREE --restore-point"; ARGS_cleanup="--sid FREE"; ARGS_rollback="--sid FREE"; ARGS_reinstate="--sid FREE PRIMDB"; ARGS_heal="--sid FREE"
 export SQL_CMD="$STUB/sqlplus -S" DGMGRL_CMD="$STUB/dgmgrl" ORACLE_HOME="$T/oh" ORACLE_SID=FREE TNS_ADMIN="$T/oh/network/admin"
 mkdir -p "$T/oh/bin" "$T/oh/network/admin"
 printf 'SID_LIST_LISTENER = (SID_LIST = (SID_DESC = (GLOBAL_DBNAME = PRIMDB_DGMGRL) (ORACLE_HOME = %s) (SID_NAME = FREE)))\n' "$T/oh" >"$T/oh/network/admin/listener.ora"
