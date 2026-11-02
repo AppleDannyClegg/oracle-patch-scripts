@@ -2,55 +2,82 @@
 
 **Deadline:** the 9–10 Nov 2025 endpoint certificates expire **9 Nov 2026 14:23 GMT**. Every node must be rotated before then.
 
-Source of the procedure: your runbook (OKV 21.8, 4-node multi-master cluster, 19c RAC endpoints, TDE `KEYSTORE_CONFIGURATION=OKV|FILE`).
+Source of the procedure: your runbook (OKV 21.8, 4-node multi-master cluster, 19c RAC endpoints, TDE `KEYSTORE_CONFIGURATION=OKV|FILE`) and your follow-up of 1 Nov 22:32 (the client refreshes its config about **once an hour**, not on every `okvutil` run).
 
-## 1. Check where each node is (read-only — run on the node, as the oracle user)
+The script for this is **`operations/okv-rotate/okv-rotate.sh`** ([README](../../operations/okv-rotate/README.md)). It does steps 1, 3, 4 and 5 below for one node; step 2 is the console click and stays manual. Run it on the node, as the oracle user, one node at a time.
 
 ```bash
-cd reports/oracle-diag && ./oracle-diag.sh            # full report (~1-3 min)
-# or, as audit controls:
-cd reports/security-posture && ./security-posture.sh --cis
+cd operations/okv-rotate
+cp okv-rotate.conf.example okv-rotate.conf && chmod 600 okv-rotate.conf   # OKV_HOME, OKV_WALLET_PASSWORD
 ```
 
-In the report (`REPORT.md`, or `SCORECARD.md` for security-posture) find the **`okv/...`** rows:
+## 1. Check where the node is (read-only)
+
+```bash
+./okv-rotate.sh inspect          # SSL_WALLET_LOC rotated or not, OKV_HOSTNAME, UPDATE_TIMESTAMP, cert notAfter, TDE OPEN, standby MRP
+./okv-rotate.sh plan             # the ordered steps for THIS node with the live values filled in
+./okv-rotate.sh preflight        # okvclient.ora, okvutil, openssl, wallet password, an instance to check TDE against
+```
+
+What it reads:
 
 - **`SSL_WALLET_LOC`** — ends at `/ssl` = **not rotated**; a path after `/ssl/` = **rotated**. This is the switch test.
-- **`OKV_HOSTNAME`** / `UPDATE_TIMESTAMP` — the node last talked to.
-- **endpoint certificate `notAfter`** — set `OKV_WALLET_PASSWORD` so the script can read the real date (read via a 600-mode file, never on a command line):
-  ```bash
-  OKV_WALLET_PASSWORD='...' ./oracle-diag.sh
-  ```
-  Without it you get the wallet-age heuristic: **WARN ≥ 300 days, CRIT ≥ 365**.
+- **`OKV_HOSTNAME`** / **`UPDATE_TIMESTAMP`** — the Key Vault node last talked to, and when the client last refreshed.
+- **endpoint certificate `notAfter`** — read when `OKV_WALLET_PASSWORD` is set (in the 600-mode conf or the environment; it reaches openssl through a 600-mode file, never a command line). Without it you get the wallet-age heuristic: **WARN ≥ 300 days, CRIT ≥ 365**.
 - **CRIT if `SSL_WALLET_LOC` points at a missing `ewallet.p12`.**
-- TCP 5696 reachability and `okvutil list` are in the same section.
+- `gv$encryption_wallet` on every `inst_id` (any `OPEN*` passes; `OPEN_UNKNOWN_MASTER_KEY_STATUS` on a mounted standby's PDB rows is normal), and on a physical standby the `MRP` process and apply lag.
 
-## 2. Rotate one node at a time (your runbook)
+Exit code: **2** CRIT, **1** WARN, **0** clean. The same facts appear as `okv/...` rows in `reports/oracle-diag/oracle-diag.sh` (`REPORT.md`) and as audit controls in `reports/security-posture/security-posture.sh --cis` (`SCORECARD.md`).
 
-1. Rotate in the Key Vault console.
-2. Run `okvutil list -v 4` until `SSL_WALLET_LOC` in `okvclient.ora` moves to a **subfolder of `ssl/`** (the client writes the new wallet into `ssl/19700101000000000000/ewallet.p12` and repoints). The console banner "Certificate rotation in progress" and "Last active = now" do **not** mean it has switched — it runs on the old cert until expiry.
-3. Verify:
-   - `SSL_WALLET_LOC` is a subfolder, not `/ssl`.
-   - `openssl pkcs12 -in <SSL_WALLET_LOC>/ewallet.p12 -nokeys -clcerts | openssl x509 -noout -serial -enddate` (add `-legacy` on RC2 errors; `orapki 19.4` prints no dates).
-   - `select inst_id, status, wallet_type from gv$encryption_wallet;` → `OPEN` on every row (works on a mounted standby).
-   - standby `MRP0` `APPLYING_LOG`/`WAIT_FOR_LOG` and a non-growing apply lag in `v$dataguard_stats`.
-4. Do **not** move/edit `$OKV_HOME/conf/ewallet.p12` (the TDE secret store). Keep the old `$OKV_HOME/ssl/ewallet.p12` until well after 9 Nov for rollback. Do not hand-edit `SERVER=` in `okvclient.ora`; no keystore close/reopen, instance restart or re-enrol as a workaround.
+## 2. Rotate in the Key Vault console (manual)
 
-## 3. Re-check
+Log in on the Key Vault node shown as `OKV_HOSTNAME` for this endpoint and rotate its certificate. The console banner "Certificate rotation in progress" and "Last active = now" do **not** mean the endpoint has switched — it runs on the old certificate until expiry.
 
-Re-run step 1. The row should read **rotated**, and `notAfter` should be the new certificate's date.
+## 3. Wait for the switch
+
+```bash
+./okv-rotate.sh wait --rotated-from okv01     # the Key Vault node you clicked on
+```
+
+`wait` runs `okvutil list -v 4` **once**, then polls `okvclient.ora` (every 60 s, up to an hour by default) keyed on `UPDATE_TIMESTAMP`. Running `okvutil` again and again does not help: the client refreshes about once an hour, and it only switches on a refresh that lands on the node that generated the certificate. The new wallet appears in a subfolder of `ssl/` (seen: `ssl/19700101000000000000/ewallet.p12`) and `SSL_WALLET_LOC` is repointed at it.
+
+| `wait` exit | Meaning | Do |
+|---|---|---|
+| **0** | switched: `SSL_WALLET_LOC` under `ssl/`, its `ewallet.p12` present, `okvutil` ran clean | go to step 4 |
+| **1** | **stop, do not start the next node**: repointed but the new wallet is missing, or `okvutil` failed (a failed read is not a confirmed switch) | read the message; keep the old `ssl/ewallet.p12`; raise it before touching another node |
+| **2** | reads are clean but still on the old wallet after the timeout | re-rotate from the node now shown as `OKV_HOSTNAME` and run `wait` again; 2–3 re-rotations without a switch → Sev 2 SR |
+
+## 4–5. Verify the certificate and TDE
+
+```bash
+./okv-rotate.sh verify           # the runbook's step 4/5 as pass/fail; exit 2 CRIT / 1 WARN / 0
+./okv-rotate.sh report           # the same as REPORT.md + raw/ under $CERT_OUT (default ~/okv-rotate), for the change record
+```
+
+`verify` is `inspect` with the assertions escalated: a node still on `/ssl` is CRIT, a TDE wallet that is not `OPEN` on some instance is CRIT, a `PHYSICAL_STANDBY` with no `MRP` row is CRIT, and a `gv$encryption_wallet` read that fails is a WARN saying the assertion was **not evaluated** (never a pass). `apply` = `wait` then `verify`; `run` = `inspect`, `wait`, `verify`.
+
+By hand, the same checks are: `openssl pkcs12 -in <SSL_WALLET_LOC>/ewallet.p12 -nokeys -clcerts | openssl x509 -noout -serial -enddate` (add `-legacy` on RC2 errors; `orapki 19.4` prints no dates); `select inst_id, status, wallet_type from gv$encryption_wallet;`; standby `MRP0` `APPLYING_LOG`/`WAIT_FOR_LOG` and a non-growing apply lag in `v$dataguard_stats`.
+
+## Don'ts (the script does none of these)
+
+- Never move, edit or delete `$OKV_HOME/conf/ewallet.p12` — it is the TDE secret store, not the endpoint certificate.
+- Keep the old `$OKV_HOME/ssl/ewallet.p12` until well after 9 Nov as rollback.
+- Do not hand-edit `SERVER=` in `okvclient.ora`; no keystore close/reopen, instance restart or re-enrol as a workaround.
+- `okv-rotate.sh backup` copies `okvclient.ora` into its run dir; `rollback` copies that snapshot back over `okvclient.ora` (the only write the script makes under `$OKV_HOME`, and only when you ask for it). It never touches either `ewallet.p12`.
 
 ## Which script does what
 
 | Script | Use |
 |---|---|
-| `reports/oracle-diag/oracle-diag.sh` | the read-only check in step 1 (`okv_endpoint_cert`, `diag_okv`): `SSL_WALLET_LOC` rotated/not, `OKV_HOSTNAME`, cert `notAfter` or age, 5696, `okvutil list` |
+| `operations/okv-rotate/okv-rotate.sh` | the per-node driver above: `inspect`/`plan`/`preflight` before, `wait` for the switch after the console click, `verify` and `report` after; `backup`/`rollback` of `okvclient.ora` |
+| `reports/oracle-diag/oracle-diag.sh` | the whole-host report; its `okv/...` rows (`okv_endpoint_cert`, `diag_okv`) are the same facts as `inspect`: `SSL_WALLET_LOC` rotated/not, `OKV_HOSTNAME`, cert `notAfter` or age, 5696, `okvutil list` |
 | `reports/security-posture/security-posture.sh --cis` | the same checks as audit PASS/FAIL controls, plus `$OKV_HOME/conf/ewallet.p12` listed as do-not-touch |
-| `patching/cert-renew/cert-renew.sh` | if a node's endpoint wallet needs rebuilding rather than just the console rotation: `cert-renew.sh inspect okv`, `plan okv`, `preflight okv`, `apply okv`, `verify okv` — with backup and rollback (`BACKUP_KEEP_HOURS`, default 168) |
+| `patching/cert-renew/cert-renew.sh` | **`inspect okv` only**: the endpoint wallet's expiry/age in the host-wide certificate list. There is no `plan`/`preflight`/`apply`/`verify`/`rollback` for okv (`apply okv` exits with "unknown target"); the wallet is rewritten by the Key Vault client during the console rotation, not by cert-renew |
 
-Both check scripts are read-only (sqlplus selects, file reads, `okvutil list`, TCP probes) and redact passwords by default.
+All of these are read-only (sqlplus selects, file reads, `okvutil list`, TCP probes) except `okv-rotate.sh rollback`, and all redact passwords by default.
 
 ## Gaps / notes
 
 - No script reads the endpoint certificate expiry **without** `OKV_WALLET_PASSWORD`; it falls back to wallet age (300/365 days). Set the password when you want the real date.
-- The scripts detect the rotation by parsing `SSL_WALLET_LOC` in `okvclient.ora`; they do not talk to the Key Vault console. The switch still happens the way your runbook describes (`okvutil list -v 4` until `SSL_WALLET_LOC` changes).
-- `cert-renew`'s `okv` target inspects/rotates the endpoint certificate; it is separate from the console-driven rotation above, for when the wallet itself must be rebuilt.
+- No script talks to the Key Vault console or REST API; the click is yours. The scripts detect the switch by parsing `SSL_WALLET_LOC` in `okvclient.ora`.
+- `cert-renew`'s `okv` target only inspects. Nothing in the tree rebuilds or rotates the endpoint wallet, by design: the runbook says never hand-edit `okvclient.ora` or touch `conf/ewallet.p12`, and the Key Vault client writes the new wallet itself.
