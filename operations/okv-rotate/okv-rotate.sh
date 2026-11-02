@@ -10,7 +10,8 @@
 #           console rotation is not finished until that line moves. Prints OKV_HOSTNAME each run: the switch
 #           is expected on the run whose OKV_HOSTNAME is the node the console rotation was started from.
 #   verify  the runbook's step 4/5 as assertions: switched, certificate notAfter in the future, every TDE
-#           wallet OPEN, standby MRP0 APPLYING_LOG/WAIT_FOR_LOG and a non-growing apply lag.
+#           wallet OPEN, standby MRP0 APPLYING_LOG/WAIT_FOR_LOG, with the apply/transport lag printed for the
+#           operator to compare (one sample - it is not asserted to be non-growing).
 #   report  check as REPORT.md, for the change record.
 #
 # Read-only. It never rotates anything and never writes into $OKV_HOME: it reads okvclient.ora, reads the
@@ -157,8 +158,10 @@ okv_check_node() {
 
   # a new subfolder under ssl/ and the wallet it holds
   local nsub; nsub="$(find "$cdir/ssl" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"; kv "subfolders under ssl/" "$nsub"
-  [ -f "$wal" ] || { finding CRIT okv "SSL_WALLET_LOC in $f points at $loc but $wal does not exist - the endpoint cannot present a certificate to Key Vault"; kv_end; }
-  [ -f "$wal" ] || { okv_tde_check; okv_standby_check; return 0; }
+  if [ ! -f "$wal" ]; then
+    finding CRIT okv "SSL_WALLET_LOC in $f points at $loc but $wal does not exist - the endpoint cannot present a certificate to Key Vault"
+    kv_end; okv_tde_check; okv_standby_check; return 0
+  fi
   age="$(okv_age_days "$wal")"
   if [ -z "$age" ]; then finding WARN okv "cannot stat $wal - endpoint certificate age and expiry unknown (not assumed fine)"; kv_end
   else
@@ -248,7 +251,7 @@ Steps (one node at a time; finish and verify this node before the next):
   4. Verify (runbook steps 4-5):  okv-rotate.sh verify
      asserts: switched; cert notAfter in the future; gv\$encryption_wallet OPEN on every inst_id
      (OPEN_UNKNOWN_MASTER_KEY_STATUS on a mounted standby's PDB rows is normal); on a standby, MRP0
-     APPLYING_LOG/WAIT_FOR_LOG and apply lag not growing.
+     APPLYING_LOG/WAIT_FOR_LOG (the apply/transport lag is printed for you to compare).
   5. Record:  okv-rotate.sh report
 
 Do NOT: touch \$OKV_HOME/conf/ewallet.p12 (the TDE secret store); delete the old \$OKV_HOME/ssl/ewallet.p12
@@ -373,6 +376,9 @@ cmd_verify() {
 main() {
   load_config; refuse_root
   local cmd="${1:-}"; shift || true; parse_opts "$@"
+  case "$MAX_RUNS" in ''|*[!0-9]*) warn "ignoring non-numeric --max-runs '$MAX_RUNS'"; MAX_RUNS=0;; esac
+  case "$WAIT_TIMEOUT" in ''|*[!0-9]*) warn "ignoring non-numeric --timeout '$WAIT_TIMEOUT'"; WAIT_TIMEOUT=3600;; esac
+  case "$WAIT_INTERVAL" in ''|*[!0-9]*) warn "ignoring non-numeric --interval '$WAIT_INTERVAL'"; WAIT_INTERVAL=60;; esac
   case "$cmd" in
     report) init_run_dir "$cmd"; DO_REPORT=1;;
     inspect|check|verify|wait|plan|preflight|backup|apply|rollback|run) init_run_dir "$cmd";;
