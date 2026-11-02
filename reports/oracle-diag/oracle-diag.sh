@@ -996,6 +996,8 @@ okv_age_finding() {
   if [ "$age" -ge 365 ]; then finding CRIT okv "endpoint wallet $wal is $age days old and endpoint certificates live 1 year: unless it was rotated in place the certificate has EXPIRED and TDE cannot reach Key Vault at the next keystore open (set OKV_WALLET_PASSWORD to read the real date; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC in $f moves to a subfolder of ssl/)"
   elif [ "$age" -ge 300 ]; then finding WARN okv "endpoint wallet $wal is $age days old: endpoint certificates live 1 year, so about $((365 - age)) days remain unless it was rotated (set OKV_WALLET_PASSWORD to read the real date; rotate in the console, then okvutil list -v 4 until SSL_WALLET_LOC in $f moves to a subfolder of ssl/)"; fi
 }
+# The three field reads and the ssl/ test below mirror lib/oracle-lib.sh okv_field / okv_is_rotated (okv-rotate.sh and
+# security-posture.sh use those); this script stays self-contained (see the header), so keep the two in step by hand.
 okv_endpoint_cert() {
   local f="$1" loc host upd d wal age exp
   loc="$(grep -iE '^SSL_WALLET_LOC=' "$f" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"; host="$(grep -iE '^OKV_HOSTNAME=' "$f" | tail -1 | cut -d= -f2-)"; upd="$(grep -iE '^UPDATE_TIMESTAMP=' "$f" | tail -1 | cut -d= -f2-)"
@@ -1036,7 +1038,7 @@ diag_okv() {
   [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
   [ -z "$conf" ] && return 0
   say "key vault"; h1 "Oracle Key Vault client"
-  local f; for f in $conf; do
+  local f; while IFS= read -r f; do  # not "for f in $conf": a space in an OKV path word-split it (Mother 13:46:44)
     h2 "$f"
     section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for s in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' ' | cut -d: -f1); do p=\$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' '\n' | grep \$s | cut -s -d: -f2); p=\${p:-5696}; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
     local raw; raw="$RAW/okv_$(printf '%s' "$f" | md5sum | cut -c1-8).txt"
@@ -1044,7 +1046,7 @@ diag_okv() {
     [ "$nbad" -gt 0 ] && { if [ "$nok" = 0 ]; then finding CRIT okv "No Oracle Key Vault server in $f is reachable on its port - TDE keystore cannot be opened after a restart"; else finding WARN okv "$nbad of $((nok + nbad)) Key Vault servers in $f unreachable (HA degraded)"; fi; }
     grep -qiE 'okvutil.*(error|fail|unable)|Cannot connect|Unable to connect|Connection refused' "$raw" && finding WARN okv "okvutil list failed against Key Vault (wallet password needed, endpoint not enrolled, or no server reachable)"
     okv_endpoint_cert "$f"
-  done
+  done <<<"$conf"
   local dbh; dbh="$(oratab_home "$(db_instances | head -1)")"; [ -f "$dbh/lib/liborapkcs.so" ] && kv "liborapkcs.so in ORACLE_HOME/lib" "$(ls -la "$dbh/lib/liborapkcs.so")" && kv_end
   [ -f /opt/oracle/extapi/64/hsm/oracle/1.0.0/liborapkcs.so ] && { kv "PKCS#11 library" "$(ls -la /opt/oracle/extapi/64/hsm/oracle/1.0.0/liborapkcs.so)"; kv_end; }
 }
