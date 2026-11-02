@@ -2,7 +2,9 @@
 # db-health-daily.sh - the 60-second daily check, built for cron. Read-only.
 # Looks at every running database on the host (plus listener, ORDS, WebLogic, Grid if present),
 # writes a one-screen SUMMARY.md and a DELTA.md against the previous run (new / cleared findings,
-# new alert-log errors since last time), and exits 2 on CRIT, 1 on WARN, 0 when clean.
+# new alert-log errors since last time), and exits 2 on CRIT, 1 on WARN, 0 when clean. A check whose tool or file could not
+# be read (ps, df, lsnrctl, crsctl, escli, an alert or server log this user cannot open) is a finding that says NOT checked -
+# never a clean count.
 #
 # Usage: db-health-daily.sh [options]
 #   --out DIR            where runs go (default ~/db-health-daily); each run is DIR/<YYYYMMDD_HHMMSS>/
@@ -38,7 +40,7 @@ parse_args() {
   while [ $# -gt 0 ]; do case "$1" in
     --out) optchk "$@"; HEALTH_OUT="$2"; shift 2;; --sid) optchk "$@"; ONLY_SID="$2"; shift 2;; --pdb) optchk "$@"; PDB="$2"; shift 2;;
     --mail) optchk "$@"; MAIL_TO="$2"; shift 2;; --always-mail) ALWAYS_MAIL=1; shift;; --cron) CRON=1; QUIET=1; shift;;
-    --install-cron) optchk "$@"; printf '%s %s * * * %s --cron --mail %s >/dev/null 2>&1\n' "${2#*:}" "${2%%:*}" "$SCRIPT_DIR/$TOOL.sh" "${MAIL_TO:-dba@example.com}"; exit 0;;
+    --install-cron) optchk "$@"; printf '%s %s * * * %s --cron --mail %s >/dev/null\n' "${2#*:}" "${2%%:*}" "$SCRIPT_DIR/$TOOL.sh" "${MAIL_TO:-dba@example.com}"; exit 0;;
     --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
@@ -60,20 +62,30 @@ check_host() {
   local load1 cpus; load1="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"; cpus="$(nproc 2>/dev/null || echo 1)"
   [ -n "$load1" ] && awk -v l="$load1" -v c="$cpus" 'BEGIN{exit !(l > c*2)}' && finding WARN host "load $load1 is over twice the CPU count ($cpus)"
   section_sh fs "df -hP -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null || df -hP"
-  df -P -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1 {gsub("%","",$5); print $5, $6}' | while read -r pct mnt; do
+  # df's status is kept: a df that could not run (rc, or no data line) used to be 'no filesystem over the threshold'
+  local dfrc=0; { df -P -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null || df -P; } >"$RAW/df.txt" 2>"$RAW/df.err" || dfrc=$?   # -x is GNU; BSD df falls back
+  if [ "$dfrc" != 0 ] || [ "$(wc -l <"$RAW/df.txt" | tr -d ' ')" -lt 2 ]; then finding WARN host "df could not list the filesystems (rc $dfrc: $(head -1 "$RAW/df.err" | cut -c1-80)) - filesystem usage NOT checked"
+  else awk 'NR>1 {gsub("%","",$5); print $5, $6}' "$RAW/df.txt" | while read -r pct mnt; do
     if [ "$pct" -ge "$FS_CRIT" ]; then finding CRIT host "filesystem $mnt ${pct}% full"; elif [ "$pct" -ge "$FS_WARN" ]; then finding WARN host "filesystem $mnt ${pct}% full"; fi
-  done
-  df -iP -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1 {gsub("%","",$5); if ($5+0 >= 90) print $5, $6}' | while read -r pct mnt; do finding CRIT host "filesystem $mnt ${pct}% inodes used"; done
+  done; fi
+  local dirc=0; { df -iP -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null || df -iP; } >"$RAW/df_inodes.txt" 2>/dev/null || dirc=$?
+  if [ "$dirc" != 0 ]; then finding WARN host "df -i failed (rc $dirc) - inode usage NOT checked"
+  else awk 'NR>1 {gsub("%","",$5); if ($5+0 >= 90) print $5, $6}' "$RAW/df_inodes.txt" | while read -r pct mnt; do finding CRIT host "filesystem $mnt ${pct}% inodes used"; done; fi
   local failed; failed="$(systemctl --failed --no-legend 2>/dev/null | wc -l | tr -d ' ')"; [ "${failed:-0}" -gt 0 ] && finding WARN host "$failed failed systemd unit(s): $(systemctl --failed --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
   if [ -n "$SUDO" ] || [ "$(id -u)" = 0 ]; then
     $SUDO journalctl -k --since '-1d' --no-pager -q 2>/dev/null | grep -iE 'out of memory|killed process|I/O error|hung task' >"$RAW/kernel.txt"
     [ -s "$RAW/kernel.txt" ] && finding CRIT host "kernel log last 24h: $(head -1 "$RAW/kernel.txt" | cut -c1-100)"
   fi
   # process inventory delta: what was running last time and is not now
-  ps -eo args 2>/dev/null | grep -oE '^ora_pmon_[A-Za-z0-9_$]+|^asm_pmon_[^ ]+|^[^ ]*/bin/tnslsn[r] [^ ]+|-Dweblogic\.Name=[^ ]+|ords\.wa[r]|weblogic\.NodeManage[r]|/bin/(ocss[d]|crs[d]|ohas[d])|[^ ]*/mg[r] PARAMFILE|emagen[t]|/tf[a]' | sort -u >"$OUT/processes.txt"
-  if [ -n "$PREV" ] && [ -f "$PREV/processes.txt" ]; then
-    comm -23 "$PREV/processes.txt" "$OUT/processes.txt" | while read -r p; do finding CRIT host "process present last run, gone now: $p"; done
-  fi
+  # through lib ps_args (b728ff6: status 1 when ps and /proc both yield nothing). 'ps | grep | sort > processes.txt' on a ps
+  # that could not run wrote an empty inventory: every process of the previous run was 'gone now' and the next run's baseline was empty
+  if ps_args >"$RAW/ps_inventory.txt"; then
+    grep -oE '^ora_pmon_[A-Za-z0-9_$]+|^asm_pmon_[^ ]+|^[^ ]*/bin/tnslsn[r] [^ ]+|-Dweblogic\.Name=[^ ]+|ords\.wa[r]|weblogic\.NodeManage[r]|/bin/(ocss[d]|crs[d]|ohas[d])|[^ ]*/mg[r] PARAMFILE|emagen[t]|/tf[a]' "$RAW/ps_inventory.txt" | sort -u >"$OUT/processes.txt"
+    if [ -n "$PREV" ] && [ -f "$PREV/processes.txt" ]; then
+      comm -23 "$PREV/processes.txt" "$OUT/processes.txt" | while read -r p; do finding CRIT host "process present last run, gone now: $p"; done
+    fi
+  else PS_UNREADABLE=1; finding CRIT host "cannot read the process list (ps failed, $PROC_DIR unreadable) - process inventory NOT checked; last run's baseline carried forward"
+    [ -n "$PREV" ] && [ -f "$PREV/processes.txt" ] && cp "$PREV/processes.txt" "$OUT/processes.txt"; fi
 }
 
 # Exascale: vault used vs provisioned and pool free space, through escli with the oracle wallet (full picture: operations/exascale-space)
@@ -82,8 +94,9 @@ check_exascale() {
   [ -n "$esc" ] || return 0
   local w=(); [ -n "${EXA_WALLET:-}" ] && w=(--wallet "$EXA_WALLET")
   h2 "Exascale"
-  to 60 "$esc" "${w[@]}" lsvault --detail </dev/null >"$RAW/exa_vaults.txt" 2>&1 || { kv "escli" "lsvault failed: $(head -1 "$RAW/exa_vaults.txt" | cut -c1-120)"; kv_end; return 0; }
-  to 60 "$esc" "${w[@]}" lsstoragepool --detail </dev/null >"$RAW/exa_pools.txt" 2>&1
+  local erc=0; to 60 "$esc" "${w[@]}" lsvault --detail </dev/null >"$RAW/exa_vaults.txt" 2>&1 || { erc=$?; kv "escli" "lsvault failed: $(head -1 "$RAW/exa_vaults.txt" | cut -c1-120)"; kv_end
+    finding WARN exascale "escli lsvault failed (rc $erc: $(head -1 "$RAW/exa_vaults.txt" | cut -c1-80)) - Exascale vault space NOT checked"; return 0; }
+  to 60 "$esc" "${w[@]}" lsstoragepool --detail </dev/null >"$RAW/exa_pools.txt" 2>&1 || finding WARN exascale "escli lsstoragepool failed (rc $?: $(head -1 "$RAW/exa_pools.txt" | cut -c1-80)) - Exascale pool space NOT checked"
   # attr value lines -> "vault|media|used|prov|pct"
   awk 'function b(v,  u,n,m){ if (v=="unlimited") return "unlimited"; n=v; u=""; if (v ~ /[A-Za-z]+$/) { match(v,/[A-Za-z]+$/); u=toupper(substr(v,RSTART)); n=substr(v,1,RSTART-1) } m=1; if (u ~ /^K/) m=1024; else if (u ~ /^M/) m=1048576; else if (u ~ /^G/) m=1073741824; else if (u ~ /^T/) m=1099511627776; else if (u ~ /^P/) m=1125899906842624; return n*m }
     function out(  i){ if (name=="") return; split("HC EF XT",t," "); for (i in t) { u=b(used[t[i]]); p=b(prov[t[i]]); if (u==0 && (p==0 || p=="unlimited")) continue; printf "%s|%s|%.0f|%s|%s\n", name, t[i], u, p, (p=="unlimited"||p==0)?"-":int(u*100/p) } name=""; delete used; delete prov }
@@ -108,8 +121,10 @@ check_listener() {
   local n; n="$(listener_homes | wc -l | tr -d ' ')"
   if [ "$n" = 0 ]; then [ -n "$(db_instances)" ] && finding CRIT db "no tnslsnr process"; return; fi
   listener_homes | while read -r h lsn; do
-    ORACLE_HOME="$h" to 30 "$h/bin/lsnrctl" status "$lsn" >"$RAW/lsnr_$lsn.txt" 2>&1
-    grep -qE 'TNS-12541|TNS-12560|TNS-00511' "$RAW/lsnr_$lsn.txt" && finding CRIT db "listener $lsn not responding"
+    local lrc=0; ORACLE_HOME="$h" to 30 "$h/bin/lsnrctl" status "$lsn" >"$RAW/lsnr_$lsn.txt" 2>&1 || lrc=$?
+    if grep -qE 'TNS-12541|TNS-12560|TNS-00511' "$RAW/lsnr_$lsn.txt"; then finding CRIT db "listener $lsn not responding"
+    # lsnrctl's status was dropped: 'Permission denied' (rc 126), a 30 s timeout (rc 124) or a missing binary matched none of the TNS- codes and left no finding
+    elif [ "$lrc" != 0 ] || ! grep -q 'STATUS of the LISTENER' "$RAW/lsnr_$lsn.txt"; then finding CRIT db "listener $lsn: lsnrctl status could not run (rc $lrc: $(grep -v '^$' "$RAW/lsnr_$lsn.txt" | head -1 | cut -c1-80)) - listener state unknown, NOT checked"; fi
     grep -qE 'The listener supports no services' "$RAW/lsnr_$lsn.txt" && finding CRIT db "listener $lsn has no services registered"
   done
 }
@@ -119,12 +134,15 @@ check_alert_log() {
   local sid="$1" alert off=0 newlines
   alert="$(sql_lines "$sid" "select value||'/alert_${sid}.log' from v\$diag_info where name='Diag Trace';" 2>/dev/null | head -1)"
   [ -f "$alert" ] || alert="$(find /u01/app/oracle/diag/rdbms /opt/oracle/diag/rdbms -name "alert_${sid}.log" 2>/dev/null | head -1)"
-  [ -f "$alert" ] || { kv "alert log" "not found"; return; }
+  [ -f "$alert" ] || { kv "alert log" "not found"; kv_end; finding WARN db "$sid: alert log not found (v\$diag_info and the usual diag paths) - errors since last run NOT checked"; return; }
+  # -f was the only test: an alert log this user cannot open (diag owned by another oracle user) read as '0 new lines, 0 error lines'
+  [ -r "$alert" ] || { kv "alert log" "$alert not readable by $(id -un)"; kv_end; finding WARN db "$sid: alert log $alert is not readable by $(id -un) - errors since last run NOT checked"
+    [ -n "$PREV" ] && [ -f "$PREV/alert_${sid}.offset" ] && cp "$PREV/alert_${sid}.offset" "$OUT/alert_${sid}.offset"; return; }
   local size; size="$(file_size "$alert")"
   [ -n "$PREV" ] && [ -f "$PREV/alert_${sid}.offset" ] && off="$(cat "$PREV/alert_${sid}.offset")"
   [ "$off" -gt "$size" ] && off=0   # rotated
   printf '%s' "$size" >"$OUT/alert_${sid}.offset"
-  tail -c +"$((off+1))" "$alert" 2>/dev/null >"$RAW/alert_${sid}.new"
+  tail -c +"$((off+1))" "$alert" >"$RAW/alert_${sid}.new" 2>"$RAW/alert_${sid}.tailerr" || { finding WARN db "$sid: alert log $alert could not be read (tail rc $?: $(head -1 "$RAW/alert_${sid}.tailerr" | cut -c1-80)) - errors since last run NOT checked"; return; }
   newlines="$(wc -l <"$RAW/alert_${sid}.new" | tr -d ' ')"
   grep -aE 'ORA-[0-9]+|TNS-[0-9]+|Errors in file|Checkpoint not complete|deadlock|Instance terminated|archiver (stuck|error)|unable to extend|ORA-00020' "$RAW/alert_${sid}.new" >"$RAW/alert_${sid}.errors"
   local n; n="$(wc -l <"$RAW/alert_${sid}.errors" | tr -d ' ')"
@@ -226,7 +244,9 @@ check_middleware() {
     [ -z "$(nodemanager_pid)" ] && finding WARN wls "Node Manager not running"
     local admin port url; admin="$(wls_admin_name "$d")"; port="$(wls_servers "$d" | awk -v a="$admin" '$1==a{print $2}')"; url="${ADMIN_URL:-http://localhost:${port:-7001}}"
     [ -n "$running" ] && [ "$(url_code "$url/weblogic/ready")" != 200 ] && finding WARN wls "$(basename "$d"): $url/weblogic/ready not 200"
+    [ -d "$d/servers" ] && [ ! -r "$d/servers" ] && finding WARN wls "$(basename "$d"): $d/servers is not readable by $(id -un) - server logs NOT checked"
     local s; for s in "$d"/servers/*/logs/*.log; do [ -f "$s" ] || continue; local sn; sn="$(basename "$(dirname "$(dirname "$s")")")"
+      [ -r "$s" ] || { finding WARN wls "$sn: $s is not readable by $(id -un) - errors since last run NOT checked"; continue; }   # -f alone read an unopenable log as 0 new error lines
       local size off=0; size="$(file_size "$s")"; [ -n "$PREV" ] && [ -f "$PREV/wls_${sn}.offset" ] && off="$(cat "$PREV/wls_${sn}.offset")"; [ "$off" -gt "$size" ] && off=0; printf '%s' "$size" >"$OUT/wls_${sn}.offset"
       tail -c +"$((off+1))" "$s" 2>/dev/null | grep -aE '<Error>|<Critical>|OutOfMemoryError|STUCK|Too many open files' >"$RAW/wls_${sn}.errors"
       local n; n="$(wc -l <"$RAW/wls_${sn}.errors" | tr -d ' ')"
@@ -238,9 +258,14 @@ check_middleware() {
   done; done
   local g; g="$(grid_home)"
   if [ -n "$g" ]; then
-    to 60 "$g/bin/crsctl" stat res -w '(TARGET = ONLINE) and (STATE != ONLINE)' -t >"$RAW/crs_offline.txt" 2>&1
-    grep -qE '^[a-z]' "$RAW/crs_offline.txt" && finding CRIT grid "cluster resources not ONLINE: $(grep -oE '^ora\.[^ ]+' "$RAW/crs_offline.txt" | tr '\n' ' ' | cut -c1-150)"
-    kv "Grid" "$(to 30 "$g/bin/crsctl" check crs 2>&1 | grep -c 'is online') of 3 CRS components online"
+    # both crsctl statuses were dropped and the offline test was grep '^[a-z]': 'CRS-4639: Could not contact Oracle High Availability
+    # Services' (uppercase) read as no offline resource, and a crsctl that could not run read as 'Grid: 0 of 3 online' with no finding
+    local crc=0; to 60 "$g/bin/crsctl" stat res -w '(TARGET = ONLINE) and (STATE != ONLINE)' -t >"$RAW/crs_offline.txt" 2>&1 || crc=$?
+    if [ "$crc" != 0 ] || grep -qE 'CRS-[0-9]+' "$RAW/crs_offline.txt"; then finding CRIT grid "crsctl stat res could not run (rc $crc: $(grep -m1 -E 'CRS-[0-9]+|.' "$RAW/crs_offline.txt" | cut -c1-80)) - cluster resource state unknown, NOT checked"
+    elif grep -qE '^[a-z]' "$RAW/crs_offline.txt"; then finding CRIT grid "cluster resources not ONLINE: $(grep -oE '^ora\.[^ ]+' "$RAW/crs_offline.txt" | tr '\n' ' ' | cut -c1-150)"; fi
+    local krc=0 online; to 30 "$g/bin/crsctl" check crs >"$RAW/crs_check.txt" 2>&1 || krc=$?; online="$(grep -c 'is online' "$RAW/crs_check.txt")"
+    if [ "$krc" != 0 ] && [ "$online" = 0 ]; then kv "Grid" "crsctl check crs failed (rc $krc)"; finding CRIT grid "crsctl check crs could not run (rc $krc: $(head -1 "$RAW/crs_check.txt" | cut -c1-80)) - CRS state unknown, NOT checked"
+    else kv "Grid" "$online of 3 CRS components online"; [ "$online" -lt 3 ] && finding CRIT grid "only $online of 3 CRS components online: $(grep -vi 'is online' "$RAW/crs_check.txt" | grep -v '^$' | head -1 | cut -c1-100)"; fi
   fi
   if ogg_detect && [ -x "${OGG_HOME:-/nonexistent}/ggsci" ]; then
     ggsci "info all" >"$RAW/ogg.txt" 2>&1
@@ -276,8 +301,13 @@ main() {
   say "db-health-daily $VERSION -> $OUTDIR (previous: ${PREV:-none})"
   check_host; check_exascale; check_listener
   h1 "Databases"
-  local sids; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
-  for s in $(oratab_sids); do printf '%s\n' "$sids" | grep -qx "$s" || { grep -qE "^$s:.*:Y" /etc/oratab 2>/dev/null && finding CRIT db "$s is :Y in oratab but not running"; }; done
+  # the loop head tests db_instances' status (lib b728ff6): a process list that cannot be read is a CRIT, not an empty loop that
+  # ends '0 critical, 0 warnings' with an empty database table (unreadable gate ps mode, f7d2f83); the oratab comparison is skipped
+  # then, since 'not in an unreadable list' is not 'not running'
+  local sids=""; if sids="$(db_instances)"; then sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')" || true
+    for s in $(oratab_sids); do printf '%s\n' "$sids" | grep -qx "$s" || { grep -qE "^$s:.*:Y" /etc/oratab 2>/dev/null && finding CRIT db "$s is :Y in oratab but not running"; }; done
+  else [ "${PS_UNREADABLE:-0}" = 1 ] || finding CRIT db "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked; pass --sid to check one"; fi
+  [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
   local s; for s in $sids; do check_db "$s"; done
   check_middleware
   findings_sync
@@ -287,7 +317,10 @@ main() {
     print_findings 'CRIT|WARN'; printf '\nfull report: %s\n' "$final"; } >"$OUTDIR/SUMMARY.md"
   write_delta
   if [ -n "$MAIL_TO" ] && { [ "$ALWAYS_MAIL" = 1 ] || [ "$NCRIT" -gt 0 ] || [ "$NWARN" -gt 0 ]; }; then
-    local m; m="$(command -v mailx || command -v mail)"; [ -n "$m" ] && "$m" -s "[db-health] $HOST: $NCRIT crit, $NWARN warn" "$MAIL_TO" <"$OUTDIR/SUMMARY.md"
+    local m; m="$(command -v mailx || command -v mail)"
+    # the send's status was dropped - under --cron the exit code is this script's whole interface and a summary that never went out looked sent
+    if [ -z "$m" ]; then err "no mailx/mail on PATH - the summary for $MAIL_TO was NOT sent"
+    else "$m" -s "[db-health] $HOST: $NCRIT crit, $NWARN warn" "$MAIL_TO" <"$OUTDIR/SUMMARY.md" || err "mail to $MAIL_TO failed (rc $?) - the summary was NOT sent (it is in $OUTDIR/SUMMARY.md)"; fi
   fi
   [ "$CRON" = 1 ] || cat "$OUTDIR/SUMMARY.md"
   findings_rc
