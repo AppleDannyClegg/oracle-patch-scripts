@@ -74,7 +74,9 @@ for s in "${scripts[@]}"; do
     : >"$GATE_LOG"; rm -rf "${T:?}/out" "${T:?}/hist" "${T:?}/home"; mkdir -p "$T/out" "$T/home"
     margs="$extra"; [ "$mode" = ps ] && margs="${extra//--sid FREE/}"   # ps mode: no --sid, discovery has to find the database, as under cron
     # shellcheck disable=SC2086
-    GATE_MODE="$mode" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 ORACLE_HOME="$T/oh" SQL_CMD="$STUB/sqlplus -S" alarm 180 bash "$s" $margs >"$T/stdout" 2>&1; rc=$?
+    # ps mode: PROC_DIR points the lib's /proc fallback (8efec99) at an empty dir, so a Linux box with /proc behaves like this Mac without it
+    mkdir -p "$T/noproc"; procdir=/proc; [ "$mode" = ps ] && procdir="$T/noproc"
+    GATE_MODE="$mode" PROC_DIR="$procdir" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 ORACLE_HOME="$T/oh" SQL_CMD="$STUB/sqlplus -S" alarm 180 bash "$s" $margs >"$T/stdout" 2>&1; rc=$?
     if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $mode: hung (180 s): last tool call $(grep '^TOOL\|^FAILED' "$GATE_LOG" | tail -1 | cut -c1-80)"; fail=$((fail+1)); fverdict=$((fverdict+1)); continue; fi
     export GATE_MODE="$mode"
     if [ "$mode" = ps ]; then calls="$(grep -c '^FAILED ps' "$GATE_LOG")"; failed="$calls"   # a failed ps is the failed read; sqlplus calls say what discovery found
