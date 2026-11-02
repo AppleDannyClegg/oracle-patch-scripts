@@ -31,6 +31,11 @@ kills, stuck threads, expiring certificates, offline cluster resources, GoldenGa
 agent not uploading...) and then the evidence section by section, so Claude can confirm or dismiss
 each finding and spot what the rules missed.
 
+For the **OKV endpoint certificate rotation** (Gen's runbook, Nov 2026), the check above is the
+`okv/...` section of the report: [OKV-endpoint-rotation.md](OKV-endpoint-rotation.md) says which
+rows to read (`SSL_WALLET_LOC` rotated or not, `OKV_HOSTNAME`, cert `notAfter`) and how to rotate one
+node at a time.
+
 Passwords in copied config files (ORDS pools, WebLogic, Key Vault, JDBC URLs) are redacted by
 default; `--no-redact` keeps them. Nothing it runs writes to the database or the middleware:
 `sqlplus` selects, `lsnrctl status`, `opatch lspatches`, `crsctl stat`, `ggsci info all`,
