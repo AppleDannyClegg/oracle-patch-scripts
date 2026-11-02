@@ -266,10 +266,23 @@ sqlsec() {
 sqlval() { local out; out="$(sql "$1" "set heading off\nwhenever sqlerror exit 1\nselect $2 from dual;" 2>/dev/null)" || return 1; printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//;s/ *$//'; }
 oratab_home() { grep -hE "^$1:" /etc/oratab /var/opt/oracle/oratab 2>/dev/null | head -1 | cut -d: -f2; }
 
-ps_args() { ps -eo args 2>/dev/null || { local f; for f in /proc/[0-9]*/cmdline; do tr '\0' ' ' <"$f" 2>/dev/null; echo; done; }; } # ps missing (minimal containers): /proc
-db_instances() { # SIDs with a pmon; oratab spelling when the process name differs in case (26ai: ora_pmon_free for FREE)
-  local p s
-  ps_args | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u |
+# ps_args: the process list from ps or, when ps is missing (minimal containers), from $PROC_DIR. A list that cannot be read is
+# status 1 and one ERROR (once per run, marker in $RAW), never an empty list with status 0 - the same class as lib/oracle-lib.sh
+# ps_read (Durandal 2 Nov 00:05): an empty list read as 'no instance on this host', and the report came out with no database
+# section and no finding
+PROC_DIR="${PROC_DIR:-/proc}"
+ps_args() {
+  local out f
+  out="$(ps -eo args 2>/dev/null)" || out="$(for f in "$PROC_DIR"/[0-9]*/cmdline; do [ -r "$f" ] || continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done)"
+  if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+    [ -e "${RAW:-/nonexistent}/.ps_unreadable" ] || { err "cannot read the process list (ps failed and $PROC_DIR is unreadable) - 'nothing running' cannot be concluded"; [ -d "${RAW:-}" ] && : >"$RAW/.ps_unreadable"; }
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+db_instances() { # SIDs with a pmon; oratab spelling when the process name differs in case (26ai: ora_pmon_free for FREE). Status 1 = list unreadable
+  local p s list; list="$(ps_args)" || return 1
+  printf '%s\n' "$list" | sed -n 's/^ora_pmon_\([A-Za-z0-9_$]*\).*/\1/p; s/^db_pmon_\([A-Za-z0-9_$]*\).*/\1/p' | sort -u |
     while IFS= read -r p; do s="$(grep -hvE '^\s*#|^\s*$' /etc/oratab /var/opt/oracle/oratab 2>/dev/null | cut -d: -f1 | grep -ixF -- "$p" | head -1)"; printf '%s\n' "${s:-$p}"; done
 }
 
@@ -337,9 +350,19 @@ diag_alert_log() {
 }
 
 # checks emitted by SQL as  CHECK|SEV|text  are turned into findings
+# The batch's outcome is kept (the lib's sql_checks got the same fix): a statement that errors or a batch killed by the timeout
+# used to leave its checks silently unevaluated behind 'nothing tripped the built-in rules'; now a WARN names it, status 1
 sql_checks() { # <sid> <label> <sql>
-  local sid="$1" label="$2" q="$3"
-  sql "$sid" "set heading off\n$q" 2>/dev/null | grep -a '^CHECK|' | while IFS='|' read -r _ sev txt; do finding "$sev" db "$label: $txt"; done
+  local sid="$1" label="$2" q="$3" rc=0 out rows errs
+  out="$(sql "$sid" "set heading off\n$q" 2>/dev/null)" || rc=$?
+  rows="$(printf '%s\n' "$out" | grep -a '^CHECK|')"
+  [ -n "$rows" ] && printf '%s\n' "$rows" | while IFS='|' read -r _ sev txt; do finding "$sev" db "$label: $txt"; done
+  errs="$(printf '%s\n' "$out" | grep -acE '(ORA|SP2)-[0-9]+')"
+  if [ "$rc" != 0 ] || [ "$errs" != 0 ]; then
+    finding WARN db "$label: checks batch did not complete (sqlplus status $rc, $errs error line(s), $(printf '%s\n' "$rows" | grep -ac '^CHECK|') check row(s) arrived: $(printf '%s\n' "$out" | grep -aoE '(ORA|SP2)-[0-9]+[^|]{0,70}' | head -1 | tr -d '\n')) - the checks that did not answer were not evaluated"
+    return 1
+  fi
+  return 0
 }
 
 diag_db_instance() {
@@ -1167,7 +1190,9 @@ main() {
   skipped host || diag_host
   if ! skipped db; then
     diag_db_env; diag_listener
-    local sids; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
+    local sids=""; if sids="$(db_instances)"; then sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"
+    else finding CRIT db "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database instance was found or checked; pass --sid to check one"; fi
+    [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
     [ -z "$sids" ] && { h2 "Database"; para "_no running database instance on this host_"; }
     for s in $sids; do
       diag_db_instance "$s"
@@ -1189,6 +1214,9 @@ main() {
   say "report: $OUT/REPORT.md ($(du -h "$OUT/REPORT.md" | cut -f1)) - $NCRIT critical, $NWARN warnings, $NINFO info, ${secs}s"
   [ "$QUIET" = 1 ] || { echo; printf '%s' "$FINDINGS" | grep -E '^- \*\*(CRIT|WARN)' | sed 's/\*\*//g' | head -40; }
   printf '\n%s\n' "$OUT/REPORT.md"
+  # exit contract, after write_header's findings_sync (the counters are rebuilt from the file there - findings from subshells
+  # only count after it): 2 CRIT, 1 WARN, 0 clean - under cron the exit code is the whole interface (Colossus 1 Nov 23:43)
+  [ "$NCRIT" -gt 0 ] && return 2; [ "$NWARN" -gt 0 ] && return 1; return 0
 }
 
 main "$@"
