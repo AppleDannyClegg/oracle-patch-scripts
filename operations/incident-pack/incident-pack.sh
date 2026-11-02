@@ -275,7 +275,11 @@ jvm_dumps() {
   if [ "$DO_HEAP" = 1 ]; then confirm "$name (pid $pid): jcmd GC.heap_dump (the JVM pauses; the file can be many GB)?" && { mkdir -p "$PACK/$rel"; [ "$DRY_RUN" = 1 ] || to 600 "$jcmd" "$pid" GC.heap_dump "$PACK/$rel/heap_$name.hprof" >>"$LOG_FILE" 2>&1 && NFILES=$((NFILES+1)); }; fi
 }
 collect_ords() {
-  ords_detect >/dev/null 2>&1 || return 0; log "ORDS ${ORDS_VER:-?} ($ORDS_HOME, config ${ORDS_CONFIG:-?})"; fact ORDS_VERSION "${ORDS_VER:-?} home=$ORDS_HOME config=${ORDS_CONFIG:-?} pid=${ORDS_PID:-none}"
+  ords_detect >/dev/null 2>&1 || return 0; log "ORDS ${ORDS_VER:-?} ($ORDS_HOME, config ${ORDS_CONFIG:-?})"
+  # an empty ORDS_PID is 'no process' only if the list was read; ORDS_PS_UNREADABLE (lib 487f88f) makes it unknown
+  local pidtxt="${ORDS_PID:-none}"; [ -z "${ORDS_PID:-}" ] && [ "${ORDS_PS_UNREADABLE:-0}" = 1 ] && pidtxt=unknown
+  fact ORDS_VERSION "${ORDS_VER:-?} home=$ORDS_HOME config=${ORDS_CONFIG:-?} pid=$pidtxt"
+  [ "${ORDS_PS_UNREADABLE:-0}" = 1 ] && warn "cannot read the process list (ps failed, $PROC_DIR unreadable) - ORDS process and JVM details NOT collected"
   local f; if [ -d "${ORDS_CONFIG:-}" ]; then while IFS= read -r f; do keep "ords/config/$(dirname "${f#"$ORDS_CONFIG"/}")" "$f" 1; done < <(find "$ORDS_CONFIG" -type f \( -name '*.xml' -o -name '*.properties' \) 2>/dev/null | grep -v wallet | head -60); fi
   local ld; for ld in "${ORDS_CONFIG:-/nonexistent}/../logs" "${ORDS_CONFIG:-/nonexistent}/logs" "$ORDS_HOME/logs" /var/log/ords "${ORDS_LOG_DIR:-/nonexistent}"; do [ -d "$ld" ] && keep_newer "ords/logs" "$ld" "*.log*" 1 20; done
   local svc; svc="$(ords_service)"; [ -n "$svc" ] && { outsh "ords/journal.txt" "journalctl -u '$svc' --since '$SINCE_ISO' --until '$UNTIL_ISO' --no-pager 2>&1 | tail -n 20000"; outsh "ords/service_status.txt" "systemctl status '$svc' --no-pager -l 2>&1 | head -40"; }
