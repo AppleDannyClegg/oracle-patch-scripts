@@ -1,5 +1,9 @@
 # okv-rotate.sh — walk the OKV endpoint-certificate rotation and prove it happened
 
+> **Status (Gen, 1 Nov 22:32):** every prod endpoint is already on its new certificate (valid to
+> Oct/Nov 2027) and the console banner has cleared. This script is for **confirming** that before the old
+> certs expire (~9 Nov 2026 14:17–14:23 GMT) and for next year's rotation. The console rotation is manual.
+
 Every Oracle Key Vault **endpoint certificate** on this host has a one-year life. Rotating one is a
 click in the Key Vault console, and the click is not the step that matters: the console can show
 "Certificate rotation in progress" and "Last active = now" while the endpoint keeps running on the
@@ -78,7 +82,8 @@ verify one node before the other.
   `~/okv-rotate`).
 
 There is deliberately **no** local certificate-issuing step: the rotation is a console action this script
-does not perform, and rebuilding a wallet (`cert-renew.sh apply okv`) is a different, rarer job.
+does not perform, and rebuilding a wallet is a different, rarer job (`cert-renew.sh inspect okv` lists it;
+its `okv` target has no apply).
 
 ## Options
 
@@ -118,5 +123,5 @@ entries), not the endpoint certificate. This script never reads or touches it.
 - `reports/oracle-diag/OKV-endpoint-rotation.md` — the runbook in script terms, and which script does what.
 - `reports/oracle-diag/oracle-diag.sh` — the host report, including `okv_endpoint_cert` (read-only).
 - `reports/security-posture/security-posture.sh --cis` — the same checks as audit PASS/FAIL controls.
-- `patching/cert-renew/cert-renew.sh` — rebuilds a wallet (`inspect okv`); not part of the console
-  rotation.
+- `patching/cert-renew/cert-renew.sh` — `inspect okv` lists the endpoint certificate in the host-wide
+  list; there is no `apply okv` (the console rotation rewrites the wallet, not this script).

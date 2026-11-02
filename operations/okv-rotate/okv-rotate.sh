@@ -44,6 +44,7 @@
 #   --okv-home DIR        $OKV_HOME (default: discovered; OKV_HOME from the config/env is preferred)
 #   --ora FILE            okvclient.ora (default: <okv-home>/conf/okvclient.ora)
 #   --node NAME           node label in the report (default: hostname -s)
+#   --sid SID             the database instance that owns this okvclient.ora (default: derived from wallet_root)
 #   --rotated-from NAME   the OKV node the console rotation was started from; wait flags the switch match
 #   --timeout SECS        wait: give up after this long (default 3600; the client refreshes ~hourly)
 #   --interval SECS       wait: seconds between okvclient.ora polls (default 60)
@@ -67,7 +68,7 @@ ROTATED_FROM="${OKV_ROTATED_FROM:-}"; WAIT_TIMEOUT="${OKV_TIMEOUT:-3600}"; WAIT_
 MAX_RUNS="${OKV_MAX_RUNS:-0}"
 CERT_WARN_DAYS="${OKV_CERT_WARN_DAYS:-90}"; CERT_CRIT_DAYS="${OKV_CERT_CRIT_DAYS:-30}"
 AGE_WARN_DAYS="${OKV_AGE_WARN_DAYS:-300}"; AGE_CRIT_DAYS="${OKV_AGE_CRIT_DAYS:-365}"
-DO_REPORT=0; OKV_PW=""; VERIFY_STRICT=0
+DO_REPORT=0; OKV_PW=""; VERIFY_STRICT=0; OKV_SID="${OKV_SID:-}"; OKV_ORA_PATH=""
 
 usage() { usage_from_header "$0"; }
 parse_opts() {
@@ -75,6 +76,7 @@ parse_opts() {
     --okv-home) optchk "$@"; OKV_HOME="$2"; shift 2;;
     --ora) optchk "$@"; OKV_ORA="$2"; shift 2;;
     --node) optchk "$@"; OKV_NODE="$2"; shift 2;;
+    --sid) optchk "$@"; OKV_SID="$2"; shift 2;;
     --rotated-from) optchk "$@"; ROTATED_FROM="$2"; shift 2;;
     --timeout) optchk "$@"; WAIT_TIMEOUT="$2"; shift 2;;
     --interval) optchk "$@"; WAIT_INTERVAL="$2"; shift 2;;
@@ -118,20 +120,38 @@ okv_cert() {
                  "$(printf '%s' "$out" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"
 }
 
+# okv_owner_sid <ora>: the database instance whose wallet_root owns this okvclient.ora. --sid/OKV_SID wins.
+# Landru 13:35:22: v$parameter.wallet_root against the ora (realpath), else the only instance; with several and
+# no match, the first is used with a warning naming it. Prints the SID; the warning goes to stderr.
+okv_owner_sid() {
+  local ora="$1" inst s wr cr ora_r n
+  [ -n "$OKV_SID" ] && { printf '%s' "$OKV_SID"; return 0; }
+  inst="$(db_instances)"; [ -n "$inst" ] || return 1
+  ora_r="$(realpath "$ora" 2>/dev/null || echo "$ora")"
+  for s in $inst; do
+    wr="$(sql_lines "$s" "set heading off feedback off\nselect value from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | head -1 | tr -d '[:space:]')"
+    [ -n "$wr" ] || continue
+    cr="$(realpath "$wr/okv/conf/okvclient.ora" 2>/dev/null || echo "$wr/okv/conf/okvclient.ora")"
+    [ "$cr" = "$ora_r" ] && { printf '%s' "$s"; return 0; }
+  done
+  n="$(printf '%s\n' $inst | wc -l | tr -d ' ')"; s="$(printf '%s\n' $inst | head -1)"
+  [ "$n" -gt 1 ] && warn "owner of ${ora:-?} not derived from wallet_root: using $s of $n instances for the TDE/apply rows - pass --sid to pin it" >&2
+  printf '%s' "$s"
+}
 # okv_db_role: PRIMARY / PHYSICAL_STANDBY / ... (empty when it cannot be read)
 okv_db_role() {
-  local s; s="$(db_instances | head -1)"; [ -n "$s" ] || return 1
+  local s; s="$(okv_owner_sid "${OKV_ORA_PATH:-}")" || return 1
   sql_lines "$s" "set heading off feedback off\nselect database_role from v\$database;" 2>/dev/null | head -1 | tr -d '[:space:]'
 }
 # okv_tde: "inst_id|status|wallet_type" for every instance (gv$ works on a mounted standby).
 # Its status is the sqlplus status: a failed read is NOT an empty result - the caller must say so, not assume fine.
 okv_tde() {
-  local s; s="$(db_instances | head -1)"; [ -n "$s" ] || return 1
+  local s; s="$(okv_owner_sid "${OKV_ORA_PATH:-}")" || return 1
   sql_lines "$s" "set heading off feedback off\nselect inst_id||'|'||status||'|'||wallet_type from gv\$encryption_wallet order by inst_id;" | grep -E '^[0-9]+\|'
 }
 # okv_standby: MRP process rows and the apply/transport lag, when this is a standby
 okv_standby() {
-  local s; s="$(db_instances | head -1)"; [ -n "$s" ] || return 1
+  local s; s="$(okv_owner_sid "${OKV_ORA_PATH:-}")" || return 1
   sql_lines "$s" "set heading off feedback off\nselect process||'|'||status from gv\$managed_standby where process like 'MRP%';\nselect name||'|'||value from v\$dataguard_stats where name in ('apply lag','transport lag');" | grep -E '^(MRP|[Aa]pply lag|[Tt]ransport lag)\|'
 }
 
@@ -145,6 +165,7 @@ okv_age_days() {
 # okv_check_node: the runbook's step 1/4/5 as findings. Prints the key values; the caller prints findings.
 okv_check_node() {
   local f loc host upd cdir wal age; f="$(okv_ora_file)" || { finding WARN okv "no okvclient.ora found (set --ora or OKV_HOME) - endpoint state unknown, nothing assumed fine"; return 0; }
+  OKV_ORA_PATH="$f"
   loc="$(okv_field "$f" SSL_WALLET_LOC)"; host="$(okv_field "$f" OKV_HOSTNAME)"; upd="$(okv_field "$f" UPDATE_TIMESTAMP)"
   cdir="$(okv_client_dir "$f")"; [ -n "$loc" ] || loc="$cdir/ssl"; wal="$loc/ewallet.p12"
 
@@ -263,7 +284,7 @@ EOF
 # cmd_preflight: are the tools, the file and the password here to do (and to verify) this on this node?
 cmd_preflight() {
   local f="" cdir; report_init "$RUN_DIR/report"; VERIFY_STRICT=1
-  if f="$(okv_ora_file)"; then kv okvclient.ora "$f"; [ -r "$f" ] || finding CRIT okv "cannot read $f"; [ -w "$f" ] || finding WARN okv "$f is not writable - rollback (restore the file) needs the oracle owner"
+  if f="$(okv_ora_file)"; then kv okvclient.ora "$f"; [ -r "$f" ] || finding CRIT okv "cannot read $f"
   else finding CRIT okv "no okvclient.ora found (set OKV_HOME or --ora)"; fi
   if [ -n "$f" ]; then cdir="$(okv_client_dir "$f")"; [ -x "$cdir/bin/okvutil" ] && kv okvutil "$cdir/bin/okvutil" || finding WARN okv "no executable $cdir/bin/okvutil - wait cannot refresh the config"; fi
   have openssl && kv openssl "$(command -v openssl)" || finding WARN okv "openssl missing - the certificate notAfter cannot be read"
@@ -366,7 +387,7 @@ cmd_wait() {
       return 2
     fi
     if [ $(( $(date +%s) - start )) -ge "$WAIT_TIMEOUT" ] || { [ "$MAX_RUNS" -gt 0 ] && [ "$i" -ge "$MAX_RUNS" ]; }; then
-      if [ "$okvfail" != 0 ]; then err "no switch after $(( $(date +%s) - start ))s and 'okvutil list' failed at the start - check the endpoint wallet password, the endpoint enrolment and TCP 5696"; return 1; fi
+      # okvfail cannot be set here: a failed, unswitched okvutil read returns 1 before the loop starts (Mother 13:36:38)
       err "no refresh yet after $(( $(date +%s) - start ))s: UPDATE_TIMESTAMP is unchanged (${ts:-?}). The client refreshes about hourly - re-rotate from OKV_HOSTNAME=${host:-?}, or wait; do not re-run okvutil repeatedly"
       return 2
     fi

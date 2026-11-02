@@ -11,9 +11,9 @@
 # OKV_ROTATED_FROM=okv01
 
 # --- wait: how hard to poll the console switch -------------------------------
-# OKV_TIMEOUT=120     # give up after this many seconds
-# OKV_INTERVAL=5      # seconds between okvutil list -v 4 runs
-# OKV_MAX_RUNS=20     # and after this many runs (whichever comes first). Gen saw it switch on run 5-6.
+# OKV_TIMEOUT=3600    # give up after this many seconds (the client refreshes ~hourly)
+# OKV_INTERVAL=60     # seconds between okvclient.ora polls
+# OKV_MAX_RUNS=0      # optional cap on polls (0 = no cap; rely on OKV_TIMEOUT)
 
 # --- thresholds, in days (the runbook's certificate life is 1 year) -----------
 # OKV_CERT_WARN_DAYS=90   # cert notAfter within 90 days -> WARN

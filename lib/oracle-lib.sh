@@ -743,8 +743,9 @@ okv_ora_discover() {
     [ -f "$f" ] && printf '%s\n' "$f"
   done 2>/dev/null | sort -u
 }
-# okv_field <ora> <KEY>: last value of KEY= (case-insensitive), whitespace stripped
-okv_field() { grep -iE "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]'; }
+# okv_field <ora> <KEY>: last value of KEY= (case-insensitive), leading/trailing whitespace stripped
+# (the internal space in UPDATE_TIMESTAMP is kept - Landru 13:39:04)
+okv_field() { grep -iE "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
 # okv_is_rotated <SSL_WALLET_LOC>: 1 when it ends at /ssl (not rotated), 0 when it points into a subfolder
 okv_is_rotated() { case "${1:-}" in ""|*/ssl|*/ssl/) return 1;; *) return 0;; esac; }
 
@@ -786,6 +787,9 @@ lib_selftest() {
   t "db_instances: unreadable process list is status 1, not no-instances" 'd=$(mktemp -d); mkdir -p $d/bin $d/proc; printf "%s\n" "#!/bin/sh" "exit 1" >"$d/bin/ps"; chmod +x "$d/bin/ps"; ! (PATH="$d/bin:$PATH" PROC_DIR=$d/proc db_instances >/dev/null 2>&1)'
   t "sql_lines: a failed read puts its ORA- line on stderr without --verbose" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null; echo \"ORA-00942: table or view does not exist\"; exit 1" >"$d/sqlplus"; chmod +x "$d/sqlplus"; e=$( (VERBOSE=0 SQL_CMD="$d/sqlplus" sql_lines X "select 1 from dual;" 2>&1 >/dev/null) ); printf "%s" "$e" | grep -q "^ORA-00942"'
   t "sql_checks: a batch that errors mid-way keeps the rows that arrived and adds a WARN naming it, status 1" 'd=$(mktemp -d); printf "%s\n" "#!/bin/sh" "cat >/dev/null; echo \"CHECK|CRIT|FRA 95% full\"; echo \"ORA-00942: table or view does not exist\"; exit 1" >"$d/sqlplus"; chmod +x "$d/sqlplus"; f=$d/f; o=$( (FINDINGS_FILE=$f SQL_CMD="$d/sqlplus" sql_checks X lbl "select 1 from dual;"; echo "rc=$?") 2>/dev/null); printf "%s" "$o" | grep -q "rc=1" && grep -q "^CRIT|db|lbl: FRA 95% full" $f && grep -q "^WARN|db|lbl: checks batch did not complete (sqlplus status 1, 1 error line(s), 1 check row(s) arrived: ORA-00942" $f'
+  t "okv_field keeps an internal space and trims the ends" 'd=$(mktemp -d); printf "UPDATE_TIMESTAMP=2026-11-02 13:00:00 \n" >"$d/ora"; o=$(okv_field "$d/ora" UPDATE_TIMESTAMP); rm -rf "$d"; [ "$o" = "2026-11-02 13:00:00" ]'
+  t "okv_is_rotated: /ssl, /ssl/ and empty are not rotated" '! okv_is_rotated "/x/okv/ssl" && ! okv_is_rotated "/x/okv/ssl/" && ! okv_is_rotated ""'
+  t "okv_is_rotated: a subfolder of ssl is rotated" 'okv_is_rotated "/x/okv/ssl/19700101000000000000"'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
 }
