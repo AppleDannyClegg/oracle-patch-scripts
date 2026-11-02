@@ -185,7 +185,8 @@ host_controls() {
 # the node last talked to). Until that line changes the endpoint still presents the old certificate. Same logic as oracle-diag's
 # okv_endpoint_cert, as controls. $OKV_HOME/conf/ewallet.p12 is the TDE secret store: listed as do-not-touch, never opened.
 okv_confs() {
-  local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora 2>/dev/null | sort -u | head -5)"
+  # lib okv_ora_discover walks the known paths; the per-instance wallet_root SQL stays here (the lib has no sqlplus)
+  local conf; conf="$(okv_ora_discover | head -5)"
   [ -z "$conf" ] && conf="$(for s in $(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX'); do sql_lines "$s" "select value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"
   [ -n "$conf" ] && printf '%s\n' "$conf"
 }
@@ -202,10 +203,11 @@ okv_controls() {
   h1 "Oracle Key Vault endpoints"
   local f; for f in $confs; do
     local d sc loc host upd wal age; d="$(dirname "$(dirname "$f")")"; sc="okv/$(basename "$d")"
-    loc="$(grep -iE '^SSL_WALLET_LOC=' "$f" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"; host="$(grep -iE '^OKV_HOSTNAME=' "$f" | tail -1 | cut -d= -f2-)"; upd="$(grep -iE '^UPDATE_TIMESTAMP=' "$f" | tail -1 | cut -d= -f2-)"
+    loc="$(okv_field "$f" SSL_WALLET_LOC)"; host="$(okv_field "$f" OKV_HOSTNAME)"; upd="$(okv_field "$f" UPDATE_TIMESTAMP)"
     [ -n "$loc" ] || loc="$d/ssl"; wal="$loc/ewallet.p12"
     section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "echo '== $f'; grep -vE '^#|^\$' '$f' | redact; echo; ls -la '$loc' '$d/conf' 2>/dev/null"
-    case "$loc" in */ssl|*/ssl/) control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - not rotated: the original ssl/ wallet";; *) control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - rotated: a subfolder of ssl/";; esac
+    if okv_is_rotated "$loc"; then control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - rotated: a subfolder of ssl/"
+    else control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - not rotated: the original ssl/ wallet"; fi
     control "$sc" "" "OKV_HOSTNAME (node last talked to) / UPDATE_TIMESTAMP" INFO "${host:-?} / ${upd:-?}"
     [ -f "$wal" ] || { control "$sc" "" "endpoint wallet file exists where SSL_WALLET_LOC points" FAIL "CRIT:$wal does not exist - the endpoint cannot present a certificate to Key Vault"; continue; }
     # a stat that fails must not leave age empty: '' -ge 365 is false, and the else branch below is PASS (Pi, 22:10)
