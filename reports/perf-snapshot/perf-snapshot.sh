@@ -228,7 +228,11 @@ select 'CHECK|INFO|$id is bind sensitive/aware ('||is_bind_sensitive||'/'||is_bi
 middleware_threads() {
   [ "$THREADS" = 1 ] || return 0
   h1 "JVM thread dumps (3 x 10 s)"
+  # wls_running and ords_detect both read the process list and lose its status in the pipe: an unreadable list was an empty
+  # section with no word (the main loop's CRIT says the databases were not found, not that these dumps were skipped)
+  ps_pid_args >/dev/null 2>&1 || { para "_process list unreadable: no JVM found_"; finding WARN mw "cannot read the process list (ps failed, $PROC_DIR unreadable) - no WebLogic/ORDS JVM found; thread dumps NOT collected"; return; }
   local pids; pids="$( { wls_running | awk '{print $2}'; ords_detect >/dev/null && echo "$ORDS_PID"; } | grep -E '^[0-9]+$' | sort -u)"
+  [ -n "$pids" ] || para "_no WebLogic server or ORDS JVM running on this host_"
   local p i; for p in $pids; do
     local jbin; jbin="$(dirname "$(readlink -f "/proc/$p/exe" 2>/dev/null)")"; local jcmd="$jbin/jcmd"; [ -x "$jcmd" ] || jcmd="$(command -v jcmd 2>/dev/null)"; [ -x "$jcmd" ] || continue
     local name; name="$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -oE 'weblogic.Name=[^ ]+' | cut -d= -f2)"; name="${name:-ords}"
