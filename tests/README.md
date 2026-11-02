@@ -9,6 +9,7 @@ of the top-level [README](../README.md) for the full description of what each on
 | `check-parse.sh` | static | every value option's `case` arm calls `optchk` |
 | `optchk-gate.sh` | static | every documented value option runs as the last argument and is not swallowed before `--dry-run` |
 | `secret-argv-gate.sh` | static | a credential never reaches argv/environ/log/run dir; it arrives on the claimed route |
+| `ru-date.sh` | static | patch-status's RU-date extractors read the real lspatches / registry line shapes (19c yymmdd, 23ai YY.MM with the trailing patch id); an empty date is a silent UNKNOWN |
 | `dry-run-gate.sh` | behavioural | no DDL/DML/flashback/PL-SQL/patch/restart/switch/ggsci verb reaches a tool under `--dry-run` |
 | `false-success-gate.sh` | behavioural | a change command that fails does not exit 0 or record a success state |
 | `unreadable-gate.sh` | behavioural | a report whose reads failed does not print a clean verdict or exit 0 |
@@ -20,6 +21,7 @@ of the top-level [README](../README.md) for the full description of what each on
 tests/check-parse.sh
 tests/optchk-gate.sh
 tests/secret-argv-gate.sh
+tests/ru-date.sh
 tests/dry-run-gate.sh          # whole tree; [script...] for one
 tests/false-success-gate.sh    # whole tree; [script...] for one; --selftest
 tests/unreadable-gate.sh       # whole gate; [script...] for one

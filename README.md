@@ -246,13 +246,16 @@ the PDB; `--as-new-id` is honoured). oracle-diag now reports the Oracle Key Vaul
 certificate state per `okvclient.ora` (rotated or not, node last talked to, wallet age or real
 expiry with `OKV_WALLET_PASSWORD`), written from the first production rotation.
 
-Six gates need no database and run anywhere with bash. Three read the scripts: `tests/check-parse.sh`
+Seven gates need no database and run anywhere with bash. Four read the scripts: `tests/check-parse.sh`
 (every value option's `case` arm calls `optchk`), `tests/optchk-gate.sh` (every documented value
 option run as the last argument and followed by `--dry-run`: none may hang or swallow the flag) and
 `tests/secret-argv-gate.sh` (every function that hands a credential to sqlplus, SQLcl, expdp/impdp
 or ggsci, run against a stub that records its argv, environment and stdin with a canary password:
 the canary must be absent from argv and environ and present on the route the function claims, plus
-the `--verbose` log and the run directory must not hold it, and the java APEX export must refuse).
+the `--verbose` log and the run directory must not hold it, and the java APEX export must refuse) and
+`tests/ru-date.sh` (patch-status's RU-date extractors, sourced out of the script and run on the lines opatch
+lspatches and dba_registry_sqlpatch really produce - `id;Database Release Update : 23.6.0.24.10 (id)` - because
+an unreadable date renders UNKNOWN with no finding, and the first 23ai fix matched a bare version but never a real line).
 Three run the scripts against stub tools (sqlplus, rman, opatch, srvctl, dgmgrl, ggsci, escli and the
 rest log their argv and stdin and answer from a canned table): `tests/dry-run-gate.sh` runs every
 command of every script with `--dry-run` and fails on any DDL, DML, flashback, PL/SQL, patch, restart,
