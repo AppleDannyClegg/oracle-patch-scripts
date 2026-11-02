@@ -33,11 +33,11 @@ exit "${PIPESTATUS[1]}"
 W
 chmod +x /home/oracle/sqlplus-trace; rm -f /home/oracle/sqltrace.*'; SQLCMD=/home/oracle/sqlplus-trace
 fi
-docker exec -u oracle "$NAME" bash -c 'cd /scripts && lib/oracle-lib.sh selftest' 2>&1 | tail -1
+docker exec -u oracle "$NAME" bash -c 'cd /scripts && bash lib/oracle-lib.sh selftest' 2>&1 | tail -1
 fail=0
 run() { local name=$1; shift; echo "== $name: $*"
   docker exec -u oracle -e HOME=/home/oracle -e OFFLINE=1 ${SQLCMD:+-e SQL_CMD=$SQLCMD} "$NAME" bash -c "cd /scripts && $*" >"$OUT/$name.log" 2>&1
-  local rc=$?; echo "   exit $rc  ($OUT/$name.log)"; grep -E '^- (CRIT|WARN)' "$OUT/$name.log" | head -8 | sed 's/^/   /'; [ "$rc" -gt 2 ] && fail=1; }
+  local rc=$?; echo "   exit $rc  ($OUT/$name.log)"; grep -E '^- (CRIT|WARN)|^# FINDINGS|[0-9]+ critical, [0-9]+ warnings' "$OUT/$name.log" | head -8 | sed 's/^/   /'; [ "$rc" -gt 2 ] && fail=1; }
 run db-health    reports/db-health-daily/db-health-daily.sh --out /home/oracle/dbh --no-tar
 run perf         reports/perf-snapshot/perf-snapshot.sh --last 30m --no-pack --out /home/oracle/perf --no-tar
 run space        reports/space-forecast/space-forecast.sh --out /home/oracle/space --no-tar
