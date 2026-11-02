@@ -39,7 +39,7 @@ cat >"$OKV/bin/okvutil" <<'STUB'
 n=$(wc -l <"$OKVUTIL_LOG" | tr -d ' ')
 if [ -n "${OKVUTIL_SWITCH_AFTER:-}" ] && [ "$n" -ge "$OKVUTIL_SWITCH_AFTER" ]; then
   sed -i.bak "s#^SSL_WALLET_LOC=.*#SSL_WALLET_LOC=$OKV/ssl/19700101000000000000#" "$OKV_ORA"
-  mkdir -p "$OKV/ssl/19700101000000000000"; : >"$OKV/ssl/19700101000000000000/ewallet.p12"
+  [ "${OKVUTIL_NO_WALLET:-0}" = 1 ] || { mkdir -p "$OKV/ssl/19700101000000000000"; : >"$OKV/ssl/19700101000000000000/ewallet.p12"; }
 fi
 echo "okvutil: stub list"
 STUB
@@ -107,21 +107,27 @@ new_wallet; write_ora "$OKV/ssl/19700101000000000000"
 run verify; expect_rc 0 "verify rotated+valid is clean (0)"
 STUB_TDE_STATUS=CLOSED run verify; expect_rc 2 "verify a wallet not OPEN is CRIT (2)"
 
-# wait: the switch happens on the 2nd okvutil run; assert okvutil was actually called
+# wait: okvutil runs once and repoints the ora during that call -> switched (Ava 13:31:48 design)
 write_ora "$OKV/ssl"; : >"$OKV/ssl/ewallet.p12"; : >"$OKVUTIL_LOG"
-export OKVUTIL_SWITCH_AFTER=1
-run wait --max-runs 5 --interval 0; expect_rc 0 "wait switches on run 2 (0)"
+export OKVUTIL_SWITCH_AFTER=0
+run wait --timeout 5 --interval 0; expect_rc 0 "wait switches after the okvutil refresh (0)"
 if [ -s "$OKVUTIL_LOG" ]; then ok "wait actually ran okvutil ($(wc -l <"$OKVUTIL_LOG" | tr -d ' ') calls)"; else bad "wait never ran okvutil (the run_sh/to bug)"; fi
 
-# wait timeout
+# wait: repointed but the new wallet is missing -> 1, do not proceed
+write_ora "$OKV/ssl"; : >"$OKV/ssl/ewallet.p12"; : >"$OKVUTIL_LOG"
+rm -f "$OKV/ssl/19700101000000000000/ewallet.p12"
+OKVUTIL_NO_WALLET=1 run wait --timeout 5 --interval 0; expect_rc 1 "wait repointed-but-no-wallet is 1 (do not proceed)"
+unset OKVUTIL_NO_WALLET
+
+# wait timeout: clean read, no refresh, still on the old wallet -> 2, re-run
 write_ora "$OKV/ssl"; : >"$OKV/ssl/ewallet.p12"; : >"$OKVUTIL_LOG"
 unset OKVUTIL_SWITCH_AFTER
-run wait --max-runs 2 --interval 0; expect_rc 2 "wait times out at the run cap (2)"
+run wait --timeout 1 --interval 0; expect_rc 2 "wait times out with a clean read (2)"
 if [ -s "$OKVUTIL_LOG" ]; then ok "wait ran okvutil before timing out"; else bad "wait never ran okvutil on timeout"; fi
 
 # wait: already switched but okvutil cannot run -> must not be a clean 0 (Unicron 13:27:32)
 new_wallet; write_ora "$OKV/ssl/19700101000000000000"; : >"$OKVUTIL_LOG"
-OKVUTIL_FAIL=1 run wait --max-runs 2 --interval 0
+OKVUTIL_FAIL=1 run wait --timeout 1 --interval 0
 if [ "$RC" != 0 ]; then ok "wait does not call a failed-read switch clean (rc=$RC)"; else bad "wait returned 0 after a failed okvutil read (Unicron 13:27:32)"; fi
 unset OKVUTIL_FAIL
 
