@@ -505,13 +505,28 @@ ords_pool_user() { sed -n 's/.*<entry key="db.username">\([^<]*\)<.*/\1/p' "$ORD
 ords_images_dir() { local i; i="$(ords_setting standalone.static.path)"; [ -z "$i" ] && i="${APEX_IMAGES_DIR:-}"; printf '%s' "$i"; }
 ords_service() { systemctl list-units --type=service --all --no-legend 2>/dev/null | awk '{print $1}' | grep -i ords | head -1; }
 
-# ogg_detect: sets OGG_HOME (classic) and OGG_MA=1 when Microservices processes exist
+# ogg_detect: sets OGG_HOME (classic), OGG_MA=1 when Microservices processes exist, OGG_PS_UNREADABLE=1 when the
+# process list could not be read. Returns 0 found, 1 not found, 2 cannot tell (unreadable list, nothing found) - so a
+# caller can say 'unknown' instead of 'no GoldenGate found'; a failed read must never read as 'not running' (ps_args
+# carries ps' status and the /proc fallback, Wheatley 00:58 / Rommie 01:16).
+# When OGG_HOME is set the return is unchanged (0 if a ggsci is there): the MA probe could not be answered, so
+# OGG_PS_UNREADABLE=1 means OGG_MA is unknown; whether to refuse on that is a caller decision (gg-ops' commands),
+# not one this function makes.
 ogg_detect() {
-  OGG_HOME="${OGG_HOME:-}"; OGG_MA=0
-  [ -z "$OGG_HOME" ] && OGG_HOME="$(ps_args | grep -oE '^[^ ]*/(mgr|ggsci|extract|replicat)( |$)' | sed -E 's#/(mgr|ggsci|extract|replicat) *$##' | head -1)"
+  OGG_HOME="${OGG_HOME:-}"; OGG_MA=0; OGG_PS_UNREADABLE=0
+  local pl exe
+  if pl="$(ps_pid_args)"; then
+    if [ -z "$OGG_HOME" ]; then
+      exe="$(printf '%s\n' "$pl" | awk '$2 ~ /(\/|^)(mgr|ggsci|extract|replicat)$/ {print $2; exit}')"
+      [ -n "$exe" ] && OGG_HOME="$(dirname "$exe")"
+    fi
+    printf '%s\n' "$pl" | grep -qE '[S]erviceManager|/bin/(adminsrv[r]|distsrv[r]|recvsrv[r]|pmsrv[r])' && OGG_MA=1
+  else OGG_PS_UNREADABLE=1; fi
   [ -z "$OGG_HOME" ] && for d in /u01/app/oracle/product/*/ogg* /u01/app/ogg* /u01/ogg* /opt/oracle/ogg* /u01/app/oracle/goldengate*; do [ -x "$d/ggsci" ] && { OGG_HOME="$d"; break; }; done
-  ps_args | grep -qE '[S]erviceManager|/bin/(adminsrv[r]|distsrv[r]|recvsrv[r]|pmsrv[r])' && OGG_MA=1
-  [ -x "${OGG_HOME:-/nonexistent}/ggsci" ] || [ "$OGG_MA" = 1 ]
+  [ -x "${OGG_HOME:-/nonexistent}/ggsci" ] && return 0
+  [ "$OGG_MA" = 1 ] && return 0
+  [ "$OGG_PS_UNREADABLE" = 1 ] && return 2
+  return 1
 }
 # ggsci <commands...>: run in OGG_HOME with the DB home's libs; "\n"-separated commands
 ggsci() {
