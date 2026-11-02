@@ -23,6 +23,8 @@
 # shellcheck disable=SC2034  # QUIET/VERBOSE read by the lib
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="space-forecast"; VERSION="1.0.0"
+# Exit: 2 with a CRIT finding, 1 with a WARN, 0 clean. A read that failed (sqlplus cannot connect, a view this edition lacks, a
+# df or ps that could not run) is a finding that says NOT forecast / NOT checked - never a quiet 0 with 'nothing tripped'.
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
@@ -77,27 +79,49 @@ add_forecast() { # <kind> <db> <name> <used_mb> <max_mb>
 # ---------------------------------------------------------------------------
 collect_fs() {
   say "filesystems"
-  df -Pk -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1 {print $6, int($3/1024), int(($3+$4)/1024)}' | while read -r mnt used max; do add_forecast fs "$HOST" "$mnt" "$used" "$max"; done
+  # df's status is kept: a df that could not run was 'no filesystem to forecast' with no word (BSD df has no -x: plain df -Pk then)
+  local out rc=0; out="$(df -Pk -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null)" || out="$(df -Pk 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || { finding WARN host "df could not list the filesystems (rc $rc: $(printf '%s\n' "$out" | head -1 | cut -c1-80)) - filesystem usage NOT forecast"; return; }
+  printf '%s\n' "$out" | awk 'NR>1 {print $6, int($3/1024), int(($3+$4)/1024)}' | while read -r mnt used max; do add_forecast fs "$HOST" "$mnt" "$used" "$max"; done
+}
+# sql_rows <sid> <container|''> <label> <what> <sql>: sql_lines with its status kept. The rows used to go 'sql_lines 2>/dev/null | while
+# read', which read ORA-00942 (a view this edition lacks), ORA-65011 (a closed PDB) or the SQL_TIMEOUT kill as 'no rows' - the
+# tablespace, FRA or ASM simply dropped out of the forecast (tests/unreadable-gate.sh statement mode). Now a WARN names what was NOT forecast.
+sql_rows() {
+  local sid="$1" p="$2" label="$3" what="$4" sql="$5" out err; err="$RAW/db_${sid}_$(printf '%s' "$what" | tr -c 'A-Za-z0-9' '_').err"
+  if out="$(with_pdb "$p" sql_lines "$sid" "$sql" 2>"$err")"; then printf '%s\n' "$out"; return 0; fi
+  finding WARN db "$label: $what could not be read ($(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$err" 2>/dev/null | cut -c1-80)) - NOT forecast"; return 1
+}
+# sql_section_audit <sid>: lib's sqlsec writes a section's SQL output verbatim, errors included, and adds no finding (perf-snapshot
+# 99c372c has the same): count the sections that hold an error and say they are not evidence
+sql_section_audit() {
+  local sid="$1" f bad=0 n=0 first=""
+  for f in "$RAW"/db_"${sid}"_*.txt; do [ -f "$f" ] || continue; n=$((n+1))
+    if grep -qE '^(ORA|SP2)-[0-9]+' "$f"; then bad=$((bad+1)); [ -n "$first" ] || first="$(basename "$f" .txt | sed "s/^db_${sid}_//"): $(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$f" | cut -c1-70)"; fi
+  done
+  [ "$bad" = 0 ] || finding WARN db "$sid: $bad of $n SQL sections hold an ORA-/SP2- error (first: $first) - those sections are NOT evidence, the query did not complete"
 }
 collect_db() {
   local sid="$1"; say "database $sid"
   sql_ok "$sid" || { finding CRIT db "$sid: cannot connect as sysdba"; return; }
-  local pack=0; [ "$NO_PACK" = 0 ] && [[ "$(sql_val "$sid" "(select upper(value) from v\$parameter where name='control_management_pack_access')" 2>/dev/null)" == *DIAGNOSTIC* ]] && pack=1
+  local pack=0 v; if [ "$NO_PACK" = 0 ]; then
+    if v="$(sql_rows "$sid" "" "$sid" "control_management_pack_access" "select upper(value) from v\$parameter where name='control_management_pack_access';")"; then [[ "$v" == *DIAGNOSTIC* ]] && pack=1; fi; fi
   # tablespaces: root (or non-CDB) and each PDB
-  local containers="" p; if db_is_cdb "$sid"; then containers="CDB\$ROOT $(db_pdbs "$sid" | tr '\n' ' ')"; [ -n "${PDB:-}" ] && containers="$containers $PDB"; else containers="$sid"; fi
+  local containers="" p pdbs; if db_is_cdb "$sid"; then pdbs="$(db_pdbs "$sid")" || finding WARN db "$sid: v\$pdbs could not be read - the PDBs' tablespaces were NOT forecast"
+    containers="CDB\$ROOT $(printf '%s\n' "$pdbs" | tr '\n' ' ')"; [ -n "${PDB:-}" ] && containers="$containers $PDB"; else containers="$sid"; fi
   for p in $containers; do
     local label="$sid"; [ "$p" != "$sid" ] && [ "$p" != 'CDB$ROOT' ] && label="$sid/$p"
-    with_pdb "$p" sql_lines "$sid" "select t.tablespace_name||'|'||round(nvl(u.used_mb,0))||'|'||round(f.max_mb) from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select d.tablespace_name, d.cur_mb - nvl(s.free_mb,0) used_mb from (select tablespace_name, sum(bytes)/1048576 cur_mb from dba_data_files group by tablespace_name) d left join (select tablespace_name, sum(bytes)/1048576 free_mb from dba_free_space group by tablespace_name) s on s.tablespace_name=d.tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY';" 2>/dev/null \
+    sql_rows "$sid" "$p" "$label" "tablespace sizes" "select t.tablespace_name||'|'||round(nvl(u.used_mb,0))||'|'||round(f.max_mb) from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name left join (select d.tablespace_name, d.cur_mb - nvl(s.free_mb,0) used_mb from (select tablespace_name, sum(bytes)/1048576 cur_mb from dba_data_files group by tablespace_name) d left join (select tablespace_name, sum(bytes)/1048576 free_mb from dba_free_space group by tablespace_name) s on s.tablespace_name=d.tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY';" \
       | while IFS='|' read -r ts used max; do [ -n "$ts" ] && add_forecast tablespace "$label" "$ts" "$used" "$max"; done
     # seed history from dba_hist_tbspc_space_usage when licensed and our own history is short
     if [ "$pack" = 1 ]; then
-      with_pdb "$p" sql_lines "$sid" "select to_char(s.end_interval_time,'YYYY-MM-DD')||'|'||t.name||'|'||round(max(u.tablespace_usedsize)*(select value from v\$parameter where name='db_block_size')/1048576)||'|'||round(max(u.tablespace_maxsize)*(select value from v\$parameter where name='db_block_size')/1048576) from dba_hist_tbspc_space_usage u join dba_hist_snapshot s on s.snap_id=u.snap_id and s.dbid=u.dbid join v\$tablespace t on t.ts#=u.tablespace_id where s.end_interval_time>sysdate-$SPACE_WINDOW and u.dbid=(select dbid from v\$database) group by to_char(s.end_interval_time,'YYYY-MM-DD'), t.name;" 2>/dev/null \
+      sql_rows "$sid" "$p" "$label" "dba_hist_tbspc_space_usage history" "select to_char(s.end_interval_time,'YYYY-MM-DD')||'|'||t.name||'|'||round(max(u.tablespace_usedsize)*(select value from v\$parameter where name='db_block_size')/1048576)||'|'||round(max(u.tablespace_maxsize)*(select value from v\$parameter where name='db_block_size')/1048576) from dba_hist_tbspc_space_usage u join dba_hist_snapshot s on s.snap_id=u.snap_id and s.dbid=u.dbid join v\$tablespace t on t.ts#=u.tablespace_id where s.end_interval_time>sysdate-$SPACE_WINDOW and u.dbid=(select dbid from v\$database) group by to_char(s.end_interval_time,'YYYY-MM-DD'), t.name;" \
         | while IFS='|' read -r d ts used max; do [ -n "$ts" ] || continue; local f; f="$(hist_file tablespace)"; grep -q "^$d,$label,$ts," "$f" 2>/dev/null || printf '%s,%s,%s,%s,%s\n' "$d" "$label" "$ts" "$used" "$max" >>"$f"; done
     fi
   done
   # FRA, ASM
-  sql_lines "$sid" "select 'FRA|'||round((space_used-space_reclaimable)/1048576)||'|'||round(space_limit/1048576) from v\$recovery_file_dest where space_limit>0;" 2>/dev/null | while IFS='|' read -r n used max; do [ -n "$n" ] && add_forecast fra "$sid" "$n" "$used" "$max"; done
-  sql_lines "$sid" "select name||'|'||(total_mb-free_mb)||'|'||total_mb from v\$asm_diskgroup where total_mb>0;" 2>/dev/null | while IFS='|' read -r n used max; do [ -n "$n" ] && add_forecast asm "$HOST" "$n" "$used" "$max"; done
+  sql_rows "$sid" "" "$sid" "recovery area (v\$recovery_file_dest)" "select 'FRA|'||round((space_used-space_reclaimable)/1048576)||'|'||round(space_limit/1048576) from v\$recovery_file_dest where space_limit>0;" | while IFS='|' read -r n used max; do [ -n "$n" ] && add_forecast fra "$sid" "$n" "$used" "$max"; done
+  sql_rows "$sid" "" "$sid" "ASM diskgroups (v\$asm_diskgroup)" "select name||'|'||(total_mb-free_mb)||'|'||total_mb from v\$asm_diskgroup where total_mb>0;" | while IFS='|' read -r n used max; do [ -n "$n" ] && add_forecast asm "$HOST" "$n" "$used" "$max"; done
   # archivelog generation per day
   h2 "$sid: archivelog generation per day (last $SPACE_WINDOW days)"
   sqlsec "$sid" arch "$sid: redo/archive per day" "select to_char(first_time,'YYYY-MM-DD') day, count(*) logs, round(sum(blocks*block_size)/1048576) mb from v\$archived_log where first_time>sysdate-$SPACE_WINDOW and dest_id=1 group by to_char(first_time,'YYYY-MM-DD') order by 1;
@@ -118,13 +142,14 @@ select 'recyclebin: '||round(nvl(sum(space),0)*8/1024)||' MB' from dba_recyclebi
 select 'temp used now: '||u.mb||' MB; temp max: '||m.mb from (select round(nvl(sum(blocks),0)*8/1024) mb from v\$sort_usage) u, (select round(sum(decode(autoextensible,'YES',maxbytes,bytes))/1048576) mb from dba_temp_files) m;
 select 'undo: '||t.mb||' MB total, '||a.mb||' MB active/unexpired, retention '||p.value||' s' from (select round(sum(bytes)/1048576) mb from dba_data_files where tablespace_name=(select value from v\$parameter where name='undo_tablespace')) t, (select round(nvl(sum(bytes),0)/1048576) mb from dba_undo_extents where status in ('ACTIVE','UNEXPIRED')) a, (select value from v\$parameter where name='undo_retention') p;"
   # top segments into history for a pack-free growth view
-  sql_lines "$sid" "select owner||'.'||segment_name||'|'||round(sum(bytes)/1048576) from (select * from cdb_segments order by bytes desc) where rownum<=50 group by owner, segment_name;" 2>/dev/null | while IFS='|' read -r n mb; do [ -n "$n" ] && hist_append segment "$sid" "$n" "$mb" 0; done
+  sql_rows "$sid" "" "$sid" "top segments (cdb_segments)" "select owner||'.'||segment_name||'|'||round(sum(bytes)/1048576) from (select * from cdb_segments order by bytes desc) where rownum<=50 group by owner, segment_name;" | while IFS='|' read -r n mb; do [ -n "$n" ] && hist_append segment "$sid" "$n" "$mb" 0; done
   sql_checks "$sid" "$sid" "select 'CHECK|WARN|'||count(*)||' datafile(s) at their autoextend maximum (cannot grow)' from dba_data_files where autoextensible='YES' and bytes>=maxbytes*0.99 having count(*)>0;
 select 'CHECK|WARN|'||count(*)||' datafile(s) with autoextend OFF in '||listagg(distinct tablespace_name, ',') within group (order by tablespace_name) from dba_data_files where autoextensible='NO' having count(*)>0;
 select 'CHECK|WARN|datafiles '||c.n||' of db_files='||p.value from (select count(*) n from dba_data_files) c, (select value from v\$parameter where name='db_files') p where c.n>to_number(p.value)*0.9;
 select 'CHECK|INFO|recyclebin holds '||round(sum(space)*8/1024)||' MB' from dba_recyclebin having sum(space)*8/1024>5000;
 select 'CHECK|WARN|aud\$ is '||round(sum(bytes)/1048576)||' MB - purge with DBMS_AUDIT_MGMT' from dba_segments where segment_name='AUD\$' having sum(bytes)/1048576>5000;
 select 'CHECK|WARN|APEX activity/debug logs are '||round(sum(bytes)/1048576)||' MB - check the APEX purge jobs' from cdb_segments where owner like 'APEX_%' and (segment_name like 'WWV_FLOW_ACTIVITY_LOG%' or segment_name like 'WWV_FLOW_DEBUG_MESSAGES%') having sum(bytes)/1048576>5000;"
+  sql_section_audit "$sid"
 }
 
 write_tables() {
@@ -151,11 +176,15 @@ main() {
   report_init "$SPACE_OUT/${HOST}_$(date '+%Y%m%d_%H%M%S')"
   say "space-forecast $VERSION window ${SPACE_WINDOW}d history $SPACE_HISTORY/$HOST -> $OUT"
   collect_fs
-  local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
+  # the loop head tests db_instances' status (lib b728ff6): a process list that cannot be read is a CRIT, not an empty loop
+  local sids="" s; if sids="$(db_instances)"; then sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')" || true
+  else finding CRIT db "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked; pass --sid to check one"; fi
+  [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
   for s in $sids; do collect_db "$s"; done
   findings_sync
   write_tables
   report_finish "space-forecast: $HOST $TODAY" "$MAKE_TAR" >/dev/null
   if [ "$CSV" = 1 ]; then cat "$RAW/forecast.csv"; else print_findings; printf '\n%s\n' "$OUT/REPORT.md"; fi
+  findings_rc   # until now main returned the printf's (or cat's) 0 whatever the findings said
 }
 main "$@"
