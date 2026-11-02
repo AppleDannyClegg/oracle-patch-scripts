@@ -68,3 +68,14 @@ FAIL_rollback='^opatch rollback'; OK_rollback='^rollback=ok$'
 # opatch leaves a failed RU out of lspatches so apply=failed, nothing is recorded as applied and run starts FREE again (started=ok,
 # open_mode read) and exits 1. Forbidden after that: apply=ok, applied=<id>, datapatch=ok, verify=ok, rollback=ok
 FAIL_run='^opatch apply'; OK_run='^(apply=ok|applied=[^[:space:]]|datapatch=ok|verify=ok|rollback=ok)'
+# <cmd>:ps_unreadable - ps cannot run (the gate's $T/ps.fail) and PROC_DIR is an empty dir, so lib's /proc fallback finds nothing
+# either (5cc183f). --sid FREE is stripped from the case's ARGS: with it, discovery never reads the list. No stub call is meant to
+# fail, so FAIL_* matches nothing and the ps stub's own FAILED line is what the gate counts. df9d2c9: before it every
+# 'db_instances | grep -qx SID' read a failed ps as 'not running' - stop recorded stopped=ok with nothing stopped, apply/datapatch/
+# rollback/run recorded applied=/datapatch=ok/rollback=ok on a home whose instance may be up, restore untarred over it, start
+# recorded started=ok; now up() dies 'cannot read the process list ... refusing to go on', rc 1, no state line. download is not
+# here: it never reads the list (ok on both sides of df9d2c9 - a case that cannot fail proves nothing).
+for _c in backup stop apply start datapatch rollback restore cleanup heal run; do
+  _a="ARGS_$_c"; _v="${!_a-$ARGS}"; eval "CASES_$_c='ps_unreadable'; FAIL_${_c}__ps_unreadable='^never matches\$'; ARGS_${_c}__ps_unreadable=\"\${_v//--sid FREE/}\""
+done
+case "${CASE:-}" in ps_unreadable) : >"$T/ps.fail"; mkdir -p "$T/env/noproc"; export PROC_DIR="$T/env/noproc";; esac
