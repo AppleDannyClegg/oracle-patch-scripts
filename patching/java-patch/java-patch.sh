@@ -29,7 +29,7 @@
 #   --no-cacerts       do not copy extra CA aliases into the new cacerts
 #   --dry-run  --yes  --json  --verbose  --run-dir DIR
 #
-# Config: java-patch.conf, ~/.java-patch.conf or the shared oracle.conf: JAVA_HOME, JAVA_BASE, MOS_USER, MOS_PASSWORD,
+# Config: java-patch.conf, ~/.java-patch.conf or the shared oracle.conf: JAVA_HOME, JAVA_BASE, MOS_TOKEN_FILE,
 # CACERTS_PASSWORD (changeit), RESTART_CMDS ("ords=sudo systemctl restart ords,wls=/u01/.../restart.sh"), ORDS_URL,
 # CHECK_URLS (comma list that must answer after the restart), EXTRA_REF_FILES (more files to search and edit).
 

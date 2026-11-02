@@ -33,7 +33,7 @@
 #   --patches ID,ID    --release 19.0.0.0.0   --latest   --dry-run  --yes  --force  --json  --verbose  --run-dir DIR  --no-backup
 #
 # Config: db-patch.conf, ~/.db-patch.conf or the shared oracle.conf: ORACLE_HOME, ORACLE_SID, SQL_CONNECT,
-# BACKUP_DIR, RUN_BASE, MOS_USER, MOS_PASSWORD, PATCHES, STOP_TIMEOUT, START_TIMEOUT, DG_STANDBY_FIRST=yes.
+# BACKUP_DIR, RUN_BASE, MOS_TOKEN_FILE, PATCHES, STOP_TIMEOUT, START_TIMEOUT, DG_STANDBY_FIRST=yes.
 
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

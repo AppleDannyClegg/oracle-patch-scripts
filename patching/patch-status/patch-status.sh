@@ -8,14 +8,14 @@
 #
 # Usage: patch-status.sh [options]
 #   --mos             ask My Oracle Support (by patch name) for the newest RU / PSU for each release;
-#                     needs ~/.netrc or MOS_USER/MOS_PASSWORD. Without it "latest" is derived from the
+#                     needs a MOS bearer token in MOS_TOKEN_FILE (default ~/.mos-token) or MOS_TOKEN. Without it "latest" is derived from the
 #                     CPU calendar (third Tuesday of Jan/Apr/Jul/Oct) and the public ORDS/APEX sites.
 #   --no-net          no network at all (skip the ORDS/APEX public probes too)
 #   --json | --csv    machine-readable table on stdout
 #   --report          also write REPORT.md with FINDINGS to PATCH_OUT/<host>_<ts>/ (and tar.gz)
 #   --out DIR  --quiet
 #
-# Config: patch-status.conf or the shared oracle.conf: PATCH_OUT, MOS_USER, MOS_PASSWORD, SQL_CONNECT.
+# Config: patch-status.conf or the shared oracle.conf: PATCH_OUT, MOS_TOKEN_FILE, SQL_CONNECT.
 # Status: CURRENT = patched to the latest CPU; "N behind" = N CPUs published since the installed
 # level's date; UNKNOWN = no date could be read. Datapatch pending and EOL Java are CRIT.
 # Exit: 2 with a CRIT finding, 1 with a WARN, 0 clean. A home or database whose level could not be read (opatch lspatches
@@ -55,6 +55,17 @@ lsp_read() { local out rc=0; out="$(to "$2" "$1" lspatches 2>/dev/null)" || rc=$
 lsp_unreadable() { printf 'opatch lspatches unreadable (rc %s) - patch level unknown' "$1"; }
 # dates: "Database Release Update 19.24.0.0.240716" -> 2024-07-16 ; "WLS PATCH SET UPDATE 12.2.1.4.240415" -> 2024-04-15
 date_from_desc() { local d; d="$(printf '%s' "$1" | grep -oE '\.[0-9]{6}\b' | tail -1 | tr -d .)"; [ -n "$d" ] && yymmdd_to_date "$d"; }
+# db_ru_date_from_desc <database/Grid RU description>: date_from_desc, plus the 23ai shape. 23ai RUs
+# carry no 6-digit yymmdd - "23.6.0.24.10" is year 24 month 10, and the RU ships on that month's CPU
+# Tuesday. Kept to the database-RU call sites, not widened inside date_from_desc, so an FMW/Coherence
+# version ending in two 2-digit parts is never read as a date. (EM RUs are not versioned this way;
+# their rows warn rather than render clean.)
+db_ru_date_from_desc() {
+  local d ym; d="$(date_from_desc "$1")"
+  [ -n "$d" ] && { printf '%s' "$d"; return; }
+  ym="$(printf '%s' "$1" | grep -oE '[0-9]{2}\.[0-9]{2}$' | tail -1)"
+  case "${ym#*.}" in 0[1-9]|1[0-2]) cpu_date "20${ym%%.*}" "$((10#${ym#*.}))";; esac
+}
 
 # ---------------------------------------------------------------------------
 db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
@@ -66,7 +77,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
       row "$p2" "$h" "$(lsp_unreadable "$lrc")" "" "" "opatch could not list the inventory - run $h/OPatch/opatch lspatches by hand"
       finding WARN patch "$p2 $h: opatch lspatches failed (rc $lrc) - its patch level is unknown, not unpatched"; continue; }
     local ru ruline; ruline="$(printf '%s\n' "$lsp" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE|Grid Infrastructure Release Update|OCW RELEASE UPDATE|DATABASE BUNDLE PATCH|DATABASE PATCH SET UPDATE' | grep -viE 'OJVM|MONTHLY' | sort -t';' -k2 | tail -1)"
-    ru="$(printf '%s' "$ruline" | cut -d';' -f2 | sed 's/^ *//')"; local rudate; rudate="$(date_from_desc "$ruline")"
+    ru="$(printf '%s' "$ruline" | cut -d';' -f2 | sed 's/^ *//')"; local rudate; rudate="$(db_ru_date_from_desc "$ruline")"
     local mrp; mrp="$(printf '%s\n' "$lsp" | grep -iE 'MONTHLY RECOMMENDED PATCHES|MRP' | tail -1 | cut -d';' -f2)"
     local ojvm ojvmdate; ojvm="$(printf '%s\n' "$lsp" | grep -iE 'OJVM' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; ojvmdate="$(date_from_desc "$ojvm")"
     local base; base="$("$h/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$base" ] && base="$(sed -n 's/.*name="Oracle Database[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$h/inventory/registry.xml" 2>/dev/null | head -1)"
@@ -101,7 +112,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     homeru="$(printf '%s\n' "$homelsp" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE' | grep -viE 'OJVM|MONTHLY' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
     while IFS='|' read -r con desc when bad; do   # no pipe: row() must run in this shell
       [ -z "$con" ] && continue
-      local note="$hnote" d; d="$(date_from_desc "$desc")"
+      local note="$hnote" d; d="$(db_ru_date_from_desc "$desc")"
       if [ -n "$homeru" ] && [ "$desc" != "$homeru" ]; then note="DATAPATCH PENDING: home has '$homeru'"; [ "$DO_REPORT" = 1 ] && finding CRIT patch "$sid/$con: binary RU is '$homeru' but datapatch level is '$desc' - run datapatch -verbose"; fi
       [ "${bad:-0}" != 0 ] && note="${note:+$note; }$bad failed/partial datapatch entries"
       row "datapatch $sid/$con" "$home" "$desc" "$d" "" "$note"
@@ -193,6 +204,8 @@ other_products() {
     local arc=0; [ -x "${abin:-/nonexistent}/OPatch/opatch" ] && { local alsp; alsp="$(lsp_read "$abin/OPatch/opatch" 120)" || arc=$?; printf '%s\n' "$alsp" >"$RAW/lspatches_em_agent.txt"
       if [ "$arc" = 0 ]; then aru="$(printf '%s\n' "$alsp" | grep -iE 'AGENT' | grep -iE 'RU|RELEASE UPDATE|BUNDLE' | sort | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
       else aru="$(lsp_unreadable "$arc")"; finding WARN patch "EM agent $abin: opatch lspatches failed (rc $arc) - its RU level is unknown, not unpatched"; fi; }
+    # an EM RU name (24.1.0.10) has no parsable date: warn rather than let row() render it UNKNOWN with no finding
+    [ "$arc" = 0 ] && [ -n "$aru" ] && [ -z "$(date_from_desc "$aru")" ] && finding WARN patch "EM agent $ah: RU '$aru' has no parsable date (EM RUs are not yymmdd-versioned) - its CPU count is unknown, not current"
     row "EM agent ${ev:-?}" "$ah" "${aru:-${ev:-unknown}}" "$(date_from_desc "$aru")" "$([ "$arc" = 0 ] && [ -n "$aru" ] && echo "RU of $LATEST_CPU")" "$(if [ "$arc" != 0 ]; then echo "opatch could not list the inventory - run $abin/OPatch/opatch lspatches by hand"; elif [ -n "$aru" ]; then echo 'RU from opatch lspatches of the agent binaries'; else echo 'no RU seen in lspatches: agent patched with agent RUs, not here'; fi)"
   fi
   local oh; oh="$(for x in "${OMS_HOME:-/nonexistent}" /u01/app/oracle/middleware* /u01/app/oracle/em*/middleware /u01/app/oracle/product/em*/middleware /opt/oracle/middleware*; do [ -x "$x/bin/emctl" ] && [ -x "$x/OPatch/opatch" ] && echo "$x"; done 2>/dev/null | head -1)"
@@ -201,6 +214,8 @@ other_products() {
     local orc=0; olsp="$(lsp_read "$oh/OPatch/opatch" 180)" || orc=$?; printf '%s\n' "$olsp" >"$RAW/lspatches_em_oms.txt"
     if [ "$orc" = 0 ]; then oru="$(printf '%s\n' "$olsp" | grep -iE 'OMS|ENTERPRISE MANAGER' | grep -iE 'RU|RELEASE UPDATE|BUNDLE' | sort | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
     else oru="$(lsp_unreadable "$orc")"; finding WARN patch "EM OMS $oh: opatch lspatches failed (rc $orc) - its RU level is unknown, not unpatched"; fi
+    # an EM RU name (24.1.0.10) has no parsable date: warn rather than let row() render it UNKNOWN with no finding
+    [ "$orc" = 0 ] && [ -n "$oru" ] && [ -z "$(date_from_desc "$oru")" ] && finding WARN patch "EM OMS $oh: RU '$oru' has no parsable date (EM RUs are not yymmdd-versioned) - its CPU count is unknown, not current"
     row "EM OMS ${ov:-?}" "$oh" "${oru:-no OMS RU in lspatches}" "$(date_from_desc "$oru")" "$([ "$orc" = 0 ] && echo "RU of $LATEST_CPU")" "$([ "$orc" = 0 ] && echo 'EM RUs come about monthly; the OMS RU and the agent RU are applied as a pair (OMSPatcher for the OMS)' || echo "opatch could not list the inventory - run $oh/OPatch/opatch lspatches by hand")"
     case "$ov" in 13.[0-4].*) [ "$DO_REPORT" = 1 ] && finding WARN patch "Enterprise Manager $ov in $oh: 13.4 and older are out of Premier Support (13.5 or 24ai)";; esac
   fi
@@ -216,7 +231,14 @@ ords_release_date() { # ORDS x.y.z -> yy.q: 24.3 = 2024 Q3 release (Jul-Sep); tr
 print_table() {
   case "$FMT" in
     csv) echo "product,home,installed,date,latest,cpus_behind,status,note"; printf '%s' "$ROWS" | awk -F'|' 'BEGIN{OFS=","} {for(i=1;i<=NF;i++) gsub(/,/,";",$i); $1=$1; print}';;
-    json) printf '{"host":"%s","latest_cpu":"%s","rows":[' "$HOST" "$LATEST_CPU"; printf '%s' "$ROWS" | awk -F'|' 'NR>1{printf ","} {printf "{\"product\":\"%s\",\"home\":\"%s\",\"installed\":\"%s\",\"date\":\"%s\",\"latest\":\"%s\",\"behind\":\"%s\",\"status\":\"%s\",\"note\":\"%s\"}", $1,$2,$3,$4,$5,$6,$7,$8}'; echo "]}";;
+    # JSON-escape each field (backslash first, then quote). HOST/CPU go through the environment, not
+    # awk -v, which would interpret backslashes in the value. row() still joins on '|', so a field
+    # containing a pipe is the one input this cannot save - that is the format's known ceiling.
+    json) printf '%s' "$ROWS" | HOST="$HOST" CPU="$LATEST_CPU" awk -F'|' '
+        function j(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); return s }
+        BEGIN{ printf "{\"host\":\"%s\",\"latest_cpu\":\"%s\",\"rows\":[", j(ENVIRON["HOST"]), j(ENVIRON["CPU"]) }
+        { if (NR>1) printf ","; printf "{\"product\":\"%s\",\"home\":\"%s\",\"installed\":\"%s\",\"date\":\"%s\",\"latest\":\"%s\",\"behind\":\"%s\",\"status\":\"%s\",\"note\":\"%s\"}", j($1),j($2),j($3),j($4),j($5),j($6),j($7),j($8) }
+        END{ print "]}" }' ;;
     *) printf '\nPatch status for %s   (latest Critical Patch Update: %s)\n\n' "$HOST" "$LATEST_CPU"
        { echo "product|home|installed|date|latest|behind|status|note"; printf '%s' "$ROWS"; } | awk -F'|' '{printf "%-28s %-45s %-50s %-10s %-24s %-6s %-9s %s\n", substr($1,1,28), substr($2,1,45), substr($3,1,50), $4, substr($5,1,24), $6, $7, $8}';;
   esac
