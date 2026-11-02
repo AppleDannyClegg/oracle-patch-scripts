@@ -55,16 +55,22 @@ esac
 STUB
 cat >"$STUB/ps" <<'STUB'
 #!/bin/sh
-case "$*" in *args*) echo "ora_pmon_FREE";; *) exec /bin/ps "$@";; esac
+case "$*" in *args*) for s in ${STUB_INSTANCES:-FREE}; do echo "ora_pmon_$s"; done;; *) exec /bin/ps "$@";; esac
 STUB
 cat >"$STUB/sqlplus" <<'STUB'
 #!/bin/sh
 q="$(cat)"
 if [ "${STUB_SQL_FAIL:-0}" = 1 ]; then echo "ORA-01017: invalid username/password; logon denied" >&2; exit 1; fi
 if printf '%s' "$q" | grep -q 'v\$database'; then [ -n "${STUB_DB_ROLE:-}" ] && echo "$STUB_DB_ROLE"; fi
+if printf '%s' "$q" | grep -q 'wallet_root'; then
+  eval "v=\${STUB_WR_${ORACLE_SID:-}:-}"
+  [ -n "$v" ] || v="${STUB_WALLET_ROOT:-}"
+  [ -n "$v" ] && echo "$v"
+fi
 if printf '%s' "$q" | grep -q 'gv\$encryption_wallet'; then
   if [ "${STUB_TDE_FAIL:-0}" = 1 ]; then echo "ORA-00942: table or view does not exist" >&2; exit 1; fi
-  printf '1|%s|OKV\n' "${STUB_TDE_STATUS:-OPEN}"
+  [ -n "${STUB_TDE_LOG:-}" ] && echo "${ORACLE_SID:-?}" >>"$STUB_TDE_LOG"
+  printf '1|%s|%s\n' "${STUB_TDE_STATUS:-OPEN}" "${ORACLE_SID:-?}"
 fi
 if printf '%s' "$q" | grep -q 'gv\$managed_standby'; then [ "${STUB_NO_MRP:-0}" = 1 ] || printf 'MRP0|%s\n' "${STUB_MRP:-APPLYING_LOG}"; fi
 if printf '%s' "$q" | grep -q 'v\$dataguard_stats'; then printf 'apply lag|+00 00:00:05\n'; fi
@@ -162,6 +168,17 @@ if [ "$RC" = 0 ] && printf '%s' "$out" | grep -q "backed-up SSL_WALLET_LOC" && g
 else
   bad "rollback advisory assertion failed (rc=$RC): $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
 fi
+
+# owner-DB resolution (Ava e93dd77 / Landru 13:35:22): two instances, only the second's wallet_root
+# owns the ora -> the TDE rows come from that instance, not the first
+new_wallet; write_ora "$OKV/ssl/19700101000000000000"
+: >"$T/tde.log"
+STUB_INSTANCES="FREE ORCL" STUB_WR_FREE=/nonexistent STUB_WR_ORCL="$T" STUB_TDE_LOG="$T/tde.log" run verify
+if grep -qx ORCL "$T/tde.log" && ! grep -qx FREE "$T/tde.log"; then ok "owner-DB: the matching second instance (ORCL) is used for the TDE read"; else bad "owner-DB: TDE read used [$(tr '\n' ' ' <"$T/tde.log")] want ORCL: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"; fi
+
+# two instances, neither wallet_root matches -> WARN naming the instance used
+STUB_INSTANCES="FREE ORCL" STUB_WR_FREE=/nonexistent STUB_WR_ORCL=/other run verify
+if printf '%s' "$out" | grep -q "not derived"; then ok "owner-DB: no match warns and names the instance used"; else bad "owner-DB: no-match WARN missing: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"; fi
 
 printf '\nokv-rotate gate: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
