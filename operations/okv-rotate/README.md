@@ -91,6 +91,7 @@ its `okv` target has no apply).
 --okv-home DIR        $OKV_HOME (default: discovered)
 --ora FILE            okvclient.ora (default: <okv-home>/conf/okvclient.ora)
 --node NAME           node label in the report (default: hostname -s)
+--sid SID             the database instance that owns this okvclient.ora (default: derived from wallet_root)
 --rotated-from NAME   the OKV node the console rotation was started from
 --timeout SECS        wait: give up after this long (default 3600; the client refreshes ~hourly)
 --interval SECS       wait: seconds between okvclient.ora polls (default 60)
@@ -98,6 +99,13 @@ its `okv` target has no apply).
 --out DIR             report output dir (default $CERT_OUT or ~/okv-rotate)
 --report  --dry-run  --yes  --force  --json  --verbose  --run-dir DIR
 ```
+
+## Which database the TDE/apply rows come from
+
+The `gv$encryption_wallet` and standby rows are read from the instance whose `v$parameter.wallet_root`
+points at the `okvclient.ora` under test (`--sid` overrides). On a node with more than one database under
+that OKV home the match can miss (Gen's `OKV_HOME` sits under the dbhome, not under `wallet_root`): the
+script then warns and uses the first instance — **pass `--sid` to pin it**.
 
 ## The rotated? test (why the wallet is not where you expect)
 
