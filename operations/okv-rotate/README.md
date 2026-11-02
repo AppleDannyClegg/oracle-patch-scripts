@@ -69,8 +69,10 @@ verify one node before the other.
   switch *is* the thing being verified), as is a wallet that is not `OPEN` anywhere, or a `PHYSICAL_STANDBY`
   with no `MRP` row (redo apply is not running). Exit 2/1/0 as for `inspect`.
 - **`apply`** — `wait` then `verify` (the script's half of the rotation; the console click is manual).
-- **`backup`** / **`rollback`** — snapshot `okvclient.ora` (the `SSL_WALLET_LOC` line) into the run dir, and
-  restore it. Neither touches `$OKV_HOME/conf/ewallet.p12`.
+- **`backup`** — snapshot `okvclient.ora` (the `SSL_WALLET_LOC` line) into the run dir, for the record.
+- **`rollback`** — **advisory only**: prints the manual recovery steps and the backed-up `SSL_WALLET_LOC`. It
+  does **not** write into `$OKV_HOME` — restoring the whole `okvclient.ora` would revert `SERVER=`,
+  `OKV_HOSTNAME` and `UPDATE_TIMESTAMP` too, which the runbook forbids. Ask Gen/Oracle before repointing.
 - **`run`** — `inspect`, then `wait`, then `verify`.
 - **`report`** — `inspect` with `--report`: writes `REPORT.md` + `raw/` under `$CERT_OUT` (default
   `~/okv-rotate`).

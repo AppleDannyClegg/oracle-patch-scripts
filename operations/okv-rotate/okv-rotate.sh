@@ -35,7 +35,8 @@
 #   verify                inspect as pass/fail assertions, with 'not rotated' escalated to CRIT. Exit 2 CRIT / 1 WARN / 0.
 #   apply                 The script's half: wait, then verify (the console click is manual).
 #   backup                Copy okvclient.ora (the SSL_WALLET_LOC line) into the run dir, for rollback.
-#   rollback              Restore okvclient.ora from the run-dir backup. Never touches $OKV_HOME/conf/ewallet.p12.
+#   rollback              Print the manual rollback steps and the backed-up SSL_WALLET_LOC. Does NOT write into
+#                         $OKV_HOME (restoring the whole file would revert SERVER=, which the runbook forbids).
 #   run                   inspect, then wait, then verify (the whole local sequence).
 #   report                inspect with --report: writes REPORT.md and raw/.
 #
@@ -288,17 +289,29 @@ cmd_apply() {
   cmd_verify
 }
 
-# cmd_rollback: restore the previous okvclient.ora (the old SSL_WALLET_LOC). Never touches conf/ewallet.p12.
+# cmd_rollback: ADVISORY. Mother 13:34:12 P1: restoring the whole okvclient.ora would revert SERVER=,
+# OKV_HOSTNAME and UPDATE_TIMESTAMP too (a hand-edit of SERVER= by another route, which the runbook forbids),
+# and nobody has confirmed an endpoint repointed at the old cert is accepted after the server-side rotation.
+# So this prints the recovery steps and the backed-up SSL_WALLET_LOC; it does not write into $OKV_HOME.
 cmd_rollback() {
-  local b f cdir; b="$(state_get backup_ora || true)"; [ -n "$b" ] || b="$RUN_DIR/okvclient.ora.bak"
-  [ -f "$b" ] || die "no okvclient.ora backup here ($RUN_DIR): run 'backup' first, or give --run-dir of the run that holds one"
+  local b f loc; b="$(state_get backup_ora || true)"; [ -n "$b" ] || b="$RUN_DIR/okvclient.ora.bak"
   f="$(okv_ora_file)" || die "no okvclient.ora found (set OKV_HOME or --ora)"
-  warn "rollback restores $f from $b (the previous SSL_WALLET_LOC). It does NOT touch \$OKV_HOME/conf/ewallet.p12; keep the old ssl/ewallet.p12 until well after the deadline"
-  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would restore $f from $b"; return 0; fi
-  cp -p "$b" "$f" || { state_set rollback failed; die "restore of $f failed"; }
-  cdir="$(okv_client_dir "$f")"
-  if [ -x "$cdir/bin/okvutil" ]; then local orc=0; to 60 "$cdir/bin/okvutil" list -v 4 </dev/null >>"${LOG_FILE:-/dev/null}" 2>&1 || orc=$?; fi
-  state_set rollback ok; log "rolled back: SSL_WALLET_LOC is now $(okv_field "$f" SSL_WALLET_LOC)"
+  loc="$(okv_field "$f" SSL_WALLET_LOC)"
+  printf 'Rollback is a MANUAL step - this script does not write into $OKV_HOME.\n\n'
+  printf 'current okvclient.ora   : %s\n' "$f"
+  printf 'current SSL_WALLET_LOC : %s\n' "${loc:-?}"
+  if [ -f "$b" ]; then printf 'backed-up SSL_WALLET_LOC: %s  (%s)\n' "$(grep -iE '^SSL_WALLET_LOC=' "$b" | tail -1 | cut -d= -f2-)" "$b"
+  else printf 'no backup in %s: run backup before the change next time\n' "$RUN_DIR"; fi
+  cat <<EOF
+
+To roll back this endpoint (only if Gen/Daniel confirm it is supported):
+  1. The old wallet is still at the OLD SSL_WALLET_LOC (the bare .../ssl path). Do NOT delete it.
+  2. Do NOT hand-edit SERVER= in okvclient.ora, and do NOT copy the whole backed-up file over the live one -
+     that reverts SERVER=/OKV_HOSTNAME/UPDATE_TIMESTAMP too. If a repoint is needed, change only the
+     SSL_WALLET_LOC line, in the console / with Oracle support, not by hand.
+  3. Re-check with:  okv-rotate.sh inspect
+Ask Gen (or raise the SR) before changing SSL_WALLET_LOC.
+EOF
 }
 
 # cmd_run: inspect, then wait for the switch, then verify (the whole local sequence).
