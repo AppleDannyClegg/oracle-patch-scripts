@@ -14,6 +14,8 @@
 # SEC_APP_SCHEMAS (comma list of application schemas to report privileges for),
 # SEC_ALLOWED_DBA (comma list of accounts allowed to hold DBA; others are flagged).
 # Output: SEC_OUT/<host>_<ts>/REPORT.md (SCORECARD + FINDINGS first) + raw/ + tar.gz.
+# Exit: 2 with a CRIT finding, 1 with a WARN, 0 clean. A control that could not be evaluated (a batch that stopped, a file
+# this user cannot read) is a FAIL that says so - never a PASS, never silently absent from the scorecard.
 
 # shellcheck disable=SC2034  # QUIET/VERBOSE read by the lib
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,8 +41,24 @@ control() {
   case "$st" in PASS) NPASS=$((NPASS+1));; FAIL) NFAIL=$((NFAIL+1)); if [[ "$ev" == CRIT:* ]]; then finding CRIT sec "$scope: $text - ${ev#CRIT:}"; else finding WARN sec "$scope: $text - $ev"; fi;; esac
   [ -n "${SCORE_FILE:-}" ] && printf '%s|%s|%s|%s\n' "$scope" "$text" "$st" "$ev" >>"$SCORE_FILE"; return 0
 }
-# sql_controls <sid> <scope> <sql>: rows "CTRL|ref|text|status|evidence"
-sql_controls() { sql_run "$1" "set heading off\n$3" 2>/dev/null | grep -a '^CTRL|' | while IFS='|' read -r _ ref text st ev; do control "$2" "$ref" "$text" "$st" "$ev"; done; }
+# sql_controls <sid> <scope> <sql>: rows "CTRL|ref|text|status|evidence". The batch is captured and judged, not piped to grep:
+# sql_run merges stderr into the stream (lib), and the old 'sql_run | grep ^CTRL|' threw away exactly the ORA- lines and the
+# status that proved a batch had stopped - a sqlplus killed by SQL_TIMEOUT at statement 20, a view this edition lacks, an
+# 'alter session set container' that failed under --pdb (ORA-65011, the batch then ran in CDB$ROOT under the PDB's label) all
+# gave a shorter scorecard, 'N PASS, 0 FAIL', with nothing saying the rest were never evaluated (Colossus/Multivac/Bishop, 1 Nov 23:36).
+# No 'whenever sqlerror' on purpose: every control that can run does; the batch control counts the rows that arrived against the
+# rows the SQL text holds and the ORA-/SP2- errors, and a CTRLEND sentinel proves the batch reached its end.
+sql_controls() {
+  local sid="$1" scope="$2" q="$3" out rc=0 n k e err
+  n="$(printf '%s\n' "$q" | grep -c "'CTRL|")"
+  out="$(sql_run "$sid" "set heading off\n$q\nselect 'CTRLEND' from dual;" 2>&1)" || rc=$?
+  printf '%s\n' "$out" | grep -a '^CTRL|' | while IFS='|' read -r _ ref text st ev; do control "$scope" "$ref" "$text" "$st" "$ev"; done
+  k="$(printf '%s\n' "$out" | grep -ac '^CTRL|')"; e="$(printf '%s\n' "$out" | grep -acE '^(ORA|SP2)-[0-9]+')"
+  if [ "$rc" != 0 ] || [ "$e" != 0 ] || ! printf '%s\n' "$out" | grep -aq '^CTRLEND'; then
+    err="$(printf '%s\n' "$out" | grep -aoE '(ORA|SP2)-[0-9]+[^|]*' | head -1 | cut -c1-100)"
+    control "$scope" "" "controls batch evaluated completely ($k of $n rows arrived, $e SQL error(s))" FAIL "CRIT:rc $rc${err:+, $err} - the controls that did not answer were NOT evaluated; they are not PASS"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 db_controls() {
@@ -111,7 +129,8 @@ select 'CTRL|APEX|applications without SSL required (Rejoin Sessions / Deep link
 pdb_controls() { # per container: accounts, PUBLIC grants, APEX
   local sid="$1"
   db_is_cdb "$sid" || return 0
-  local p pdbs; pdbs="$(db_pdbs "$sid")"; [ -n "${PDB:-}" ] && pdbs="$(printf '%s\n%s\n' "$PDB" "$pdbs" | awk '!s[$0]++')"
+  local p pdbs; pdbs="$(db_pdbs "$sid")" || control "$sid" "" "PDB list readable (v\$pdbs)" FAIL "v\$pdbs could not be read - the per-PDB controls were NOT evaluated"
+  [ -n "${PDB:-}" ] && pdbs="$(printf '%s\n%s\n' "$PDB" "$pdbs" | awk '!s[$0]++')"
   for p in $pdbs; do with_pdb "$p" db_controls "$sid" "$sid/$p"; done
 }
 
@@ -136,7 +155,11 @@ network_controls() {
     [ -n "$wl" ] && { local wp; wp="$(file_mode "$wl")"; control "net/$lsn" "" "wallet directory $wl not world-readable" "$([ -n "$wp" ] && [ "${wp: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${wp:-unknown}$([ -n "$wp" ] && [ "${wp: -1}" != 0 ] && echo " - others can read the wallet files")"; }
     local pw; pw="$(ls "$h"/dbs/orapw* 2>/dev/null | head -1)"; [ -n "$pw" ] && { local pm; pm="$(file_mode "$pw")"; control "net/$lsn" "1.x" "password file $(basename "$pw") mode 640 or stricter" "$([ -n "$pm" ] && [ "${pm: -1}" = 0 ] && echo PASS || echo FAIL)" "mode ${pm:-unknown}"; }
     local ob; ob="$(file_mode "$h/bin/oracle")"; [ -n "$ob" ] && control "net/$lsn" "1.x" "\$ORACLE_HOME/bin/oracle is 6751 (setuid oracle, no world execute beyond the binary's design)" "$([ "$ob" = 6751 ] || [ "$ob" = 751 ] && echo PASS || echo INFO)" "mode $ob"
-    local ww; ww="$(find "$h" -xdev -perm -o+w ! -type l 2>/dev/null | head -5 | tr '\n' ' ')"; control "net/$lsn" "1.x" "no world-writable files under ORACLE_HOME" "$([ -z "$ww" ] && echo PASS || echo FAIL)" "${ww:-none}"
+    # find's errors are kept: a home this user cannot read (or a directory inside it) used to scan as 'none' = PASS (Bishop 23:37)
+    local ww werr; ww="$(find "$h" -xdev -perm -o+w ! -type l 2>"$RAW/worldw_$lsn.err" | head -5 | tr '\n' ' ')"; werr="$(wc -l <"$RAW/worldw_$lsn.err" | tr -d ' ')"
+    if [ -n "$ww" ]; then control "net/$lsn" "1.x" "no world-writable files under ORACLE_HOME" FAIL "$ww"
+    elif [ "$werr" != 0 ]; then control "net/$lsn" "1.x" "no world-writable files under ORACLE_HOME" FAIL "find could not read $werr path(s) under $h ($(head -1 "$RAW/worldw_$lsn.err" | sed 's/^find: //' | cut -c1-80)) - partial scan, not a pass"
+    else control "net/$lsn" "1.x" "no world-writable files under ORACLE_HOME" PASS "none"; fi
   done
   grep -qE '^[^#].*:Y' /etc/oratab 2>/dev/null && true
 }
@@ -213,6 +236,10 @@ okv_controls() {
 wls_controls() {
   local h d; for h in $(wls_homes); do for d in $(wls_domains "$h"); do
     local cfg="$d/config/config.xml" dn; dn="$(basename "$d")"
+    # every control below is a grep/sed on config.xml, and 'pattern absent' is the PASS branch for most of them: an unreadable
+    # config.xml (domain owned by another user) scored PASS on demo keystore, anonymous admin lookup and hostname verification,
+    # and the JDBC plaintext CRIT never fired on an unreadable jdbc/ (Bishop 23:37, run with the file chmod 000)
+    [ -r "$cfg" ] || { control "wls/$dn" "" "config.xml readable" FAIL "CRIT:$cfg is not readable by $(id -un) - no WebLogic control was evaluated for this domain"; continue; }
     section_sh "wls_${dn}_sec" "grep -E '<production-mode-enabled>|<name>weblogic</name>|DemoIdentity|DemoTrust|custom-identity-keystore|<listen-address>|<ssl>|<enabled>|<listen-port-enabled>|<two-way-ssl|<hostname-verification|<administration-port-enabled>|<console-enabled>|<web-service-test-page|<anonymous-admin-lookup|<t3|<tunneling|<credential-encrypted>|<password-encrypted>' '$cfg' | sed 's/^ *//' | redact | head -80; echo; ls -la '$d'/security/ 2>/dev/null; echo; grep -lE 'password-encrypted>\{AES' '$d'/config/jdbc/*.xml 2>/dev/null | wc -l | sed 's/^/jdbc modules with encrypted passwords: /'; grep -LE 'password-encrypted>\{AES' '$d'/config/jdbc/*.xml 2>/dev/null | sed 's/^/PLAINTEXT or missing: /'"
     local pm; pm="$(sed -n 's/.*<production-mode-enabled>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"; control "wls/$dn" "" "production mode enabled" "$([ "$pm" = true ] && echo PASS || echo FAIL)" "production-mode-enabled=${pm:-false}"
     grep -q 'DemoIdentity' "$cfg" && ! grep -q 'custom-identity-keystore-file-name' "$cfg" && control "wls/$dn" "" "no Demo identity keystore" FAIL "DemoIdentity.jks in use" || control "wls/$dn" "" "no Demo identity keystore" PASS "custom keystore or no demo reference"
@@ -222,7 +249,8 @@ wls_controls() {
     grep -qE '<anonymous-admin-lookup-enabled>true' "$cfg" && control "wls/$dn" "" "anonymous admin lookup disabled" FAIL "anonymous-admin-lookup-enabled=true" || control "wls/$dn" "" "anonymous admin lookup disabled" PASS "default"
     grep -qE '<web-service-test-page-enabled>true' "$cfg" && control "wls/$dn" "" "web service test page disabled" FAIL "enabled" || true
     grep -qE '<hostname-verification-ignored>true|<hostname-verifier-ignored>true' "$cfg" && control "wls/$dn" "" "SSL hostname verification not ignored" FAIL "hostname verification ignored" || control "wls/$dn" "" "SSL hostname verification not ignored" PASS "default"
-    local pt; pt="$(grep -LE 'password-encrypted>\{AES' "$d"/config/jdbc/*.xml 2>/dev/null | wc -l | tr -d ' ')"; [ "$pt" != 0 ] && control "wls/$dn" "" "all JDBC passwords encrypted ({AES})" FAIL "CRIT:$pt JDBC module(s) without an {AES} encrypted password"
+    if [ -d "$d/config/jdbc" ] && [ ! -r "$d/config/jdbc" ]; then control "wls/$dn" "" "all JDBC passwords encrypted ({AES})" FAIL "CRIT:$d/config/jdbc is not readable - JDBC password encryption NOT checked"
+    else local pt; pt="$(grep -LE 'password-encrypted>\{AES' "$d"/config/jdbc/*.xml 2>/dev/null | wc -l | tr -d ' ')"; [ "$pt" != 0 ] && control "wls/$dn" "" "all JDBC passwords encrypted ({AES})" FAIL "CRIT:$pt JDBC module(s) without an {AES} encrypted password"; fi
     local bp; bp="$(ls -la "$d/servers/"*/security/boot.properties 2>/dev/null | awk '$1 !~ /^-rw-------/ {print $NF}' | head -3 | tr '\n' ' ')"; [ -n "$bp" ] && control "wls/$dn" "" "boot.properties mode 600" FAIL "$bp"
     local t3; t3="$(grep -c '<tunneling-enabled>true' "$cfg")"; [ "$t3" != 0 ] && control "wls/$dn" "" "HTTP tunneling (T3 over HTTP) disabled" FAIL "tunneling-enabled=true on $t3 server(s) - exposes T3/RMI to the web tier"
     control "wls/$dn" "" "T3 reachable only from trusted networks (JEP290 filter / network channels)" INFO "check: non-SSL T3 on $(wls_servers "$d" | awk '{print $2}' | tr '\n' ',') - put a network channel for HTTP only behind the proxy; set the RMI filter in JAVA_OPTIONS (weblogic.rmi.filter)"
@@ -265,5 +293,8 @@ select grantee, granted_role, admin_option from dba_role_privs where grantee in 
   report_finish "security-posture: $HOST $(date '+%Y-%m-%d')" "$MAKE_TAR" >/dev/null
   [ "$QUIET" = 1 ] || { echo; printf '%s PASS, %s FAIL\n' "$NPASS" "$NFAIL"; print_findings; }
   printf '\n%s\n%s\n' "$OUT/SCORECARD.md" "$OUT/REPORT.md"
+  # exit contract (2 CRIT, 1 WARN, 0 clean): until now main returned the printf's status, 0 whatever the scorecard said - under
+  # cron with output discarded the exit code is the whole interface (Colossus 23:43). Counts are synced by report_finish above.
+  findings_rc
 }
 main "$@"
