@@ -20,6 +20,8 @@
 #   --steps "…"           steps to reproduce / what was being done
 #   --contact "…"         name, phone, hours (MOS asks for it)
 #   --out DIR             where SR.md, CLAUDE-PROMPT.md and MOS-SEARCH.txt go (default <pack>/sr or ~/sr-draft/<ts>)
+# Exit 0 means the draft was written, not that every fact was collected: a fact that could not be read says 'NOT collected'
+# in SR.md and a [WARN ] line on stderr says why - read those, not the exit code, before filing.
 #   --verbose
 #
 # Config: sr-draft.conf, ~/.sr-draft.conf or the shared oracle.conf: SR_CONTACT, SR_CSI (support identifier),
