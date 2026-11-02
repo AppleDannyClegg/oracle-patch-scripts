@@ -1,6 +1,6 @@
 # OKV endpoint certificate rotation — quickstart for Gen
 
-**Deadline:** the 9–10 Nov 2025 endpoint certificates expire **9 Nov 2026 14:23 GMT**. Every node must be rotated before then.
+**Status (Gen, 1 Nov 2026 22:32):** every prod endpoint is on its new certificate (valid to Oct/Nov 2027) and the console's "rotation in progress" banner has cleared. The old certificates expire **9 Nov 2026 ~14:17–14:23 GMT**; keep the old `ssl/ewallet.p12` files until well after that. This page is the procedure for next time, with the script that now does the checking and waiting.
 
 Source of the procedure: your runbook (OKV 21.8, 4-node multi-master cluster, 19c RAC endpoints, TDE `KEYSTORE_CONFIGURATION=OKV|FILE`) and your follow-up of 1 Nov 22:32 (the client refreshes its config about **once an hour**, not on every `okvutil` run).
 
@@ -45,7 +45,7 @@ Log in on the Key Vault node shown as `OKV_HOSTNAME` for this endpoint and rotat
 |---|---|---|
 | **0** | switched: `SSL_WALLET_LOC` under `ssl/`, its `ewallet.p12` present, `okvutil` ran clean | go to step 4 |
 | **1** | **stop, do not start the next node**: repointed but the new wallet is missing, or `okvutil` failed (a failed read is not a confirmed switch) | read the message; keep the old `ssl/ewallet.p12`; raise it before touching another node |
-| **2** | reads are clean but still on the old wallet after the timeout | re-rotate from the node now shown as `OKV_HOSTNAME` and run `wait` again; 2–3 re-rotations without a switch → Sev 2 SR |
+| **2** | reads are clean but still on the old wallet after the timeout | `UPDATE_TIMESTAMP` unchanged: re-rotate from the node in `OKV_HOSTNAME`, or wait about an hour for the next refresh. Changed but still `/ssl`: the refresh hit the wrong node; re-rotate from the node now shown as `OKV_HOSTNAME`. Then run `wait` again (it runs `okvutil` straight after, which is what worked on the last node). 2–3 re-rotations without a switch → Sev 2 SR |
 
 ## 4–5. Verify the certificate and TDE
 
