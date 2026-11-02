@@ -9,7 +9,8 @@
 # changing verb (opatch apply, ords install, rman restore, srvctl stop ...). NOT-EXERCISED: the command ended before
 # any stub that could change something was called (pgrep and probe-only systemctl verbs do not count): counted and
 # listed on the last line, never a pass. The env file may write $T/ps.txt (one process per line) for the ps stub to
-# print; it cannot change CMD. Needs no database.
+# print, $T/pgrep.txt (pids) for pgrep to find, or set PS_FAIL=1 / create $T/ps.fail to make every ps call fail (logged
+# as FAILED) - so a command that reads an unreadable list as 'nothing running' is visible, not a silent clean; it cannot change CMD. Needs no database.
 # Usage: tests/dry-run-gate.sh [script...]
 cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
@@ -20,11 +21,13 @@ for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki ex
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
 me="$(basename "$0")"
-# ps: what the env file wrote to $T/ps.txt (one process per line, e.g. '1234 ora_pmon_FREE'), else the real ps; never logged
-[ "$me" = ps ] && { f="$(dirname "$DRY_LOG")/ps.txt"; if [ -s "$f" ]; then cat "$f"; else exec /bin/ps "$@"; fi; exit 0; }
+# ps: fails (exit 1, logged FAILED) when PS_FAIL=1 or the env file created $T/ps.fail; else what the env file wrote to $T/ps.txt
+# (one process per line, e.g. '1234 ora_pmon_FREE'), else the real ps; a ps that answers is never logged
+[ "$me" = ps ] && { d="$(dirname "$DRY_LOG")"; { [ "${PS_FAIL:-0}" = 1 ] || [ -e "$d/ps.fail" ]; } && { echo "ps: cannot read the process list (dry-run gate)" >&2; echo "FAILED ps $*" >>"$DRY_LOG"; exit 1; }; f="$d/ps.txt"; if [ -s "$f" ]; then cat "$f"; else exec /bin/ps "$@"; fi; exit 0; }
 q=""; [ -t 0 ] || q="$(cat)"
 { echo "TOOL $me $*"; [ -n "$q" ] && printf '%s\n' "$q" | sed 's/^/  > /'; } >>"$DRY_LOG"
-[ "$me" = pgrep ] && exit 1                       # nothing is running on this box: no real process is ever signalled
+# pgrep: the pids the env file wrote to $T/pgrep.txt, else nothing is running on this box (no real process is ever signalled)
+[ "$me" = pgrep ] && { f="$(dirname "$DRY_LOG")/pgrep.txt"; if [ -s "$f" ]; then cat "$f"; exit 0; fi; exit 1; }
 case "$me" in sqlplus|sql)   # canned answers so scripts reach their change steps: sql_ok, then the env file's regex|answer lines, matched on THIS call's stdin only
   printf '%s' "$q" | grep -q "'ok'" && echo ok
   while IFS='|' read -r re ans; do [ -n "$re" ] && printf '%s' "$q" | grep -qiE -- "$re" && { echo "$ans"; break; }; done <"$ANSWERS";;
@@ -42,7 +45,8 @@ for s in "${scripts[@]}"; do
   cmds="$(sed -n '2,80p' "$s" | awk '/^# Commands/{p=1;next} /^# Options/{exit} /^#$/{p=0;next} p && /^#   [a-z]/{sub(/^#   /,""); n=split($0,w," "); for(i=1;i<=n;i++){ if(w[i]=="|") continue; if(i>1 && w[i-1]!="|") break; m=split(w[i],v,"|"); for(j=1;j<=m;j++) print v[j] } }')"
   for c in $cmds; do
     case " $readonly_cmds " in *" $c "*) continue;; esac
-    : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "$T/env" "$T/env.ok"; mkdir -p "$T/env"
+    # ps.txt / ps.fail / pgrep.txt are per command: one script's ps world (or a PS_FAIL the caller set) must not leak into the next
+    : >"$DRY_LOG"; : >"$ANSWERS"; rm -rf "${T:?}/env" "${T:?}/env.ok" "$T/ps.txt" "$T/ps.fail" "$T/pgrep.txt"; mkdir -p "$T/env"
     # the per-script environment: sourced in a subshell that then runs the command, so nothing leaks between scripts
     # shellcheck disable=SC1090,SC2034
     ( CMD="$c"; readonly CMD; ARGS=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"; a="ARGS_${CMD//-/_}"; extra="${!a-$ARGS}"
