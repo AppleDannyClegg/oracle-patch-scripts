@@ -64,6 +64,7 @@ By hand, the same checks are: `openssl pkcs12 -in <SSL_WALLET_LOC>/ewallet.p12 -
 - Never move, edit or delete `$OKV_HOME/conf/ewallet.p12` — it is the TDE secret store, not the endpoint certificate.
 - Keep the old `$OKV_HOME/ssl/ewallet.p12` until well after 9 Nov as rollback.
 - Do not hand-edit `SERVER=` in `okvclient.ora`; no keystore close/reopen, instance restart or re-enrol as a workaround.
+- After the window: leave the Key Vault certificate-expiry alerts **enabled** (Reports > Alerts > Configure; other alert types can be unticked or have their Limit/days changed there). No script in the tree watches OKV expiry day-to-day; oracle-diag and security-posture are on-demand runs, so the console alert is the standing check until the next rotation.
 - `okv-rotate.sh backup` snapshots `okvclient.ora` into its run dir; `rollback` is advisory: it prints the manual recovery steps and the backed-up `SSL_WALLET_LOC` and writes nothing. The script makes no write under `$OKV_HOME` and never touches either `ewallet.p12`.
 
 ## Which script does what
@@ -81,4 +82,5 @@ All of these are read-only (sqlplus selects, file reads, `okvutil list`, TCP pro
 
 - No script reads the endpoint certificate expiry **without** `OKV_WALLET_PASSWORD`; it falls back to wallet age (300/365 days). Set the password when you want the real date.
 - No script talks to the Key Vault console or REST API; the click is yours. The scripts detect the switch by parsing `SSL_WALLET_LOC` in `okvclient.ora`.
+- Nothing watches the endpoint certificate's expiry between runs; the Key Vault console alerts do that. Keep them on.
 - `cert-renew`'s `okv` target only inspects. Nothing in the tree rebuilds or rotates the endpoint wallet, by design: the runbook says never hand-edit `okvclient.ora` or touch `conf/ewallet.p12`, and the Key Vault client writes the new wallet itself.
