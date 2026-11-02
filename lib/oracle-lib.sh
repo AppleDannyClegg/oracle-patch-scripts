@@ -481,10 +481,16 @@ wls_datasources() { local f; for f in "$1"/config/jdbc/*.xml; do [ -f "$f" ] || 
 ords_setting() { local v; v="$(sed -n "s/^$1=//p" "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; [ -z "$v" ] && v="$(sed -n "s/.*<entry key=\"$1\">\([^<]*\)<.*/\1/p" "${ORDS_CONFIG:-/nonexistent}/global/settings.xml" 2>/dev/null | head -1)"; printf '%s' "$v"; }
 # url_sni_rejected <url>: 0 when an https URL gets Jetty's "400 Invalid SNI" - the host in the URL is not in the certificate (ORDS 22+ standalone checks SNI)
 url_sni_rejected() { case "$1" in https://*) local b; b="$(curl -sk -m 15 "$1" 2>/dev/null)"; grep -qi 'Invalid SNI' <<<"$b";; *) return 1;; esac; }
-# ords_detect: sets ORDS_HOME ORDS_CONFIG ORDS_PID ORDS_VER ORDS_URL ORDS_POOLS (0 = found something)
+# ords_detect: sets ORDS_HOME ORDS_CONFIG ORDS_PID ORDS_VER ORDS_URL ORDS_POOLS ORDS_PS_UNREADABLE (0 = found something)
 # shellcheck disable=SC2034
 ords_detect() {
-  ORDS_PID="$(pgrep -f 'ords.war|ords serve|ords --config|ords\.standalone|oracle.dbtools' 2>/dev/null | head -1)"
+  # the pid comes from ps_pid_args (status kept, /proc fallback), not 'pgrep | head -1': pgrep has no /proc fallback and its status
+  # was dropped, so a minimal container without procps or a pgrep that could not run read as 'no ORDS pid' - db-health-daily then
+  # said CRIT 'ORDS not running', patch-status/perf-snapshot/incident-pack/sr-draft/cert-renew silently had no ORDS (Wheatley 00:58).
+  # ORDS_PS_UNREADABLE=1 when the list could not be read: callers say 'NOT checked', not 'not running'
+  local pl; ORDS_PID=""; ORDS_PS_UNREADABLE=0
+  if pl="$(ps_pid_args 2>/dev/null)"; then ORDS_PID="$(printf '%s\n' "$pl" | grep -E 'ords\.war|ords serve|ords --config|ords\.standalone|oracle\.dbtools' | awk '{print $1}' | head -1)"
+  else ORDS_PS_UNREADABLE=1; fi
   if [ -z "${ORDS_HOME:-}" ]; then local c; c="$(command -v ords 2>/dev/null)"; [ -n "$c" ] && ORDS_HOME="$(cd "$(dirname "$c")/.." && pwd)"; fi
   [ -z "${ORDS_HOME:-}" ] && for d in /opt/oracle/ords /opt/ords /u01/ords /u01/app/oracle/ords "$HOME/ords"; do [ -x "$d/bin/ords" ] && { ORDS_HOME="$d"; break; }; done
   [ -z "${ORDS_CONFIG:-}" ] && [ -n "$ORDS_PID" ] && ORDS_CONFIG="$(tr '\0' ' ' <"/proc/$ORDS_PID/cmdline" 2>/dev/null | sed -n 's/.*--config \([^ ]*\).*/\1/p; s/.*-Dconfig.url=\([^ ]*\).*/\1/p' | head -1)"
