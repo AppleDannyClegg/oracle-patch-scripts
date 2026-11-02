@@ -19,7 +19,7 @@
 # Usage: tests/okv-rotate.sh
 cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
-SCRIPT="operations/okv-rotate/okv-rotate.sh"
+SCRIPT="${OKV_SCRIPT:-operations/okv-rotate/okv-rotate.sh}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 STUB="$T/stub"; OKV="$T/okv"; mkdir -p "$STUB" "$OKV/conf" "$OKV/bin" "$OKV/ssl" "$T/home"
 export PATH="$STUB:$PATH" HOME="$T/home" CERT_OUT="$T/reports" RUN_BASE="$T/runs"
@@ -153,10 +153,15 @@ RUN_BASE="$T/run-bak" run backup
 bakdir="$(ls -d "$T"/run-bak/*-backup 2>/dev/null | tail -1)"
 if [ -n "$bakdir" ] && [ -f "$bakdir/okvclient.ora.bak" ] && grep -q '^backup_ora=' "$bakdir/state"; then ok "backup snapshots the ora and records backup_ora"; else bad "backup did not snapshot/record (bakdir=$bakdir)"; fi
 
-# rollback is a manual step: it must not write okvclient.ora (the non-goal)
-before="$(cat "$OKV/conf/okvclient.ora")"
-RUN_BASE="$T/run-bak" run rollback
-if [ "$(cat "$OKV/conf/okvclient.ora")" = "$before" ]; then ok "rollback leaves okvclient.ora untouched (manual)"; else bad "rollback wrote okvclient.ora"; fi
+# rollback is advisory: with a backup present and the live ora moved on to the switched state,
+# it must name the backed-up SSL_WALLET_LOC and NOT restore the file (Mother 13:38:01 - a cp mutant must fail this)
+write_ora "$OKV/ssl/19700101000000000000"; : >"$OKV/ssl/19700101000000000000/ewallet.p12"
+run rollback --run-dir "$bakdir"
+if [ "$RC" = 0 ] && printf '%s' "$out" | grep -q "backed-up SSL_WALLET_LOC" && grep -q '^SSL_WALLET_LOC=.*/19700101000000000000' "$OKV/conf/okvclient.ora"; then
+  ok "rollback is advisory: prints the backup and leaves the live ora alone"
+else
+  bad "rollback advisory assertion failed (rc=$RC): $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+fi
 
 printf '\nokv-rotate gate: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
