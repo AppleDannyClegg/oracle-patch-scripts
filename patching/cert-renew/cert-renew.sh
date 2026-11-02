@@ -12,7 +12,8 @@
 # Commands
 #   inspect [target]     Every certificate found, sorted by days left (configured store AND what the port really serves)
 #                        --report writes REPORT.md (expired CRIT, <30 d WARN, <90 d INFO, demo/self-signed, SHA1, <2048 bit)
-#                        --json for machines. Exit code with --report: 2 CRIT, 1 WARN, 0 clean (cron-friendly)
+#                        --json for machines. Exit code (every output mode): 2 CRIT, 1 WARN, 0 clean (cron-friendly). A process
+#                        list that cannot be read is a CRIT: the running listeners/databases/JVMs/ORDS/WebLogic were NOT discovered
 #   csr <name>           New private key + CSR: --cn, --san a,b (CN added), --bits; written to CERT_DIR/<name>/
 #   plan <target>        What apply would do with --cert FILE --key FILE [--chain FILE]: cert/key match, chain, names, dates
 #   preflight <target>   plan + tools present, credentials available, files writable, live port reachable
@@ -80,7 +81,24 @@ parse_opts() {
 # ---------------------------------------------------------------------------
 # tools and certificate facts
 # ---------------------------------------------------------------------------
+# the process list is read once per command, before discovery: lib's listener_homes / java_homes / wls_homes / db_instances merge ps
+# with the inventory, the environment and well-known paths and lose ps' status on the way, so a ps that cannot run made every running
+# listener, database, JVM, ORDS and WebLogic server invisible - 'inspect' listed fewer certificates and said nothing (the 86ea2b5
+# class; the readers here were db_instances at find_tools, listener_admin_dirs, inspect_apex, listener_services_wait and
+# listener_homes at resolve_target). inspect goes on with the static sources and says CRIT (the list is not complete); csr/cleanup
+# warn; the change commands refuse - which listener (T_INST) or ORDS serves the certificate is read from that list.
+PS_READABLE=1; PS_MODE=change
+probe_process_list() {
+  ps_args >/dev/null 2>&1 && return 0
+  PS_READABLE=0
+  case "$PS_MODE" in
+    change) die "cannot read the process list (ps failed, $PROC_DIR unreadable) - cannot tell which listener, ORDS or server runs here or serves the certificate; refusing to go on";;
+    inspect) ;;   # cmd_inspect records the CRIT once the report is open
+    *) warn "cannot read the process list (ps failed, $PROC_DIR unreadable) - keytool/orapki searched in the inventory, environment and well-known paths only";;
+  esac
+}
 find_tools() {
+  probe_process_list
   local j; for j in "${JAVA_HOME:-}" $(java_homes); do [ -x "$j/bin/keytool" ] && { KEYTOOL="$j/bin/keytool"; break; }; done
   [ -z "$KEYTOOL" ] && have keytool && KEYTOOL="$(command -v keytool)"
   ORAPKI="${ORAPKI:-}"; [ -z "$ORAPKI" ] && for j in "${ORACLE_HOME:-}" "$(db_home_of "$(db_instances | head -1)")" $(listener_homes | awk '{print $1}') $(grid_home); do [ -x "$j/bin/orapki" ] && { ORAPKI="$j/bin/orapki"; break; }; done
@@ -381,7 +399,8 @@ restart_cmd_for() { printf '%s\n' "${RESTART_CMDS//,/$'\n'}" | sed -n "s/^$1=//p
 listener_services_wait() {
   local l="$1" i n s
   for i in $(seq 1 "${LSNR_REG_WAIT:-70}"); do n="$(to 20 "$l" status "$T_INST" 2>/dev/null | grep -c '^Service "' || true)"; [ "$n" -gt 0 ] && { log "listener $T_INST: $n service(s) registered after ${i}s"; return 0; }
-    [ "$i" = 3 ] && for s in $(db_instances); do log "alter system register on $s (LREG otherwise re-registers within 60 s)"; sql_run "$s" "alter system register;" >>"$LOG_FILE" 2>&1 || true; done; sleep 1; done
+    if [ "$i" = 3 ]; then local l; if l="$(db_instances)"; then for s in $l; do log "alter system register on $s (LREG otherwise re-registers within 60 s)"; sql_run "$s" "alter system register;" >>"$LOG_FILE" 2>&1 || true; done
+      else warn "cannot read the process list - 'alter system register' not sent to any instance; LREG re-registers within 60 s"; fi; fi; sleep 1; done
   warn "listener $T_INST shows no registered services after ${LSNR_REG_WAIT:-70}s: connections get ORA-12514 until LREG re-registers (alter system register; on each instance hurries it)"; return 0
 }
 # restart_target: 0 = restarted (or dry-run), 1 = a restart was attempted and FAILED, 2 = nothing was restarted and the operator
@@ -474,6 +493,7 @@ new_ks_pass() { [ -n "$WLS_KS_PASS" ] || { if [ "$ASSUME_YES" = 1 ] && [ ! -t 0 
 cmd_inspect() {
   init_run_dir inspect; find_tools
   local t="${ARGS[0]:-}"; [ "$REPORT_OUT" = 1 ] && report_init "$CERT_OUT/${HOST}_certs_$(date '+%Y%m%d_%H%M%S')"
+  [ "$PS_READABLE" = 1 ] || finding CRIT host "cannot read the process list (ps failed, $PROC_DIR unreadable) - running listeners, databases, JVMs, ORDS and WebLogic servers were NOT discovered; only the inventory, environment and well-known paths were inspected, so this list is NOT complete"
   [ -z "$KEYTOOL" ] && warn "no keytool found: keystores cannot be read (JAVA_HOME)"
   case "${t%%:*}" in
     "") inspect_wls; inspect_ords; inspect_listener; inspect_ohs; inspect_java; inspect_okv; inspect_gg; inspect_apex; inspect_ports;;
@@ -483,16 +503,17 @@ cmd_inspect() {
   esac
   rows_findings
   pgrep -f 'emagent|oracle.sysman.gcagent' >/dev/null 2>&1 && finding INFO oem "EM agent present: its certificate is managed by the OMS (emctl secure agent / emctl status agent -secure); not inspected here"
-  if [ "$JSON_OUT" = 1 ]; then rows_json; return 0; fi
+  # the exit code is the whole interface under cron, --report or not: until now plain and --json output returned 0 with CRIT findings
+  if [ "$JSON_OUT" = 1 ]; then rows_json; findings_rc; return $?; fi
   print_rows; echo; print_findings 'CRIT|WARN|INFO'
   if [ "$REPORT_OUT" = 1 ]; then
     h1 "Certificates on $HOST"; para "Sorted by days left. Each configured store is read and the port it serves is probed; a serial mismatch between the two means a restart is pending."
     table_head DAYS KIND TARGET WHERE CN ISSUER EXPIRES SIG BITS SERIAL FLAGS
     local days kind target where cn issuer end sig bits serial flags; while IFS='|' read -r days kind target where cn issuer end sig bits serial flags; do table_row "$days" "$kind" "$target" "$where" "$cn" "$issuer" "$end" "$sig" "$bits" "$serial" "$flags"; done < <(sorted_rows)
     h2 "Thresholds"; kv "expired" CRIT; kv "< $WARN_DAYS days" WARN; kv "< $INFO_DAYS days" INFO; kv "demo/self-signed, SHA-1/MD5, RSA < 2048" WARN
-    report_finish "cert-renew inspect: $HOST" 0 >/dev/null; findings_rc; return $?
+    report_finish "cert-renew inspect: $HOST" 0 >/dev/null
   fi
-  return 0
+  findings_rc
 }
 
 cmd_csr() {
@@ -775,6 +796,7 @@ main() {
   local cmd="${1:-}"; shift || true; parse_opts "$@"
   BACKUP_KEEP_HOURS="${BACKUP_KEEP_HOURS:-168}"; [[ "$BACKUP_KEEP_HOURS" =~ ^[0-9]+$ ]] || die "BACKUP_KEEP_HOURS must be a whole number of hours: '$BACKUP_KEEP_HOURS'"
   case "$cmd" in ""|-h|--help|help) ;; *) if [ "$DRY_RUN" = 1 ]; then log "DRY-RUN: backups older than ${BACKUP_KEEP_HOURS}h under $RUN_BASE are left alone"; else expire_backups; fi;; esac
+  case "$cmd" in inspect) PS_MODE=inspect;; csr|cleanup) PS_MODE=csr;; esac
   case "$cmd" in
     inspect) cmd_inspect;; cleanup) cmd_cleanup;; csr) cmd_csr;; plan) cmd_plan;; preflight) cmd_preflight;; backup) cmd_backup;; apply) cmd_apply;; verify) cmd_verify;; rollback) cmd_rollback;; run) cmd_run;;
     ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;
