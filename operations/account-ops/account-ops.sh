@@ -66,7 +66,15 @@ parse_opts() {
 # ---------------------------------------------------------------------------
 # where accounts live: "sid|container|user" rows
 # ---------------------------------------------------------------------------
-sids() { if [ -n "$ONLY_SID" ]; then echo "$ONLY_SID"; else db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX'; fi; }
+# the instance list is read once, in main, and an unreadable process list is a die, not an empty list: sids() used to call
+# db_instances per use, and every command's 'for sid in $(sids)' ran over nothing when ps could not be read - inspect printed
+# an empty report, unlock/reset/profile did nothing, all with exit 0 (lib b728ff6 made db_instances fail closed; this is its
+# caller's half - a die inside $(sids) would only end the subshell)
+SIDS_FOUND=""
+find_sids() { [ -n "$ONLY_SID" ] && return 0
+  SIDS_FOUND="$(db_instances)" || die "cannot read the process list (ps failed, /proc unreadable) - no instance can be found; pass --sid SID"
+  SIDS_FOUND="$(printf '%s\n' "$SIDS_FOUND" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; return 0; }
+sids() { if [ -n "$ONLY_SID" ]; then echo "$ONLY_SID"; else printf '%s\n' "$SIDS_FOUND" | grep . || true; fi; }
 containers() { # <sid>: "-" for root/non-CDB, then open PDBs
   if [ -n "$ONLY_PDB" ]; then echo "$ONLY_PDB"; return; fi
   echo "-"; db_is_cdb "$1" && db_pdbs "$1"; return 0
@@ -382,7 +390,7 @@ cmd_heal() {
 main() {
   load_config; refuse_root
   local cmd="${1:-}"; shift || true; parse_opts "$@"
-  case "$cmd" in ""|-h|--help|help) ;; *) expire_rollback_material;; esac
+  case "$cmd" in ""|-h|--help|help) ;; *) expire_rollback_material; find_sids;; esac
   case "$cmd" in
     inspect) cmd_inspect;; expiring) cmd_expiring;; unlock) cmd_unlock;; reset) cmd_reset;; profile) cmd_profile;; verify) cmd_verify;;
     rollback) cmd_rollback;; cleanup) cmd_cleanup;; heal|run) cmd_heal;; ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;
