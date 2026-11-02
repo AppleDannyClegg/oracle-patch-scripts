@@ -258,7 +258,7 @@ ords_detect() {
     APEX_IMAGES_DIR="$(sed -n 's/.*key="standalone.static.path">\([^<]*\)<.*/\1/p' "$ORDS_CONFIG/global/settings.xml" | head -1)"
   fi
   [ -z "${ORDS_URL:-}" ] && ORDS_URL="http://localhost:8080/ords/"
-  if [ "$WLS_MODE" = 1 ]; then ORDS_RUNNING="$(wait_for_url "$ORDS_URL" 1 && echo wls)"; else ORDS_RUNNING="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null | head -1)"; fi
+  if [ "$WLS_MODE" = 1 ]; then ORDS_RUNNING="$(wait_for_url "$ORDS_URL" 1 && echo wls)"; else ORDS_RUNNING="$(ords_pid)" || die "cannot read the process list (pgrep failed) - cannot tell whether ORDS is running"; fi
   [ -n "${APEX_IMAGES_DIR:-}" ] && [ -f "$APEX_IMAGES_DIR/apex_version.txt" ] && IMAGES_VER="$(grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' "$APEX_IMAGES_DIR/apex_version.txt" | head -1)"
 }
 
@@ -483,14 +483,22 @@ ords_stop() {
   else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING" || { err "cannot signal ORDS pid $ORDS_RUNNING (owner: $(ps -o user= -p "$ORDS_RUNNING" 2>/dev/null || echo '?')): not stopped"; return 1; }; fi
   [ "$DRY_RUN" = 1 ] && { ORDS_RUNNING=""; return 0; }
   # the proof is the process table, not kill -0: kill -0 also fails on a process this user may not signal (EPERM), which read as 'gone'
-  local t=60; while [ $t -gt 0 ] && pid_alive "$ORDS_RUNNING"; do sleep 5; t=$((t - 5)); done
-  if pid_alive "$ORDS_RUNNING"; then
+  # ... and a process table that cannot be read is 'cannot tell', not 'gone' (a ps that fails looks exactly like a pid that left)
+  local t=60 st; while [ $t -gt 0 ]; do pid_alive "$ORDS_RUNNING"; st=$?; [ $st = 0 ] || break; sleep 5; t=$((t - 5)); done
+  pid_alive "$ORDS_RUNNING"; st=$?
+  [ $st = 2 ] && { err "cannot read the process table (ps -p failed) - cannot tell whether ORDS pid $ORDS_RUNNING stopped: not recorded as stopped"; return 1; }
+  if [ $st = 0 ]; then
     if [ "$FORCE" = 1 ]; then kill -9 "$ORDS_RUNNING" 2>/dev/null; sleep 2; fi
-    pid_alive "$ORDS_RUNNING" && { err "ORDS (pid $ORDS_RUNNING) is still running after 60 s$([ "$FORCE" = 1 ] || echo ' (--force sends kill -9)')"; return 1; }
+    pid_alive "$ORDS_RUNNING"; st=$?
+    [ $st = 2 ] && { err "cannot read the process table (ps -p failed) after kill -9 - cannot tell whether ORDS pid $ORDS_RUNNING stopped: not recorded as stopped"; return 1; }
+    [ $st = 0 ] && { err "ORDS (pid $ORDS_RUNNING) is still running after 60 s$([ "$FORCE" = 1 ] || echo ' (--force sends kill -9)')"; return 1; }
   fi
   ORDS_RUNNING=""
 }
-pid_alive() { ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
+# ords_pid: the first ORDS pid, empty when none; rc 1 when pgrep itself could not run (rc 2/3) - an unreadable process list is not 'no ORDS'
+ords_pid() { local p rc; p="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null)"; rc=$?; [ $rc -le 1 ] || return 1; printf '%s\n' "$p" | head -1; }
+# pid_alive <pid>: 0 alive, 1 gone, 2 the process table cannot be read (ps does not even show this shell) - 2 is never 'gone' (wls-patch 3ab88b8's stop)
+pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -qE "^ *$$\$" || return 2; ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
 ords_start() {
   ords_detect
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }
