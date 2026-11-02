@@ -308,10 +308,18 @@ cmd_delete_obsolete() {
 
 # ---------------------------------------------------------------------------
 report_cmd() { # <command> : one report over every database
-  local cmd="$1" sids s
-  sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
-  [ -n "$sids" ] || die "no running database instance (or --sid SID)"
+  local cmd="$1" sids s unreadable=0
+  if sids="$(db_instances)"; then
+    sids="$(printf '%s\n' "$sids" | grep -vE '^\+ASM|^-MGMTDB|^\+APX' | sed '/^$/d')"
+    [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
+    [ -n "$sids" ] || die "no running database instance (or --sid SID)"
+  elif [ -n "$ONLY_SID" ]; then
+    sids="$ONLY_SID"
+  else
+    unreadable=1; sids=""
+  fi
   report_init "$RMAN_OUT/${HOST}_${cmd}_$(date '+%Y%m%d_%H%M%S')"
+  [ "$unreadable" = 1 ] && finding CRIT db "cannot read the process list (ps failed, ${PROC_DIR:-/proc} unreadable) - no database was found or checked; pass --sid to check one"
   say "rman-ops $cmd on: $(printf '%s' "$sids" | tr '\n' ' ') -> $OUT"
   for s in $sids; do
     h1 "Database $s"
@@ -341,8 +349,13 @@ main() {
   case "$cmd" in
     inspect|validate|recovery-window|zdlra|evidence|run) report_cmd "$cmd";;
     restore-test|crosscheck|delete-obsolete)
-      local sid="$ONLY_SID"; [ -z "$sid" ] && [ "$(db_instances | grep -vE '^\+ASM|^-MGMTDB' | grep -c .)" = 1 ] && sid="$(db_instances | grep -vE '^\+ASM|^-MGMTDB')"
-      [ -n "$sid" ] || die "$cmd needs --sid SID (running: $(db_instances | tr '\n' ' '))"
+      local sid="$ONLY_SID" l
+      if [ -z "$sid" ]; then
+        if ! l="$(db_instances)"; then die "cannot read the process list (ps failed, ${PROC_DIR:-/proc} unreadable) - cannot tell which database is running; pass --sid SID"; fi
+        l="$(printf '%s\n' "$l" | grep -vE '^\+ASM|^-MGMTDB' | sed '/^$/d')"
+        [ "$(printf '%s\n' "$l" | grep -c .)" = 1 ] && sid="$l"
+      fi
+      [ -n "$sid" ] || die "$cmd needs --sid SID (running: $(db_instances 2>/dev/null | tr '\n' ' '))"
       sql_ok "$sid" || die "cannot connect to $sid as sysdba"
       case "$cmd" in restore-test) cmd_restore_test "$sid";; crosscheck) cmd_crosscheck "$sid";; delete-obsolete) cmd_delete_obsolete "$sid";; esac;;
     ""|-h|--help|help) usage;; *) die "Unknown command: $cmd";;

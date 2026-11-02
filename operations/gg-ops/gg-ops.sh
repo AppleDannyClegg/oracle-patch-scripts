@@ -206,7 +206,12 @@ cmd_inspect() {
   report_init "$([ "$REPORT_OUT" = 1 ] && echo "$GG_OUT/${HOST}_gg_$(date '+%Y%m%d_%H%M%S')" || echo "$RUN_DIR/report")"
   h1 "GoldenGate on $HOST ($GG_MODE, ${OGG_HOME:-$GG_MA_URL})"; kv "mode" "$GG_MODE"; kv "home" "${OGG_HOME:-$GG_MA_DEPLOYMENT@$GG_MA_URL}"; kv "version" "$(gg "versions" 2>/dev/null | grep -iE 'Oracle GoldenGate|Version' | head -2 | tr '\n' ' ' | cut -c1-120)"; kv_end
   inspect_processes; [ "$GG_MODE" = classic ] && { inspect_trails; inspect_errors; }
-  local sid; for sid in $(sids_for_sql); do inspect_db "$sid"; done
+  local sid sids
+  if sids="$(sids_for_sql)"; then
+    for sid in $sids; do inspect_db "$sid"; done
+  else
+    finding CRIT db "cannot read the process list (ps failed, ${PROC_DIR:-/proc} unreadable) - no database was found or checked; pass --sid to check one"
+  fi
   findings_sync
   if [ "$JSON_OUT" = 1 ]; then
     printf '{"host":"%s","mode":"%s","processes":[' "$HOST" "$GG_MODE"; local first=1 prog st g lag since
@@ -327,10 +332,12 @@ heal_one() { # <group> <status>: decide from the report's last error
   case "$err" in
     *OGG-00446*|*OGG-02028*|*OGG-01028*"archive"*|*"Could not find archived log"*)
       local seq thr; seq="$(printf '%s' "$err" | grep -oE 'sequence[^0-9]*[0-9]+' | grep -oE '[0-9]+' | head -1)"; thr="$(printf '%s' "$err" | grep -oE 'thread[^0-9]*[0-9]+' | grep -oE '[0-9]+' | head -1)"
-      local cur; cur="$(for s in $(sids_for_sql); do sql_val "$s" "(select max(sequence#) from v\$archived_log where thread#=${thr:-1} and dest_id=1)" 2>/dev/null; done | head -1)"
+      local sids cur
+      if ! sids="$(sids_for_sql)"; then die "cannot read the process list (ps failed, ${PROC_DIR:-/proc} unreadable) - cannot tell which database is running; pass --sid SID"; fi
+      cur="$(for s in $sids; do sql_val "$s" "(select max(sequence#) from v\$archived_log where thread#=${thr:-1} and dest_id=1)" 2>/dev/null; done | head -1)"
       local rman="restore archivelog from logseq ${seq:-N} until logseq ${cur:-M} thread ${thr:-1};"
       echo "   -> missing archivelog(s): the extract needs sequence ${seq:-?} (thread ${thr:-?}) which RMAN deleted. Restore them, then start: RMAN> $rman"
-      [ -n "$seq" ] && confirm "run RMAN '$rman' on $(sids_for_sql | head -1) now?" && { if rman_restore "$(sids_for_sql | head -1)" "$rman"; then confirm "start $p $g?" && start_one "$g"; else err "RMAN restore failed (see $LOG_FILE)"; fi; };;
+      [ -n "$seq" ] && confirm "run RMAN '$rman' on $(printf '%s\n' "$sids" | head -1) now?" && { if rman_restore "$(printf '%s\n' "$sids" | head -1)" "$rman"; then confirm "start $p $g?" && start_one "$g"; else err "RMAN restore failed (see $LOG_FILE)"; fi; };;
     *ORA-01031*|*OGG-00665*"insufficient privileges"*|*ORA-01017*)
       echo "   -> database privileges / login: as SYSDBA: exec dbms_goldengate_auth.grant_admin_privilege('$GG_SCHEMA'); grant select any dictionary, select any transaction to $GG_SCHEMA; alter system set enable_goldengate_replication=true;"
       echo "      and check the credential store: ggsci> info credentialstore / alter credentialstore replace user ... alias $GG_ALIAS (account-ops.sh reset --user $GG_SCHEMA propagates a password change)";;
