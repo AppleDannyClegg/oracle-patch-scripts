@@ -348,6 +348,14 @@ escli_setup() { # sets ESCLI or explains why not; returns 1 when the database si
   es_ok || { finding WARN escli "escli cannot reach Exascale: $(printf '%s' "$ES_ERR" | head -1 | cut -c1-160) (EXA_WALLET / EXA_CTRL in the conf; wallet search: \$OSSCONF/eswallet, \$ORACLE_BASE/admin/eswallet, /etc/oracle/cell/network-config/eswallet)"; return 1; }
   return 0
 }
+# the database list: lib db_instances returns 1 when the process list cannot be read (b728ff6) - that is 'unknown', never 'none
+# running'. inspect and plan say so as a CRIT (exit 2), purge-archivelogs/heal refuse; --sid names the target and needs no list.
+ps_unreadable_msg() { printf '%s' "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked; pass --sid to name one"; }
+db_sids() { # sets SIDS; status 1 = the process list could not be read and no --sid names a database
+  SIDS=""; [ -n "$ONLY_SID" ] && { SIDS="$ONLY_SID"; return 0; }
+  local l; l="$(db_instances)" || return 1
+  SIDS="$(printf '%s\n' "$l" | grep -vE '^\+ASM|^-MGMTDB|^\+APX')" || true
+}
 
 cmd_inspect() {
   report_init "$EXA_OUT/${HOST}_$(date '+%Y%m%d_%H%M%S')"
@@ -362,9 +370,10 @@ cmd_inspect() {
   fi
   if [ "$NO_DB" = 0 ]; then
     h1 "Database side"
-    local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
-    [ -n "$sids" ] || para "_no running database instance on this host_"
-    for s in $sids; do collect_db "$s"; done
+    local s; if db_sids; then
+      [ -n "$SIDS" ] || para "_no running database instance on this host_"
+      for s in $SIDS; do collect_db "$s"; done
+    else finding CRIT db "$(ps_unreadable_msg)"; para "_$(ps_unreadable_msg)_"; fi
   fi
   findings_sync; write_summary
   h1 "What to do when a vault is full (the short version)"
@@ -423,9 +432,9 @@ cmd_plan() {
     echo
   done
   [ "$have_es" = 0 ] && echo "escli not usable here ($(print_findings 'CRIT|WARN|INFO' | grep escli | head -1)); database-side plan only" && echo
+  local dbrc=0
   if [ "$NO_DB" = 0 ]; then
-    local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"
-    for s in $sids; do
+    local s; if db_sids; then for s in $SIDS; do
       sql_ok "$s" || continue
       [ "$(sql_val "$s" "(select count(*) from v\$datafile where name like '@%')" 2>/dev/null)" = 0 ] && continue
       echo "== database $s"
@@ -437,9 +446,10 @@ select 'thin clone PDB '||name||' from con_id '||snapshot_parent_con_id||' ('||r
       echo "   -> $TOOL.sh purge-archivelogs --sid $s --days ${ARCH_DAYS:-$EXA_ARCH_DAYS}$([ "$DO_OBSOLETE" = 1 ] && echo ' --obsolete')     (RMAN: delete noprompt archivelog all completed before 'sysdate-${ARCH_DAYS:-$EXA_ARCH_DAYS}' backed up $EXA_ARCH_BACKED_UP times to device type $EXA_ARCH_DEVICE)"
       echo
     done
+    else echo "== databases: $(ps_unreadable_msg) - nothing is planned for the database side"; echo; finding CRIT db "$(ps_unreadable_msg)"; dbrc=2; fi
   fi
   MAKE_TAR="$saved_tar"; report_finish "exascale-space plan: $HOST $TODAY" 0 >/dev/null
-  echo "details: $OUT/REPORT.md"
+  echo "details: $OUT/REPORT.md"; return "$dbrc"
 }
 
 # ---------------------------------------------------------------------------
@@ -531,10 +541,11 @@ cmd_rollback() {
 # purge-archivelogs: RMAN deletes only what it has backed up; --obsolete adds delete obsolete
 # ---------------------------------------------------------------------------
 cmd_purge() {
-  local sids s; sids="$(db_instances | grep -vE '^\+ASM|^-MGMTDB|^\+APX')"; [ -n "$ONLY_SID" ] && sids="$ONLY_SID"; [ -n "$sids" ] || die "no running database (use --sid)"
+  local s; db_sids || die "$(ps_unreadable_msg) - purge refused: nothing is known about which databases run"
+  [ -n "$SIDS" ] || die "no running database (use --sid)"
   init_run_dir purge-archivelogs
   local fail=0
-  for s in $sids; do
+  for s in $SIDS; do
     sql_ok "$s" || { warn "$s: cannot connect"; fail=1; continue; }
     local n; n="$(sql_val "$s" "(select count(*)||' files '||round(nvl(sum(blocks*block_size),0)/1073741824,1)||' GB' from v\$archived_log where dest_id=1 and deleted='NO' and standby_dest='NO' and backup_count>=$EXA_ARCH_BACKED_UP and completion_time<sysdate-${ARCH_DAYS:-$EXA_ARCH_DAYS})" 2>/dev/null)"
     local nb; nb="$(sql_val "$s" "(select count(*) from v\$archived_log where dest_id=1 and deleted='NO' and standby_dest='NO' and backup_count=0 and completion_time<sysdate-${ARCH_DAYS:-$EXA_ARCH_DAYS})" 2>/dev/null)"
