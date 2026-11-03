@@ -17,7 +17,9 @@
 #
 # Config: patch-status.conf or the shared oracle.conf: PATCH_OUT, MOS_TOKEN_FILE, SQL_CONNECT.
 # Status: CURRENT = patched to the latest CPU; "N behind" = N CPUs published since the installed
-# level's date; UNKNOWN = no date could be read. Datapatch pending and EOL Java are CRIT.
+# level's date; UNKNOWN = no date could be read; info = an FMW component bundle whose level has no CPU
+# date to compare against (e.g. a Coherence Cumulative Patch, '...12.2.1.4.30'), so it is not date-scored.
+# Datapatch pending and EOL Java are CRIT.
 # Exit: 2 with a CRIT finding, 1 with a WARN, 0 clean. A home or database whose level could not be read (opatch lspatches
 # failed, sqlplus failed, the registry could not be read) is a WARN in every output mode: unknown is never shown as current.
 
