@@ -5,11 +5,14 @@ Data Guard, RMAN, GoldenGate) without being an expert in each product. Twenty sc
 folders, `patching/`, `operations/` and `reports/`, one sub-folder per script with its
 `*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch` and
 `oracle-diag` sources `lib/oracle-lib.sh` from the top of the tree (two levels up), so copy the whole
-tree (`get.sh` does it) or a script folder together with `lib/`, never a single file.
+tree (`get.sh`, or `get.ps1` on Windows, does it) or a script folder together with `lib/`, never a single file.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
 ```
+
+On Windows the same fetch is one line too (PowerShell or a plain `cmd`/`tar` form) - see
+[Getting the scripts](#getting-the-scripts).
 
 Every script that changes something has the same shape:
 
@@ -79,15 +82,34 @@ recent one. The last line of `run` is either `SUCCESS ...` or an error naming th
 
 ## Getting the scripts
 
-On your own machine (Mac, Linux or WSL), one line fetches everything into `./oracle-patch-scripts`,
-no git or GitHub account needed:
+One line fetches everything into `./oracle-patch-scripts`, no git or GitHub account needed.
+
+**Mac, Linux or WSL** (bash):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
 ```
 
-Run the same line again whenever you want the newest version; it keeps your `*.conf` files and
-leaves the old copy as `oracle-patch-scripts.old`.
+**Windows - PowerShell** (Windows Terminal's default profile):
+
+```powershell
+irm https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.ps1 | iex
+```
+
+**Windows - Command Prompt** (no PowerShell; uses the built-in `curl.exe` and `tar.exe`, Windows 10 1803+):
+
+```cmd
+curl -fsSL -o "%TEMP%\ops.zip" https://github.com/AppleDannyClegg/oracle-patch-scripts/archive/refs/heads/main.zip && tar -xf "%TEMP%\ops.zip" -C . && ren oracle-patch-scripts-main oracle-patch-scripts && del "%TEMP%\ops.zip"
+```
+
+Run the same line again whenever you want the newest version. `get.sh` and `get.ps1` keep your
+`*.conf` files and leave the old copy as `oracle-patch-scripts.old`. The plain `cmd` line is
+download-and-extract only: it carries nothing across and errors if `oracle-patch-scripts` already
+exists, so delete it (or use `get.ps1`) before re-running.
+
+The scripts are bash, so to *run* them on Windows use Git Bash or WSL; `get.ps1` skips the library
+self-test on Windows for that reason. It also prints the server-side `chmod -R +x` you need after
+`scp`-ing the tree from Windows, which has no Unix executable bit.
 
 ## Servers without internet access
 
@@ -97,7 +119,7 @@ reach out, and each has an offline path:
 
 | Need | Where it comes from | What to do on an air-gapped server |
 |---|---|---|
-| the scripts themselves | GitHub (`get.sh`) | run `get.sh` on your laptop, then `scp -r oracle-patch-scripts oracle@server:~/` |
+| the scripts themselves | GitHub (`get.sh`, or `get.ps1` on Windows) | run `get.sh` on your laptop, then `scp -r oracle-patch-scripts oracle@server:~/` |
 | patch files | My Oracle Support (bearer token from the get_token page, 60 minutes) or download.oracle.com (public) | download on the laptop, copy the file to the place in the table below, run the script without `latest`/`download`/`--latest`/`--patches` |
 | "is there a newer release" probes | download.oracle.com | put `OFFLINE=1` in `oracle.conf` (top of the tree) so no script waits on a blocked connection; without it each script probes once for 5 s and then carries on offline |
 
