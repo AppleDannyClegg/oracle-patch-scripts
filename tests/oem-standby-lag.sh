@@ -118,6 +118,18 @@ EMCLI_TARGETS='STBYA STBYB' run deploy --targets STBYA,STBYB --dry-run --yes
 if [ "$rc" = 0 ] && ! grep -qE '^emcli (import|save|publish|deploy|undeploy)_metric_extension' "$LOG"; then ok
 else no "deploy --dry-run: rc=$rc or a changing verb reached emcli:"; sed 's/^/    /' "$LOG"; fi
 
+# every change command under --dry-run, not only deploy: confirm() answers yes under --dry-run, so a command whose
+# emcli call has no DRY_RUN guard runs it for real (Cortex/GERTY 3 Nov, b9091d0: import, publish and rollback did)
+for c in import publish rollback; do
+  extra=""; [ "$c" = rollback ] && extra="--run-dir $T/run-dry-rb"
+  mkdir -p "$T/run-dry-rb"; printf 'deployed_targets=STBYA\n' >"$T/run-dry-rb/state"
+  # shellcheck disable=SC2086
+  EMCLI_TARGETS='STBYA' run "$c" --targets STBYA $extra --dry-run --yes
+  if [ "$rc" = 0 ] && ! grep -qE '^emcli (import|save|publish|deploy|undeploy)_metric_extension' "$LOG"; then ok
+  else no "$c --dry-run: rc=$rc or a changing verb reached emcli:"; sed 's/^/    /' "$LOG"; fi
+done
+grep -qx 'deployed_targets=STBYA' "$T/run-dry-rb/state" && ok || no "rollback --dry-run cleared the recorded deployed_targets"
+
 EMCLI_TARGETS='STBYA STBYB' run deploy --targets STBYA,STBYB --yes --run-dir "$T/run-deploy"
 if [ "$rc" = 0 ] && grep -qxF 'emcli deploy_metric_extension -target_type=oracle_database -name=ME$STANDBY_LAG -version=1 -target_names=STBYA,STBYB' "$LOG" \
    && grep -qx 'deployed_targets=STBYA,STBYB' "$T/run-deploy/state"; then ok
@@ -138,8 +150,10 @@ EMCLI_TARGETS='STBYA' ME_ARCHIVE="$T/absent.zip" run import --yes
 [ "$rc" != 0 ] && ! grep -q 'import_metric_extension -file' "$LOG" && ok || no "import of a missing archive: rc=$rc (want refused before emcli)"
 
 EMCLI_TARGETS='STBYA' run publish --yes
-grep -q '^emcli save_metric_extension_draft ' "$LOG" && grep -q '^emcli publish_metric_extension ' "$LOG" && [ "$rc" = 0 ] && ok \
-  || no "publish: rc=$rc, save draft + publish not both called"
+# the full argv: a metric extension is identified by target type + name + version, so both verbs carry all three
+grep -qxF 'emcli save_metric_extension_draft -target_type=oracle_database -name=ME$STANDBY_LAG -version=1' "$LOG" \
+  && grep -qxF 'emcli publish_metric_extension -target_type=oracle_database -name=ME$STANDBY_LAG -version=1' "$LOG" && [ "$rc" = 0 ] && ok \
+  || { no "publish: rc=$rc, save draft + publish not both called with -target_type/-name/-version:"; sed 's/^/    /' "$LOG"; }
 
 # --- verify: the repository says each target is collecting ---------------------------------------------------
 r_a='STBYA|lag_status|OK|2026-11-03 12:00:00'; r_b='STBYB|lag_status|OK|2026-11-03 12:00:00'
