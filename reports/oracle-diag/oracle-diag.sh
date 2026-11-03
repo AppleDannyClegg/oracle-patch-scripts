@@ -717,7 +717,7 @@ diag_wls() {
     kv "products in this home" "$(grep -oE 'name="[^"]*" version="[0-9.]+"' "$h/inventory/registry.xml" 2>/dev/null | grep -vE 'name="(WebLogic Server|Oracle Common|Oracle Installer)' | sed 's/name=//; s/ version=/ /; s/"//g' | tr '\n' ';' | cut -c1-300)"
     kv "JDK (oui/.globalEnv)" "$(sed -n 's/^JAVA_HOME=//p' "$h/oui/.globalEnv.properties" 2>/dev/null | head -1)"
     kv "OPatch" "$("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    local lsp psu; if lsp="$(env ORACLE_HOME="$h" to 120 "$h/OPatch/opatch" lspatches 2>/dev/null)"; then psu="$(printf '%s\n' "$lsp" | grep -i 'PATCH SET UPDATE' | sed -n 's/.*UPDATE *\([0-9.]*\).*/\1/p' | sort -V | tail -1)"; kv "PSU level" "${psu:-none listed}"
+    local lsp psu; if lsp="$(to 120 env ORACLE_HOME="$h" "$h/OPatch/opatch" lspatches 2>/dev/null)"; then psu="$(printf '%s\n' "$lsp" | grep -i 'PATCH SET UPDATE' | sed -n 's/.*UPDATE *\([0-9.]*\).*/\1/p' | sort -V | tail -1)"; kv "PSU level" "${psu:-none listed}"
     else kv "PSU level" "unknown - opatch lspatches failed for $h (not 'unpatched')"; finding WARN wls "$(basename "$h"): opatch lspatches failed - patch level unknown, not unpatched"; fi
     kv_end
     section "wls_patches_$(basename "$h")" env ORACLE_HOME="$h" "$h/OPatch/opatch" lspatches
