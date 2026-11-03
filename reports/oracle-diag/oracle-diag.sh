@@ -48,6 +48,7 @@ SUDO=""; command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && SUDO="su
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 say()  { [ "$QUIET" = 1 ] || printf '%s  %s\n' "$(ts)" "$*" >&2; }
 warn() { printf '%s  WARN %s\n' "$(ts)" "$*" >&2; }
+err()  { printf '%s  ERROR %s\n' "$(ts)" "$*" >&2; }   # self-contained copy: this script never sources lib's err (same as warn/die/optchk)
 die()  { printf '%s  ERROR %s\n' "$(ts)" "$*" >&2; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 skipped() { case "$SKIP" in *" $1 "*) return 0;; esac; return 1; }
