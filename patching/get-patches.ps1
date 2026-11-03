@@ -124,9 +124,12 @@ function Get-MosReleases {
     $script:Releases
 }
 
-function Get-ReleaseId([string] $Label) {
+function Get-ReleaseId([string] $Label, [switch] $Optional) {
     $r = Get-MosReleases | Where-Object { $_.Label -eq $Label } | Select-Object -First 1
-    if (-not $r) { throw "release '$Label' is not in the MOS release table" }
+    if (-not $r) {
+        if ($Optional) { return $null }
+        throw "release '$Label' is not in the MOS release table"
+    }
     $r.Id
 }
 
@@ -171,9 +174,18 @@ function Get-InstalledLevel($Wls, [string] $Pattern) {
 
 function Get-WlsPlan($Wls) {
     $release = $Wls.Release
+    if (-not $release) {
+        Write-Warning "$($Wls.Home): the manifest has no WebLogic release for this home - fix the wls| line (registry.xml or .product.properties) and run again"
+        return
+    }
     $short = ($release.Split('.')[0..3]) -join '.'                       # 12.2.1.4.0 -> 12.2.1.4
     $esc = [regex]::Escape($short)
-    $rows = @(Get-MosPatchRows $script:ProductWls (Get-ReleaseId "Oracle WebLogic Server $(Get-FivePart $release)") $script:PlatformGeneric -Recommended)
+    $wlsRelease = Get-ReleaseId "Oracle WebLogic Server $(Get-FivePart $release)" -Optional
+    if (-not $wlsRelease) {
+        Write-Warning "$($Wls.Home): MOS has no release 'Oracle WebLogic Server $(Get-FivePart $release)' - skipping its patches"
+        return
+    }
+    $rows = @(Get-MosPatchRows $script:ProductWls $wlsRelease $script:PlatformGeneric -Recommended)
 
     # Stack Patch Bundle first: it carries the PSU and Coherence (and Thirdparty, OSS, JDBC, RDA)
     $spbPattern = "^WLS STACK PATCH BUNDLE $esc(?:\.0)?\.(\d{6})"
@@ -211,8 +223,10 @@ function Get-WlsPlan($Wls) {
     # Coherence cumulative patch. lspatches says "Coherence Cumulative Patch 12.2.1.4.30"; MOS can say
     # "Coherence 12.2.1.4 Cumulative Patch 30 (12.2.1.4.30)". Both carry the level as <release>.<N>.
     if ($Wls.Coherence -and -not $spb) {
-        $cohRows = @(Get-MosPatchRows $script:ProductCoherence (Get-ReleaseId "Oracle Coherence $(Get-FivePart $short)") $script:PlatformGeneric -Recommended |
-                Where-Object { $_.Abstract -match 'Coherence' -and $_.Abstract -match 'Cumulative Patch' })
+        $cohRelease = Get-ReleaseId "Oracle Coherence $(Get-FivePart $short)" -Optional
+        if (-not $cohRelease) { Write-Warning "$($Wls.Home): MOS has no release 'Oracle Coherence $(Get-FivePart $short)' - skipping the Coherence patch" }
+        $cohRows = if ($cohRelease) { @(Get-MosPatchRows $script:ProductCoherence $cohRelease $script:PlatformGeneric -Recommended |
+                Where-Object { $_.Abstract -match 'Coherence' -and $_.Abstract -match 'Cumulative Patch' }) } else { @() }
         $newest = $cohRows | Sort-Object { Get-CoherenceLevel $_.Abstract $short } -Descending | Select-Object -First 1
         $have = @($Wls.Patches | Where-Object { $_.Description -match 'Coherence' -and $_.Description -match 'Cumulative Patch' } |
                 ForEach-Object { Get-CoherenceLevel $_.Description $short } | Sort-Object -Descending)[0]
@@ -254,11 +268,20 @@ function Get-JdkPlan($Jdks) {
 # a database or client home: newest Database Release Update for its release, with OPatch 6880880.
 # The parameter is $Db, not $Home: that is a read-only automatic variable.
 function Get-DbPlan($Db) {
-    $major = $Db.Version.Split('.')[0]
+    $major = ($Db.Version -split '\.')[0]
+    if (-not $major -or $major -notmatch '^\d+$') {
+        Write-Warning "$($Db.Home): the manifest has no database version for this home - skipping its Release Update. Fix the home| line (opatch lsinventory there), or get the number from MOS Doc 2118136.2 and pass -Patch"
+        return
+    }
     $label = "Oracle Database $major.0.0.0.0"
+    $dbRelease = Get-ReleaseId $label -Optional
+    if (-not $dbRelease) {
+        Write-Warning "$($Db.Home): MOS has no release '$label' - skipping its Release Update. Get the number from MOS Doc 2118136.2 and pass -Patch"
+        return
+    }
     # ends at "(" or the end: the " - CMAN" / " - GSM" RUs are not for this home (as db-patch.sh)
     $ruPattern = "^Database Release Update\s*:?\s*$major\.(\d+)\.0\.0\.(\d{6})\s*(?:\(|$)"
-    $rows = @(Get-MosPatchRows $script:ProductDatabase (Get-ReleaseId $label) $script:PlatformLinux -Recommended)
+    $rows = @(Get-MosPatchRows $script:ProductDatabase $dbRelease $script:PlatformLinux -Recommended)
     $newest = $rows | Where-Object { $_.Abstract -match $ruPattern } |
         Sort-Object { [regex]::Match($_.Abstract, $ruPattern).Groups[2].Value } -Descending | Select-Object -First 1
     $have = @($Db.Patches | Where-Object { $_.Description -match $ruPattern } |

@@ -99,10 +99,35 @@ home_kind() {
   elif [ -d "$1/sysman" ] || [[ "$1" == */agent* ]]; then echo agent
   else echo other; fi
 }
+# version of an installed component from a home's own inventory; the last resort when nothing else reads it
+comp_version() {
+  local h="$1" name
+  for name in oracle.rdbms oracle.sqlplus oracle.client; do
+    sed -n "/NAME=\"$name\"/{s/.*VER=\"\([0-9][0-9.]*\)\".*/\1/p;q;}" "$h/inventory/ContentsXML/comps.xml" 2>/dev/null
+  done | head -1
+}
+
+# a version-looking path component: .../product/19.0.0.0 or .../product/19.0.0/dbhome_1
+version_in_path() {
+  local p
+  for p in "$(basename "$1")" "$(basename "$(dirname "$1")")"; do
+    printf '%s' "$p" | grep -qE '^[0-9]+(\.[0-9]+)+$' && { printf '%s' "$p"; return; }
+  done
+}
+
 home_version() {
-  case "$2" in
-    db) "$1/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | head -1 ;;
-    agent) basename "$1" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 ;;
+  local h="$1" kind="$2" v
+  case "$kind" in
+    db)
+      # sqlplus -V needs the home's lib on the loader path, and prints nothing at all when it cannot
+      # start (a client home is often read this way): try it plain, then with LD_LIBRARY_PATH, then
+      # read the version out of the home's inventory, then off the install path
+      v="$("$h/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | head -1)"
+      [ -n "$v" ] || v="$(LD_LIBRARY_PATH="$h/lib:${LD_LIBRARY_PATH:-}" "$h/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | head -1)"
+      [ -n "$v" ] || v="$(comp_version "$h")"
+      [ -n "$v" ] || v="$(version_in_path "$h")"
+      printf '%s' "$v" ;;
+    agent) basename "$h" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 ;;
   esac
 }
 
@@ -134,7 +159,7 @@ wls_lines() {
 
 # a home line and its patch lines for every other inventory home that has OPatch
 other_lines() {
-  local h kind opatch lsp wls
+  local h kind opatch lsp wls version
   wls="$(wls_homes)"
   for h in $(inventory_homes | sort -u); do
     [ -x "$h/OPatch/opatch" ] || continue
@@ -142,7 +167,10 @@ other_lines() {
     kind="$(home_kind "$h")"
     opatch="$("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     lsp="$(with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
-    printf 'home|%s|%s|%s|%s\n' "$h" "$kind" "$(home_version "$h" "$kind")" "$opatch"
+    version="$(home_version "$h" "$kind")"
+    # get-patches.ps1 needs the version to pick the right Release Update: say so here, do not leave it silent
+    [ -n "$version" ] || [ "$kind" != db ] || echo "patch-manifest: warning: could not read the version of $h - get-patches.ps1 will skip its Release Update" >&2
+    printf 'home|%s|%s|%s|%s\n' "$h" "$kind" "$version" "$opatch"
     patch_lines "$h" "$lsp"
   done
 }

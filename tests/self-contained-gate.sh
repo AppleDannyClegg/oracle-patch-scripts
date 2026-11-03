@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# self-contained-gate.sh - the four scripts README.md lists as NOT sourcing lib/oracle-lib.sh
-# (wls-patch, apex-patch, ords-patch, oracle-diag) must DEFINE every lib-named function they call.
+# self-contained-gate.sh - the scripts README.md lists as NOT sourcing lib/oracle-lib.sh
+# (wls-patch, apex-patch, ords-patch, oracle-diag, patch-manifest) must DEFINE every lib-named function they call.
 #
 # Why: oracle-diag.sh :728 called lib's epoch_of and :278 called lib's err, but the script sources
 # nothing and defines neither, so both were command-not-found - a silent, latent defect. A harness that
@@ -18,6 +18,7 @@ SCRIPTS=(
   patching/apex-patch/apex-patch.sh
   patching/ords-patch/ords-patch.sh
   reports/oracle-diag/oracle-diag.sh
+  patching/patch-manifest.sh
 )
 
 defs()  { grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$1" 2>/dev/null | tr -d '()' | sort -u; }
