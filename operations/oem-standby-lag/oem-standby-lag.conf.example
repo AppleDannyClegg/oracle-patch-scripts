@@ -1,0 +1,42 @@
+# oem-standby-lag.sh config - copy to oem-standby-lag.conf (chmod 600), or ~/.oem-standby-lag.conf,
+# or put the same keys in the shared oracle.conf. Every key is optional; the defaults are below.
+
+# --- the metric-extension archive and its name in EM ------------------------------------------------
+# The .zip exported from the OEM console after the extension is built and tested there (README (b)).
+# `import` runs: emcli import_metric_extension -file_name=$ME_ARCHIVE
+# ME_ARCHIVE=/u01/app/oracle/oem/ME_STANDBY_LAG.zip
+
+# The extension's name in EM. deploy/undeploy/verify all key on this name and version 1, so if it was
+# built under a different name in the console, set it here - a mismatch means rollback will not remove
+# what deploy added. (The version is fixed at 1 in the script.)
+# ME_NAME=ME$STANDBY_LAG
+
+# Default targets when --targets is not given, comma-separated database target names.
+# ME_TARGETS=STBYA,STBYB
+
+# Default database instance for sql-test when --sid is not given.
+# ME_SID=STBYA
+
+# The metric SQL file (default: standby-lag.sql beside the script).
+# ME_SQL_FILE=/u01/app/oracle/oem/standby-lag.sql
+
+# --- thresholds, in seconds (local sql-test; the console thresholds are set in the UI, README (b)) ----
+# TRANSPORT_LAG_WARN=300      # transport lag over this -> WARN
+# TRANSPORT_LAG_CRIT=900      # ... -> CRIT
+# APPLY_LAG_WARN=900          # apply lag over this -> WARN
+# APPLY_LAG_CRIT=3600         # ... -> CRIT
+# CONTACT_AGE_WARN=300        # seconds since the primary last updated v$dataguard_stats -> WARN
+# CONTACT_AGE_CRIT=900        # ... -> CRIT. This is what catches a frozen 0 lag with the primary gone.
+
+# --- the OEM repository (verify) ---------------------------------------------------------------------
+# sysman connect string for sysman.mgmt$metric_current. It is read through sqlplus on STDIN, never passed
+# on a command line or exported into a child's environment. No OMR_CONNECT -> verify is a WARN (rc 1:
+# not verified), never a pass.
+# OMR_CONNECT=sysman/change-me@omr
+
+# --- timeouts and output -----------------------------------------------------------------------------
+# EMCLI_TIMEOUT=120           # seconds for each emcli call (default 120; preflight's help checks included)
+
+# A run dir is created per run under the tool's run base (see lib/oracle-lib.sh init_run_dir). The state
+# file in it holds deployed_targets, which deploy writes only after a read-back confirms the extension is
+# visible, and which rollback reads. Pass --run-dir DIR to pin it.
