@@ -171,7 +171,12 @@ see a bad row without waiting for a collection.
 | `EMCLI_TIMEOUT` | 120 | seconds per `emcli` call |
 
 CLI options: `--targets a,b`, `--sid SID`, `--sql-file FILE`, `--run-dir DIR`, `--timeout SECS`, and the
-shared `--dry-run --yes --force --json --verbose --quiet`. `--dry-run` reaches no changing `emcli` verb.
+shared `--dry-run --yes --force --json --verbose --quiet`.
+
+**On `--dry-run`:** it is meant to reach no changing `emcli` verb, and `deploy` is guarded that way — but
+confirm it on the version in front of you before you rely on it for `import`, `publish`, `rollback` or
+`run`, which is what [`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) exists to check. A `--dry-run`
+that still imports a draft, publishes it or undeploys from live targets is worse than no dry run.
 
 See [`oem-standby-lag.conf.example`](oem-standby-lag.conf.example). Exit codes are the repo convention:
 **2** CRIT, **1** WARN, **0** clean.
