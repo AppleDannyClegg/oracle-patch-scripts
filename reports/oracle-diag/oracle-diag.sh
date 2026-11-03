@@ -812,8 +812,16 @@ diag_wls_domain() {
     inblk&&name==""&&match($0,/<name>[^<]*<\/name>/){name=substr($0,RSTART+6,RLENGTH-13)}
     inblk&&ssl&&sport==""&&match($0,/<listen-port>[^<]*<\/listen-port>/){sport=substr($0,RSTART+13,RLENGTH-27)}
     inblk&&/<\/server>/{inblk=0; if(name==a&&sport!="") print sport}' "$cfg")"
-  local url="" code="" cands u
-  if [ -n "${ADMIN_URL:-}" ]; then cands="$ADMIN_URL"; else cands="http://localhost:${admin_port:-7001}"; [ -n "$admin_ssl" ] && cands="$cands https://localhost:$admin_ssl"; fi
+  local url="" code="" cands u h h_fqdn h_ip
+  if [ -n "${ADMIN_URL:-}" ]; then cands="$ADMIN_URL"; else
+    # the admin often binds the host address, not loopback (wl-host1: [::ffff:192.0.2.10]:44110),
+    # so probe localhost AND the host's own FQDN + first IPv4, on both the plain and the SSL port
+    h_fqdn="$(hostname -f 2>/dev/null || echo "$HOST")"; h_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')"
+    for h in localhost "$h_fqdn" ${h_ip:+"$h_ip"}; do
+      cands="$cands http://$h:${admin_port:-7001}"
+      [ -n "$admin_ssl" ] && cands="$cands https://$h:$admin_ssl"
+    done
+  fi
   section_sh "wls_$(basename "$d")_console" "for u in $cands; do for p in console weblogic/ready; do printf '%-52s ' \"\$u/\$p\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s\n' \"\$u/\$p\" || echo 'no answer'; done; done"
   for u in $cands; do local c; c="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$u/weblogic/ready" 2>/dev/null)"; [ "$c" = 200 ] && { code=200; url="$u"; break; }; [ -z "$code" ] && code="${c:-000}"; done
   [ -n "$running" ] && [ "$code" != 200 ] && finding WARN wls "$(basename "$d"): admin server ready-check returned '${code:-000}' on $cands - admin not answering"
