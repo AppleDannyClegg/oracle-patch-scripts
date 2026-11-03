@@ -725,7 +725,7 @@ diag_wls() {
     local psu; psu="$(grep -i 'PATCH SET UPDATE' "$RAW/wls_patches_$(basename "$h").txt" | sed -n 's/.*UPDATE *[0-9.]*\.\([0-9]\{6\}\).*/\1/p' | sort | tail -1)"
     # epoch_of is GNU-or-BSD; if neither can read it (busybox / unparsable) say so rather than falling back
     # to 'date +%s' -> age 0 -> the stale home silently reported as not behind (Edi 14:18:14)
-    if [ -n "$psu" ]; then local age pes; pes="$(epoch_of "20${psu:0:2}-${psu:2:2}-${psu:4:2}")"
+    if [ -n "$psu" ]; then local age pes; pes="$(epoch_of "20${psu:0:2}-${psu:2:2}-${psu:4:2}")" || pes=""   # '|| pes=' keeps a future set -e from aborting on an unparseable date
       if [ -n "$pes" ]; then age="$(( ( $(date +%s) - pes ) / 86400 ))"; [ "$age" -gt 200 ] && finding WARN wls "$h: newest WLS PSU is dated 20${psu:0:2}-${psu:2:2}, $age days old - at least two CPUs behind"
       else finding WARN wls "$h: cannot date the newest WLS PSU 20${psu:0:2}-${psu:2:2} (no GNU/BSD date support?) - its age was not checked"; fi; fi
     local d
