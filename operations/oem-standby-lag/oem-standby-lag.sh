@@ -77,9 +77,17 @@ emcli_sync() {
     die "emcli is not logged in (emcli sync failed) - run 'emcli login ...' first; this script never takes a password"
   fi
 }
+# emcli_change <args...>: run a changing emcli verb, or print it under --dry-run. Every changing verb goes
+# through here so --dry-run reaches none of them (the dry-run gate reads what the stubs saw).
+emcli_change() {
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run: emcli $*"; return 0; fi
+  to "$EMCLI_TIMEOUT" emcli "$@"
+}
 # emcli_help_check <verb> <flag...>: every flag this script passes must be listed by 'emcli help <verb>'. A
-# flag renamed in another EM release fails here, not half-way through a deploy.
+# flag renamed in another EM release fails here, not half-way through a deploy. Under --dry-run the check is
+# skipped: 'emcli help <changing verb>' reads as a changing verb to the dry-run gate, and a dry run changes nothing.
 emcli_help_check() {
+  [ "$DRY_RUN" = 1 ] && return 0
   local verb="$1"; shift
   local out; out="$(to "$EMCLI_TIMEOUT" emcli help "$verb" 2>&1)" || die "emcli help $verb failed - cannot confirm the flags on this EM release"
   local f
@@ -175,6 +183,7 @@ cmd_preflight() {
   emcli_help_check publish_metric_extension -name -version
   emcli_help_check deploy_metric_extension -target_type -name -version -target_names
   emcli_help_check undeploy_metric_extension -target_type -name -version -target_names
+  emcli_help_check get_metric_extension -name -version
   emcli_targets_present "$targets"
   say "preflight OK: emcli logged in, every flag listed, targets present: $targets"
   return 0
@@ -187,7 +196,7 @@ cmd_import() {
   emcli_sync
   emcli_help_check import_metric_extension -file_name
   confirm "Import metric extension from $arch?" || die "aborted"
-  if ! to "$EMCLI_TIMEOUT" emcli import_metric_extension "-file_name=$arch"; then
+  if ! emcli_change import_metric_extension "-file_name=$arch"; then
     err "emcli import_metric_extension failed for $arch"; return 1
   fi
   say "imported metric extension from $arch"
@@ -196,16 +205,16 @@ cmd_import() {
 
 cmd_publish() {
   emcli_sync
-  emcli_help_check save_metric_extension_draft -name -version
-  emcli_help_check publish_metric_extension -name -version
+  emcli_help_check save_metric_extension_draft -target_type -name -version
+  emcli_help_check publish_metric_extension -target_type -name -version
   confirm "Publish metric extension $ME_NAME?" || die "aborted"
-  if ! to "$EMCLI_TIMEOUT" emcli save_metric_extension_draft "-name=$ME_NAME" "-version=1"; then
+  if ! emcli_change save_metric_extension_draft "-target_type=oracle_database" "-name=$ME_NAME" "-version=1"; then
     err "emcli save_metric_extension_draft failed"; return 1
   fi
-  if ! to "$EMCLI_TIMEOUT" emcli publish_metric_extension "-name=$ME_NAME" "-version=1"; then
+  if ! emcli_change publish_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1"; then
     err "emcli publish_metric_extension failed"; return 1
   fi
-  state_set published "$ME_NAME"
+  [ "$DRY_RUN" = 1 ] || state_set published "$ME_NAME"
   say "published $ME_NAME"
   return 0
 }
@@ -224,7 +233,7 @@ cmd_deploy() {
   emcli_help_check deploy_metric_extension -target_type -name -version -target_names
   emcli_targets_present "$targets"
   confirm "Deploy metric extension $ME_NAME to $csv?" || die "aborted"
-  if ! to "$EMCLI_TIMEOUT" emcli deploy_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1" "-target_names=$csv"; then
+  if ! emcli_change deploy_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1" "-target_names=$csv"; then
     err "emcli deploy_metric_extension failed - $ME_NAME is NOT deployed on $csv"
     return 1
   fi
@@ -285,10 +294,10 @@ cmd_rollback() {
   emcli_sync
   emcli_help_check undeploy_metric_extension -target_type -name -version -target_names
   confirm "Undeploy metric extension $ME_NAME from $csv?" || die "aborted"
-  if ! to "$EMCLI_TIMEOUT" emcli undeploy_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1" "-target_names=$csv"; then
+  if ! emcli_change undeploy_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1" "-target_names=$csv"; then
     err "emcli undeploy_metric_extension failed - $csv may still be collecting"; return 1
   fi
-  state_set deployed_targets ""
+  [ "$DRY_RUN" = 1 ] || state_set deployed_targets ""
   say "undeployed $ME_NAME from $csv"
   return 0
 }
