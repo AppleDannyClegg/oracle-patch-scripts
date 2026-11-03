@@ -104,8 +104,10 @@ curl -fsSL -o "%TEMP%\ops.zip" https://github.com/AppleDannyClegg/oracle-patch-s
 
 Run the same line again whenever you want the newest version. `get.sh` and `get.ps1` keep your
 `*.conf` files and leave the old copy as `oracle-patch-scripts.old`. The plain `cmd` line is
-download-and-extract only: it carries nothing across and errors if `oracle-patch-scripts` already
-exists, so delete it (or use `get.ps1`) before re-running.
+download-and-extract only: it carries nothing across, checks no `lib/`, and errors if
+`oracle-patch-scripts` already exists, so delete it (or use `get.ps1`) before re-running. It also
+assumes the archive unpacks to `oracle-patch-scripts-main` (GitHub names the folder `<repo>-<branch>`),
+so adjust the `ren` if the repository or default branch is renamed.
 
 The scripts are bash, so to *run* them on Windows use Git Bash or WSL; `get.ps1` skips the library
 self-test on Windows for that reason. It also prints the server-side `chmod -R +x` you need after
