@@ -48,7 +48,11 @@ if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
     throw "cannot write to $parent"
 }
 try {
-    $probe = Join-Path $parent ('.oracle-get-w-' + [System.Guid]::NewGuid().ToString('N'))
+    # resolve the parent to an ABSOLUTE path first: [System.IO.File] resolves a relative path against
+    # the process cwd, while Remove-Item resolves against PowerShell's $PWD, and the two diverge under
+    # 'irm | iex'. An absolute probe removes the mismatch.
+    $parentFull = (Resolve-Path -LiteralPath $parent).Path
+    $probe = Join-Path $parentFull ('.oracle-get-w-' + [System.Guid]::NewGuid().ToString('N'))
     [System.IO.File]::WriteAllText($probe, '')
     Remove-Item -LiteralPath $probe -Force
 } catch {
@@ -111,19 +115,28 @@ try {
             }
             if ($target) {
                 Copy-Item -LiteralPath $c.FullName -Destination $target -Force
-                Write-Host "kept your $(Split-Path -Leaf $target)/$($c.Name)"
+                $destFull = (Resolve-Path -LiteralPath $Dest).Path
+                $tFull = if ($target -eq $Dest) { $destFull } else { (Resolve-Path -LiteralPath $target).Path }
+                $rel = $tFull.Substring($destFull.Length).TrimStart([char]'\', [char]'/')
+                Write-Host "kept your $rel/$($c.Name)"
             }
         }
     }
 
-    # bash is not on Windows by default: run the library self-test only if we can find it
-    $bash = Get-Command bash -ErrorAction SilentlyContinue
-    if ($null -ne $bash) {
-        & $bash.Source $lib selftest *> $null
-        if ($LASTEXITCODE -eq 0) { Write-Host 'lib/oracle-lib.sh selftest ok' }
-        else { Write-Host 'warning: lib/oracle-lib.sh selftest failed on this machine (bash 4+, GNU coreutils?)' }
+    # The scripts are bash. On Windows, 'Get-Command bash' is usually the WSL launcher
+    # (System32\bash.exe), which cannot read a C:\ path, so the selftest would warn for the wrong
+    # reason. Skip it on Windows and point at the right place instead.
+    if ($env:OS -eq 'Windows_NT') {
+        Write-Host 'note: skipping the lib selftest on Windows; run it under WSL/Git Bash: bash lib/oracle-lib.sh selftest'
     } else {
-        Write-Host 'note: bash not found. The scripts are bash - install Git Bash or WSL to run them; the tree is laid down only.'
+        $bash = Get-Command bash -ErrorAction SilentlyContinue
+        if ($null -ne $bash) {
+            & $bash.Source $lib selftest *> $null
+            if ($LASTEXITCODE -eq 0) { Write-Host 'lib/oracle-lib.sh selftest ok' }
+            else { Write-Host 'warning: lib/oracle-lib.sh selftest failed on this machine (bash 4+, GNU coreutils?)' }
+        } else {
+            Write-Host 'note: bash not found. The scripts are bash - install Git Bash or WSL to run them; the tree is laid down only.'
+        }
     }
 
     Write-Host ''
