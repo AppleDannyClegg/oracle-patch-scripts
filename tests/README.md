@@ -15,7 +15,7 @@ of the top-level [README](../README.md) for the full description of what each on
 | `dry-run-gate.sh` | behavioural | no DDL/DML/flashback/PL-SQL/patch/restart/switch/ggsci verb reaches a tool under `--dry-run` |
 | `false-success-gate.sh` | behavioural | a change command that fails does not exit 0 or record a success state |
 | `unreadable-gate.sh` | behavioural | a report whose reads failed does not print a clean verdict or exit 0 |
-| `oracle-free-container.sh` | end-to-end | the six read-only reports against a real Oracle Free instance (needs docker) |
+| `oracle-free-container.sh` | end-to-end | the seven read-only reports (the six DB reports plus `okv-diag`, with an okvclient.ora fixture so its OKV half is exercised) against a real Oracle Free instance (needs docker) |
 
 ## Running
 
