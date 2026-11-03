@@ -8,6 +8,14 @@ Puts everything in .\oracle-patch-scripts (or the folder given as the first argu
 Run it again later to pick up the newest version; the previous copy is kept as <folder>.old,
 and your own *.conf files are carried across.
 
+HARDENED form (older Windows PowerShell 5.1, or to keep this script's variables out of your
+session): the plain 'irm | iex' is one long-lived expression, so get.ps1's variables and its
+$ErrorActionPreference leak into your shell, and on a pre-1803 build the bootstrap 'irm' itself
+fails because TLS 1.2 is not the default until a line of the script runs. This runs it in a child
+scope and sets TLS 1.2 before the download:
+
+  powershell -NoProfile -Command "$u='https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.ps1'; [Net.ServicePointManager]::SecurityProtocol=$([Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12); & ([scriptblock]::Create((irm $u)))"
+
 The scripts themselves are bash. This installer lays the tree down and checks the shared
 library; to actually RUN the scripts on Windows you need Git Bash or WSL (bash on PATH).
 
@@ -73,17 +81,29 @@ try {
         throw 'lib/oracle-lib.sh missing from the download; the scripts will not run'
     }
 
-    # carry the user's *.conf across, but only from the copy just moved aside
+    # get.sh chmod +x's every *.sh. On Windows the exec bit is NTFS metadata and meaningless, but pwsh
+    # can run on Linux/macOS or over a WSL/Unix path, so mirror it when chmod exists
+    $chmod = Get-Command chmod -ErrorAction SilentlyContinue
+    if ($null -ne $chmod) {
+        Get-ChildItem -LiteralPath $Dest -Recurse -Filter '*.sh' -File |
+            ForEach-Object { & $chmod.Source '+x' $_.FullName }
+    }
+
+    # carry the user's *.conf across, but only from the copy just moved aside, and only the depths
+    # get.sh migrates: <type>/<script>/*.conf, <type>/*.conf, and oracle.conf at the top
     if ($moved) {
         $oldPath = (Resolve-Path -LiteralPath "$Dest.old").Path
-        $oldLeaf = Split-Path -Leaf $oldPath
         foreach ($c in Get-ChildItem -LiteralPath $oldPath -Recurse -Filter '*.conf' -File) {
-            $dirLeaf = Split-Path -Leaf (Split-Path -Parent $c.FullName)
+            $parts = $c.FullName.Substring($oldPath.Length + 1) -split '[\\/]'
+            $depth = $parts.Count
+            if ($depth -gt 3) { continue }
+            if ($depth -eq 1 -and $parts[0] -ne 'oracle.conf') { continue }
             $target = $null
-            if ($dirLeaf -eq $oldLeaf) {
+            if ($depth -eq 1) {
                 $target = $Dest   # oracle.conf at the top of the old tree
             } else {
                 # a script folder: patching/<name>, operations/<name>, reports/<name>
+                $dirLeaf = $parts[$depth - 2]
                 foreach ($t in Get-ChildItem -LiteralPath $Dest -Directory) {
                     $cand = Join-Path $t.FullName $dirLeaf
                     if (Test-Path -LiteralPath $cand -PathType Container) { $target = $cand; break }
@@ -124,6 +144,8 @@ try {
     Write-Host ''
     Write-Host "next: read $Dest\README.md, then copy the whole tree to the server (a script needs lib/ two levels up), e.g."
     Write-Host "  scp -r $Dest oracle@server:~/"
+    Write-Host "Windows has no Unix exec bit, so if you copied from Windows set it on the server after the copy:"
+    Write-Host "  ssh oracle@server 'chmod -R +x ~/$(Split-Path -Leaf $Dest)'"
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
