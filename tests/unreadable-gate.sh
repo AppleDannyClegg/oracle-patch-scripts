@@ -62,6 +62,7 @@ args_of() { case "$1" in
   perf-snapshot)    echo "--sid FREE --out $T/out --no-tar --no-pack --samples 1";;
   space-forecast)   echo "--sid FREE --out $T/out --no-tar --no-pack --history $T/hist";;
   oracle-diag)      echo "--sid FREE --out $T/out --no-tar";;
+  okv-diag)         echo "--sid FREE --out $T/out --no-tar";;
   patch-status)     echo "--no-net --report --out $T/out";;
   sr-draft)         echo "--sid FREE --error ORA-00600 --out $T/out";;
   incident-pack)    echo "GATE --sid FREE --out $T/out --no-diag --no-tfa --hours 1 --yes";;

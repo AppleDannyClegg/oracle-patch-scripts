@@ -1,0 +1,19 @@
+# okv-diag.conf.example - copy to okv-diag.conf (or ~/.okv-diag.conf, or use the shared oracle.conf)
+# and edit. Loaded as shell; a password here must be mode 600.
+
+# where the reports are written (default ~/okv-diag)
+OKV_OUT="$HOME/okv-diag"
+
+# the SQL*Plus connect string for the TDE side (no password can appear on a command line; this
+# reaches sqlplus on stdin). Default: / as sysdba
+# SQL_CONNECT="/ as sysdba"
+
+# an OKV client home to check when auto-discovery does not find it. Usually unset: every
+# okvclient.ora on the host is discovered (WALLET_ROOT, /u01/app/oracle/okv, OKV_HOME,
+# <ORACLE_HOME>/flex_tde_wallet/okv, ...)
+# OKV_HOME=/u01/app/oracle/okv/okvclient
+
+# the endpoint wallet password, so the report can read the certificate's real notAfter instead of
+# falling back to the file age. Prefer the environment over this file. It is never passed on a
+# command line: it goes to openssl through a 600-mode file in the run dir, removed on exit.
+# OKV_WALLET_PASSWORD=

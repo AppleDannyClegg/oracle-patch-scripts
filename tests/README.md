@@ -11,6 +11,7 @@ of the top-level [README](../README.md) for the full description of what each on
 | `secret-argv-gate.sh` | static | a credential never reaches argv/environ/log/run dir; it arrives on the claimed route |
 | `ru-date.sh` | static | patch-status's RU-date extractors read the real lspatches / registry line shapes (19c yymmdd, 23ai YY.MM with the trailing patch id); an empty date is a silent UNKNOWN |
 | `okv-rotate.sh` | behavioural | okv-rotate.sh's check/verify exit codes (not-rotated, missing wallet, expiring cert, a wallet not OPEN, a PHYSICAL_STANDBY with no MRP row, a failed sqlplus) and its wait 0/1/2 contract (switched, do-not-proceed, clean-read-still-old) against a fake OKV_HOME |
+| `okv-diag.sh` | behavioural | okv-diag.sh probes an explicit `SERVER=host:PORT` on PORT (not the 5696 default); a config with no `SERVER=` is a CRIT, never a clean exit 0; `--okv-home` names the path in the no-config message; and TERM stops the run (rc=143). Plus a static guard against the GNU-only sed BRE `\+`, which BSD sed cannot match - the docker harness runs GNU sed and never signals, so neither is visible there |
 | `dry-run-gate.sh` | behavioural | no DDL/DML/flashback/PL-SQL/patch/restart/switch/ggsci verb reaches a tool under `--dry-run` |
 | `false-success-gate.sh` | behavioural | a change command that fails does not exit 0 or record a success state |
 | `unreadable-gate.sh` | behavioural | a report whose reads failed does not print a clean verdict or exit 0 |
@@ -24,6 +25,7 @@ tests/optchk-gate.sh
 tests/secret-argv-gate.sh
 tests/ru-date.sh
 tests/okv-rotate.sh            # fake OKV_HOME + stubs; no database
+tests/okv-diag.sh              # local OKV fixtures + a real TERM; no database, no docker
 tests/dry-run-gate.sh          # whole tree; [script...] for one
 tests/false-success-gate.sh    # whole tree; [script...] for one; --selftest
 tests/unreadable-gate.sh       # whole gate; [script...] for one
