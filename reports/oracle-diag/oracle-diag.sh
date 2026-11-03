@@ -831,7 +831,7 @@ diag_wls_domain() {
     inblk&&/<\/server>/{inblk=0; if(name==a&&sport!="") print sport}' "$cfg")"
   local url="" code="" cands u h h_fqdn h_ip
   if [ -n "${ADMIN_URL:-}" ]; then cands="$ADMIN_URL"; else
-    # the admin often binds the host address, not loopback (wl-host1: [::ffff:192.0.2.10]:44110),
+    # the admin often binds the host address, not loopback (e.g. [::ffff:192.0.2.10]:44110),
     # so probe localhost AND the host's own FQDN + first IPv4, on both the plain and the SSL port
     h_fqdn="$(hostname -f 2>/dev/null || echo "$HOST")"; h_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')"
     for h in localhost "$h_fqdn" ${h_ip:+"$h_ip"}; do

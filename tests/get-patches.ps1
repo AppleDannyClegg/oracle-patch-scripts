@@ -241,7 +241,7 @@ try {
     Check (@($r6.Plan | Where-Object { $_.Kind -eq 'db' }).Count -eq 0) "an empty db version plans no db patch"
     Check (@($r6.Plan | Where-Object { $_.Kind -eq 'spb' }).Count -eq 1) "the WebLogic lookup still ran after the db home was skipped"
 
-    # ---- empty db version (sqlplus -V failed on wl-host1): the major comes from the RU, else the path
+    # ---- empty db version (sqlplus -V failed on a real WebLogic host): the major comes from the RU, else the path
     $fromRu = Join-Path $tmp 'noversion-ru.txt'
     @('host|wl8', 'home|/stage/client/dbhome_1|db||12.2.0.1.44',
       'patch|/stage/client/dbhome_1|37642901|Database Release Update : 19.27.0.0.250415 (37642901)') | Set-Content -LiteralPath $fromRu
