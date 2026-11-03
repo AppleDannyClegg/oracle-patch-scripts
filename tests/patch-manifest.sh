@@ -129,6 +129,14 @@ else
   bad "no manifest written to $OUT"
 fi
 
+# a real client sqlplus only runs with its own ORACLE_HOME set: C's sqlplus now refuses any other
+rm -f "$OUT"; mv "$C/bin/sqlplus" "$C/bin/sqlplus.ok"
+printf '#!/bin/sh\n[ "$ORACLE_HOME" = "%s" ] && exec "%s" "$@"\necho "SP2-0667: Message file sp1<lang>.msb not found" >&2; exit 1\n' "$C" "$C/bin/sqlplus.ok" >"$C/bin/sqlplus"
+chmod +x "$C/bin/sqlplus"
+( cd "$T" && HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT" ) >"$T/run4.log" 2>&1
+has "$OUT" "home|$C|db|19.27.0.0.0|12.2.0.1.44"
+rm -f "$C/bin/sqlplus"; mv "$C/bin/sqlplus.ok" "$C/bin/sqlplus"
+
 # lspatches fails: no manifest, non-zero exit
 rm -f "$OUT"; touch "$H/OPatch/fail"
 ( cd "$T" && HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT" ) >"$T/run2.log" 2>&1

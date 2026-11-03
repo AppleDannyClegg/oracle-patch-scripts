@@ -123,7 +123,7 @@ home_version() {
       # start (a client home is often read this way): try it plain, then with LD_LIBRARY_PATH, then
       # read the version out of the home's inventory, then off the install path
       v="$("$h/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | head -1)"
-      [ -n "$v" ] || v="$(LD_LIBRARY_PATH="$h/lib:${LD_LIBRARY_PATH:-}" "$h/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | head -1)"
+      [ -n "$v" ] || v="$(ORACLE_HOME="$h" LD_LIBRARY_PATH="$h/lib:${LD_LIBRARY_PATH:-}" "$h/bin/sqlplus" -V 2>/dev/null | sed -n 's/^Version \([0-9.]*\).*/\1/p' | head -1)"
       [ -n "$v" ] || v="$(comp_version "$h")"
       [ -n "$v" ] || v="$(version_in_path "$h")"
       printf '%s' "$v" ;;
