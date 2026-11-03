@@ -267,9 +267,18 @@ function Get-JdkPlan($Jdks) {
 
 # a database or client home: newest Database Release Update for its release, with OPatch 6880880.
 # The parameter is $Db, not $Home: that is a read-only automatic variable.
+# the database major (19) for a db home: its version, else the Release Update it has, else its path
+# (/stage/client/app/product/19.0.0.0). sqlplus -V can fail on the host, leaving the version empty.
+function Get-DbMajor($Db) {
+    if ($Db.Version -match '^(\d+)\.') { return $Matches[1] }
+    foreach ($p in $Db.Patches) { if ($p.Description -match '^Database Release Update\s*:?\s*(\d+)\.') { return $Matches[1] } }
+    if ($Db.Home -match '(?:^|/)(\d+)\.\d+\.\d+\.\d+(?:/|$)') { return $Matches[1] }
+    return ''
+}
+
 function Get-DbPlan($Db) {
-    $major = ($Db.Version -split '\.')[0]
-    if (-not $major -or $major -notmatch '^\d+$') {
+    $major = Get-DbMajor $Db
+    if (-not $major) {
         Write-Warning "$($Db.Home): the manifest has no database version for this home - skipping its Release Update. Fix the home| line (opatch lsinventory there), or get the number from MOS Doc 2118136.2 and pass -Patch"
         return
     }

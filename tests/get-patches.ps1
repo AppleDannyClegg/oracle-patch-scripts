@@ -233,13 +233,24 @@ try {
 
     $noVer = Join-Path $tmp 'noversion.txt'
     @('host|wl6',
-      'home|/stage/client/app/product/19.0.0.0|db||12.2.0.1.44',
+      'home|/stage/client/dbhome_1|db||12.2.0.1.44',   # no version, no RU, no version in the path
       'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.23|no',
       'patch|/u01/fmw|39000002|WLS PATCH SET UPDATE 12.2.1.4.261020') | Set-Content -LiteralPath $noVer
     $r6 = PlanWithWarnings (Read-Manifest $noVer)
     Check (($r6.Warnings -join ' ') -match 'no database version') "an empty db version warns"
     Check (@($r6.Plan | Where-Object { $_.Kind -eq 'db' }).Count -eq 0) "an empty db version plans no db patch"
     Check (@($r6.Plan | Where-Object { $_.Kind -eq 'spb' }).Count -eq 1) "the WebLogic lookup still ran after the db home was skipped"
+
+    # ---- empty db version (sqlplus -V failed on wl-host1): the major comes from the RU, else the path
+    $fromRu = Join-Path $tmp 'noversion-ru.txt'
+    @('host|wl8', 'home|/stage/client/dbhome_1|db||12.2.0.1.44',
+      'patch|/stage/client/dbhome_1|37642901|Database Release Update : 19.27.0.0.250415 (37642901)') | Set-Content -LiteralPath $fromRu
+    $n8 = @((PlanWithWarnings (Read-Manifest $fromRu)).Plan | ForEach-Object { $_.Patch })
+    Check ($n8 -contains '39600003') "no version: the major comes from the RU it has, 19.31 planned (got $($n8 -join ','))"
+    $fromPath = Join-Path $tmp 'noversion-path.txt'
+    @('host|wl9', 'home|/stage/client/app/product/19.0.0.0|db||12.2.0.1.44') | Set-Content -LiteralPath $fromPath
+    $n9 = @((PlanWithWarnings (Read-Manifest $fromPath)).Plan | ForEach-Object { $_.Patch })
+    Check ($n9 -contains '39600003') "no version, no RU: the major comes from the home path 19.0.0.0 (got $($n9 -join ','))"
 
     # ---- a db release MOS does not list: warn by name, skip -------------------------------------------
     $noRel = Join-Path $tmp 'norelease.txt'
