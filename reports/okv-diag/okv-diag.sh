@@ -15,6 +15,7 @@
 # Exit: 2 with a CRIT finding, 1 with a WARN, 0 clean. A read that failed is said out loud (a finding
 # naming the database and the failure) - never a clean verdict, never exit 0.
 
+# shellcheck disable=SC2034  # TOOL/VERSION are read by the lib's log/state names, VERBOSE by dbg
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="okv-diag"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
@@ -66,7 +67,7 @@ server_reachable() {
 # so until that line moves the endpoint still runs the old certificate. $OKV_HOME/conf/ewallet.p12 is the TDE
 # secret store, not the endpoint certificate, and is not read here.
 endpoint_cert() {
-  local f="$1" loc d wal m age exp pf pfx
+  local f="$1" loc d wal m age exp pf
   loc="$(okv_field "$f" SSL_WALLET_LOC)"; d="$(dirname "$(dirname "$f")")"; [ -n "$loc" ] || loc="$d/ssl"
   h3 "endpoint certificate"
   kv "SSL_WALLET_LOC" "$loc$(okv_is_rotated "$loc" && echo '  (rotated: a subfolder of ssl/)' || echo '  (not rotated: still the original ssl/ wallet)')"
