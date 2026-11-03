@@ -800,12 +800,23 @@ diag_wls_domain() {
     ls "$d"/servers/"$sname"/hs_err* "$d"/hs_err* >/dev/null 2>&1 && finding CRIT wls "$sname: JVM crash file hs_err_pid*.log present"
   done
   [ -f "$d/nodemanager/nodemanager.log" ] && { h3 "nodemanager.log"; recent_errors wls_nodemanager "$d/nodemanager/nodemanager.log" '<SEVERE>|<WARNING>|Exception|failed' >/dev/null; tail_file wls_nodemanager_tail "$d/nodemanager/nodemanager.log"; }
-  # admin URL
-  local admin_port; admin_port="$(awk '$1=="'"$(sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"'"{print $2}' "$RAW/wls_$(basename "$d")_servers.txt" | sed 's/port=//')"
-  local url="${ADMIN_URL:-http://localhost:${admin_port:-7001}}"
-  section_sh "wls_$(basename "$d")_console" "for u in '$url/console' '$url/weblogic/ready'; do printf '%-50s ' \"\$u\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s\n' \"\$u\" || echo 'no answer'; done"
-  local code; code="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$url/weblogic/ready" 2>/dev/null)"
-  [ -n "$running" ] && [ "$code" != 200 ] && finding WARN wls "$(basename "$d"): admin server ready-check $url/weblogic/ready returned '$code'"
+  # admin URL(s): $ADMIN_URL, else the domain's own admin ports - http on the plain <listen-port> and, if
+  # the admin has an <ssl> block (a domain that fronts the admin over SSL, e.g. FCUBS on 44110), https on
+  # its <ssl><listen-port>. Probing only 7001/http reported '000' for a perfectly healthy SSL-only admin.
+  local admin_name admin_port admin_ssl
+  admin_name="$(sed -n 's/.*<admin-server-name>\([^<]*\)<.*/\1/p' "$cfg" | head -1)"; [ -z "$admin_name" ] && admin_name=AdminServer
+  admin_port="$(awk -v a="$admin_name" '$1==a{print $2}' "$RAW/wls_$(basename "$d")_servers.txt" | sed 's/port=//')"
+  admin_ssl="$(awk -v a="$admin_name" '
+    /<server>/{inblk=1;name="";ssl=0;sport=""}
+    inblk&&/<ssl>/{ssl=1} inblk&&/<\/ssl>/{ssl=0}
+    inblk&&name==""&&match($0,/<name>[^<]*<\/name>/){name=substr($0,RSTART+6,RLENGTH-13)}
+    inblk&&ssl&&sport==""&&match($0,/<listen-port>[^<]*<\/listen-port>/){sport=substr($0,RSTART+13,RLENGTH-27)}
+    inblk&&/<\/server>/{inblk=0; if(name==a&&sport!="") print sport}' "$cfg")"
+  local url="" code="" cands u
+  if [ -n "${ADMIN_URL:-}" ]; then cands="$ADMIN_URL"; else cands="http://localhost:${admin_port:-7001}"; [ -n "$admin_ssl" ] && cands="$cands https://localhost:$admin_ssl"; fi
+  section_sh "wls_$(basename "$d")_console" "for u in $cands; do for p in console weblogic/ready; do printf '%-52s ' \"\$u/\$p\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s\n' \"\$u/\$p\" || echo 'no answer'; done; done"
+  for u in $cands; do local c; c="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$u/weblogic/ready" 2>/dev/null)"; [ "$c" = 200 ] && { code=200; url="$u"; break; }; [ -z "$code" ] && code="${c:-000}"; done
+  [ -n "$running" ] && [ "$code" != 200 ] && finding WARN wls "$(basename "$d"): admin server ready-check returned '${code:-000}' on $cands - admin not answering"
   if [ "$THREADS" = 1 ]; then ps -eo pid,args | grep '[w]eblogic.Server' | grep -- "$d\|$(basename "$d")" | while read -r pid rest; do jvm_threads "$(printf '%s' "$rest" | grep -oE 'weblogic.Name=[^ ]+' | cut -d= -f2)" "$pid"; done; fi
 }
 
