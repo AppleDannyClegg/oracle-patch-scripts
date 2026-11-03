@@ -1,0 +1,22 @@
+# obic-diag.conf.example - copy to obic-diag.conf (or ~/.obic-diag.conf, or use the shared oracle.conf)
+# and edit. Loaded as shell.
+
+# where the reports are written (default ~/obic-diag)
+OBIC_OUT="$HOME/obic-diag"
+
+# the plato discovery service (Spring Cloud Eureka). The OBIC services register here and discover each
+# other through it. On the wl-host estate it is the OTHER node; the path is /plato-discovery-service/eureka.
+DISCOVERY_URL="https://wl-host2.example.com:44115/plato-discovery-service/eureka"
+
+# Zipkin (distributed tracing). The OBIC services log 'Connection refused' on localhost:9411 when it is
+# down; that is not usually fatal, so it is a WARN.
+ZIPKIN_URL="http://localhost:9411"
+
+# the WebLogic domain that holds the OBIC managed servers (used to auto-detect them and read their logs)
+DOMAIN_HOME="/u01/app/oracle/config/domains/FCUBS_domain"
+
+# the OBIC managed servers to check. Leave empty to auto-detect names starting OBIC_ from DOMAIN_HOME.
+# OBIC_SERVERS="OBIC_Config01 OBIC_JAVAIC01"
+
+# the Eureka application names that MUST be registered UP, e.g. the OBIC config and JavaIC services.
+# OBIC_APPS="CONFIG-SERVICE"

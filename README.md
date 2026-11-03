@@ -62,6 +62,7 @@ Report scripts have no commands: run them, read `REPORT.md`, or hand it to Claud
 | `reports/space-forecast/space-forecast.sh` | Growth and days-to-full for tablespaces, FRA, ASM, filesystems and archivelog; keeps its own history so it needs no licensed views | [README](reports/space-forecast/README.md) |
 | `reports/security-posture/security-posture.sh` | Auditor-shaped scorecard (PASS/FAIL/INFO with evidence) for database, listener, host and WebLogic, following the CIS Oracle 19c benchmark | [README](reports/security-posture/README.md) |
 | `reports/okv-diag/okv-diag.sh` | Oracle Key Vault client health: every `okvclient.ora`, the endpoint certificate (age and `notAfter`), server reachability, `okvutil`, the PKCS#11 library and TDE keystore OPEN per instance | [README](reports/okv-diag/README.md) |
+| `reports/obic-diag/obic-diag.sh` | FLEXCUBE OBIC / "plato" microservice platform: the plato discovery service (Eureka), Zipkin, the OBIC-managed servers and their JVMs, and the class-version (JDK) mismatch that stops an OBIC deployment loading | [README](reports/obic-diag/README.md) |
 
 ## Shared library
 
