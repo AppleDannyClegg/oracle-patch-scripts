@@ -183,9 +183,10 @@ shared `--dry-run --yes --force --json --verbose --quiet`.
 verb — `import`, `publish` and `deploy` no-op, `run` reaches none of theirs, and `rollback` makes no
 `emcli` call at all. `preflight` and `verify` still run in a dry run because they change nothing (a
 `sync` probe and a repository read).
-[`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) is what proves that on the version in front of you
-(it reports the guarded commands as NOT-EXERCISED there because they make no tool call under `--dry-run`,
-which is the correct reading). A `--dry-run` that still imports a draft, publishes it or applies a
+[`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) is what proves that on the version in front of you:
+`import`/`publish`/`run` pass it because their probe calls still reach the stub, and `deploy`/`rollback`
+are reported NOT-EXERCISED there because under `--dry-run` they make no tool call at all — the correct
+reading, not a gap. A `--dry-run` that still imports a draft, publishes it or applies a
 template is worse than no dry run.
 
 ## (e) Rollback, blackouts and RAC
