@@ -41,11 +41,14 @@ parse_args() {
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
 # row <product> <home> <installed> <date YYYY-MM-DD|""> <latest> <note> ; status from the date
+# An EMPTY date is a real 'level unknown' -> '?' + UNKNOWN. An EMPTY latest is 'no comparison was
+# available' (a bundle, a kernel, an agent with no RU), which is not the same thing -> '-', so a row
+# does not read '?' for a value that was never meant to exist (Daniel 14:4x).
 row() {
   local prod="$1" home="$2" inst="$3" date="$4" latest="$5" note="$6" behind status
   if [ -z "$date" ]; then behind="?"; status="UNKNOWN"
   else behind="$(quarters_behind "$date")"; case "$behind" in 0) status="CURRENT";; 1) status="1 behind";; *) status="$behind behind";; esac; fi
-  ROWS="${ROWS}$prod|$home|$inst|${date:-?}|${latest:-?}|$behind|$status|$note"$'\n'
+  ROWS="${ROWS}$prod|$home|$inst|${date:-?}|${latest:--}|$behind|$status|$note"$'\n'
   [ "$DO_REPORT" = 1 ] && { case "$behind" in 0|\?) ;; 1) finding WARN patch "$prod ($home) is one CPU behind: $inst ($date)";; *) finding CRIT patch "$prod ($home) is $behind CPUs behind: $inst ($date)";; esac; }
   return 0
 }
@@ -216,7 +219,13 @@ other_products() {
       else aru="$(lsp_unreadable "$arc")"; finding WARN patch "EM agent $abin: opatch lspatches failed (rc $arc) - its RU level is unknown, not unpatched"; fi; }
     # an EM RU name (24.1.0.10) has no parsable date: warn rather than let row() render it UNKNOWN with no finding
     [ "$arc" = 0 ] && [ -n "$aru" ] && [ -z "$(date_from_desc "$aru")" ] && finding WARN patch "EM agent $ah: RU '$aru' has no parsable date (EM RUs are not yymmdd-versioned) - its CPU count is unknown, not current"
-    row "EM agent ${ev:-?}" "$ah" "${aru:-${ev:-unknown}}" "$(date_from_desc "$aru")" "$([ "$arc" = 0 ] && [ -n "$aru" ] && echo "RU of $LATEST_CPU")" "$(if [ "$arc" != 0 ]; then echo "opatch could not list the inventory - run $abin/OPatch/opatch lspatches by hand"; elif [ -n "$aru" ]; then echo 'RU from opatch lspatches of the agent binaries'; else echo 'no RU seen in lspatches: agent patched with agent RUs, not here'; fi)"
+    if [ "$arc" = 0 ] && [ -z "$aru" ]; then
+      # the agent binaries carry no RU in lspatches (agent RUs are applied by OMSPatcher, not here), so there
+      # is no date to compare - render '-/info' rather than '?/UNKNOWN', same as an FMW bundle with no date
+      ROWS="${ROWS}EM agent ${ev:-?}|$ah|${ev:-unknown}|-|-|-|info|no RU seen in the agent's lspatches (agent RUs are applied by OMSPatcher, not here) - not CPU-dated"$'\n'
+    else
+      row "EM agent ${ev:-?}" "$ah" "${aru:-${ev:-unknown}}" "$(date_from_desc "$aru")" "$([ "$arc" = 0 ] && [ -n "$aru" ] && echo "RU of $LATEST_CPU")" "$(if [ "$arc" != 0 ]; then echo "opatch could not list the inventory - run $abin/OPatch/opatch lspatches by hand"; elif [ -n "$aru" ]; then echo 'RU from opatch lspatches of the agent binaries'; else echo 'no RU seen in lspatches: agent patched with agent RUs, not here'; fi)"
+    fi
   fi
   local oh; oh="$(for x in "${OMS_HOME:-/nonexistent}" /u01/app/oracle/middleware* /u01/app/oracle/em*/middleware /u01/app/oracle/product/em*/middleware /opt/oracle/middleware*; do [ -x "$x/bin/emctl" ] && [ -x "$x/OPatch/opatch" ] && echo "$x"; done 2>/dev/null | head -1)"
   if [ -n "$oh" ]; then
