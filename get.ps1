@@ -35,6 +35,7 @@ $ErrorActionPreference = 'Stop'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 $Repo = 'AppleDannyClegg/oracle-patch-scripts'
 $Url  = "https://github.com/$Repo/archive/refs/heads/main.zip"
+if ([string]::IsNullOrWhiteSpace($Dest)) { throw 'destination is empty; omit the argument or pass a folder name' }
 $Dest = $Dest.TrimEnd('\', '/')
 
 # the parent must be writable BEFORE the download and before the previous copy is moved aside,
@@ -46,6 +47,10 @@ if (-not (Test-Path -LiteralPath $parent)) {
 }
 if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
     throw "cannot write to $parent"
+}
+# a file where the tree should go: fail early with a clear message (get.sh's [ -d ] guard skips the swap)
+if (Test-Path -LiteralPath $Dest -PathType Leaf) {
+    throw "$Dest exists and is a file, not a folder"
 }
 try {
     # resolve the parent to an ABSOLUTE path first: [System.IO.File] resolves a relative path against
@@ -95,7 +100,7 @@ try {
 
     # carry the user's *.conf across, but only from the copy just moved aside, and only the depths
     # get.sh migrates: <type>/<script>/*.conf, <type>/*.conf, and oracle.conf at the top
-    if ($moved) {
+    if ($moved -and (Test-Path -LiteralPath "$Dest.old" -PathType Container)) {
         $oldPath = (Resolve-Path -LiteralPath "$Dest.old").Path
         foreach ($c in Get-ChildItem -LiteralPath $oldPath -Recurse -Filter '*.conf' -File) {
             $parts = $c.FullName.Substring($oldPath.Length + 1) -split '[\\/]'
