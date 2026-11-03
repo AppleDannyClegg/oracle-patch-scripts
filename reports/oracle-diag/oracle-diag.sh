@@ -760,7 +760,23 @@ diag_wls_domain() {
   # configured-but-not-running on this machine: only flag servers whose machine maps to this host or which have no machine
   local names; names="$(awk '{print $1}' "$RAW/wls_$(basename "$d")_servers.txt")"
   local running; running="$(awk '{print $1}' "$RAW/wls_$(basename "$d")_running.txt")"
-  local s; for s in $names; do printf '%s\n' "$running" | grep -qx "$s" || finding INFO wls "$(basename "$d"): server $s is configured but no JVM for it is running on this host (fine if it lives on another node)"; done
+  # a server that is configured but not running: was never started, or did its last start FAIL? the Node
+  # Manager log has the answer - 'will not be restarted' / 'failed during startup' means a real failure
+  # (read servers/<s>/logs/<s>.out for why), not 'fine if it lives on another node' (Weyland 15:3x)
+  local s nm last when; nm="$d/nodemanager/nodemanager.log"
+  for s in $names; do
+    printf '%s\n' "$running" | grep -qx "$s" && continue
+    last="$(grep -F "<$s>" "$nm" 2>/dev/null | tail -1)"
+    if printf '%s' "$last" | grep -qiE 'will not be restarted|failed during startup|Server failed'; then
+      when="$(printf '%s' "$last" | sed -n 's/^<\([^>]*\)>.*/\1/p')"
+      finding WARN wls "$(basename "$d"): server $s is NOT running and its last start FAILED${when:+ ($when)} - see servers/$s/logs/$s.out; this is a failure, not 'on another node'"
+    elif printf '%s' "$last" | grep -qiE 'is running now'; then
+      when="$(printf '%s' "$last" | sed -n 's/^<\([^>]*\)>.*/\1/p')"
+      finding WARN wls "$(basename "$d"): server $s is configured, last started ${when:-earlier} (Node Manager), but no JVM is running now - it stopped or crashed"
+    else
+      finding INFO wls "$(basename "$d"): server $s is configured but no JVM for it is running on this host (fine if it lives on another node)"
+    fi
+  done
   [ -z "$running" ] && finding CRIT wls "$(basename "$d"): no WebLogic server JVM is running on this host"
   ps -eo args | grep -q '[w]eblogic.NodeManager' || finding WARN wls "Node Manager is not running - servers cannot be started from the console / auto-restarted"
   # deployments: this is where FLEXCUBE / OBP / SOA / OSB / Forms / OBIEE etc. show up
@@ -785,13 +801,14 @@ diag_wls_domain() {
     local f; for f in "$lg/$sname.log" "$lg/$sname.out"; do
       [ -f "$f" ] || continue
       h3 "$sname: $(basename "$f")"
-      local n; n="$(recent_errors "wls_${sname}_$(basename "$f" | tr . _)" "$f" '<Error>|<Critical>|<Emergency>|<Alert>|BEA-[0-9]+.*(Error|Critical)|OutOfMemoryError|StuckThread|STUCK|Too many open files|Deadlock|java.lang.Exception|SQLException|ORA-[0-9]+|BEA-000337|BEA-002616|BEA-149500|Connection refused|unable to resolve|JTA transaction.*timed out|GC overhead|FORCE SHUTDOWN|BEA-310003' | tail -1)"
+      local n; n="$(recent_errors "wls_${sname}_$(basename "$f" | tr . _)" "$f" '<Error>|<Critical>|<Emergency>|<Alert>|BEA-[0-9]+.*(Error|Critical)|OutOfMemoryError|StuckThread|STUCK|Too many open files|Deadlock|java.lang.Exception|SQLException|ORA-[0-9]+|BEA-000337|BEA-002616|BEA-149500|Connection refused|unable to resolve|JTA transaction.*timed out|GC overhead|FORCE SHUTDOWN|BEA-310003|UnsupportedClassVersionError|BEA-2162500' | tail -1)"
       [ "${n:-0}" -gt 100 ] && finding WARN wls "$sname: $n error lines recently in $(basename "$f")"
       grep -qE 'OutOfMemoryError|GC overhead' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: OutOfMemoryError in $(basename "$f") - heap exhausted (raise -Xmx or find the leak with a heap dump)"
       grep -qE 'BEA-000337|StuckThread|STUCK' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding WARN wls "$sname: stuck threads (BEA-000337) - slow DB/backend calls; take thread dumps while it happens (--threads)"
       grep -qE 'Too many open files' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: 'Too many open files' - raise nofile ulimit for the WebLogic user"
       grep -qE 'BEA-310003' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding WARN wls "$sname: free memory below 5% of heap (BEA-310003)"
       grep -qE 'BEA-149500|BEA-149205|Failed to deploy' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: deployment failures (BEA-149xxx) in the log"
+      grep -qE 'UnsupportedClassVersionError|BEA-2162500' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: app compiled for a NEWER Java than the server JVM (UnsupportedClassVersionError / BEA-2162500) - the deployment cannot load; build it for this JDK or run the JVM on the version it needs"
       grep -qE 'BEA-001112|BEA-001129|BEA-001153|Could not create pool connection|ORA-01017|ORA-28000|ORA-12541|ORA-12514' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: JDBC data source connection failures (BEA-0011xx / ORA-01017 / TNS) - DB user or listener"
       grep -qE 'FORCE SHUTDOWN|Server state changed to FAILED|FAILED_NOT_RESTARTABLE' "$RAW/wls_${sname}_$(basename "$f" | tr . _).errors" 2>/dev/null && finding CRIT wls "$sname: server went to FAILED / forced shutdown recently"
     done
