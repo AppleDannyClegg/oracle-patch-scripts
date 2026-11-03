@@ -179,10 +179,14 @@ so you can see a bad row without waiting for a collection. The **console thresho
 CLI options: `--targets a,b`, `--sid SID`, `--sql-file FILE`, `--run-dir DIR`, `--timeout SECS`, and the
 shared `--dry-run --yes --force --json --verbose --quiet`.
 
-**On `--dry-run`:** it is meant to reach no changing `emcli` verb, and `deploy` is guarded that way — but
-confirm it on the version in front of you before you rely on it for `import`, `publish`, `rollback` or
-`run`, which is what [`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) exists to check. A `--dry-run`
-that still imports a draft, publishes it or applies a template is worse than no dry run.
+**On `--dry-run`:** every changing call goes through one guard, so a dry run reaches no changing `emcli`
+verb — `import`, `publish` and `deploy` no-op, `run` reaches none of theirs, and `rollback` makes no
+`emcli` call at all. `preflight` and `verify` still run in a dry run because they change nothing (a
+`sync` probe and a repository read).
+[`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) is what proves that on the version in front of you
+(it reports the guarded commands as NOT-EXERCISED there because they make no tool call under `--dry-run`,
+which is the correct reading). A `--dry-run` that still imports a draft, publishes it or applies a
+template is worse than no dry run.
 
 ## (e) Rollback, blackouts and RAC
 
