@@ -148,8 +148,15 @@ fmw_homes() {
     row "WebLogic $v" "$h" "${psu:-no PSU}" "$(date_from_desc "$psu")" "$latest" "OPatch $("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     case "$v" in 12.1.*|10.3.*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "WebLogic $v in $h is out of Premier Support";; 12.2.1.3*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "WebLogic 12.2.1.3 in $h: no more PSUs (upgrade to 12.2.1.4 / 14.1.x)";; esac
     local b; while read -r b; do
-      [ -z "$b" ] && continue; local d; d="$(printf '%s' "$b" | cut -d';' -f2 | sed 's/^ *//')"
-      row "FMW bundle ($(basename "$h"))" "$h" "$d" "$(date_from_desc "$d")" "" ""
+      [ -z "$b" ] && continue; local d ddate; d="$(printf '%s' "$b" | cut -d';' -f2 | sed 's/^ *//')"; ddate="$(date_from_desc "$d")"
+      if [ -n "$ddate" ]; then
+        # a bundle has no CPU-calendar 'latest' to compare against, so pass '-' (not '' which row() shows as '?')
+        row "FMW bundle ($(basename "$h"))" "$h" "$d" "$ddate" "-" ""
+      else
+        # a Coherence Cumulative Patch ('Coherence Cumulative Patch 12.2.1.4.30') carries no yymmdd, so it
+        # cannot be date-compared - render '-/info' rather than '?', which reads as a failed read.
+        ROWS="${ROWS}FMW bundle ($(basename "$h"))|$h|$d|-|-|-|info|no date in the bundle level (e.g. a Coherence Cumulative Patch) - not CPU-dated"$'\n'
+      fi
     done < <(printf '%s\n' "$lsp" | grep -iE 'Coherence|ADF BUNDLE|OPSS BUNDLE|OWSM BUNDLE|SOA BUNDLE|OSB BUNDLE|OHS|FMW PLATFORM|JDEV|WebCenter|OAM BUNDLE|OIM BUNDLE|FORMS|REPORTS|BI PATCH' | grep -viE 'WLS PATCH SET UPDATE')
     local j; j="$(wls_java_home "$h")"; [ -n "$j" ] && java_row "$j" "WebLogic $(basename "$h")"
   done
