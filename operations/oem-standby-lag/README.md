@@ -2,8 +2,10 @@
 
 > **Status:** the wrapper and its gate are verified against **stubs only**. The SQL has been run on Oracle
 > Database Free (a PRIMARY), but the standby path, the real `emcli` flag names on your EM release, and the
-> metric in the console have **not** been exercised on this estate. Treat this as a reviewed starting point
-> and prove it per (f) before you trust a green `verify`.
+> metric in the console have **not** been exercised on this estate. In particular the **deploy path uses
+> `emcli apply_template`**, and those flag names came from memory (the doc fetch used for the redesign did
+> not return that verb's entry) — see (d) and (f). Treat this as a reviewed starting point and prove it per
+> (f) before you trust a green `verify`.
 
 Enterprise Manager's built-in **Data Guard Performance** metric already reports Apply Lag and Transport Lag
 on a standby. This metric extension exists for the cases that built-in metric does not make obvious:
@@ -20,8 +22,9 @@ on a standby. This metric extension exists for the cases that built-in metric do
 - **Switchover safety.** On a PRIMARY every lag/mrp column is `NULL` and `lag_status = PRIMARY`, so the
   same extension can be deployed to **both** sides of the configuration and survives a switchover.
 
-The metric extension is built **once in the UI** (b), then this script carries it the rest of the way:
-`import` → `publish` → `deploy` → `verify`, and `rollback` to undo it.
+The metric extension is built **once in the UI** (b). This script then carries it the rest of the way —
+`import` → `publish` → `deploy` (apply a monitoring template that holds the extension and its thresholds)
+→ `verify` — and `rollback` hands back the console steps to undeploy it.
 
 ## The SQL it deploys
 
@@ -60,16 +63,16 @@ Prove it on a database before deploying: **`oem-standby-lag.sh sql-test`** runs 
 
 ```bash
 cd operations/oem-standby-lag
-cp oem-standby-lag.conf.example oem-standby-lag.conf && chmod 600 oem-standby-lag.conf  # ME_ARCHIVE, OMR_CONNECT, thresholds
+cp oem-standby-lag.conf.example oem-standby-lag.conf && chmod 600 oem-standby-lag.conf  # ME_ARCHIVE, ME_TEMPLATE, OMR_CONNECT, thresholds
 
 ./oem-standby-lag.sh sql-test  --sid STBYA     # the metric's own SQL + thresholds on one standby
 ./oem-standby-lag.sh preflight --targets STBYA,STBYB   # logged in? flags exist? targets exist? names safe?
 ./oem-standby-lag.sh import    --yes           # emcli import_metric_extension -file_name=<ME_ARCHIVE>
 ./oem-standby-lag.sh publish   --yes           # save_metric_extension_draft + publish_metric_extension
-./oem-standby-lag.sh deploy    --targets STBYA,STBYB --yes   # deploy, then record the targets for rollback
+./oem-standby-lag.sh deploy    --targets STBYA,STBYB --yes   # apply_template of the monitoring template
 ./oem-standby-lag.sh verify    --targets STBYA,STBYB         # the repository says each target is collecting
 # ... later, to remove it ...
-./oem-standby-lag.sh rollback  --yes           # undeploy exactly the targets the deploy recorded
+./oem-standby-lag.sh rollback  --yes           # prints the recorded targets + the console undeploy steps
 ```
 
 `run` = `preflight` → `import` → `publish` → `deploy` → `verify`. It does **not** include `sql-test`; run that per
@@ -90,31 +93,30 @@ gone (`primary_contact_age_sec`), **apply not running** (`mrp_processes`), and a
 computed (`UNKNOWN`). If those are the failures you keep having to diagnose by hand, build it; if not, stop
 here.
 
-## (b) Build the metric extension once in the UI
+## (b) Build the extension and its template once in the UI
 
-Enterprise → Monitoring → **Metric Extensions** → **Create**:
+**1. The metric extension.** Enterprise → Monitoring → **Metric Extensions** → **Create**:
 
-1. **Target type:** `Database Instance`. **Adapter:** SQL.
-2. Paste [`standby-lag.sql`](standby-lag.sql). **No key column.** Seven columns, in the order above, with
-   types: `database_role` String, `open_mode` String, `transport_lag_sec` Number, `apply_lag_sec` Number,
-   `primary_contact_age_sec` Number, `mrp_processes` Number, `lag_status` String.
-3. **Thresholds** (this is what decides CRIT vs WARN in the console; the script's own thresholds are
-   config, below, and do not have to match):
+- **Target type:** `Database Instance`. **Adapter:** SQL.
+- Paste [`standby-lag.sql`](standby-lag.sql). **No key column.** Seven columns, in the order above, with
+  types: `database_role` String, `open_mode` String, `transport_lag_sec` Number, `apply_lag_sec` Number,
+  `primary_contact_age_sec` Number, `mrp_processes` Number, `lag_status` String.
+- **Collection schedule:** every 5 minutes.
+- **Test it against a standby in the UI** before saving. This is the step the repo cannot do for you: it
+  proves the SQL runs under the monitoring credential and the columns come back as typed.
+- **Save**, then **export the `.zip`** (`emcli export_metric_extension`). That export is the `ME_ARCHIVE`
+  the script imports — keep it, it is how the extension is moved to another EM.
 
-   | Column | Warning | Critical |
-   |---|---|---|
-   | `transport_lag_sec` | 300 | 900 |
-   | `apply_lag_sec` | 900 | 3600 |
-   | `primary_contact_age_sec` | 300 | 900 |
-   | `mrp_processes` | — | `= 0` |
-   | `lag_status` | — | matches `UNKNOWN` |
+**2. The monitoring template.** The extension is **deployed by applying a monitoring template**, not by a
+metric-extension verb. Create (or reuse) a template — `` ME_TEMPLATE ``, default `STANDBY_LAG` — that:
 
-4. **Collection schedule:** every 5 minutes.
-5. **Test it against a standby in the UI first.** This is the step the repo cannot do for you: it proves
-   the SQL runs under the monitoring credential and the columns come back as typed.
-6. **Save**, then **export the `.zip`** (`emcli export_metric_extension`) and keep it in this folder. That
-   export is the `ME_ARCHIVE` the script imports — the UI is the source of truth for the extension
-   definition and the SQL is kept here so a reviewer can read what will be deployed.
+- includes this metric extension, and
+- carries the **thresholds**. For a template deployment the template is the place thresholds live:
+  `transport_lag_sec` 300/900, `apply_lag_sec` 900/3600, `primary_contact_age_sec` 300/900,
+  `mrp_processes` critical at `= 0`, `lag_status` critical on `UNKNOWN`.
+
+The template is built **per EM** (it is a console object, not the exported `.zip`); the `.zip` is the
+artifact you carry between EMs and the template is what `deploy` applies to the targets.
 
 ## (c) Credentials — read this before you point it at a mounted standby
 
@@ -133,29 +135,32 @@ Enterprise → Monitoring → **Metric Extensions** → **Create**:
 |---|---|---|
 | `plan` | prints the steps for these targets | change anything |
 | `sql-test` | runs `standby-lag.sql` per target via `sql_lines`, prints the 7 columns and applies the thresholds locally | deploy anything |
-| `preflight` | `emcli sync` (must be logged in), `emcli help <verb>` must list **every** flag the script passes, `get_targets` per target, target names must match `^[A-Za-z0-9_.:-]+$` | change anything |
+| `preflight` | `emcli sync` (must be logged in), `emcli help <verb>` must list **every** flag the script passes (including `apply_template -name -targets`), `get_targets` per target, target names must match `^[A-Za-z0-9_.:-]+$` | change anything |
 | `import` | `emcli import_metric_extension -file_name=<ME_ARCHIVE>` | publish or deploy |
-| `publish` | `emcli save_metric_extension_draft -name=$ME_NAME -version=1` then `publish_metric_extension` | deploy |
-| `deploy` | `emcli deploy_metric_extension -target_type=oracle_database -name=$ME_NAME -version=1 -target_names=<a,b>`, then a read-back with `emcli get_metric_extension -name=$ME_NAME -version=1`; records `deployed_targets` **only after that read-back confirms the extension is visible** | trust `emcli`'s exit status alone |
-| `verify` | reads `sysman.mgmt$metric_current` over `OMR_CONNECT` and checks each target has a current row | declare success from the deploy's exit code alone |
-| `rollback` | `emcli undeploy_metric_extension … -target_names=<recorded targets>` — exactly what `deploy` recorded — then clears `deployed_targets` | undeploy targets it did not deploy |
+| `publish` | `emcli save_metric_extension_draft -target_type=oracle_database -name=<ME_NAME> -version=1` then `publish_metric_extension` | deploy |
+| `deploy` | `emcli apply_template -name=<ME_TEMPLATE> -targets="<a>:oracle_database;<b>:oracle_database"`; records `deployed_targets` **only after `emcli` returns 0** | prove the metric is collecting (that is `verify`) |
+| `verify` | reads `sysman.mgmt$metric_current` over `OMR_CONNECT` and checks each target has a current `lag_status` row | declare success from the deploy's exit code alone |
+| `rollback` | prints the targets `deploy` recorded and the **console** undeploy steps (Enterprise → Monitoring → Metric Extensions → the extension → Actions → Undeploy From Targets). **No `emcli` call**, changes no state, never says "undeployed" | undeploy anything itself |
 | `run` | `preflight` → `import` → `publish` → `deploy` → `verify` | — |
 
 **Preflight is the release guard.** `emcli` verb names and flags move between EM releases; a renamed flag
 must fail here, before a half-finished deploy, not in the middle of one. If `preflight` dies naming a verb
 and a flag, that is the check doing its job — read the flag name off `emcli help <verb>` on your release
-and adjust the wrapper (or the release).
+and adjust the wrapper (or the release). **`apply_template`'s flags in particular were written from
+memory** for the redesign and have not been checked against a real `emcli help apply_template` — that is
+the first thing `preflight` will tell you.
 
-**`verify` is the deploy outcome, not the deploy.** `deploy` records its targets only after `emcli`
-returns success **and** a read-back shows the extension, and `verify` then requires a current repository
-row for each target. A missing target is
-CRIT, a failed repository read is CRIT, and **no `OMR_CONNECT` is a WARN (`rc 1`) — never "verified"**. A
-target reporting `lag_status = UNKNOWN` is CRIT.
+**`verify` is the deploy outcome, not the deploy.** `apply_template` exiting 0 means the template was
+applied, not that the extension is collecting. `deploy` records its targets only after `emcli` returns
+success, and `verify` then requires a current repository row for each target. A missing target is CRIT, a
+failed repository read is CRIT, and **no `OMR_CONNECT` is a WARN (`rc 1`) — never "verified"**. A target
+reporting `lag_status = UNKNOWN` is CRIT. Always run `verify` after `deploy`.
 
 ## Thresholds and configuration
 
-The script's thresholds are config, not the console's — `sql-test` and `run` apply them locally so you can
-see a bad row without waiting for a collection.
+The script's thresholds are config, and they mirror the template's — `sql-test` and `run` apply them locally
+so you can see a bad row without waiting for a collection. The **console thresholds are the template's**
+(see (b)); if the two drift, the console is what fires.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -163,7 +168,8 @@ see a bad row without waiting for a collection.
 | `APPLY_LAG_WARN` / `APPLY_LAG_CRIT` | 900 / 3600 | seconds |
 | `CONTACT_AGE_WARN` / `CONTACT_AGE_CRIT` | 300 / 900 | seconds since the primary last updated the stats |
 | `ME_ARCHIVE` | — | the exported metric-extension `.zip` from (b) |
-| `ME_NAME` | `ME$STANDBY_LAG` | the extension's name in EM; deploy/undeploy/verify all key on it |
+| `ME_NAME` | `ME$STANDBY_LAG` | the extension's name in EM; import/publish key on it |
+| `ME_TEMPLATE` | `STANDBY_LAG` | the monitoring template `deploy` applies |
 | `ME_TARGETS` | — | default comma-separated targets when `--targets` is not given |
 | `ME_SID` | — | default instance for `sql-test` when `--sid` is not given |
 | `ME_SQL_FILE` | `standby-lag.sql` beside the script | the metric SQL file |
@@ -176,46 +182,47 @@ shared `--dry-run --yes --force --json --verbose --quiet`.
 **On `--dry-run`:** it is meant to reach no changing `emcli` verb, and `deploy` is guarded that way — but
 confirm it on the version in front of you before you rely on it for `import`, `publish`, `rollback` or
 `run`, which is what [`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) exists to check. A `--dry-run`
-that still imports a draft, publishes it or undeploys from live targets is worse than no dry run.
-
-See [`oem-standby-lag.conf.example`](oem-standby-lag.conf.example). Exit codes are the repo convention:
-**2** CRIT, **1** WARN, **0** clean.
+that still imports a draft, publishes it or applies a template is worse than no dry run.
 
 ## (e) Rollback, blackouts and RAC
 
-- **Rollback** undeploys from the `deployed_targets` recorded in the run dir. It does **not** delete the
-  metric extension or its published definition — undeploy stops it collecting on those targets. Do the
-  verification step after any rollback: **`verify` must fail for the undeployed target**; if it still
-  passes, the undeploy did not take.
+- **Rollback** is **advisory**: it prints the recorded targets and the console undeploy steps and changes
+  nothing. Do the undeploy in the console (Actions → Undeploy From Targets), then **run `verify`: it must
+  fail for the undeployed target** — if it still passes, the undeploy did not take.
 - **Blackouts:** a planned `APPLY-OFF`, or a snapshot standby, will show `lag_status = UNKNOWN` (CRIT).
   That is correct behaviour, not a fault — suppress the target during the window with an OEM blackout rather
   than raising a threshold.
-- **RAC:** `mrp_processes` is counted over `gv$dataguard_process`, so the apply instance is included. Deploy
-  to the **database instance** targets for the standby, and expect one row per instance; the repository
-  check in `verify` is per target name.
+- **RAC:** `mrp_processes` is counted over `gv$dataguard_process`, so the apply instance is included.
+  `apply_template -targets` names the **database instance** targets for the standby, and `verify` checks the
+  repository per target name.
 
 ## (f) What has and has not been verified
 
 - **Verified against stubs:** the wrapper's control flow and its gates —
   [`tests/oem-standby-lag.sh`](../../tests/oem-standby-lag.sh) drives stub `emcli`/`sqlplus` to prove that an
   unreadable or `UNKNOWN` lag is never a clean exit, that a missing help flag or unknown target stops before
-  any change, that a failed deploy records nothing, that rollback undeploys exactly the recorded targets,
-  and that the repository password never reaches an argv. `--dry-run` safety is checked by
-  [`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) and the failure paths by
-  [`tests/false-success-gate.sh`](../../tests/false-success-gate.sh) — run both on the version you deploy,
-  they are the authority on whether `--dry-run` really refuses.
+  any change, that a failed deploy records nothing, and that the repository password never reaches an argv.
+  `--dry-run` safety is checked by [`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) and the failure
+  paths by [`tests/false-success-gate.sh`](../../tests/false-success-gate.sh) — run both on the version you
+  deploy, they are the authority on whether `--dry-run` really refuses.
 - **Run on a real database:** `standby-lag.sql` on Oracle Database Free as a PRIMARY (a row with
   `lag_status = PRIMARY`).
-- **NOT exercised:** the standby path of the SQL, the real `emcli` flag names on your EM release, the
-  metric in the console, and the threshold behaviour over a real lag. The flag names here come from the 13c
-  CLI reference and are checked by `preflight` against your release; treat the rest as unverified until you
-  run (b) and (d) on the estate.
+- **NOT exercised:** the standby path of the SQL, the real `emcli` flag names on your EM release, the metric
+  in the console, and the threshold behaviour over a real lag. The **`apply_template` flags were written
+  from memory** during the redesign (the doc fetch returned no entry for that verb) and no EM has run them;
+  `preflight` is what checks them on your release. Treat the deploy path as unverified until (b) and (d)
+  have been run on the estate.
+- **Redesign history, for the record:** an earlier revision deployed with `emcli deploy_metric_extension` /
+  `undeploy_metric_extension` and read back with `get_metric_extension`; the 13.5 metric-extension verb list
+  does not document those three, so the deploy moved to `apply_template` and `rollback` to console guidance.
+  That is why there is no read-back verb here.
 
 ## Don'ts
 
 - Don't deploy to production targets before you have run `sql-test` and `preflight` on a standby host.
 - Don't put the `OMR_CONNECT` password on a command line; it is read on stdin.
-- Don't read a bare `deploy_metric_extension` success as "collecting" — `verify` is the outcome.
+- Don't read a bare `apply_template` success as "collecting" — `verify` is the outcome.
+- Don't expect `rollback` to undeploy anything; it hands you the console steps.
 - Don't forget the undeploy check after a rollback.
 
 ## Related

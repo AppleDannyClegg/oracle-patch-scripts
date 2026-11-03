@@ -6,10 +6,16 @@
 # `import` runs: emcli import_metric_extension -file_name=$ME_ARCHIVE
 # ME_ARCHIVE=/u01/app/oracle/oem/ME_STANDBY_LAG.zip
 
-# The extension's name in EM. deploy/undeploy/verify all key on this name and version 1, so if it was
-# built under a different name in the console, set it here - a mismatch means rollback will not remove
-# what deploy added. (The version is fixed at 1 in the script.)
+# The extension's name in EM. import/publish key on this name and version 1; set it if the extension was
+# built under a different name in the console. (The version is fixed at 1 in the script.)
 # ME_NAME=ME$STANDBY_LAG
+
+# The monitoring template that holds the extension AND its thresholds. `deploy` runs:
+#   emcli apply_template -name=$ME_TEMPLATE -targets="STBYA:oracle_database;STBYB:oracle_database"
+# The template is built per EM in the console (README (b)); the thresholds live there, so this is where
+# the console Critical/Warning values come from. NOTE: the apply_template flags are unverified on a real
+# emcli - preflight is what checks them on your release.
+# ME_TEMPLATE=STANDBY_LAG
 
 # Default targets when --targets is not given, comma-separated database target names.
 # ME_TARGETS=STBYA,STBYB
@@ -20,7 +26,7 @@
 # The metric SQL file (default: standby-lag.sql beside the script).
 # ME_SQL_FILE=/u01/app/oracle/oem/standby-lag.sql
 
-# --- thresholds, in seconds (local sql-test; the console thresholds are set in the UI, README (b)) ----
+# --- thresholds, in seconds (local sql-test; keep in step with the TEMPLATE's thresholds, README (b)) --
 # TRANSPORT_LAG_WARN=300      # transport lag over this -> WARN
 # TRANSPORT_LAG_CRIT=900      # ... -> CRIT
 # APPLY_LAG_WARN=900          # apply lag over this -> WARN
@@ -31,12 +37,14 @@
 # --- the OEM repository (verify) ---------------------------------------------------------------------
 # sysman connect string for sysman.mgmt$metric_current. It is read through sqlplus on STDIN, never passed
 # on a command line or exported into a child's environment. No OMR_CONNECT -> verify is a WARN (rc 1:
-# not verified), never a pass.
+# not verified), never a pass. verify is the outcome check: apply_template returning 0 is not proof the
+# metric is collecting.
 # OMR_CONNECT=sysman/change-me@omr
 
 # --- timeouts and output -----------------------------------------------------------------------------
 # EMCLI_TIMEOUT=120           # seconds for each emcli call (default 120; preflight's help checks included)
 
-# A run dir is created per run under the tool's run base (see lib/oracle-lib.sh init_run_dir). The state
-# file in it holds deployed_targets, which deploy writes only after a read-back confirms the extension is
-# visible, and which rollback reads. Pass --run-dir DIR to pin it.
+# A run dir is created per run under the tool's run base (see lib/oracle-lib.sh init_run_dir). Its state
+# file holds deployed_targets, which deploy writes only after apply_template returns 0. `rollback` does not
+# undeploy anything: it PRINTS the recorded targets and the console undeploy steps for you to run. Pass
+# --run-dir DIR to pin it.
