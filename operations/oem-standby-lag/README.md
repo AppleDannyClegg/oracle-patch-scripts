@@ -199,8 +199,11 @@ See [`oem-standby-lag.conf.example`](oem-standby-lag.conf.example). Exit codes a
 - **Verified against stubs:** the wrapper's control flow and its gates —
   [`tests/oem-standby-lag.sh`](../../tests/oem-standby-lag.sh) drives stub `emcli`/`sqlplus` to prove that an
   unreadable or `UNKNOWN` lag is never a clean exit, that a missing help flag or unknown target stops before
-  any change, that `--dry-run` reaches no changing verb, that a failed deploy records nothing, that rollback
-  undeploys exactly the recorded targets, and that the repository password never reaches an argv.
+  any change, that a failed deploy records nothing, that rollback undeploys exactly the recorded targets,
+  and that the repository password never reaches an argv. `--dry-run` safety is checked by
+  [`tests/dry-run-gate.sh`](../../tests/dry-run-gate.sh) and the failure paths by
+  [`tests/false-success-gate.sh`](../../tests/false-success-gate.sh) — run both on the version you deploy,
+  they are the authority on whether `--dry-run` really refuses.
 - **Run on a real database:** `standby-lag.sql` on Oracle Database Free as a PRIMARY (a row with
   `lag_status = PRIMARY`).
 - **NOT exercised:** the standby path of the SQL, the real `emcli` flag names on your EM release, the
