@@ -17,10 +17,11 @@
 #   preflight   emcli logged in, every flag this script passes listed by 'emcli help', each target known. Read-only.
 #   import      emcli import_metric_extension for $ME_ARCHIVE.
 #   publish     emcli save_metric_extension_draft, then publish_metric_extension.
-#   deploy      emcli deploy_metric_extension to --targets. deployed_targets is recorded only after a
-#               read-back confirms the extension is visible - never on emcli's exit status alone.
+#   deploy      Apply the monitoring template ($ME_TEMPLATE, which holds the metric extension and its
+#               thresholds) to --targets with emcli apply_template. deployed_targets is recorded only
+#               after that exits 0; verify reads the repository and is the check that it is collecting.
 #   verify      Read sysman.mgmt$metric_current over OMR_CONNECT; a missing or UNKNOWN target is CRIT.
-#   rollback    emcli undeploy_metric_extension for the targets recorded by deploy.
+#   rollback    Print the console undeploy steps for the targets deploy recorded. Makes no change.
 #   run         preflight, import, publish, deploy, verify.
 #
 # Options
@@ -34,7 +35,8 @@
 # Config: oem-standby-lag.conf (600), ~/.oem-standby-lag.conf or the shared oracle.conf -
 #   TRANSPORT_LAG_WARN (300), TRANSPORT_LAG_CRIT (900), APPLY_LAG_WARN (900), APPLY_LAG_CRIT (3600),
 #   CONTACT_AGE_WARN (300), CONTACT_AGE_CRIT (900), ME_ARCHIVE (the exported .zip), ME_NAME
-#   (default ME$STANDBY_LAG), OMR_CONNECT (sysman/<pw>@<omr> - read through sqlplus on stdin, never argv).
+#   (default ME$STANDBY_LAG), ME_TEMPLATE (default STANDBY_LAG - the monitoring template holding the
+#   extension and its thresholds), OMR_CONNECT (sysman/<pw>@<omr> - read through sqlplus on stdin, never argv).
 
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +45,7 @@ TOOL="oem-standby-lag"; VERSION="1.0.0"
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
 ME_NAME="${ME_NAME:-ME\$STANDBY_LAG}"    # the metric extension's name in EM
+ME_TEMPLATE="${ME_TEMPLATE:-STANDBY_LAG}"    # the monitoring template that holds the extension and its thresholds
 ME_ARCHIVE="${ME_ARCHIVE:-}"
 ME_TARGETS="${ME_TARGETS:-}"
 ME_SID="${ME_SID:-}"
@@ -163,9 +166,9 @@ OEM standby-lag metric extension - plan
   2. preflight  from a host with emcli logged in:          oem-standby-lag.sh preflight --targets <a,b>
   3. import     the exported extension:                    oem-standby-lag.sh import --yes
   4. publish    the draft:                                 oem-standby-lag.sh publish --yes
-  5. deploy     to the standby database targets:          oem-standby-lag.sh deploy --targets <a,b> --yes
+  5. deploy     apply the template to the targets:        oem-standby-lag.sh deploy --targets <a,b> --yes
   6. verify     that each is collecting (reads the OMR):  oem-standby-lag.sh verify --targets <a,b>
-  7. rollback   undeploy exactly what deploy recorded:     oem-standby-lag.sh rollback --yes
+  7. rollback   print the console undeploy steps:         oem-standby-lag.sh rollback --yes
 
 Everything here is verified against stubs only (tests/oem-standby-lag.sh); the real emcli flag names on
 your EM release, the SQL on a real standby, and the metric in the console are preflight/sql-test/verify
@@ -181,9 +184,7 @@ cmd_preflight() {
   emcli_help_check import_metric_extension -file_name
   emcli_help_check save_metric_extension_draft -name -version
   emcli_help_check publish_metric_extension -name -version
-  emcli_help_check deploy_metric_extension -target_type -name -version -target_names
-  emcli_help_check undeploy_metric_extension -target_type -name -version -target_names
-  emcli_help_check get_metric_extension -name -version
+  emcli_help_check apply_template -name -targets
   emcli_targets_present "$targets"
   say "preflight OK: emcli logged in, every flag listed, targets present: $targets"
   return 0
@@ -223,27 +224,24 @@ cmd_deploy() {
   local targets; targets="$(target_list)"
   [ -n "$targets" ] || die "deploy needs --targets a,b"
   validate_targets "$targets"
-  local csv; csv="$(printf '%s' "$targets" | tr ' ' ',')"
+  local csv t tstr=""; csv="$(printf '%s' "$targets" | tr ' ' ',')"
+  for t in $targets; do tstr="${tstr:+$tstr;}$t:oracle_database"; done
   if [ "$DRY_RUN" = 1 ]; then
-    log "dry-run: would run: emcli deploy_metric_extension -target_type=oracle_database -name=$ME_NAME -version=1 -target_names=$csv"
-    say "dry-run: $ME_NAME would be deployed to $csv"
+    log "dry-run: would run: emcli apply_template -name=$ME_TEMPLATE -targets=$tstr"
+    say "dry-run: monitoring template $ME_TEMPLATE (metric extension $ME_NAME) would be applied to $tstr"
     return 0
   fi
   emcli_sync
-  emcli_help_check deploy_metric_extension -target_type -name -version -target_names
+  emcli_help_check apply_template -name -targets
   emcli_targets_present "$targets"
-  confirm "Deploy metric extension $ME_NAME to $csv?" || die "aborted"
-  if ! emcli_change deploy_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1" "-target_names=$csv"; then
-    err "emcli deploy_metric_extension failed - $ME_NAME is NOT deployed on $csv"
+  confirm "Apply monitoring template $ME_TEMPLATE (metric extension $ME_NAME) to $csv?" || die "aborted"
+  if ! emcli_change apply_template "-name=$ME_TEMPLATE" "-targets=$tstr"; then
+    err "emcli apply_template failed - $ME_NAME is NOT deployed on $csv"
     return 1
   fi
-  # the outcome, not emcli's exit status: read the extension back before recording it as deployed
-  if ! to "$EMCLI_TIMEOUT" emcli get_metric_extension "-name=$ME_NAME" "-version=1" >/dev/null 2>&1; then
-    err "emcli deploy_metric_extension exited 0 but $ME_NAME is not visible to emcli get_metric_extension - not recording it as deployed"
-    return 1
-  fi
+  # apply_template's rc is not proof the metric is collecting: 'verify' reads the repository and is that check
   state_set deployed_targets "$csv"
-  say "deployed $ME_NAME to $csv"
+  say "applied monitoring template $ME_TEMPLATE (metric extension $ME_NAME) to $csv - run 'verify' to confirm it is collecting"
   return 0
 }
 
@@ -291,14 +289,10 @@ select target_name||'|'||metric_column||'|'||value||'|'||to_char(collection_time
 cmd_rollback() {
   local csv; csv="$(state_get deployed_targets || true)"
   [ -n "$csv" ] || die "no deployed_targets recorded in this run dir - point --run-dir at the deploy run"
-  emcli_sync
-  emcli_help_check undeploy_metric_extension -target_type -name -version -target_names
-  confirm "Undeploy metric extension $ME_NAME from $csv?" || die "aborted"
-  if ! emcli_change undeploy_metric_extension "-target_type=oracle_database" "-name=$ME_NAME" "-version=1" "-target_names=$csv"; then
-    err "emcli undeploy_metric_extension failed - $csv may still be collecting"; return 1
-  fi
-  [ "$DRY_RUN" = 1 ] || state_set deployed_targets ""
-  say "undeployed $ME_NAME from $csv"
+  # there is no emcli verb that undeploys a metric extension: this is a console action, and the script makes no change
+  say "Rollback is a console action: Enterprise > Monitoring > Metric Extensions > $ME_NAME > Actions > Undeploy From Targets"
+  say "Targets recorded by deploy: $csv"
+  say "The metric extension stays deployed until you do that from the console - this script changes nothing."
   return 0
 }
 
