@@ -99,13 +99,14 @@ irm https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/
 **Windows - Command Prompt** (no PowerShell; uses the built-in `curl.exe` and `tar.exe`, Windows 10 1803+):
 
 ```cmd
-curl -fsSL -o "%TEMP%\ops.zip" https://github.com/AppleDannyClegg/oracle-patch-scripts/archive/refs/heads/main.zip && tar -xf "%TEMP%\ops.zip" -C . && ren oracle-patch-scripts-main oracle-patch-scripts && del "%TEMP%\ops.zip"
+curl -fsSL -o "%TEMP%\ops.zip" https://github.com/AppleDannyClegg/oracle-patch-scripts/archive/refs/heads/main.zip && tar -xf "%TEMP%\ops.zip" -C . && ren oracle-patch-scripts-main oracle-patch-scripts & del "%TEMP%\ops.zip"
 ```
 
 Run the same line again whenever you want the newest version. `get.sh` and `get.ps1` keep your
 `*.conf` files and leave the old copy as `oracle-patch-scripts.old`. The plain `cmd` line is
 download-and-extract only: it carries nothing across, checks no `lib/`, and errors if
-`oracle-patch-scripts` already exists, so delete it (or use `get.ps1`) before re-running. It also
+`oracle-patch-scripts` already exists, so delete it (or use `get.ps1`) before re-running. (The trailing `& del` is a single ampersand,
+so the temp zip is removed even when an earlier step fails.) It also
 assumes the archive unpacks to `oracle-patch-scripts-main` (GitHub names the folder `<repo>-<branch>`),
 so adjust the `ren` if the repository or default branch is renamed.
 
