@@ -1,0 +1,398 @@
+<#
+get-patches.ps1 - on a Windows 10/11 machine with internet: read the manifest that patch-manifest.sh wrote on
+a server with no internet, work out which patches that server is behind on, and download them from My
+Oracle Support, ready to copy to the server. Runs in the PowerShell that ships with Windows (5.1) and in 7.
+
+  .\get-patches.ps1 -Manifest .\patch-manifest-wl1.txt             # plan + download into .\patches-wl1
+  .\get-patches.ps1 -Manifest .\patch-manifest-wl1.txt -PlanOnly   # only say what it would download
+  .\get-patches.ps1 -Manifest ... -Patch 38123456                  # also download these numbers
+
+What it looks up, for everything in the manifest:
+  WebLogic home
+  - WLS Stack Patch Bundle (SPB): newest "WLS STACK PATCH BUNDLE <release>.<yymmdd>" in MOS's Recommended
+    list. One download carrying the PSU, Coherence, FMW Thirdparty, OSS, JDBC and RDA patches; it is
+    applied with the spbat.sh inside it (see its readme), not with wls-patch.sh.
+  - only when MOS lists no SPB: the WLS PSU and the Coherence cumulative patch one by one
+  - FMW Platform Bundle: newest "FMW PLATFORM BUNDLE PATCH <release>.<yymmdd>", where one is installed
+  - OPatch kit 28186730 when OPatch is older than 13.9.4.2.0
+  Database or client home (e.g. a 19c client)
+  - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it
+  EM agent home
+  - reported, not downloaded: agent RUs are applied from the OMS
+  JDK
+  - newest update of each major version in use that has a Linux x86-64 download (one per major)
+Anything else Oracle lists for these homes (e.g. ADF/OPSS/OWSM bundles, MOS Doc 2806740.2): add it with -Patch.
+
+Token: log in to My Oracle Support in a browser, open https://updates.oracle.com/Orion/GenToken/get_token,
+press Generate token (valid 60 minutes) and save it as %USERPROFILE%\.mos-token (or pass -TokenFile).
+MOS no longer takes the account password.
+
+Files keep Oracle's names (p<number>_<release>_<platform>.zip), which wls-patch.sh matches on. A JDK patch
+zip is unpacked to its .tar.gz, which is what java-patch.sh wants. Every file is SHA-256 checked.
+#>
+[CmdletBinding()]
+param(
+    [string] $Manifest,
+    [string] $Dest,
+    [string] $TokenFile = (Join-Path $HOME '.mos-token'),
+    [string[]] $Patch = @(),
+    [switch] $PlanOnly
+)
+
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # Windows PowerShell 5.1 downloads crawl with the progress bar on
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+
+$script:MosBase = 'https://updates.oracle.com'
+$script:MosHeaders = @{}
+$script:Releases = $null
+
+# MOS product and platform numbers (the same ones lib/oracle-lib.sh uses)
+$script:ProductWls = 15991
+$script:ProductCoherence = 13964
+$script:ProductJdk = 12443
+$script:PlatformGeneric = 2000
+$script:PlatformLinux = 226
+$script:OPatchKit = '28186730'
+$script:ProductDatabase = 9480
+$script:DbOPatch = '6880880'
+
+# ---- network: the only two functions that talk to MOS --------------------------------------------------
+function Invoke-MosGet([string] $Path) {
+    $resp = Invoke-WebRequest -Uri ($script:MosBase + $Path) -Headers $script:MosHeaders -UseBasicParsing
+    [string] $resp.Content
+}
+
+function Invoke-MosDownload([string] $Url, [string] $OutFile) {
+    # the URL redirects to Oracle's CDN; the Authorization header is dropped on that hop, which the CDN expects
+    Invoke-WebRequest -Uri $Url -Headers $script:MosHeaders -OutFile $OutFile -UseBasicParsing
+}
+
+# ---- small helpers -------------------------------------------------------------------------------------
+function Remove-Cdata([string] $Text) { $Text.Replace('<![CDATA[', '').Replace(']]>', '') }
+
+# "1.8.0_471" / "12.2.1.4.0" / "13.9.4.2.23" -> a string that sorts the same way the versions do
+function Get-VersionKey([string] $Version) {
+    $parts = [regex]::Matches($Version, '\d+') | ForEach-Object { $_.Value.PadLeft(8, '0') }
+    ($parts -join '.')
+}
+
+# "12.2.1.4" -> "12.2.1.4.0": MOS release labels have five parts
+function Get-FivePart([string] $Version) {
+    $parts = @($Version.Split('.'))
+    while ($parts.Count -lt 5) { $parts += '0' }
+    ($parts -join '.')
+}
+
+# ---- manifest ------------------------------------------------------------------------------------------
+function Read-Manifest([string] $Path) {
+    $m = [pscustomobject]@{ Host = ''; Wls = @(); Homes = @(); Jdks = @() }
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        if (-not $line.Trim() -or $line.StartsWith('#')) { continue }
+        $f = $line.Split('|')
+        switch ($f[0]) {
+            'host' { $m.Host = $f[1] }
+            'wls' {
+                $m.Wls += [pscustomobject]@{ Home = $f[1]; Release = $f[2]; OPatch = $f[3]; Coherence = ($f[4] -eq 'yes'); Patches = @() }
+            }
+            'home' {
+                $m.Homes += [pscustomobject]@{ Home = $f[1]; Kind = $f[2]; Version = $f[3]; OPatch = $f[4]; Patches = @() }
+            }
+            'patch' {
+                $w = @($m.Wls) + @($m.Homes) | Where-Object { $_ -and $_.Home -eq $f[1] } | Select-Object -First 1
+                if ($w) { $w.Patches += [pscustomobject]@{ Id = $f[2]; Description = (($f[3..($f.Count - 1)]) -join '|').Trim() } }
+            }
+            'jdk' { $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] } }
+        }
+    }
+    if (-not $m.Wls -and -not $m.Homes -and -not $m.Jdks) { throw "$Path has no wls or jdk lines - is it a patch-manifest.sh file?" }
+    $m
+}
+
+# ---- MOS lookups ---------------------------------------------------------------------------------------
+# every ARU release: Label ("Oracle WebLogic Server 12.2.1.4.0"), Name, Id. 4 MB, fetched once per run.
+function Get-MosReleases {
+    if ($null -eq $script:Releases) {
+        $xml = (Invoke-MosGet '/Orion/Services/metadata?table=aru_releases') -replace "[`r`n]", ''   # as lib does: entries can break lines
+        $script:Releases = @([regex]::Matches($xml, '<release id="(\d+)"[^>]*name="([^"]*)"><!\[CDATA\[([^\]]*)\]\]>') | ForEach-Object {
+                [pscustomobject]@{ Id = $_.Groups[1].Value; Name = $_.Groups[2].Value; Label = $_.Groups[3].Value }
+            })
+        if ($script:Releases.Count -eq 0) { throw 'MOS returned an empty release table' }
+        # a cut-off table still has rows, but too few: the JDK walk would quietly pick an older update
+        if ($xml.TrimEnd() -notmatch '</results>$') { $script:Releases = $null; throw 'the MOS release table arrived incomplete - run again' }
+    }
+    $script:Releases
+}
+
+function Get-ReleaseId([string] $Label) {
+    $r = Get-MosReleases | Where-Object { $_.Label -eq $Label } | Select-Object -First 1
+    if (-not $r) { throw "release '$Label' is not in the MOS release table" }
+    $r.Id
+}
+
+# patches filed under a product/release/platform: Number, Abstract, Date (yyyy-mm-dd)
+function Get-MosPatchRows([int] $Product, [string] $ReleaseId, [int] $Platform, [switch] $Recommended) {
+    $q = "/Orion/Services/search?product=$Product&release=$ReleaseId&platform=$Platform&patch_type=all"
+    if ($Recommended) { $q += '&classification=recommended' }
+    $xml = (Invoke-MosGet $q) -replace "[`r`n]", ''
+    foreach ($blk in ($xml -split '<patch ' | Select-Object -Skip 1)) {
+        # the first <number>/<abstract> only: the record goes on to list every bug the patch fixes
+        $n = [regex]::Match($blk, '<number>(\d+)')
+        $a = [regex]::Match($blk, '<abstract><!\[CDATA\[([^\]]*)')
+        $d = [regex]::Match($blk, '<released_date[^>]*>(\d{4}-\d{2}-\d{2})')
+        if ($n.Success) { [pscustomobject]@{ Number = $n.Groups[1].Value; Abstract = $a.Groups[1].Value.Trim(); Date = $d.Groups[1].Value } }
+    }
+}
+
+# Coherence level N from "...12.2.1.4.N..." (either wording), else from "Cumulative Patch N"; 0 when neither
+function Get-CoherenceLevel([string] $Text, [string] $Short) {
+    $m = [regex]::Match($Text, [regex]::Escape($Short) + '\.(\d+)\b')
+    if (-not $m.Success) { $m = [regex]::Match($Text, 'Cumulative Patch (\d+)\b(?!\.)') }
+    if ($m.Success) { [int] $m.Groups[1].Value } else { 0 }
+}
+
+# ---- the plan ------------------------------------------------------------------------------------------
+function New-PlanItem([string] $Kind, [string] $What, [string] $Installed, $Row, [string] $Release) {
+    [pscustomobject]@{ Kind = $Kind; What = $What; Installed = $Installed; Patch = $Row.Number; Abstract = $Row.Abstract; Release = $Release }
+}
+
+# newest row whose abstract matches $Pattern; the first capture group is what is compared
+function Select-Newest($Rows, [string] $Pattern) {
+    $Rows | Where-Object { $_.Abstract -match $Pattern } |
+        Sort-Object { Get-VersionKey ([regex]::Match($_.Abstract, $Pattern).Groups[1].Value) } -Descending |
+        Select-Object -First 1
+}
+
+function Get-InstalledLevel($Wls, [string] $Pattern) {
+    $levels = @($Wls.Patches | Where-Object { $_.Description -match $Pattern } |
+            ForEach-Object { [regex]::Match($_.Description, $Pattern).Groups[1].Value })
+    $levels | Sort-Object { Get-VersionKey $_ } -Descending | Select-Object -First 1
+}
+
+function Get-WlsPlan($Wls) {
+    $release = $Wls.Release
+    $short = ($release.Split('.')[0..3]) -join '.'                       # 12.2.1.4.0 -> 12.2.1.4
+    $esc = [regex]::Escape($short)
+    $rows = @(Get-MosPatchRows $script:ProductWls (Get-ReleaseId "Oracle WebLogic Server $(Get-FivePart $release)") $script:PlatformGeneric -Recommended)
+
+    # Stack Patch Bundle first: it carries the PSU and Coherence (and Thirdparty, OSS, JDBC, RDA)
+    $spbPattern = "^WLS STACK PATCH BUNDLE $esc(?:\.0)?\.(\d{6})"
+    $spb = Select-Newest $rows $spbPattern
+    if ($spb) {
+        $have = Get-InstalledLevel $Wls $spbPattern
+        if (-not $have -or [regex]::Match($spb.Abstract, $spbPattern).Groups[1].Value -gt $have) {
+            # its own folder: wls-patch.sh run applies every zip in wls/, and an SPB is applied with spbat.sh
+            New-PlanItem 'spb' "WLS Stack Patch Bundle ($($Wls.Home))" $have $spb $release
+        }
+    }
+
+    # no SPB on MOS: the PSU on its own. Exact PSU rows only, not "(BLR)" / MERGE / OVERLAY look-alikes
+    $psuPattern = "^WLS PATCH SET UPDATE $esc(?:\.0)?\.(\d{6})\s*$"
+    if (-not $spb) {
+        $newest = Select-Newest $rows $psuPattern
+        $have = Get-InstalledLevel $Wls $psuPattern
+        if (-not $newest) { Write-Warning "$($Wls.Home): MOS lists no WLS PSU or Stack Patch Bundle for $short - get the number from Doc 2806740.2 and pass -Patch" }
+        elseif (-not $have -or [regex]::Match($newest.Abstract, $psuPattern).Groups[1].Value -gt $have) {
+            New-PlanItem 'wls' "WLS PSU ($($Wls.Home))" $have $newest $release
+        }
+    }
+
+    # FMW Platform Bundle: only where one is installed
+    $bundlePattern = "^FMW PLATFORM BUNDLE PATCH $esc(?:\.0)?\.(\d{6})"
+    $have = Get-InstalledLevel $Wls $bundlePattern
+    if ($have) {
+        $newest = Select-Newest $rows $bundlePattern
+        if (-not $newest) { Write-Warning "$($Wls.Home): FMW Platform Bundle $have is installed but MOS's Recommended list has none - get the number from Doc 2806740.2 and pass -Patch" }
+        elseif ([regex]::Match($newest.Abstract, $bundlePattern).Groups[1].Value -gt $have) {
+            New-PlanItem 'wls' "FMW Platform Bundle ($($Wls.Home))" $have $newest $release
+        }
+    }
+
+    # Coherence cumulative patch. lspatches says "Coherence Cumulative Patch 12.2.1.4.30"; MOS can say
+    # "Coherence 12.2.1.4 Cumulative Patch 30 (12.2.1.4.30)". Both carry the level as <release>.<N>.
+    if ($Wls.Coherence -and -not $spb) {
+        $cohRows = @(Get-MosPatchRows $script:ProductCoherence (Get-ReleaseId "Oracle Coherence $(Get-FivePart $short)") $script:PlatformGeneric -Recommended |
+                Where-Object { $_.Abstract -match 'Coherence' -and $_.Abstract -match 'Cumulative Patch' })
+        $newest = $cohRows | Sort-Object { Get-CoherenceLevel $_.Abstract $short } -Descending | Select-Object -First 1
+        $have = @($Wls.Patches | Where-Object { $_.Description -match 'Coherence' -and $_.Description -match 'Cumulative Patch' } |
+                ForEach-Object { Get-CoherenceLevel $_.Description $short } | Sort-Object -Descending)[0]
+        if (-not $newest) { Write-Warning "$($Wls.Home): MOS lists no Coherence patch for $short" }
+        elseif (-not $have -or (Get-CoherenceLevel $newest.Abstract $short) -gt $have) {
+            New-PlanItem 'wls' "Coherence ($($Wls.Home))" $(if ($have) { "Cumulative Patch $short.$have" } else { '' }) $newest $release
+        }
+    }
+
+    # OPatch: modern PSUs refuse an OPatch older than 13.9.4.2.0
+    if ($Wls.OPatch -and (Get-VersionKey $Wls.OPatch) -lt (Get-VersionKey '13.9.4.2.0')) {
+        New-PlanItem 'wls' "OPatch kit ($($Wls.Home))" $Wls.OPatch ([pscustomobject]@{ Number = $script:OPatchKit; Abstract = 'OPatch 13.9.4.x' }) '13.9.4'
+    }
+}
+
+function Get-JdkPlan($Jdks) {
+    # the EM agent's JDK moves with the agent's own RU, not with java-patch.sh: leave it out of the comparison
+    foreach ($group in ($Jdks | Where-Object { $_.Major -and $_.Home -notmatch '/agent' } | Group-Object Major)) {
+        $major = $group.Name
+        $prefix = if ($major -eq '8') { 'Oracle JDK 1.8.0_' } else { "Oracle JDK $major." }
+        $oldest = $group.Group | Sort-Object { Get-VersionKey $_.Version } | Select-Object -First 1
+        # one ARU release per update; the newest are announced before their patch exists, so walk down to one with a Linux file
+        $candidates = Get-MosReleases |
+            Where-Object { $_.Label.StartsWith($prefix) -and $_.Label.Substring($prefix.Length) -notmatch '-|Performance' } |
+            Sort-Object { Get-VersionKey $_.Label } -Descending | Select-Object -First 4
+        $found = $null
+        foreach ($r in $candidates) {
+            $rows = @(Get-MosPatchRows $script:ProductJdk $r.Id $script:PlatformLinux)
+            if ($rows.Count -gt 0) { $found = [pscustomobject]@{ Release = $r; Row = ($rows | Sort-Object Date -Descending | Select-Object -First 1) }; break }
+        }
+        if (-not $found) { Write-Warning "JDK ${major}: no Linux x86-64 patch in the newest MOS releases - get it from MOS Doc 1439822.2 and pass -Patch"; continue }
+        $newVersion = $found.Release.Label.Substring('Oracle JDK '.Length)
+        if ((Get-VersionKey $newVersion) -gt (Get-VersionKey $oldest.Version)) {
+            New-PlanItem 'jdk' "JDK $major (oldest here: $($oldest.Home))" $oldest.Version $found.Row $newVersion
+        }
+    }
+}
+
+# a database or client home: newest Database Release Update for its release, with OPatch 6880880.
+# The parameter is $Db, not $Home: that is a read-only automatic variable.
+function Get-DbPlan($Db) {
+    $major = $Db.Version.Split('.')[0]
+    $label = "Oracle Database $major.0.0.0.0"
+    # ends at "(" or the end: the " - CMAN" / " - GSM" RUs are not for this home (as db-patch.sh)
+    $ruPattern = "^Database Release Update\s*:?\s*$major\.(\d+)\.0\.0\.(\d{6})\s*(?:\(|$)"
+    $rows = @(Get-MosPatchRows $script:ProductDatabase (Get-ReleaseId $label) $script:PlatformLinux -Recommended)
+    $newest = $rows | Where-Object { $_.Abstract -match $ruPattern } |
+        Sort-Object { [regex]::Match($_.Abstract, $ruPattern).Groups[2].Value } -Descending | Select-Object -First 1
+    $have = @($Db.Patches | Where-Object { $_.Description -match $ruPattern } |
+            ForEach-Object { [regex]::Match($_.Description, $ruPattern).Groups[2].Value } | Sort-Object -Descending)[0]
+    if (-not $newest) { Write-Warning "$($Db.Home): MOS lists no Database Release Update for $major - get it from MOS Doc 2118136.2 and pass -Patch"; return }
+    if (-not $have -or [regex]::Match($newest.Abstract, $ruPattern).Groups[2].Value -gt $have) {
+        $installed = @($Db.Patches | Where-Object { $_.Description -match $ruPattern } | ForEach-Object { $_.Description })[0]
+        $release = "$major.0.0.0.0"
+        New-PlanItem 'db' "Database Release Update ($($Db.Home))" $installed $newest $release
+        # the newest OPatch too when this one is older than current RUs need (db-patch.sh's 12.2.0.1.40)
+        if (-not $Db.OPatch -or (Get-VersionKey $Db.OPatch) -lt (Get-VersionKey '12.2.0.1.40')) {
+            New-PlanItem 'db' "OPatch for $($Db.Home)" $Db.OPatch ([pscustomobject]@{ Number = $script:DbOPatch; Abstract = 'OPatch 12.2.0.1.x (newest)' }) $release
+        }
+    }
+}
+
+function Get-PatchPlan($Manifest) {
+    foreach ($w in $Manifest.Wls) { Get-WlsPlan $w }
+    foreach ($h in ($Manifest.Homes | Where-Object { $_.Kind -eq 'db' })) { Get-DbPlan $h }
+    if ($Manifest.Jdks) { Get-JdkPlan $Manifest.Jdks }
+}
+
+# ---- download ------------------------------------------------------------------------------------------
+# fetch one patch's file for Linux (or Generic), preferring $Release; returns the saved path
+function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
+    $xml = Remove-Cdata ((Invoke-MosGet "/Orion/Services/search?bug=$Patch") -replace "[`r`n]", '')
+    if ($xml -match '<html') { throw "MOS returned a web page for $Patch - the token was not accepted (expired or mis-pasted?)" }
+    $files = @()
+    foreach ($blk in ($xml -split '<patch ' | Select-Object -Skip 1)) {
+        $rel = [regex]::Match($blk, '<release[^>]*name="([^"]*)"').Groups[1].Value
+        $plat = [regex]::Match($blk, '<platform id="\d+"[^>]*>([^<]*)').Groups[1].Value
+        foreach ($f in ($blk -split '<file>' | Select-Object -Skip 1)) {
+            $name = [regex]::Match($f, '<name>([^<]*)</name>')
+            $url = [regex]::Match($f, '<download_url[^>]*host="([^"]*)"[^>]*>([^<]*)</download_url>')
+            $sha = [regex]::Match($f, '<digest type="SHA-256">([^<]*)</digest>')
+            if ($name.Success -and $url.Success) {
+                $files += [pscustomobject]@{
+                    Name = $name.Groups[1].Value.Trim(); Url = ($url.Groups[1].Value + $url.Groups[2].Value).Replace('&amp;', '&')
+                    Sha = $sha.Groups[1].Value.Trim().ToLower(); Release = $rel; Platform = $plat
+                }
+            }
+        }
+    }
+    if ($files.Count -eq 0) { throw "patch ${Patch}: no downloadable files (not entitled, or the number is wrong)" }
+
+    $forUs = @($files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' })
+    if ($forUs.Count -eq 0) { $forUs = $files }
+    $pick = $null
+    if ($Release) {
+        $tag = '_' + $Release.Replace('.', '')
+        $pick = $forUs | Where-Object { $_.Release.StartsWith($Release) -or $_.Name.Contains($tag) } | Select-Object -First 1
+    }
+    if (-not $pick -and $forUs.Count -eq 1) { $pick = $forUs[0] }
+    if (-not $pick) {
+        $list = ($forUs | ForEach-Object { "    $($_.Name)  release $($_.Release)  ($($_.Platform))" }) -join "`n"
+        throw "patch $Patch has several files and none is for release '$Release':`n$list"
+    }
+
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    $out = Join-Path $Dest $pick.Name
+    if ((Test-Path -LiteralPath $out) -and $pick.Sha -and ((Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLower() -eq $pick.Sha)) {
+        Write-Host "  $($pick.Name) already here and verified"
+        return $out
+    }
+    Write-Host "  downloading $($pick.Name)"
+    Invoke-MosDownload $pick.Url "$out.part"
+    if ($pick.Sha -and ((Get-FileHash -LiteralPath "$out.part" -Algorithm SHA256).Hash.ToLower() -ne $pick.Sha)) {
+        Remove-Item -LiteralPath "$out.part" -Force
+        throw "SHA-256 mismatch for $($pick.Name) - deleted it, try again"
+    }
+    Move-Item -LiteralPath "$out.part" -Destination $out -Force
+    $out
+}
+
+# a JDK patch zip holds the .tar.gz java-patch.sh wants: unpack it next to the zip
+function Expand-JdkTarball([string] $Zip) {
+    if (-not $Zip.EndsWith('.zip')) { return }
+    $dir = Split-Path -Parent $Zip
+    $tmp = Join-Path $dir ('unzip-' + [guid]::NewGuid())
+    Expand-Archive -LiteralPath $Zip -DestinationPath $tmp
+    Get-ChildItem -LiteralPath $tmp -Recurse -Filter '*.tar.gz' | ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $dir -Force; Write-Host "  unpacked $($_.Name)" }
+    Remove-Item -LiteralPath $tmp -Recurse -Force
+}
+
+# ---- main ----------------------------------------------------------------------------------------------
+function Read-MosToken([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { throw "No MOS token at $Path. Generate one at https://updates.oracle.com/Orion/GenToken/get_token (60 minutes) and save it there." }
+    $t = Get-Content -LiteralPath $Path | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') } | Select-Object -First 1
+    if (-not $t) { throw "$Path has no token line" }
+    $t.Trim()
+}
+
+function Main {
+    if (-not $Manifest) { throw 'Pass -Manifest <the file patch-manifest.sh wrote on the server>' }
+    $m = Read-Manifest $Manifest
+    if (-not $Dest) { $Dest = Join-Path (Get-Location) "patches-$($m.Host)" }
+
+    $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
+    try { Invoke-MosGet '/Orion/Services/search?bug=6880880' | Out-Null }
+    catch { throw "MOS did not accept the token (expired after 60 minutes, or mis-pasted?), or cannot be reached: $($_.Exception.Message)" }
+
+    Write-Host "Host $($m.Host): looking up the newest patches on My Oracle Support"
+    $plan = @(Get-PatchPlan $m)
+    foreach ($p in $Patch) { $plan += [pscustomobject]@{ Kind = 'wls'; What = 'asked for with -Patch'; Installed = ''; Patch = $p; Abstract = ''; Release = $(if ($m.Wls) { $m.Wls[0].Release } else { '' }) } }
+
+    if ($plan.Count -eq 0 -and -not ($m.Homes | Where-Object { $_.Kind -ne 'db' })) { Write-Host 'Nothing to download: MOS has nothing newer than what is installed.'; return }
+    Write-Host ''
+    $plan | Format-Table @{ n = 'what'; e = { $_.What } }, @{ n = 'installed'; e = { $_.Installed } }, @{ n = 'patch'; e = { $_.Patch } }, @{ n = 'MOS says'; e = { $_.Abstract } } -AutoSize -Wrap | Out-Host
+    Write-Host 'Not looked up here: other FMW bundles (ADF/OPSS/OWSM...) - check MOS Doc 2806740.2 and add them with -Patch.'
+    foreach ($a in ($m.Homes | Where-Object { $_.Kind -eq 'agent' })) {
+        $ru = @($a.Patches | ForEach-Object { $_.Description } | Where-Object { $_ -match 'AGENT' })[0]
+        Write-Host "EM agent $($a.Version) at $($a.Home) (installed: $(if ($ru) { $ru } else { 'no agent RU' })): not downloaded - agent RUs (and the agent's JDK) are applied from the OMS."
+    }
+    foreach ($o in ($m.Homes | Where-Object { $_.Kind -eq 'other' })) { Write-Host "Oracle home $($o.Home): not a kind this script knows - check MOS for it by hand." }
+    if ($plan | Where-Object { $_.What -like 'WLS Stack Patch Bundle*' }) { Write-Host 'The Stack Patch Bundle is applied with the spbat.sh inside it (see its readme), not with wls-patch.sh.' }
+    if ($PlanOnly) { return }
+
+    $failed = 0
+    foreach ($p in $plan) {
+        Write-Host "$($p.What): patch $($p.Patch)"
+        try {
+            $saved = Save-MosPatch -Patch $p.Patch -Dest (Join-Path $Dest $p.Kind) -Release $p.Release
+            if ($p.Kind -eq 'jdk') { Expand-JdkTarball $saved }
+        }
+        catch { $failed++; Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red }
+    }
+
+    Write-Host ''
+    Write-Host "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:"
+    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { Write-Host "  scp `"$Dest\wls\*.zip`" oracle@$($m.Host):/u01/patches/wls/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { Write-Host "  scp `"$Dest\spb\*.zip`" oracle@$($m.Host):/u01/patches/spb/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { Write-Host "  scp `"$Dest\db\*.zip`" oracle@$($m.Host):/u01/patches/db/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { Write-Host "  scp `"$Dest\jdk\*.tar.gz`" oracle@$($m.Host):/u01/patches/jdk/" }
+    if ($failed -gt 0) { Write-Host "$failed download(s) failed - see above." -ForegroundColor Red; exit 1 }
+}
+
+if ($MyInvocation.InvocationName -ne '.') { Main }
