@@ -29,6 +29,10 @@ param(
     [string]$Dest = 'oracle-patch-scripts'
 )
 
+# Everything below runs in a CHILD scope, so the plain 'irm | iex' cannot leak this script's
+# variables or its $ErrorActionPreference into the caller's session (get.sh runs in a subshell).
+& {
+
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 still defaults to TLS 1.0/1.1; GitHub needs 1.2 (classic 'Could not create
 # SSL/TLS secure channel'). Harmless no-op on PowerShell 7.
@@ -123,6 +127,7 @@ try {
                 $destFull = (Resolve-Path -LiteralPath $Dest).Path
                 $tFull = if ($target -eq $Dest) { $destFull } else { (Resolve-Path -LiteralPath $target).Path }
                 $rel = $tFull.Substring($destFull.Length).TrimStart([char]'\', [char]'/')
+                if (-not $rel) { $rel = Split-Path -Leaf $destFull }   # top-level conf: match get.sh's 'dest/conf'
                 Write-Host "kept your $rel/$($c.Name)"
             }
         }
@@ -167,4 +172,5 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}
 }
