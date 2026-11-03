@@ -37,7 +37,9 @@ chmod +x "$STUB/emcli"
 export EMCLI_TARGETS="STBYA STBYB"
 # emcli's metric-extension verbs are not in the gates' CHANGE_RE, so fail the extension calls explicitly: the
 # false-success gate then drives the command for real and checks the wrapper records no success after emcli failed.
-FAIL_import='emcli .*import_metric_extension'; FAIL_publish='emcli .*(save_metric_extension_draft|publish_metric_extension)'; FAIL_deploy='emcli .*deploy_metric_extension'; FAIL_rollback='emcli .*undeploy_metric_extension'; FAIL_run='emcli .*(import|save|publish|deploy)_metric_extension'
+# anchored '^emcli <verb>': preflight calls 'emcli help <verb>', so an unanchored regex fails the help call and the
+# false-success gate never reaches the actual change. Fail the change itself.
+FAIL_import='^emcli import_metric_extension'; FAIL_publish='^emcli (save_metric_extension_draft|publish_metric_extension)'; FAIL_deploy='^emcli deploy_metric_extension'; FAIL_rollback='^emcli undeploy_metric_extension'; FAIL_run='^emcli (import|save|publish|deploy)_metric_extension'
 # a change claim in state: any <step>=ok, plus the extension-specific records the wrapper writes only after success
 OK_import='^([a-z_]+=ok|imported=)'; OK_publish='^([a-z_]+=ok|published=)'; OK_deploy='^([a-z_]+=ok|deployed_targets=)'; OK_rollback='^([a-z_]+=ok|undeployed_targets=)'; OK_run='^([a-z_]+=ok|deployed_targets=)'
 ARGS="--sid STBY"; ARGS_sql_test="--sid STBY"; ARGS_import="--targets STBYA"; ARGS_publish="--targets STBYA"; ARGS_deploy="--targets STBYA,STBYB --run-dir $T/env/run-deploy"; ARGS_rollback="--run-dir $r"; ARGS_run="--targets STBYA,STBYB"
