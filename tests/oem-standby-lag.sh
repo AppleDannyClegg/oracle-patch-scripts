@@ -7,7 +7,8 @@
 #  - preflight: an emcli that is not logged in, or whose help does not list a flag the wrapper passes, stops the run
 #    before any change (a renamed flag in another EM release must fail here, not half-way through a deploy).
 #  - --dry-run reaches no changing emcli verb; a real deploy passes the targets and records them for rollback; a
-#    failed deploy exits non-zero and records nothing; rollback undeploys exactly the recorded targets.
+#    failed deploy exits non-zero and records nothing. There is no emcli undeploy verb (EM 13.5 'Using Metric
+#    Extensions' lists none), so rollback changes nothing: it prints the recorded targets and the console steps.
 #  - verify: every target must have a current row in the repository; a missing target is CRIT, a failed repository
 #    read is CRIT, and no OMR_CONNECT is a WARN (never "verified").
 #  - the repository password in OMR_CONNECT never reaches an argv.
@@ -103,9 +104,9 @@ EMCLI_TARGETS='STBYA STBYB' run preflight --targets STBYA,STBYB
 EMCLI_SYNC_RC=1 EMCLI_TARGETS='STBYA' run preflight --targets STBYA
 [ "$rc" != 0 ] && grep -qi 'logged in' "$T/out" && ok || no "preflight not logged in: rc=$rc (want non-zero, 'logged in')"
 
-EMCLI_HELP_DROP='deploy_metric_extension:-target_names' EMCLI_TARGETS='STBYA' run preflight --targets STBYA
-[ "$rc" != 0 ] && grep -q 'deploy_metric_extension' "$T/out" && grep -q -- '-target_names' "$T/out" && ok \
-  || no "preflight with a flag missing from emcli help: rc=$rc (want non-zero naming deploy_metric_extension -target_names)"
+EMCLI_HELP_DROP='apply_template:-targets' EMCLI_TARGETS='STBYA' run preflight --targets STBYA
+[ "$rc" != 0 ] && grep -q 'apply_template' "$T/out" && grep -q -- '-targets' "$T/out" && ok \
+  || no "preflight with a flag missing from emcli help: rc=$rc (want non-zero naming apply_template -targets)"
 
 EMCLI_TARGETS='STBYA' run preflight --targets STBYA,NOSUCH
 [ "$rc" != 0 ] && grep -q 'NOSUCH' "$T/out" && ok || no "preflight unknown target: rc=$rc (want non-zero naming NOSUCH)"
@@ -115,7 +116,7 @@ run preflight --targets "STBYA');drop"
 
 # --- change commands -------------------------------------------------------------------------------------------
 EMCLI_TARGETS='STBYA STBYB' run deploy --targets STBYA,STBYB --dry-run --yes
-if [ "$rc" = 0 ] && ! grep -qE '^emcli (import|save|publish|deploy|undeploy)_metric_extension' "$LOG"; then ok
+if [ "$rc" = 0 ] && ! grep -qE '^emcli (import_metric_extension|save_metric_extension_draft|publish_metric_extension|apply_template)' "$LOG"; then ok
 else no "deploy --dry-run: rc=$rc or a changing verb reached emcli:"; sed 's/^/    /' "$LOG"; fi
 
 # every change command under --dry-run, not only deploy: confirm() answers yes under --dry-run, so a command whose
@@ -125,23 +126,29 @@ for c in import publish rollback; do
   mkdir -p "$T/run-dry-rb"; printf 'deployed_targets=STBYA\n' >"$T/run-dry-rb/state"
   # shellcheck disable=SC2086
   EMCLI_TARGETS='STBYA' run "$c" --targets STBYA $extra --dry-run --yes
-  if [ "$rc" = 0 ] && ! grep -qE '^emcli (import|save|publish|deploy|undeploy)_metric_extension' "$LOG"; then ok
+  if [ "$rc" = 0 ] && ! grep -qE '^emcli (import_metric_extension|save_metric_extension_draft|publish_metric_extension|apply_template)' "$LOG"; then ok
   else no "$c --dry-run: rc=$rc or a changing verb reached emcli:"; sed 's/^/    /' "$LOG"; fi
 done
 grep -qx 'deployed_targets=STBYA' "$T/run-dry-rb/state" && ok || no "rollback --dry-run cleared the recorded deployed_targets"
 
-EMCLI_TARGETS='STBYA STBYB' run deploy --targets STBYA,STBYB --yes --run-dir "$T/run-deploy"
-if [ "$rc" = 0 ] && grep -qxF 'emcli deploy_metric_extension -target_type=oracle_database -name=ME$STANDBY_LAG -version=1 -target_names=STBYA,STBYB' "$LOG" \
+EMCLI_TARGETS='STBYA STBYB' run deploy --targets STBYA,STBYB --yes --run-dir "$T/run-deploy"; cp "$LOG" "$LOG.deploy"
+if [ "$rc" = 0 ] && grep -qxF 'emcli apply_template -name=STANDBY_LAG -targets=STBYA:oracle_database;STBYB:oracle_database' "$LOG" \
    && grep -qx 'deployed_targets=STBYA,STBYB' "$T/run-deploy/state"; then ok
 else no "deploy: rc=$rc, or the deploy call/state is not what was asked:"; sed 's/^/    /' "$LOG"; cat "$T/run-deploy/state" 2>/dev/null | sed 's/^/    state: /'; fi
 
-EMCLI_FAIL=deploy_metric_extension EMCLI_TARGETS='STBYA' run deploy --targets STBYA --yes --run-dir "$T/run-fail"
+EMCLI_FAIL=apply_template EMCLI_TARGETS='STBYA' run deploy --targets STBYA --yes --run-dir "$T/run-fail"
 if [ "$rc" != 0 ] && ! grep -q '^deployed_targets=STBYA' "$T/run-fail/state" 2>/dev/null; then ok
 else no "failed deploy: rc=$rc (want non-zero) and no deployed_targets recorded"; fi
 
 EMCLI_TARGETS='STBYA STBYB' run rollback --yes --run-dir "$T/run-deploy"
-grep -qxF 'emcli undeploy_metric_extension -target_type=oracle_database -name=ME$STANDBY_LAG -version=1 -target_names=STBYA,STBYB' "$LOG" && [ "$rc" = 0 ] && ok \
-  || { no "rollback: rc=$rc, did not undeploy the recorded STBYA,STBYB:"; sed 's/^/    /' "$LOG"; }
+# rollback: no emcli verb undeploys a metric extension, so it must change nothing and claim nothing - it names the
+# recorded targets and the console steps, and the state still says they are deployed
+if [ "$rc" = 0 ] && ! grep -qE '^emcli (undeploy|deploy|import|save|publish|apply)' "$LOG" \
+   && grep -q 'Undeploy From Targets' "$T/out" && grep -q 'STBYA,STBYB' "$T/out" \
+   && ! grep -qiE '(^|[^a-z])undeployed ' "$T/out" && grep -qx 'deployed_targets=STBYA,STBYB' "$T/run-deploy/state"; then ok
+else no "rollback: rc=$rc - it must make no emcli change call, print the console steps and STBYA,STBYB, not claim 'undeployed', and keep the state:"; sed 's/^/    out: /' "$T/out"; sed 's/^/    emcli: /' "$LOG"; fi
+# deploy calls only the verbs the EM 13.5 guide documents plus apply_template - never the invented read-back
+grep -q 'get_metric_extension' "$LOG.deploy" 2>/dev/null && no "deploy calls emcli get_metric_extension, which is not a documented verb" || ok
 
 EMCLI_TARGETS='STBYA' run import --yes --run-dir "$T/run-import"
 grep -qxF "emcli import_metric_extension -file_name=$T/me.zip" "$LOG" && [ "$rc" = 0 ] && ok || no "import: rc=$rc, file_name not passed"
