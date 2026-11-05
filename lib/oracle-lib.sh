@@ -28,6 +28,9 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN="${DRY_RUN:-0}"; ASSUME_YES="${ASSUME_YES:-0}"; FORCE="${FORCE:-0}"; JSON_OUT="${JSON_OUT:-0}"; VERBOSE="${VERBOSE:-0}"; QUIET="${QUIET:-0}"
 RUN_BASE="${RUN_BASE:-$HOME/$TOOL/runs}"
+# one folder for everything downloaded: the manifest, the patch zips (patch_base/<kind>), the tools tree
+# (patch_base/scripts). A server uses /u01/patches; set PATCH_BASE in oracle.conf (or the environment) to move it.
+PATCH_BASE="${PATCH_BASE:-/u01/patches}"
 RUN_DIR="${RUN_DIR:-}"; LOG_FILE="${LOG_FILE:-}"; STATE_FILE="${STATE_FILE:-}"
 CMD_TIMEOUT="${CMD_TIMEOUT:-60}"; SQL_TIMEOUT="${SQL_TIMEOUT:-90}"
 HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || cat /etc/hostname 2>/dev/null || echo "${HOSTNAME:-unknown}")"; HOST="${HOST%%.*}"

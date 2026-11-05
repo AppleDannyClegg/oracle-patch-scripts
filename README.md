@@ -6,8 +6,12 @@ folders, `patching/`, `operations/` and `reports/`, one sub-folder per script wi
 `*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch` and
 `oracle-diag` sources `lib/oracle-lib.sh` from the top of the tree (two levels up), so copy the whole
 tree (`get.sh`, or `get.ps1` on Windows, does it) or a script folder together with `lib/`, never a single file.
+`get.sh` lays the tree down in `$PATCH_BASE/scripts` (default `/u01/patches/scripts`; `get.ps1` uses `.\patches\scripts`).
+`$PATCH_BASE` is also where every download lands - the manifest and the patch zips, one subfolder per
+kind - so one folder holds everything (see [Where to put the files](#servers-without-internet-access)).
 
 ```bash
+export PATCH_BASE=~/patches       # optional; default /u01/patches
 curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
 ```
 
@@ -83,7 +87,7 @@ recent one. The last line of `run` is either `SUCCESS ...` or an error naming th
 
 ## Getting the scripts
 
-One line fetches everything into `./oracle-patch-scripts`, no git or GitHub account needed.
+One line fetches everything into `$PATCH_BASE/scripts` (`/u01/patches/scripts` by default, `\.\patches\scripts` on Windows), no git or GitHub account needed.
 
 **Mac, Linux or WSL** (bash):
 
@@ -104,7 +108,7 @@ curl -fsSL -o "%TEMP%\ops.zip" https://github.com/AppleDannyClegg/oracle-patch-s
 ```
 
 Run the same line again whenever you want the newest version. `get.sh` and `get.ps1` keep your
-`*.conf` files and leave the old copy as `oracle-patch-scripts.old`. The plain `cmd` line is
+`*.conf` files and leave the old copy as `<dest>.old`. The plain `cmd` line is
 download-and-extract only: it carries nothing across, checks no `lib/`, and errors if
 `oracle-patch-scripts` already exists, so delete it (or use `get.ps1`) before re-running. (The trailing `& del` is a single ampersand,
 so the temp zip is removed even when an earlier step fails.) It also
@@ -128,17 +132,17 @@ reach out, and each has an offline path:
 
 | Need | Where it comes from | What to do on an air-gapped server |
 |---|---|---|
-| the scripts themselves | GitHub (`get.sh`, or `get.ps1` on Windows) | run `get.sh` on your laptop, then `scp -r oracle-patch-scripts oracle@server:~/` |
-| patch files | My Oracle Support (bearer token from the get_token page, 60 minutes) or download.oracle.com (public) | download on the laptop, copy the file to the place in the table below, run the script without `latest`/`download`/`--latest`/`--patches` |
+| the scripts themselves | GitHub (`get.sh`, or `get.ps1` on Windows) | run `get.sh` on your laptop, then `scp -r $PATCH_BASE/scripts oracle@server:$PATCH_BASE/scripts` |
+| patch files | My Oracle Support (bearer token from the get_token page, 60 minutes) or download.oracle.com (public) | download on the laptop (get-patches.ps1 lands them in `$PATCH_BASE/<host>`), `scp -r $PATCH_BASE/<host>/* oracle@server:$PATCH_BASE/`, run the script without `latest`/`download`/`--latest`/`--patches` |
 | "is there a newer release" probes | download.oracle.com | put `OFFLINE=1` in `oracle.conf` (top of the tree) so no script waits on a blocked connection; without it each script probes once for 5 s and then carries on offline |
 
 Where to put the files:
 
 | Script | Download on the laptop | Put it at | Then |
 |---|---|---|---|
-| `patching/wls-patch` | the PSU / Coherence zips `p<ID>_<release>_Generic.zip` from MOS (patch numbers from the quarter's *Critical Patch Update Availability Document*, or `patch-status.sh` on a host with MOS) | any directory, e.g. `~/patches/wls-2026Q4/` | `wls-patch.sh run ~/patches/wls-2026Q4` |
-| `patching/db-patch` | the RU, OJVM and (if needed) the OPatch kit `p6880880_*.zip` from MOS | one directory | `db-patch.sh run <dir>` |
-| `patching/java-patch` | the JDK `jdk-<ver>_linux-x64_bin.tar.gz` from MOS (or java.oracle.com) | anywhere | `java-patch.sh run <tar.gz>` |
+| `patching/wls-patch` | the PSU / Coherence zips `p<ID>_<release>_Generic.zip` from MOS (patch numbers from the quarter's *Critical Patch Update Availability Document*, or `patch-status.sh` on a host with MOS) | `$PATCH_BASE/wls/` (default `/u01/patches/wls`; `download` with no directory uses it) | `wls-patch.sh run $PATCH_BASE/wls` |
+| `patching/db-patch` | the RU, OJVM and (if needed) the OPatch kit `p6880880_*.zip` from MOS | `$PATCH_BASE/db/` (default `/u01/patches/db`) | `db-patch.sh run $PATCH_BASE/db` |
+| `patching/java-patch` | the JDK `jdk-<ver>_linux-x64_bin.tar.gz` from MOS (or java.oracle.com) | `$PATCH_BASE/jdk/` (default `/u01/patches/jdk`) | `java-patch.sh run $PATCH_BASE/jdk/<tar.gz>` |
 | `patching/apex-patch` | `apex_<version>.zip` from download.oracle.com (public) | `APEX_BASE/downloads/` (default `/opt/oracle/apex-releases/downloads/`) | `apex-patch.sh run <version>` (or `run`, it picks the newest zip on disk) |
 | `patching/ords-patch` | `ords-latest.zip` from download.oracle.com (public) | `ORDS_BASE/downloads/` | `ords-patch.sh run` (it uses the newest `ords*.zip` on disk) |
 | `patching/patch-status` | nothing | - | works offline: the quarter comes from the CPU calendar; `--mos` and the newest ORDS/APEX versions need the internet |
@@ -156,10 +160,10 @@ below; the others follow the same `inspect`, `plan`, `preflight`, `run` pattern 
 README has the exact lines.
 
 ```bash
-scp -r oracle-patch-scripts oracle@server:~/
+scp -r $PATCH_BASE/scripts oracle@server:/u01/patches/scripts
 ssh oracle@server
-chmod +x ~/oracle-patch-scripts/*/*.sh
-cd ~/oracle-patch-scripts
+chmod +x /u01/patches/scripts/*/*.sh
+cd /u01/patches/scripts
 ```
 
 ### 1. WebLogic (`wls-patch.sh`) — on the WebLogic server
@@ -169,9 +173,9 @@ cd patching/wls-patch
 cp wls-patch.conf.example wls-patch.conf     # first time; MOS token in ~/.mos-token for latest/download
 ./wls-patch.sh inspect                       # version, PSU level, OPatch, JDK, domain, running servers
 ./wls-patch.sh plan --latest                 # which PSU / Coherence patch would be applied
-./wls-patch.sh download /u01/patches/latest --patches latest
-./wls-patch.sh preflight /u01/patches/latest # OPatch version, release match, JDK, conflicts, disk
-./wls-patch.sh run /u01/patches/latest       # backup > stop > apply > start > verify (auto-rollback on failure)
+./wls-patch.sh download --patches latest    # into /u01/patches/wls
+./wls-patch.sh preflight /u01/patches/wls   # OPatch version, release match, JDK, conflicts, disk
+./wls-patch.sh run /u01/patches/wls         # backup > stop > apply > start > verify (auto-rollback on failure)
 ```
 
 No internet on the server: download the zips on a laptop from support.oracle.com into the folder

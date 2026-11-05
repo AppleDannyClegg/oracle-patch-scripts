@@ -62,6 +62,7 @@ VERBOSE=0
 STOP_TIMEOUT="${STOP_TIMEOUT:-180}"
 START_TIMEOUT="${START_TIMEOUT:-600}"
 RUN_BASE="${RUN_BASE:-$HOME/wls-patch/runs}"
+PATCH_BASE="${PATCH_BASE:-/u01/patches}"   # 'download' with no dir lands in $PATCH_BASE/wls
 BACKUP_DIR="${BACKUP_DIR:-$HOME/wls-patch/backups}"
 RUN_DIR=""
 LOG_FILE=""
@@ -1429,7 +1430,8 @@ cmd_latest() {
 }
 
 cmd_download() {
-  local pdir="$1"; shift
+  local pdir
+  if [ $# -gt 0 ]; then pdir="$1"; shift; else pdir="$PATCH_BASE/wls"; fi
   [ -n "$pdir" ] || die "download needs <patch-dir> <patch-number ...>"
   local ids="$*"
   [ -n "$ids" ] || ids="$(printf '%s' "$PATCHES" | tr ',' ' ')"

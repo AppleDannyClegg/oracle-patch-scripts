@@ -3,9 +3,9 @@ get-patches.ps1 - on a Windows 10/11 machine with internet: read the manifest th
 a server with no internet, work out which patches that server is behind on, and download them from My
 Oracle Support, ready to copy to the server. Runs in the PowerShell that ships with Windows (5.1) and in 7.
 
-  .\get-patches.ps1 -Manifest .\patch-manifest-wl1.txt             # plan + download into .\patches-wl1
-  .\get-patches.ps1 -Manifest .\patch-manifest-wl1.txt -PlanOnly   # only say what it would download
-  .\get-patches.ps1 -Manifest ... -Patch 38123456                  # also download these numbers
+  .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt             # plan + download into .\patches\wl1
+  .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt -PlanOnly   # only say what it would download
+  .\get-patches.ps1 -Manifest ... -Patch 38123456                    # also download these numbers
 
 What it looks up, for everything in the manifest:
   WebLogic home
@@ -678,7 +678,7 @@ function Read-MosToken([string] $Path) {
 function Main {
     if (-not $Manifest) { throw 'Pass -Manifest <the file patch-manifest.sh wrote on the server>' }
     $m = Read-Manifest $Manifest
-    if (-not $Dest) { $Dest = Join-Path (Get-Location) "patches-$($m.Host)" }
+    if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
 
     $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
     try { Invoke-MosGet '/Orion/Services/search?bug=6880880' | Out-Null }

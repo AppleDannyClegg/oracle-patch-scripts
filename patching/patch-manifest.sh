@@ -7,7 +7,7 @@
 # One file, nothing else needed: copy it to the server and run it as the oracle user.
 #
 # Usage: patch-manifest.sh [--out FILE]
-#   --out FILE   where to write it (default ./patch-manifest-<host>.txt)
+#   --out FILE   where to write it (default $PATCH_BASE/manifest-<host>.txt, PATCH_BASE=/u01/patches)
 #
 # WebLogic homes are found from the Oracle inventory, the usual paths, running servers and ORACLE_HOME /
 # MW_HOME; every other home with OPatch (database client, EM agent, ...) from the inventory. JDKs from those
@@ -25,6 +25,9 @@
 # file is written, so a half-read host never looks up to date.
 
 set -uo pipefail
+
+# one folder for everything downloaded; a server uses /u01/patches (PATCH_BASE in the environment moves it)
+PATCH_BASE="${PATCH_BASE:-/u01/patches}"
 
 die() { echo "patch-manifest: $*" >&2; exit 1; }
 
@@ -329,7 +332,8 @@ main() {
   done
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-}")"
   [ -n "$host" ] || die "cannot determine the hostname - set HOSTNAME and run again"
-  [ -n "$out_file" ] || out_file="./patch-manifest-$host.txt"
+  [ -n "$out_file" ] || out_file="$PATCH_BASE/manifest-$host.txt"
+  mkdir -p "$(dirname "$out_file")" || die "Cannot create $(dirname "$out_file")"
 
   inventory_check
   body="$(wls_lines)" || exit 1
