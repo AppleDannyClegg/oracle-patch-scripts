@@ -40,12 +40,14 @@ cp java-patch.conf.example java-patch.conf      # JAVA_HOME if auto-detection is
    build; same major unless `--force`; WebLogic/ORDS matrix for the new major; disk in
    `JAVA_BASE` (3× the tarball); `JAVA_BASE`, the symlink's parent and every reference file
    writable; who is running on the old JDK; the old `cacerts` opens with `CACERTS_PASSWORD`.
-2. **backup**: every file to be edited copied to the run dir; the old JDK directory is never
-   touched.
+2. **backup**: every file to be edited copied to the run dir; the old JDK is left alone (a symlink target)
+   or moved into the run dir as `old-jdk` (an in-place target, below).
 3. **apply**: `tar -xzf` into `JAVA_BASE` (skipped when already unpacked); `keytool` export +
    import of every trusted alias present in the old `cacerts` but not in the new one (your
-   internal CAs); then `ln -sfn NEW JAVA_HOME` when `JAVA_HOME` is a symlink, else `sed` of the
-   old path to the new in every reference file; `/usr/java/latest` updated if it pointed at the
+   internal CAs); then the switch: `ln -sfn NEW JAVA_HOME` when `JAVA_HOME` is a symlink; when it is
+   a real directory the new JDK takes its path (the old one moves to the run dir as `old-jdk` and
+   nothing has to be edited, the default - `--keep-old` unpacks a sibling and `sed`s the old path to
+   the new in every reference file instead); `/usr/java/latest` updated if it pointed at the
    old JDK and is writable.
 4. **restart** (with `--restart`): `RESTART_CMDS` in order, else the ORDS systemd unit; waits
    for `CHECK_URLS`/`ORDS_URL`.
@@ -67,6 +69,7 @@ the password reaches keytool through a 600-mode file (`-storepass:file`), never 
 ## Options and config
 
 `--java-home DIR`, `--java-base DIR`, `--tar FILE`, `--restart`, `--force`, `--no-cacerts`,
+`--in-place` (the default when `--java-home` is a real directory), `--keep-old`,
 `--dry-run`, `--yes`, `--json`, `--verbose`, `--run-dir`. Config in `java-patch.conf` (see the
 example) or the shared `oracle.conf`; MOS access is a bearer token in `~/.mos-token` (see `oracle.conf.example`). Needs `lib/oracle-lib.sh` one
 folder up. Logs and backups under `~/java-patch/runs/<ts>/`.

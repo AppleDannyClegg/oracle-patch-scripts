@@ -27,6 +27,10 @@
 #   --tar FILE         the JDK tarball (same as giving it as <tar>)        --restart       run RESTART_CMDS after apply
 #   --force            allow a different major (e.g. 8 -> 11) when the product matrix permits it
 #   --no-cacerts       do not copy extra CA aliases into the new cacerts
+#   --in-place         put the new JDK at --java-home itself, replacing it (the default when --java-home is a
+#                      real directory, not a symlink): the old directory is moved into the run dir and the new
+#                      JDK takes its path, so nothing has to be edited. --keep-old unpacks a sibling and
+#                      edits the references instead.
 #   --dry-run  --yes  --json  --verbose  --run-dir DIR
 #
 # Config: java-patch.conf, ~/.java-patch.conf or the shared oracle.conf: JAVA_HOME, JAVA_BASE, MOS_TOKEN_FILE,
@@ -41,7 +45,7 @@ TOOL="java-patch"; VERSION="1.0.0"
 
 OLD_JH="${JAVA_HOME:-}"; JAVA_BASE="${JAVA_BASE:-}"; TARBALL=""; DO_RESTART=0; NO_CACERTS=0; CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"
 RESTART_CMDS="${RESTART_CMDS:-}"; CHECK_URLS="${CHECK_URLS:-}"; EXTRA_REF_FILES="${EXTRA_REF_FILES:-}"
-OLD_REAL=""; OLD_VER=""; OLD_MAJOR=""; NEW_JH=""; NEW_VER=""; NEW_MAJOR=""; REFS=""; LINKED=0
+OLD_REAL=""; OLD_VER=""; OLD_MAJOR=""; NEW_JH=""; NEW_VER=""; NEW_MAJOR=""; REFS=""; LINKED=0; IN_PLACE=0; KEEP_OLD=0
 USER_ORDS_URL="${ORDS_URL:-}"   # only a URL the operator gave (ords_detect invents a default we must not verify against)
 
 usage() { usage_from_header "$0"; }
@@ -49,7 +53,7 @@ parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
     --java-home) optchk "$@"; OLD_JH="$2"; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$2"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
-    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -108,6 +112,9 @@ discover() {
   fi
   [ -x "$OLD_JH/bin/java" ] || die "$OLD_JH has no bin/java"
   OLD_REAL="$(readlink -f "$OLD_JH")"; [ -L "$OLD_JH" ] && LINKED=1
+  # a real-directory target: replace it in place by default, because the references name that path (a symlink
+  # is flipped instead, and --keep-old asks for the old unpack-a-sibling-and-edit-references behaviour)
+  [ "$LINKED" = 0 ] && [ "$KEEP_OLD" = 0 ] && IN_PLACE=1
   OLD_VER="$(jdk_version "$OLD_JH")"; OLD_MAJOR="$(java_major_of "$OLD_JH")"
   [ -z "$JAVA_BASE" ] && JAVA_BASE="$(dirname "$OLD_REAL")"
   REFS="$(refs_to "$OLD_JH"; [ "$OLD_REAL" != "$OLD_JH" ] && refs_to "$OLD_REAL")"
@@ -204,11 +211,13 @@ cmd_preflight() {
 
 cmd_plan() {
   discover; pick_tar
-  echo "PLAN: $OLD_JH ($OLD_VER) -> $NEW_JH ($NEW_VER)"
+  echo "PLAN: $OLD_JH ($OLD_VER) -> $([ "$IN_PLACE" = 1 ] && echo "$OLD_JH (in place)" || echo "$NEW_JH") ($NEW_VER)"
   echo "  1. preflight   JDK tarball, major $OLD_MAJOR->$NEW_MAJOR, WebLogic/ORDS matrix, disk in $JAVA_BASE, who runs on the old JDK"
-  echo "  2. backup      $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | grep -c .) reference file(s) copied to the run dir; the old JDK stays at $OLD_REAL"
+  echo "  2. backup      $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | grep -c .) reference file(s) copied to the run dir$([ "$IN_PLACE" = 1 ] && echo "; the old JDK is moved to ${RUN_DIR:-<run-dir>}/old-jdk" || echo "; the old JDK stays at $OLD_REAL")"
   echo "  3. apply       tar -xzf $(basename "$TARBALL") -C $JAVA_BASE ; keytool import of CA aliases present only in the old cacerts$([ "$NO_CACERTS" = 1 ] && echo ' (skipped)')"
-  [ "$LINKED" = 1 ] && echo "                 ln -sfn $NEW_JH $OLD_JH   (symlink flip, no file edits)" || echo "                 sed $OLD_JH -> $NEW_JH in: $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | tr '\n' ' ')"
+  if [ "$IN_PLACE" = 1 ]; then echo "                 mv $OLD_JH ${RUN_DIR:-<run-dir>}/old-jdk ; mv $NEW_JH $OLD_JH   (the new JDK takes $OLD_JH, no file edits)"
+  elif [ "$LINKED" = 1 ]; then echo "                 ln -sfn $NEW_JH $OLD_JH   (symlink flip, no file edits)"
+  else echo "                 sed $OLD_JH -> $NEW_JH in: $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | tr '\n' ' ')"; fi
   echo "  4. restart     $([ "$DO_RESTART" = 1 ] && echo "${RESTART_CMDS:-ORDS service $(ords_service)}" || echo 'not requested (--restart): JVMs keep the old JDK until restarted')"
   echo "  5. verify      $NEW_JH/bin/java -version, references, running JVMs' /proc/pid/exe, URLs: ${CHECK_URLS:-${USER_ORDS_URL:-none}}"
   echo "  rollback       symlink back / files restored from the run dir, restart again"
@@ -219,6 +228,7 @@ cmd_backup() {
   # a copy that failed used to be recorded as backed up all the same, and rollback would have found nothing to restore
   local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do cp -p "$f" "$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')" || die "cannot back up $f into $RUN_DIR/files (cp failed): nothing changed"; state_append backed_files "$f"; done
   [ "$LINKED" = 1 ] && state_set link_target "$OLD_REAL"
+  [ "$IN_PLACE" = 1 ] && state_set in_place 1
   log "backed up $(state_get backed_files | wc -w | tr -d ' ') file(s) to $RUN_DIR/files"; state_set backup ok
 }
 
@@ -247,7 +257,18 @@ cmd_apply() {
     log "cacerts: $n CA alias(es) carried over ($(printf '%s' "$extra" | tr '\n' ' '))"; state_set cacerts_imported "$n"
     [ "$nf" = 0 ] || die "cacerts: $nf alias(es) failed to import into $nc - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"
   fi
-  if [ "$LINKED" = 1 ]; then
+  if [ "$IN_PLACE" = 1 ]; then
+    # the new JDK takes the target's path: the old directory moves into the run dir (a rename, no copy) and
+    # the freshly unpacked one moves onto the same path, so nothing that names $OLD_JH has to change
+    log "replacing $OLD_JH with $NEW_JH (the old JDK moves to $RUN_DIR/old-jdk)"; confirm "mv $OLD_JH $RUN_DIR/old-jdk && mv $NEW_JH $OLD_JH ?" || die "aborted"
+    if [ "$DRY_RUN" = 1 ]; then :
+    else
+      mv "$OLD_JH" "$RUN_DIR/old-jdk" || die "cannot move $OLD_JH aside - nothing changed"
+      mv "$NEW_JH" "$OLD_JH" || die "cannot move $NEW_JH to $OLD_JH - the old JDK is at $RUN_DIR/old-jdk, move it back by hand"
+      [ -x "$OLD_JH/bin/java" ] || die "$OLD_JH/bin/java missing after the move"
+    fi
+    NEW_JH="$OLD_JH"
+  elif [ "$LINKED" = 1 ]; then
     log "flipping symlink $OLD_JH -> $NEW_JH"; confirm "ln -sfn $NEW_JH $OLD_JH ?" || die "aborted"
     [ "$DRY_RUN" = 1 ] || { ln -sfn "$NEW_JH" "$OLD_JH" || die "symlink flip failed"; [ "$(readlink "$OLD_JH")" = "$NEW_JH" ] || die "symlink flip did not take: $OLD_JH -> $(readlink "$OLD_JH" || echo '?') (is $OLD_JH a directory, not a link?)"; }
   else
@@ -282,7 +303,10 @@ cmd_verify() {
   discover; reuse_or_init verify; local fail=0
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
-  if [ "$LINKED" = 1 ]; then [ "$(readlink -f "$OLD_JH")" = "$(readlink -f "$newjh")" ] && log "$OLD_JH -> $newjh" || { err "$OLD_JH points at $(readlink -f "$OLD_JH")"; fail=1; }
+  if [ "$IN_PLACE" = 1 ]; then
+    # the path did not change, so there is nothing to re-point: the new build must simply be there
+    local v; v="$(jdk_version "$newjh")"; [ "$v" = "$NEW_VER" ] && log "$newjh is now $v" || { err "$newjh is $v, expected $NEW_VER"; fail=1; }
+  elif [ "$LINKED" = 1 ]; then [ "$(readlink -f "$OLD_JH")" = "$(readlink -f "$newjh")" ] && log "$OLD_JH -> $newjh" || { err "$OLD_JH points at $(readlink -f "$OLD_JH")"; fail=1; }
   else local left; left="$(refs_to "$(state_get old_real)" | grep -c .)"; [ "$left" = 0 ] && log "no reference to the old JDK left" || { err "$left reference(s) still name the old JDK: $(refs_to "$(state_get old_real)" | cut -c1-120 | tr '\n' ';')"; fail=1; }; fi
   local oldrun; if ! oldrun="$(running_on "$(state_get old_real)")"; then err "$(ps_unreadable_msg) - whether anything still runs on the old JDK is NOT known"; fail=1; oldrun=""
   elif [ -n "$oldrun" ]; then warn "still running on the OLD JDK (restart them): $(printf '%s\n' "$oldrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; else log "no JVM runs on the old JDK"; fi
@@ -295,8 +319,16 @@ cmd_verify() {
 cmd_rollback() {
   discover; reuse_or_init rollback
   local tgt; tgt="$(state_get link_target || true)"
-  [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
+  [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || [ -d "$RUN_DIR/old-jdk" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
   local rfail=0
+  if [ "$(state_get in_place || true)" = 1 ] && [ -d "$RUN_DIR/old-jdk" ]; then
+    confirm "mv $OLD_JH $RUN_DIR/new-jdk-rollback && mv $RUN_DIR/old-jdk $OLD_JH ?" || die "aborted"
+    if [ "$DRY_RUN" = 1 ]; then :
+    else
+      mv "$OLD_JH" "$RUN_DIR/new-jdk-rollback" || { err "cannot move the new JDK aside from $OLD_JH"; rfail=1; }
+      mv "$RUN_DIR/old-jdk" "$OLD_JH" || { err "cannot restore the old JDK from $RUN_DIR/old-jdk"; rfail=1; }
+    fi
+  fi
   if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; if [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; then log "symlink restored -> $tgt"; else err "cannot restore the symlink $OLD_JH -> $tgt"; rfail=1; fi; fi
   # a missing or uncopyable backup used to be skipped silently and the rollback still said ok
   local f b; for f in $(state_get backed_files || true); do b="$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"
