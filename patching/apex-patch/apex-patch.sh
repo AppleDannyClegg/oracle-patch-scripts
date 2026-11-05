@@ -190,6 +190,7 @@ wls_discover() {
     case "$src" in *i.war) WLS_I_WAR="$src";; esac
   done <<<"$blocks"
   [ "$WLS_MODE" = 1 ] || return 1
+  command -v unzip >/dev/null || warn "unzip is not installed: the ORDS config dir, the images dir and the ORDS version cannot be read from the deployed wars - set ORDS_CONFIG / APEX_IMAGES_DIR"
   # config dir: embedded in the war (ords --config X war) or -Dconfig.url on the managed server
   if [ -z "${ORDS_CONFIG:-}" ]; then
     ORDS_CONFIG="$(unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null | tr -d '\n' | sed -n 's/.*config\.url<\/param-name>[^<]*<param-value>\([^<]*\)<.*/\1/p')"

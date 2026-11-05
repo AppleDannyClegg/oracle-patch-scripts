@@ -320,7 +320,7 @@ cmd_stop() {
   # process substitution, not '| while': a listener that would not stop must reach fail (opatch refuses a home whose listener runs: files in use)
   local h lsn; while read -r h lsn; do [ "$h" = "$HOME_DIR" ] || continue
     run_cmd env ORACLE_HOME="$h" "$h/bin/lsnrctl" stop "$lsn" || { err "lsnrctl stop $lsn failed - a listener from $HOME_DIR is still running"; fail=1; }; state_append listeners "$lsn"; done < <(listener_homes)
-  [ "$DRY_RUN" = 1 ] || { local left; left="$(ps -eo args | grep -E "^ora_[a-z0-9]+_" | grep -E "$(printf '%s' "$SIDS" | sed 's/ /|/g')" | wc -l | tr -d ' ')"; [ "$left" != 0 ] && [ -n "$SIDS" ] && warn "$left oracle processes of these SIDs still running"; }
+  [ "$DRY_RUN" = 1 ] || { local left pl; if pl="$(ps_args)"; then left="$(printf '%s\n' "$pl" | grep -E "^ora_[a-z0-9]+_" | grep -E "$(printf '%s' "$SIDS" | sed 's/ /|/g')" | wc -l | tr -d ' ')"; [ "$left" != 0 ] && [ -n "$SIDS" ] && warn "$left oracle processes of these SIDs still running"; else warn "cannot re-read the process list after the stop - leftover oracle processes NOT checked"; fi; }
   if [ "$fail" = 0 ]; then state_set stopped ok
   else state_set stopped failed; err "stop INCOMPLETE: a database or listener of $HOME_DIR is still running - nothing in this home can be patched until it is down"; return 1; fi
 }

@@ -61,8 +61,9 @@ wls_homes() {
     ls -d /u01/app/oracle/product/*/fmw* /u01/app/oracle/middleware* /u01/oracle/* /opt/oracle/* /opt/oracle/product/* "$HOME"/Oracle/Middleware*
     [ -n "${ORACLE_HOME:-}" ] && echo "$ORACLE_HOME"
     [ -n "${MW_HOME:-}" ] && echo "$MW_HOME"
-    ps -eo args | grep -oE '[^ ]*/wlserve[r]/' | sed 's#/wlserver/##'
-  } 2>/dev/null | while read -r h; do [ -d "$h/wlserver" ] && echo "$h"; done | sort -u
+    local pl; if pl="$(ps -eo args)"; then printf '%s\n' "$pl" | grep -oE '[^ ]*/wlserve[r]/' | sed 's#/wlserver/##'
+    else echo "patch-manifest: ps failed - WebLogic homes found only from the inventory and the usual paths, not from running servers" >&3; fi
+  } 3>&2 2>/dev/null | while read -r h; do [ -d "$h/wlserver" ] && echo "$h"; done | sort -u
 }
 
 wls_version() {
