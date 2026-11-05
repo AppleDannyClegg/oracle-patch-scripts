@@ -119,6 +119,13 @@ java_changed() { grep -qE '^(apply=ok|old_jdk=)' "$JAVA_RUN/state" 2>/dev/null; 
 java_attempted=0; wls_attempted=0
 recover() {
   local rec=1
+  # stop before undoing anything: an in-place java-patch rollback renames the JDK under live JVMs (apply refuses
+  # exactly that) and an SPB restore overwrites the home under them; both need the JVMs down first
+  log "recovering: stopping the servers first"
+  if ! wrun stop; then
+    err "Could not stop the servers to recover - nothing is restored or rolled back, and the servers are NOT started. Fix by hand."
+    return 0
+  fi
   if [ "$wls_attempted" = 1 ]; then
     log "recovering: wls-patch restore (an SPB's nrollback is cumulative - restore is the only complete rollback)"
     wrun restore || { err "wls-patch restore failed - restore this home by hand"; rec=0; }

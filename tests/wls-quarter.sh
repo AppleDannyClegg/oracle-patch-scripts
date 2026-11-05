@@ -34,6 +34,9 @@ case "\$1" in
     [ -n "\$rd" ] && echo "apply=ok" >>"\$rd/state" ;;
   restore) [ -n "\${FAIL_WLS_RESTORE:-}" ] && exit 1 ;;
   rollback) [ -n "\${FAIL_JAVA_ROLLBACK:-}" ] && exit 1 ;;
+  verify) [ "\$who" = java ] && [ -n "\${FAIL_JAVA_VERIFY:-}" ] && exit 1 ;;
+  start) [ -n "\${FAIL_WLS_START:-}" ] && exit 1 ;;
+  stop) [ -n "\${FAIL_WLS_STOP:-}" ] && [ -e "$T/stop.ok" ] && exit 1; : >"$T/stop.ok" ;;
 esac
 exit 0
 EOF
@@ -50,7 +53,7 @@ mkroot() { # <dir> [jdk] [spb] [wls]
 }
 runq() { # <root> [env assignments...]  -> runs the quarter, returns rc, logs to $T/out
   local root="$1"; shift
-  : >"$T/calls.log"; rm -rf "$T/run"
+  : >"$T/calls.log"; rm -rf "$T/run"; rm -f "$T/stop.ok"
   env "$@" bash "$QUARTER" --patch-root "$root" --run-dir "$T/run" --yes >"$T/out" 2>&1
 }
 line() { grep -n "$1" "$T/calls.log" | head -1 | cut -d: -f1; }
@@ -103,6 +106,20 @@ runq "$T/root" FAIL_WLS_SPB=1 FAIL_WLS_RESTORE=1; rc=$?
 [ "$rc" != 0 ] && ok || bad "a failed recovery exited 0"
 grep -q '^wls start' "$T/calls.log" && bad "servers were started although recovery failed" || ok
 grep -q 'servers NOT started' "$T/out" && ok || bad "a failed recovery did not say the servers were left stopped"
+
+# ---- recovery stops the servers BEFORE undoing anything (Baymax P2) ------------------------------------------
+mkroot "$T/rootjdk" 1 0 0
+runq "$T/rootjdk" FAIL_JAVA_VERIFY=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "a JDK-only verify failure exited 0"
+v="$(line 'java verify')"; jr="$(line 'java rollback')"
+[ -n "$v" ] && [ -n "$jr" ] && awk -v a="$v" -v b="$jr" 'NR>a && NR<b && /^wls stop/ {f=1} END{exit !f}' "$T/calls.log" && ok || bad "recovery did not stop the servers before the java rollback (verify=$v rollback=$jr)"
+
+# recovery stop itself fails: nothing is undone and nothing is started
+runq "$T/root" FAIL_WLS_WLS=1 FAIL_WLS_STOP=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "a recovery-stop failure exited 0"
+[ -z "$(line 'wls restore')" ] && ok || bad "a restore ran although the recovery stop failed"
+[ -z "$(line 'java rollback')" ] && ok || bad "a rollback ran although the recovery stop failed"
+grep -q 'servers are NOT started' "$T/out" && ok || bad "a failed recovery stop did not say nothing was started"
 
 # ---- dry-run: every changing verb carries --dry-run ----------------------------------------------------------
 : >"$T/calls.log"; rm -rf "$T/run"
