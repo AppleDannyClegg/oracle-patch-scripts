@@ -67,8 +67,46 @@ function Invoke-MosGet([string] $Path) {
 }
 
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
-    # the URL redirects to Oracle's CDN; the Authorization header is dropped on that hop, which the CDN expects
-    Invoke-WebRequest -Uri $Url -Headers $script:MosHeaders -OutFile $OutFile -UseBasicParsing
+    # the URL redirects to Oracle's CDN; the Authorization header is dropped on that hop, which the CDN expects.
+    # Stream it ourselves (not Invoke-WebRequest -OutFile, which with $ProgressPreference='SilentlyContinue' goes
+    # quiet for the whole of a multi-GB patch) so the operator sees a live status: percent, size, MB/s.
+    $req = [Net.HttpWebRequest]::Create($Url)
+    $req.AllowAutoRedirect = $true
+    $req.UserAgent = 'get-patches.ps1'
+    if ($script:MosHeaders -and $script:MosHeaders['Authorization']) { $req.Headers.Add('Authorization', $script:MosHeaders['Authorization']) }
+    $resp = $req.GetResponse()
+    try {
+        $total = $resp.ContentLength
+        $in = $resp.GetResponseStream()
+        $out = [IO.File]::Create($OutFile)
+        try {
+            $buf = New-Object byte[] 1048576
+            [long] $done = 0
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                $out.Write($buf, 0, $n); $done += $n
+                $secs = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
+                $rate = $done / 1MB / $secs
+                if ($total -gt 0) {
+                    $pct = [int](100 * $done / $total)
+                    Write-Host ("`r    {0,3}%  {1}/{2}  {3,6:N1} MB/s" -f $pct, (Format-Size $done), (Format-Size $total), $rate) -NoNewline
+                } else {
+                    Write-Host ("`r    {0}  {1,6:N1} MB/s" -f (Format-Size $done), $rate) -NoNewline
+                }
+            }
+            $sw.Stop()
+        } finally { $out.Dispose(); $in.Dispose() }
+        $secs = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
+        Write-Host ("`r    done: {0} in {1:N0}s ({2:N1} MB/s)" -f (Format-Size $done), $sw.Elapsed.TotalSeconds, ($done / 1MB / $secs))
+    } finally { $resp.Dispose() }
+}
+
+# bytes -> a short human size, so a small file does not read as '0.0 MB'
+function Format-Size([double] $Bytes) {
+    if ($Bytes -ge 1GB) { return ('{0:N2} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    if ($Bytes -ge 1KB) { return ('{0:N0} KB' -f ($Bytes / 1KB)) }
+    return ("$([int]$Bytes) B")
 }
 
 # ---- small helpers -------------------------------------------------------------------------------------
