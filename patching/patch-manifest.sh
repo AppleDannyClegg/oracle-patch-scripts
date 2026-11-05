@@ -34,7 +34,22 @@ inventory_homes() {
   for inv in ${ORAINST_LOC:-/etc/oraInst.loc /var/opt/oracle/oraInst.loc}; do
     [ -f "$inv" ] || continue
     d="$(sed -n 's/^inventory_loc=//p' "$inv")"
-    sed -n 's/.*<HOME NAME="[^"]*" LOC="\([^"]*\)".*/\1/p' "$d/ContentsXML/inventory.xml" 2>/dev/null
+    # a REMOVED="T" entry is a de-installed home still listed in inventory.xml: skip it, do not probe it
+    # (its OPatch may still be on disk, and a failed lspatches there used to kill the whole manifest - PM-8)
+    sed -n '/REMOVED="T"/d; s/.*<HOME NAME="[^"]*" LOC="\([^"]*\)".*/\1/p' "$d/ContentsXML/inventory.xml" 2>/dev/null
+  done
+}
+
+# an existing oraInst.loc must yield a readable inventory.xml: if it does not, every non-WebLogic home is
+# silently missing from the manifest and the host reads as fully checked (EM-4, live). Die like the lspatches
+# path does, so a half-read host never looks up to date.
+inventory_check() {
+  local inv d
+  for inv in ${ORAINST_LOC:-/etc/oraInst.loc /var/opt/oracle/oraInst.loc}; do
+    [ -f "$inv" ] || continue
+    d="$(sed -n 's/^inventory_loc=//p' "$inv")"
+    [ -n "$d" ] || die "$inv has no inventory_loc= line - cannot find the Oracle homes. No manifest written."
+    [ -r "$d/ContentsXML/inventory.xml" ] || die "$inv points at $d but $d/ContentsXML/inventory.xml is not readable - every inventory home would be missing from the manifest. No manifest written."
   done
 }
 
@@ -65,10 +80,16 @@ wls_java_home() {
 
 # every JDK referenced by something on the host, one per line, symlinks resolved
 java_homes() {
+  # a ps that fails must say so: otherwise the JDKs of running JVMs drop silently (GM-3, the G3 class)
+  local psargs
+  if ! psargs="$(ps -eo args 2>/dev/null)"; then
+    echo "patch-manifest: warning: cannot read the process list (ps failed) - the JDKs of running JVMs will not be found" >&2
+    psargs=""
+  fi
   {
     local h c
     for h in $(wls_homes); do wls_java_home "$h"; echo; done
-    ps -eo args | awk '$1 ~ /\/bin\/java$/ {print $1}' | sed 's#/bin/java$##'
+    [ -n "$psargs" ] && printf '%s\n' "$psargs" | awk '$1 ~ /\/bin\/java$/ {print $1}' | sed 's#/bin/java$##'
     [ -n "${JAVA_HOME:-}" ] && echo "$JAVA_HOME"
     ls -d /usr/java/jdk* /usr/java/latest /usr/lib/jvm/* /opt/java/* /u01/app/oracle/jdk* /u01/jdk*
     c="$(command -v java)"
@@ -76,7 +97,13 @@ java_homes() {
   } 2>/dev/null | while read -r j; do [ -x "$j/bin/java" ] && (readlink -f "$j" 2>/dev/null || echo "$j"); done | sort -u
 }
 
-java_version_of() { "$1/bin/java" -version 2>&1 | head -1 | sed -n 's/.*version "\([^"]*\)".*/\1/p'; }
+java_version_of() {
+  # the JVM can print 'Picked up JAVA_TOOL_OPTIONS: ...' as its first stderr line, and a hung java can block
+  # forever: take the first line that actually carries a version, with the three override vars unset, under a
+  # timeout (PM-7, EM-5). head -1 alone used to read the 'Picked up' line and drop every jdk| line.
+  with_timeout 30 env -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS -u JDK_JAVA_OPTIONS "$1/bin/java" -version 2>&1 \
+    | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1
+}
 
 # 1.8.0_471 -> 8, 17.0.13 -> 17
 java_major_of() {
@@ -105,7 +132,9 @@ home_kind() {
 comp_version() {
   local h="$1" name
   for name in oracle.rdbms oracle.sqlplus oracle.client; do
-    sed -n "/NAME=\"$name\"/{s/.*VER=\"\([0-9][0-9.]*\)\".*/\1/p;q;}" "$h/inventory/ContentsXML/comps.xml" 2>/dev/null
+    # no 'q': a matching NAME line may carry no VER (print nothing and let a later line be read), and the
+    # pattern is anchored to the VER attribute so a REP_VER= is never read as the version (EM-6)
+    sed -n "/NAME=\"$name\"/{s/.*[ \"]VER=\"\([0-9][0-9.]*\)\".*/\1/p;}" "$h/inventory/ContentsXML/comps.xml" 2>/dev/null
   done | head -1
 }
 
@@ -146,14 +175,21 @@ patch_lines() {
 # ---- manifest -------------------------------------------------------------------------------------------
 # one wls line and its patch lines per WebLogic home
 wls_lines() {
-  local h release opatch lsp coherence
+  local h release opatch lsp coherence err
   for h in $(wls_homes); do
     [ -x "$h/OPatch/opatch" ] || continue
     release="$(wls_version "$h")"
+    # an empty release or OPatch column changes get-patches.ps1's plan (skips the OPatch kit for WLS,
+    # always-downloads for db): warn, do not leave it silent (A-M1/ROY-2/EM-3)
+    [ -n "$release" ] || echo "patch-manifest: warning: could not read the WebLogic release of $h - get-patches.ps1 will skip its patches" >&2
     # opatch acts on $ORACLE_HOME, not on the directory its executable sits in: scope it to this home or
     # every home reports the calling home's OPatch and patches
     opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
+    [ -n "$opatch" ] || echo "patch-manifest: warning: could not read the OPatch version of $h - get-patches.ps1 may skip the OPatch kit" >&2
+    # keep opatch's own stderr for the die message: rc 28/73/124/1 used to read the same (EM-2/ROY-1)
+    err="$(mktemp "${TMPDIR:-/tmp}/patch-manifest.XXXXXX" 2>/dev/null)"
+    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>"${err:-/dev/null}")" || die "opatch lspatches failed in $h${err:+: $(head -1 "$err" 2>/dev/null)} - run it by hand. No manifest written."
+    rm -f "${err:-}"
     coherence=no
     grep -qi 'coherence' "$h/inventory/registry.xml" 2>/dev/null && coherence=yes
     printf 'wls|%s|%s|%s|%s\n' "$h" "$release" "$opatch" "$coherence"
@@ -163,14 +199,17 @@ wls_lines() {
 
 # a home line and its patch lines for every other inventory home that has OPatch
 other_lines() {
-  local h kind opatch lsp wls version
+  local h kind opatch lsp wls version err
   wls="$(wls_homes)"
   for h in $(inventory_homes | sort -u); do
     [ -x "$h/OPatch/opatch" ] || continue
     printf '%s\n' "$wls" | grep -qxF "$h" && continue
     kind="$(home_kind "$h")"
     opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
+    [ -n "$opatch" ] || echo "patch-manifest: warning: could not read the OPatch version of $h - get-patches.ps1 may skip the OPatch kit" >&2
+    err="$(mktemp "${TMPDIR:-/tmp}/patch-manifest.XXXXXX" 2>/dev/null)"
+    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>"${err:-/dev/null}")" || die "opatch lspatches failed in $h${err:+: $(head -1 "$err" 2>/dev/null)} - run it by hand. No manifest written."
+    rm -f "${err:-}"
     version="$(home_version "$h" "$kind")"
     # get-patches.ps1 needs the version to pick the right Release Update: say so here, do not leave it silent
     [ -n "$version" ] || [ "$kind" != db ] || echo "patch-manifest: warning: could not read the version of $h - get-patches.ps1 will skip its Release Update" >&2
@@ -183,7 +222,9 @@ jdk_lines() {
   local j version
   for j in $(java_homes); do
     version="$(java_version_of "$j")"
-    [ -n "$version" ] || continue   # a java that will not say its version is no use for picking a download
+    # a java that will not say its version is no use for picking a download - but say so, do not drop it
+    # silently: a host that looks current on Java is the dangerous direction (PM-7, EM-1)
+    [ -n "$version" ] || { echo "patch-manifest: warning: could not read the version of $j - it will not be checked for updates" >&2; continue; }
     printf 'jdk|%s|%s|%s\n' "$j" "$version" "$(java_major_of "$j")"
   done
 }
@@ -197,9 +238,11 @@ main() {
       *) die "Unknown option: $1";;
     esac
   done
-  host="$(hostname -s 2>/dev/null || hostname)"
+  host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-}")"
+  [ -n "$host" ] || die "cannot determine the hostname - set HOSTNAME and run again"
   [ -n "$out_file" ] || out_file="./patch-manifest-$host.txt"
 
+  inventory_check
   body="$(wls_lines)" || exit 1
   others="$(other_lines)" || exit 1
   body="$body"$'\n'"$others"$'\n'"$(jdk_lines)"

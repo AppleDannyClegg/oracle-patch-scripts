@@ -39,7 +39,7 @@ cat >"$H/OPatch/opatch" <<'EOF'
 case "$1" in
   version) echo "OPatch Version: 13.9.4.2.23"; echo; echo "OPatch succeeded." ;;
   lspatches)
-    [ -f "$(dirname "$0")/fail" ] && { echo "lspatches broke" >&2; exit 1; }
+    [ -f "$(dirname "$0")/fail" ] && { echo "opatch failed: PRKC-1044 cannot reach the inventory" >&2; exit 28; }
     [ -f "$(dirname "$0")/none" ] && { echo "There are no Interim patches installed in this Oracle Home."; echo; echo "OPatch succeeded."; exit 0; }
     echo "38102345;WLS PATCH SET UPDATE 12.2.1.4.260514"
     echo "37984123;Coherence 12.2.1.4 Cumulative Patch 30 (12.2.1.4.30)"
@@ -173,6 +173,85 @@ OUT2="$T/wf2-manifest.txt"
 ( cd "$T" && HOME="$T" ORAINST_LOC="$W/oraInst.loc" ORACLE_HOME="$W/wls" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT2" ) >"$T/wf2.log" 2>&1
 has "$OUT2" "patch|$W/wls|77777|PATCH-OWNER=wls"
 has "$OUT2" "patch|$W/client|77777|PATCH-OWNER=client"
+
+# EM-2 / ROY-1: the die on a failed lspatches must carry opatch's own reason, not just 'it failed'
+grep -q 'PRKC-1044' "$T/run2.log" && ok || bad "EM-2: the die dropped opatch's stderr (no PRKC-1044 in run2.log)"
+
+# ---- EM-4: an existing oraInst.loc that yields no readable inventory must stop the run, not silently
+#      drop every inventory home and write a WLS-only manifest with exit 0 (Gort's live P2) -------------
+E4="$T/em4"; mkdir -p "$E4"; printf 'inventory_loc=%s/missing\n' "$E4" >"$E4/oraInst.loc"
+OUT4="$T/em4.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$E4/oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT4" ) >"$T/em4.log" 2>&1
+rc=$?
+[ "$rc" != 0 ] && ok || bad "EM-4: exit 0 although an existing oraInst.loc has no readable inventory"
+[ -f "$OUT4" ] && bad "EM-4: a manifest was written with every inventory home silently dropped" || ok
+
+# ---- PM-8: a REMOVED="T" inventory entry must be skipped, not kill the manifest when its home has OPatch
+P8="$T/pm8"; mkdir -p "$P8/live/OPatch" "$P8/dead/OPatch" "$P8/inv/ContentsXML"
+mk_opatch "$P8/live" 12.2.0.1.44 "11111;Database Release Update : 19.27.0.0.250415 (11111)"
+cat >"$P8/dead/OPatch/opatch" <<'EOF2'
+#!/bin/sh
+echo "opatch: the inventory is locked (rc 73)" >&2; exit 73
+EOF2
+chmod +x "$P8/dead/OPatch/opatch"
+printf 'inventory_loc=%s\n' "$P8/inv" >"$P8/oraInst.loc"
+printf '<HOME_LIST>\n<HOME NAME="dead" LOC="%s" TYPE="O" IDX="1" REMOVED="T"/>\n<HOME NAME="live" LOC="%s" TYPE="O" IDX="2"/>\n</HOME_LIST>\n' "$P8/dead" "$P8/live" >"$P8/inv/ContentsXML/inventory.xml"
+OUT8="$T/pm8.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$P8/oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT8" ) >"$T/pm8.log" 2>&1
+rc=$?
+[ "$rc" = 0 ] && ok || bad "PM-8: exit $rc - a REMOVED home with OPatch killed the manifest"
+grep -q "^home|$P8/live|" "$OUT8" && ok || bad "PM-8: the live home was not read"
+grep -q "^home|$P8/dead|" "$OUT8" && bad "PM-8: the REMOVED home was still probed" || ok
+
+# ---- PM-7: JAVA_TOOL_OPTIONS makes the JVM print 'Picked up...' first; the jdk line must survive -------
+P7="$T/pm7"; mkdir -p "$P7/jdk/bin"
+cat >"$P7/jdk/bin/java" <<'EOF2'
+#!/bin/sh
+[ -n "${JAVA_TOOL_OPTIONS:-}" ] && echo "Picked up JAVA_TOOL_OPTIONS: $JAVA_TOOL_OPTIONS" >&2
+echo 'java version "1.8.0_471"' >&2
+EOF2
+chmod +x "$P7/jdk/bin/java"
+OUT7="$T/pm7.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$T/oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$P7/jdk" JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 bash "$SCRIPT" --out "$OUT7" ) >"$T/pm7.log" 2>&1
+has "$OUT7" "jdk|$P7/jdk|1.8.0_471|8"
+
+# ---- EM-1: a JDK whose java cannot report a version must warn, not vanish silently -------------------
+E1="$T/em1"; mkdir -p "$E1/bin"
+printf '#!/bin/sh\necho "not a java" >&2\nexit 1\n' >"$E1/bin/java"; chmod +x "$E1/bin/java"
+OUTE1="$T/em1.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$T/oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$E1" bash "$SCRIPT" --out "$OUTE1" ) >"$T/em1.log" 2>&1
+grep -q "warning: could not read the version of $E1" "$T/em1.log" && ok || bad "EM-1: a JDK whose java fails was dropped without a warning"
+
+# ---- A-M1 / ROY-2 / EM-3: an empty release or OPatch read must warn, not emit 'wls|home|||no' silently
+AM="$T/am1"; mkdir -p "$AM/wlserver" "$AM/OPatch"
+cat >"$AM/OPatch/opatch" <<'EOF2'
+#!/bin/sh
+case "$1" in version) exit 0;; lspatches) echo "OPatch succeeded.";; esac
+EOF2
+chmod +x "$AM/OPatch/opatch"
+OUTAM="$T/am1.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$T/oraInst.loc" ORACLE_HOME="$AM" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTAM" ) >"$T/am1.log" 2>&1
+grep -q 'warning: could not read the WebLogic release' "$T/am1.log" && ok || bad "A-M1: no warning for an empty WebLogic release read"
+grep -q 'warning: could not read the OPatch version' "$T/am1.log" && ok || bad "A-M1: no warning for an empty OPatch version read"
+
+# ---- EM-6: comp_version must read a later matching line and the real VER, not quit early / read REP_VER
+echo '<COMP NAME="oracle.rdbms" REP_VER="19.0.0.0.0"/>' >"$T/em6a.xml"
+printf '<COMP NAME="oracle.rdbms" REP_VER="19.0.0.0.0"/>\n<COMP NAME="oracle.rdbms" VER="19.27.0.0.0" REP_VER="19.0.0.0.0"/>\n' >"$T/em6.xml"
+E6H="$T/em6home/dbhome"; mkdir -p "$E6H/rdbms" "$E6H/OPatch" "$E6H/inventory/ContentsXML"
+cp "$T/em6.xml" "$E6H/inventory/ContentsXML/comps.xml"
+mk_opatch "$E6H" 12.2.0.1.44 "22222;Database Release Update : 19.27.0.0.250415 (22222)"
+E6INV="$T/em6inv"; mkdir -p "$E6INV/ContentsXML"
+printf 'inventory_loc=%s\n' "$E6INV" >"$T/em6-oraInst.loc"
+printf '<HOME_LIST>\n<HOME NAME="em6" LOC="%s" TYPE="O" IDX="1"/>\n</HOME_LIST>\n' "$E6H" >"$E6INV/ContentsXML/inventory.xml"
+OUTE6="$T/em6.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$T/em6-oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTE6" ) >"$T/em6.log" 2>&1
+has "$OUTE6" "home|$E6H|db|19.27.0.0.0|12.2.0.1.44"
+
+# ---- GM-3: a failing ps must warn, not silently drop the JDKs of running JVMs ----------------------
+GP="$T/gm3/bin"; mkdir -p "$GP"; printf '#!/bin/sh\nexit 1\n' >"$GP/ps"; chmod +x "$GP/ps"
+OUTG3="$T/gm3.txt"
+( cd "$T" && HOME="$T" PATH="$GP:$PATH" ORAINST_LOC="$T/oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTG3" ) >"$T/gm3.log" 2>&1
+grep -q 'cannot read the process list' "$T/gm3.log" && ok || bad "GM-3: a failing ps dropped the running JVMs' JDKs without a warning"
 
 echo "patch-manifest gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
