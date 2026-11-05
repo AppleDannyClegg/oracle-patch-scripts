@@ -565,6 +565,15 @@ finally {
     @('jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
     $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
     Check $threw "a manifest with no host| line throws"
+    @('host|wl1', 'created|', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty created| throws, like an empty host| (Jocasta 22:22:57)"
+    @('host|wl1', 'plat|linux|', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty plat| arch throws (Edi 22:23:24)"
+    @('host|wl1', 'jdk|/j|1.8.0_471|') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty jdk| major throws, instead of the JDK vanishing silently (Edi 22:23:24)"
 
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
@@ -582,7 +591,7 @@ finally {
     Check ((Get-ManifestFreshnessWarning '2026-10-01 09:00 +0000' $now) -match 'days ago') "a 35-day-old manifest warns"
     Check ((Get-ManifestFreshnessWarning '2026-11-04 09:00 +0000' $now) -eq '') "a 1-day-old manifest is silent"
     Check ((Get-ManifestFreshnessWarning '' $now) -eq '') "an absent created| is silent"
-    Check ((Get-ManifestFreshnessWarning 'not-a-date' $now) -eq '') "an unparseable created| is silent"
+    Check ((Get-ManifestFreshnessWarning 'not-a-date' $now) -match 'did not parse') "an unparseable created| warns naming the value (not silent)"
     Check ((Get-ManifestFreshnessWarning '2026-10-22 02:24 +0000' $now) -match 'made 14 days') "14.4 days old warns and prints 14 (floor; the docstring's rule is 'older than 14')"
     Check ((Get-ManifestFreshnessWarning '2026-10-22 12:00 +0000' $now) -eq '') "exactly 14.0 days old is silent"
     Check ((Get-ManifestFreshnessWarning '2026-10-21 21:36 +0000' $now) -match 'made 14 days') "14.6 days old warns and prints 14 (floor, not round)"
