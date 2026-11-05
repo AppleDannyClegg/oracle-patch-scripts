@@ -28,7 +28,8 @@ mk_home() { # <dir> <opatch version>
 echo "\$*" >>"$T/opatch.log"
 case "\$1" in
   version) echo "OPatch Version: $2" ;;
-  lspatches) echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)" ;;
+  lspatches) [ -f "$T/lsp_fail" ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)" ;;
 esac
 exit 0
 EOF
@@ -56,7 +57,7 @@ EOF
 
 run() { # each invocation gets its own log; run() is called in $( ), so a counter would not persist
   local f; f="$(printf '%s/run.%02d.log' "$T" "$(( $(find "$T" -maxdepth 1 -name 'run.*.log' | wc -l | tr -d ' ') + 1 ))")"
-  HOME="$T" ORACLE_HOME="$1" JAVA_HOME="$T/jdk" bash "$SCRIPT" "${@:2}" >"$f" 2>&1; echo $?; }
+  HOME="$T" ORACLE_HOME="$1" JAVA_HOME="$T/jdk" STOP_TIMEOUT=10 START_TIMEOUT=10 bash "$SCRIPT" "${@:2}" >"$f" 2>&1; echo $?; }
 lastlog() { tail -4 "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"; }
 
 # ---- precheck is run when OPatch is new enough -------------------------------------------------------
@@ -144,6 +145,52 @@ grep -q "opatch lspatches' is unchanged" "$(find "$T" -maxdepth 1 -name 'run.*.l
 rc="$(run "$OH5" verify --oracle-home "$OH5" --java-home "$T/jdk")"
 [ "$rc" != 0 ] && ok || bad "verify passed although the bundle never reached the inventory"
 grep -q 'is unchanged after the bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not name the unchanged inventory: $(lastlog)"
+
+# ---- an SPB whose verify fails is recovered by RESTORING the backup, never by the cumulative nrollback ----------
+OH6="$T/oh-recover"; mk_home "$OH6" 13.9.4.2.23
+PD11="$T/patches-recover"; mk_spb "$PD11"; rm -f "$T/psu" "$T/lsp_fail"
+cat >"$PD11/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+case "\$*" in *-phase\ apply*) echo 12.2.1.4.261007 >"$T/psu"; : >"$T/lsp_fail";; esac
+exit 0
+EOF
+chmod +x "$PD11/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+: >"$T/opatch.log"
+rc="$(run "$OH6" run "$PD11" --oracle-home "$OH6" --java-home "$T/jdk" --yes --force)"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+grep -q 'Restoring the pre-patch backup' "$L" && ok || bad "an SPB verify failure did not restore the backup: $(tail -4 "$L")"
+grep -q 'nrollback' "$T/opatch.log" && bad "an SPB verify failure used the cumulative opatch nrollback" || ok
+
+# ---- run: SPBAT changes the home then fails -> restored from the backup, no nrollback, no start on a bad home ----
+spb_fail_mid() { # <patch dir>
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\ncase "$*" in *-phase\\ apply*) touch "$4/HALF_PATCHED"; exit 1;; esac\nexit 0\n' "$T" \
+    >"$1/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+}
+OH7="$T/oh-runfail"; mk_home "$OH7" 13.9.4.2.23
+PD13="$T/patches-runfail"; mk_spb "$PD13"; spb_fail_mid "$PD13"; rm -f "$T/psu" "$T/lsp_fail"; : >"$T/opatch.log"
+rc="$(run "$OH7" run "$PD13" --oracle-home "$OH7" --java-home "$T/jdk" --yes --backup-dir "$T/bk7")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+[ "$rc" != 0 ] && ok || bad "run exited 0 although SPBAT apply failed"
+[ ! -e "$OH7/HALF_PATCHED" ] && ok || bad "a failed SPB run left the part-patched home in place (no restore): $(tail -4 "$L")"
+grep -q 'nrollback' "$T/opatch.log" && bad "a failed SPB run called opatch nrollback" || ok
+
+# ---- run: recovery impossible (backup gone) -> servers are NOT started ------------------------------------------
+OH9="$T/oh-norec"; mk_home "$OH9" 13.9.4.2.23
+PD14="$T/patches-norec"; mk_spb "$PD14"; rm -f "$T/psu" "$T/lsp_fail"
+printf '#!/bin/sh\ncase "$*" in *-phase\\ apply*) rm -rf "%s/bk9"; exit 1;; esac\nexit 0\n' "$T" \
+  >"$PD14/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rc="$(run "$OH9" run "$PD14" --oracle-home "$OH9" --java-home "$T/jdk" --yes --backup-dir "$T/bk9")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+grep -q 'servers NOT started' "$L" && ok || bad "a failed recovery did not say the servers were left stopped: $(tail -4 "$L")"
+grep -q 'Starting servers on the recovered home' "$L" && bad "servers were started although the recovery failed" || ok
+
+# ---- run --no-backup with an SPB is refused before anything changes ------------------------------------------------
+OH8="$T/oh-nobk"; mk_home "$OH8" 13.9.4.2.23
+PD12="$T/patches-nobk"; mk_spb "$PD12"; : >"$T/spbat.log"
+rc="$(run "$OH8" run "$PD12" --oracle-home "$OH8" --java-home "$T/jdk" --yes --no-backup)"
+[ "$rc" != 0 ] && ok || bad "run --no-backup with an SPB was not refused"
+grep -q -- '-phase apply' "$T/spbat.log" && bad "run --no-backup with an SPB still ran SPBAT apply" || ok
 
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

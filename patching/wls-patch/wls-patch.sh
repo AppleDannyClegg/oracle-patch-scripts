@@ -942,6 +942,7 @@ cmd_apply() {
     [ "$DRY_RUN" = 1 ] || { state_set psu_before "$before0"
       "$ORACLE_HOME/OPatch/opatch" lspatches >"$lb" 2>/dev/null || lrc=$?
       state_set lspatches_before_rc "$lrc"; }
+    [ "$DRY_RUN" = 1 ] || state_set spb_pending "$spb_path"
     ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) || { err "SPBAT apply failed. See $LOG_FILE and the SPBAT logs"; state_set failed_patch SPB; return 1; }
     if [ "$DRY_RUN" = 1 ]; then
       log "dry-run: not recording the SPB as applied"   # a dry run must not change a real run's state
@@ -1520,6 +1521,29 @@ cmd_plan() {
 }
 
 # ---------------------------------------------------------------------------
+# failure recovery
+# ---------------------------------------------------------------------------
+recover_failed_change() { # after a failed apply, or a failed start/verify of a change that was made
+  local spb; spb="$(state_get spb_pending || true)"
+  [ -n "$spb" ] || spb="$(state_get spb_applied || true)"
+  if [ -z "$spb" ]; then
+    ASSUME_YES=1 cmd_rollback || { err "Rollback failed too - restoring from backup"; ASSUME_YES=1 cmd_restore; }
+    return $?
+  fi
+  # an SPB rollback ('opatch nrollback -idFile') is cumulative across past and present bundles and does not put the
+  # previous bundle's patches back, so a home reported as 'rolled back' would be running BELOW where it started.
+  # Restoring the pre-patch backup is the only complete rollback of a bundle (SPB README, Section 6).
+  local bd
+  bd="$(state_get backup_dir || true)"; [ -n "$bd" ] || bd="$(readlink "$BACKUP_DIR/latest" 2>/dev/null || true)"
+  if [ "$NO_BACKUP" = 1 ] || [ -z "$bd" ] || [ ! -d "$bd" ]; then
+    err "A Stack Patch Bundle was changed and there is no backup to restore. 'opatch nrollback' is NOT run automatically: it is cumulative and would leave this home below the level it started at. Restore a backup, or re-apply the previous bundle, by hand."
+    return 1
+  fi
+  err "Restoring the pre-patch backup: an SPB rollback is cumulative and does not put the previous bundle's patches back"
+  ASSUME_YES=1 cmd_restore
+}
+
+# ---------------------------------------------------------------------------
 # run : the orchestrated flow with automatic rollback
 # ---------------------------------------------------------------------------
 cmd_run() {
@@ -1558,6 +1582,11 @@ cmd_run() {
   fi
   if ! confirm "Preflight OK. Stop WebLogic, back up, and apply patches now?"; then return 1; fi
 
+  # a Stack Patch Bundle's only complete rollback is the backup (its nrollback is cumulative), so it never runs without one
+  if [ "$NO_BACKUP" = 1 ] && prepare_patch_dir "$pdir" 2>/dev/null | grep -q '|spb$'; then
+    err "--no-backup is refused for a Stack Patch Bundle: restoring the backup is its only complete rollback. Nothing was changed."
+    return 1
+  fi
   if [ "$NO_BACKUP" = 1 ]; then
     warn "=== 4/7 backup SKIPPED (--no-backup): rollback will rely on OPatch only"
   else
@@ -1570,10 +1599,14 @@ cmd_run() {
 
   log "=== 6/7 apply"
   if ! cmd_apply "$pdir"; then
-    err "Apply failed - rolling back"
-    ASSUME_YES=1 cmd_rollback || { err "Rollback failed too - restoring from backup"; ASSUME_YES=1 cmd_restore; }
-    log "Starting servers on the pre-patch home"
-    cmd_start || err "Servers did not start after rollback - manual attention needed. Log: $LOG_FILE"
+    err "Apply failed - recovering"
+    # servers start only on a home that was actually recovered: after a failed recovery the home may be part-patched
+    if recover_failed_change; then
+      log "Starting servers on the recovered home"
+      cmd_start || err "Servers did not start after recovery - manual attention needed. Log: $LOG_FILE"
+    else
+      err "Recovery failed - servers NOT started: the home may be part-patched. Restore it by hand. Log: $LOG_FILE"
+    fi
     return 1
   fi
 
@@ -1585,16 +1618,19 @@ cmd_run() {
   fi
 
   err "Start/verify failed after patching"
-  # an SPB that left the inventory unchanged changed nothing we can see: rolling the bundle back could hit patches
-  # from earlier bundles (the README's idFile is cumulative), so leave the home alone and say so
+  # an SPB that left the inventory unchanged changed nothing we can see: there is nothing to recover, and any
+  # unwinding would be the cumulative nrollback - so leave the home alone and say so
   if [ "$(state_get spb_inventory_unchanged || true)" = 1 ]; then
     err "The Stack Patch Bundle left the inventory unchanged - nothing is rolled back automatically. Check the SPBAT log and the servers before doing anything else."
     return 1
   fi
-  if [ "$FORCE" = 1 ] || confirm "Roll back the patches and restart on the old binaries?"; then
+  if [ "$FORCE" = 1 ] || confirm "Recover to the pre-patch home and restart on it?"; then
     cmd_stop || true
-    ASSUME_YES=1 cmd_rollback || { err "Rollback failed - restoring from backup"; ASSUME_YES=1 cmd_restore; }
-    cmd_start || err "Servers did not start after rollback - manual attention needed. Log: $LOG_FILE"
+    if recover_failed_change; then
+      cmd_start || err "Servers did not start after recovery - manual attention needed. Log: $LOG_FILE"
+    else
+      err "Recovery failed - servers NOT started: the home may be part-patched. Restore it by hand. Log: $LOG_FILE"
+    fi
   fi
   return 1
 }
