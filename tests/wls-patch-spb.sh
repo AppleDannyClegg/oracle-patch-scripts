@@ -79,9 +79,26 @@ PD3="$T/patches-apply"; mk_spb "$PD3"; : >"$T/spbat.log"; : >"$T/opatch.log"
 rc="$(run "$OH" apply "$PD3" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
 grep -qx -- '-phase apply -oracle_home '"$OH" "$T/spbat.log" && ok || bad "SPBAT apply not run/arg-spaced: [$(cat "$T/spbat.log")]"
 grep -q 'opatch apply' "$T/opatch.log" && bad "opatch apply ran alongside SPBAT" || ok
+rc="$(run "$OH" verify --oracle-home "$OH" --java-home "$T/jdk")"
+[ "$rc" = 0 ] && ok || bad "verify after an SPB apply exited $rc: $(lastlog)"
+grep -Eq 'inventory PSU .*bundle|inventory PSU is' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not compare the inventory PSU with the bundle: $(lastlog)"
 rc="$(run "$OH" rollback --yes)"
 grep -q -- 'nrollback' "$T/opatch.log" && ok || bad "rollback did not use the SPB's 'opatch nrollback': [$(cat "$T/opatch.log")]"
 grep -q -- '-idFile .*rollback_patchlist.txt' "$T/opatch.log" && ok || bad "nrollback without the README's -idFile: [$(cat "$T/opatch.log")]"
+
+# ---- two bundles in one folder is refused, not silently last-one-wins -------------------------------
+PD7="$T/patches-two"; mk_spb "$PD7"
+cp -R "$PD7/extracted/WLS_SPB_12.2.1.4.990101" "$PD7/extracted/WLS_SPB_12.2.1.4.990102"
+: >"$T/spbat.log"
+rc="$(run "$OH" preflight "$PD7" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
+[ "$rc" != 0 ] && ok || bad "preflight accepted two Stack Patch Bundles in one folder"
+grep -q 'more than one Stack Patch Bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "two SPBs not reported: $(lastlog)"
+
+# ---- an unreadable oui/.globalEnv.properties is reported, not read as a pass ------------------------
+OH4="$T/oh-nogj"; mk_home "$OH4" 13.9.4.2.23; rm -f "$OH4/oui/.globalEnv.properties"
+PD8="$T/patches-nogj"; mk_spb "$PD8"
+rc="$(run "$OH4" preflight "$PD8" --oracle-home "$OH4" --java-home "$T/jdk" --yes)"
+grep -q 'could not read .*globalEnv.properties' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a missing oui/.globalEnv.properties passed the JAVA_HOME check silently: $(lastlog)"
 
 # ---- get-patches files the SPB zip under <patch-dir>/spb/, which must still be found ------------------
 PD6="$T/patches-sub"; mkdir -p "$PD6/spb" "$T/zipsrc"

@@ -523,17 +523,30 @@ cmd_preflight() {
 
   # a Stack Patch Bundle goes through SPBAT: precheck when OPatch is new enough for it, and never together
   # with individual patches (SPBAT applies the bundle as one unit)
-  local spb_path="" spb_others=""
+  local spb_path="" spb_others="" spb_all=""
   while IFS='|' read -r _ p kind; do
-    [ "$kind" = spb ] && spb_path="$p"
+    [ "$kind" = spb ] && { spb_path="$p"; spb_all="${spb_all:+$spb_all }$p"; }
     [ "$kind" = patch ] && spb_others="${spb_others:+$spb_others }$(basename "$p")"
   done <<<"$list"
   if [ -n "$spb_path" ]; then
     log "Stack Patch Bundle: $spb_path (SPBAT; its own patches and OPatch upgrade, not applied one by one)"
+    # more than one bundle would silently apply whichever the loop reached last
+    if [ "$(printf '%s\n' $spb_all | wc -l | tr -d ' ')" -gt 1 ]; then
+      err "more than one Stack Patch Bundle in this folder ($spb_all) - apply them one at a time, each with its own patch dir"
+      problems=$((problems + 1))
+    fi
     [ -n "$spb_others" ] && warn "individual patches in the folder are IGNORED when a Stack Patch Bundle is present: $spb_others (apply them separately with their own patch dir)"
     local g="$ORACLE_HOME/oui/.globalEnv.properties" gj=""
-    gj="$(sed -n 's/^JAVA_HOME=//p' "$g" 2>/dev/null | head -1)"
-    case "$gj" in "$ORACLE_HOME"/*) err "JAVA_HOME in $g is inside ORACLE_HOME ($gj) - SPBAT refuses that; point it at a JDK outside the home"; problems=$((problems + 1));; esac
+    if [ -r "$g" ]; then
+      gj="$(sed -n 's/^JAVA_HOME=//p' "$g" | head -1)"
+      case "$gj" in
+        "$ORACLE_HOME"/*) err "JAVA_HOME in $g is inside ORACLE_HOME ($gj) - SPBAT refuses that; point it at a JDK outside the home"; problems=$((problems + 1));;
+        "") warn "no JAVA_HOME in $g - SPBAT needs one outside ORACLE_HOME";;
+      esac
+    else
+      # an unreadable file is not a passing check: SPBAT will refuse a JDK inside the home, but say we could not look
+      warn "could not read $g - not checking that JAVA_HOME is outside ORACLE_HOME (SPBAT requires it to be)"
+    fi
     if [ -n "$OPATCH_VERSION" ] && version_ge "$OPATCH_VERSION" 13.9.4.2.13; then
       log "SPBAT precheck phase (OPatch $OPATCH_VERSION >= 13.9.4.2.13)"
       if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $spb_path/tools/spbat/generic/SPBAT/spbat.sh -phase precheck -oracle_home $ORACLE_HOME"
@@ -984,6 +997,18 @@ cmd_verify() {
   if [ -n "$(state_get spb_applied || true)" ]; then
     log "SPB $(basename "$(state_get spb_applied)") was applied by SPBAT - checking the servers"
     expected=""
+    # the exit status alone is a weak gate: re-read the inventory and compare the PSU level with the bundle's own
+    # version (WLS_SPB_12.2.1.4.<V>), so a partial SPBAT that exits 0 is not read as success
+    local rci=0
+    "$ORACLE_HOME/OPatch/opatch" lspatches >/dev/null 2>&1 || rci=$?
+    local want_spb=""
+    want_spb="$(basename "$(state_get spb_applied)" | sed -n 's/^WLS_SPB_\([0-9][0-9.]*\)$/\1/p')"
+    if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
+    elif [ -n "$want_spb" ] && [ -n "$PSU_LEVEL" ] && version_ge "$PSU_LEVEL" "$want_spb"; then
+      log "inventory PSU $PSU_LEVEL is at or above the bundle's $want_spb"
+    else
+      warn "inventory PSU is '${PSU_LEVEL:-none}' and the bundle is '${want_spb:-unknown}' - SPBAT reported success; if the bundle's PSU is not there, read its log"
+    fi
   fi
   if [ -z "$expected" ] && [ -n "$pdir" ]; then
     expected="$(prepare_patch_dir "$pdir" | awk -F'|' '$3=="patch" {print $1}' | tr '\n' ' ')"
