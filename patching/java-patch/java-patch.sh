@@ -269,6 +269,8 @@ cmd_plan() {
 }
 
 cmd_backup() {
+  # a dry run changes nothing, so it must not copy reference files or write run state either (Ash P3)
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would back up the reference file(s) the swap edits"; return 0; fi
   discover; reuse_or_init backup; mkdir -p "$RUN_DIR/files"
   # in place the JDK keeps its path, so no reference file names a different path and none needs editing.
   # Backing them up anyway would let a rollback overwrite a reference file the operator changed after apply.

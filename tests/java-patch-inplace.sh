@@ -71,6 +71,9 @@ grep -q 'Verify FAILED' "$T/out-dry.log" && bad "run --dry-run reported Verify F
 [ "$(ref_sha)" = "$REF_BEFORE" ] && ok || bad "in place: the reference file was changed"
 [ -z "$(ls -A "$R/files" 2>/dev/null)" ] && ok || bad "in place: a reference file was backed up into $R/files"
 grep -q '^backed_files=' "$R/state" 2>/dev/null && bad "in place: backed_files was recorded" || ok
+# a dry-run backup writes no state (Ash P3)
+bash "$S" backup --dry-run --java-home "$T/java" --no-cacerts --run-dir "$T/run-drybackup" >>"$OUT" 2>&1 && ok || bad "backup --dry-run failed"
+grep -q '^backup=' "$T/run-drybackup/state" 2>/dev/null && bad "backup --dry-run wrote state" || ok
 
 # cycle isolation: a bare 'preflight' (no --run-dir) must start a FRESH run dir, not reuse the previous
 # cycle's dir through the 'latest' link - a reused 'backup=ok' would skip the next cycle's backup and a
