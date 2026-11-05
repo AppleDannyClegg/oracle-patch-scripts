@@ -13,16 +13,24 @@
 # MW_HOME; every other home with OPatch (database client, EM agent, ...) from the inventory. JDKs from those
 # homes, running java processes, JAVA_HOME and the usual paths. ORAINST_LOC points at another oraInst.loc.
 #
-# Lines (| separated):
-#   host|<name>   created|<date>
+# Lines (| separated). Still v1: plat| and patch_base| are additive, and a v1 reader ignores them.
+# A reader skips a line type it does not know, so a new type needs its Read-Manifest
+# case in get-patches.ps1 in the same change, or the line is dropped silently and the reader uses a default:
+#   host|<name>
+#   plat|<uname -s>|<uname -m>   (lowercased, not mapped: get-patches.ps1 owns the allow-list)
+#   patch_base|<PATCH_BASE on this host>   (the SERVER path, absolute, never contains '|'; not the Windows
+#                                          machine's own PATCH_BASE, which get-patches.ps1 reads separately)
+#   created|<YYYY-MM-DD HH:MM +zzzz>   (date '+%Y-%m-%d %H:%M %z'; field 2 is one string)
 #   wls|<home>|<release>|<OPatch version>|<coherence installed: yes/no>
 #   home|<home>|<kind: db (database or client) / agent (EM agent) / ohs (standalone Oracle HTTP Server) / other>|<version, may be empty>|<OPatch version>
 #   ohs|<WebLogic home>|<OHS release>   (OHS installed collocated in that WebLogic home)
 #   patch|<home>|<patch number>|<description from opatch lspatches>   (for every home above)
+#   fmw|<WebLogic home>|<family, or OTHER for a bundle-shaped line that fits no family>|<version or description>|<patch number>
 #   jdk|<java home>|<version>|<major>
 #
-# Exit: 0 written; 1 when any Oracle home's patches could not be read (opatch lspatches failed). Then no
-# file is written, so a half-read host never looks up to date.
+# Exit: 0 written; 1 when any Oracle home's patches could not be read (opatch lspatches failed), when uname
+# cannot say the platform, or when PATCH_BASE is relative or holds a '|'. Then no file is written, so a
+# half-read host never looks up to date.
 
 set -uo pipefail
 
@@ -322,7 +330,7 @@ jdk_lines() {
 }
 
 main() {
-  local out_file="" host body others
+  local out_file="" host body others os arch
   while [ $# -gt 0 ]; do
     case "$1" in
       --out) [ $# -ge 2 ] || die "--out needs a file"; out_file="$2"; shift 2;;
@@ -330,6 +338,19 @@ main() {
       *) die "Unknown option: $1";;
     esac
   done
+  # get-patches.ps1 reads patch_base| to know where the files go on this host: a relative path, or a '|' or
+  # newline that would shift every field, must stop here, not reach the manifest
+  case "$PATCH_BASE" in
+    /*) ;;
+    *) die "PATCH_BASE must be an absolute path, not '$PATCH_BASE' - no manifest written";;
+  esac
+  case "$PATCH_BASE" in
+    *'|'*|*$'\n'*) die "PATCH_BASE must not contain '|' or a newline: '$PATCH_BASE' - no manifest written";;
+  esac
+  # get-patches.ps1 picks the download platform from plat|: never let it guess
+  os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ -n "$os" ] && [ -n "$arch" ] || die "cannot read the platform (uname) - no manifest written"
   host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf '%s' "${HOSTNAME:-}")"
   [ -n "$host" ] || die "cannot determine the hostname - set HOSTNAME and run again"
   [ -n "$out_file" ] || out_file="$PATCH_BASE/manifest-$host.txt"
@@ -344,7 +365,9 @@ main() {
   {
     echo "# patch-manifest v1 - copy to the Windows machine and run: .\\get-patches.ps1 -Manifest <this file>"
     echo "host|$host"
-    echo "created|$(date '+%Y-%m-%d %H:%M')"
+    echo "plat|$os|$arch"
+    echo "patch_base|$PATCH_BASE"
+    echo "created|$(date '+%Y-%m-%d %H:%M %z')"
     printf '%s\n' "$body" | grep .
   } >"$out_file" || die "Cannot write $out_file"
   echo "wrote $out_file" >&2
