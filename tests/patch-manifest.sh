@@ -71,7 +71,8 @@ EOF
 #   C4 a db home with no version anywhere (must warn, not fail)
 C="$T/client/19.0.0.0"; A="$T/agent/agent_24.1.0.0.0"
 C2="$T/client2/19.0.0.0"; C3="$T/client3/19.0.0.0"; C4="$T/client4/foo"
-mkdir -p "$T/oraInventory/ContentsXML" "$C/bin" "$A/sysman" "$C2/bin" "$C2/inventory/ContentsXML" "$C3/rdbms" "$C4/rdbms"
+# an EM agent home ships rdbms/ as well as sysman/: it must still be read as an agent, not a db home (WF-1)
+mkdir -p "$T/oraInventory/ContentsXML" "$C/bin" "$A/sysman" "$A/rdbms" "$C2/bin" "$C2/inventory/ContentsXML" "$C3/rdbms" "$C4/rdbms"
 printf 'inventory_loc=%s\ninst_group=oinstall\n' "$T/oraInventory" >"$T/oraInst.loc"
 cat >"$T/oraInventory/ContentsXML/inventory.xml" <<EOF2
 <HOME_LIST>
@@ -150,6 +151,28 @@ rm -f "$OUT" "$H/OPatch/fail"; touch "$H/OPatch/none"
 rc=$?
 [ "$rc" = 0 ] && ok || bad "exit $rc for a home with no patches (want 0): $(tail -2 "$T/run3.log")"
 [ -f "$OUT" ] && grep -q "^wls|$H|" "$OUT" && ok || bad "no wls line for a home with no patches"
+
+# OPatch resolves the inventory from $ORACLE_HOME, not from the directory its executable sits in. The real
+# host has ORACLE_HOME set (the header tells you to), so every home must be probed with ORACLE_HOME set to
+# itself - otherwise every home reports the calling home's OPatch version and patch list (WF-2).
+W="$T/wf2"; mkdir -p "$W/wls/wlserver" "$W/wls/OPatch" "$W/client/bin" "$W/client/OPatch" "$W/inv/ContentsXML"
+for h in wls client; do
+  cat >"$W/$h/OPatch/opatch" <<'EOF2'
+#!/bin/sh
+case "$1" in
+  version) echo "OPatch Version: 13.9.4.2.23" ;;
+  lspatches) echo "77777;PATCH-OWNER=$(basename "${ORACLE_HOME:-unset}")"; echo; echo "OPatch succeeded." ;;
+esac
+EOF2
+  chmod +x "$W/$h/OPatch/opatch"
+done
+printf '#!/bin/sh\necho "Version 19.27.0.0.0"\n' >"$W/client/bin/sqlplus"; chmod +x "$W/client/bin/sqlplus"
+printf 'inventory_loc=%s\ninst_group=oinstall\n' "$W/inv" >"$W/oraInst.loc"
+printf '<HOME_LIST>\n<HOME NAME="client" LOC="%s" TYPE="O" IDX="1"/>\n</HOME_LIST>\n' "$W/client" >"$W/inv/ContentsXML/inventory.xml"
+OUT2="$T/wf2-manifest.txt"
+( cd "$T" && HOME="$T" ORAINST_LOC="$W/oraInst.loc" ORACLE_HOME="$W/wls" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT2" ) >"$T/wf2.log" 2>&1
+has "$OUT2" "patch|$W/wls|77777|PATCH-OWNER=wls"
+has "$OUT2" "patch|$W/client|77777|PATCH-OWNER=client"
 
 echo "patch-manifest gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

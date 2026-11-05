@@ -95,8 +95,10 @@ with_timeout() {
 
 # what a non-WebLogic home is and its version
 home_kind() {
-  if [ -x "$1/bin/sqlplus" ] || [ -d "$1/rdbms" ]; then echo db
-  elif [ -d "$1/sysman" ] || [[ "$1" == */agent* ]]; then echo agent
+  # an EM agent home ships an rdbms/ directory too, so its own marks are tested before the db arm: read as
+  # a db home it is planned as a database and its version column comes out empty (the wl2 agent line)
+  if [ -d "$1/sysman" ] || [[ "$1" == */agent/agent_* ]]; then echo agent
+  elif [ -x "$1/bin/sqlplus" ] || [ -d "$1/rdbms" ]; then echo db
   else echo other; fi
 }
 # version of an installed component from a home's own inventory; the last resort when nothing else reads it
@@ -148,8 +150,10 @@ wls_lines() {
   for h in $(wls_homes); do
     [ -x "$h/OPatch/opatch" ] || continue
     release="$(wls_version "$h")"
-    opatch="$("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    lsp="$(with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
+    # opatch acts on $ORACLE_HOME, not on the directory its executable sits in: scope it to this home or
+    # every home reports the calling home's OPatch and patches
+    opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
+    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
     coherence=no
     grep -qi 'coherence' "$h/inventory/registry.xml" 2>/dev/null && coherence=yes
     printf 'wls|%s|%s|%s|%s\n' "$h" "$release" "$opatch" "$coherence"
@@ -165,8 +169,8 @@ other_lines() {
     [ -x "$h/OPatch/opatch" ] || continue
     printf '%s\n' "$wls" | grep -qxF "$h" && continue
     kind="$(home_kind "$h")"
-    opatch="$("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    lsp="$(with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
+    opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
+    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>/dev/null)" || die "opatch lspatches failed in $h - run it by hand. No manifest written."
     version="$(home_version "$h" "$kind")"
     # get-patches.ps1 needs the version to pick the right Release Update: say so here, do not leave it silent
     [ -n "$version" ] || [ "$kind" != db ] || echo "patch-manifest: warning: could not read the version of $h - get-patches.ps1 will skip its Release Update" >&2
