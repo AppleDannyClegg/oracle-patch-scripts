@@ -315,6 +315,16 @@ function Get-DbPlan($Db) {
 # the newest matching '<FAMILY> BUNDLE PATCH <release>.<yymmdd>' row is the one to download
 function Get-FmwPlan($Manifest) {
     foreach ($fw in $Manifest.Fmw) {
+        # the producer reports a bundle-shaped patch it could not place as family OTHER; planning a lookup
+        # for a family literally called OTHER would be nonsense, and silence would lose it - name it
+        if ($fw.Family -eq 'OTHER') {
+            # the SPB and Coherence are already planned by Get-WlsPlan, and the PSU is not an FMW product:
+            # warning about those would train the operator to ignore the one warning that matters
+            if ($fw.Version -notmatch '(?i)WLS STACK PATCH BUNDLE|Coherence|WLS PATCH SET UPDATE') {
+                Write-Warning "$($fw.Home): '$($fw.Version)' is a bundle-shaped patch this script cannot place - check MOS Doc 2806740.2 and pass its number with -Patch"
+            }
+            continue
+        }
         $w = $Manifest.Wls | Where-Object { $_.Home -eq $fw.Home } | Select-Object -First 1
         if (-not $w -or -not $w.Release) {
             Write-Warning "$($fw.Home): $($fw.Family) is in the manifest but the home has no WebLogic release - skipping its bundle"
@@ -322,7 +332,11 @@ function Get-FmwPlan($Manifest) {
         }
         $release = $w.Release
         $short = ($release.Split('.')[0..3]) -join '.'
-        $pat = "(?i)^$([regex]::Escape($fw.Family)) BUNDLE PATCH $([regex]::Escape($short))(?:\.0)?\.(\d{6})"
+        # a family token can carry its own version ('JDBC19.30', 'OSS 19C'): matching it literally would
+        # never see the next release's bundle ('JDBC19.31'), so drop the version and allow one back
+        $base = $fw.Family -replace '\s+[0-9][0-9A-Za-z.]*$', '' -replace '[0-9][0-9.]*$', ''
+        if (-not $base) { $base = $fw.Family }
+        $pat = "(?i)^$([regex]::Escape($base))(?:(?:[ .]?[0-9][0-9A-Za-z.]*)?) BUNDLE PATCH $([regex]::Escape($short))(?:\.0)?\.(\d{6})"
         $wlsRelease = Get-ReleaseId "Oracle WebLogic Server $(Get-FivePart $release)" -Optional
         if (-not $wlsRelease) { Write-Warning "$($fw.Home): MOS has no release 'Oracle WebLogic Server $(Get-FivePart $release)' - skipping the $($fw.Family) bundle"; continue }
         $rows = @(Get-MosPatchRows $script:ProductWls $wlsRelease $script:PlatformGeneric -Recommended)

@@ -36,20 +36,22 @@ $releaseXml = @'
 </results>
 '@
 $wlsRows = '<results>' +
-    (Row 39000001 'WLS PATCH SET UPDATE 12.2.1.4.260818' '2026-08-18') +
-    (Row 39000002 'WLS PATCH SET UPDATE 12.2.1.4.261020' '2026-10-20') +
+    (Row 39000001 'Wls Patch Set Update 12.2.1.4.260818' '2026-08-18') +
+    (Row 39000002 'WLS Patch Set Update 12.2.1.4.261020' '2026-10-20') +
     (Row 39000009 'WLS PATCH SET UPDATE 12.2.1.4.261031 (BLR)' '2026-10-31') +
     (Row 39000003 'Fmw Platform Bundle Patch 12.2.1.4.261020' '2026-10-20') +
     (Row 39000004 'FMW PLATFORM BUNDLE PATCH 12.2.1.4.260715' '2026-07-15') +
     (Row 39000031 'ADF BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') +
     (Row 39000032 'ADF BUNDLE PATCH 12.2.1.4.250415' '2025-04-15') +
     (Row 39000033 'OPSS BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') +
-    (Row 39000041 'FMW Thirdparty Bundle Patch 12.2.1.4.260317' '2026-03-17') + '</results>'
+    (Row 39000041 'FMW Thirdparty Bundle Patch 12.2.1.4.260317' '2026-03-17') +
+    (Row 39000042 'JDBC19.31 BUNDLE PATCH 12.2.1.4.260216' '2026-02-16') +
+    (Row 39000043 'OSS 19C BUNDLE PATCH 12.2.1.4.0.260228' '2026-02-28') + '</results>'
 $spbRows = (Row 39500001 'WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)' '2026-05-22') +
-    (Row 39500002 'WLS STACK PATCH BUNDLE 12.2.1.4.261020 (Patch 39500002)' '2026-10-20')
+    (Row 39500002 'Wls Stack Patch Bundle 12.2.1.4.261020 (Patch 39500002)' '2026-10-20')
 $dbRows = '<results>' +
     (Row 39600001 'Database Release Update : 19.30.0.0.260120 (39600001)' '2026-01-20') +
-    (Row 39600003 'Database Release Update : 19.31.0.0.261020 (39600003)' '2026-10-20') +
+    (Row 39600003 'database release update : 19.31.0.0.261020 (39600003)' '2026-10-20') +
     (Row 39600004 'OJVM RELEASE UPDATE: 19.31.0.0.261020 (39600004)' '2026-10-20') +
     (Row 39600005 'Database Release Update Revision 19.30.2.0.261020' '2026-10-20') +
     (Row 39600006 'COMBO OF OJVM RU COMPONENT 19.31.0.0.261031 + Database Release Update 19.31.0.0.261031' '2026-10-31') +
@@ -282,7 +284,12 @@ try {
         'fmw|/u01/app/fmw/home1|ADF|12.2.1.4.250415|39000032',
         'fmw|/u01/app/fmw/home1|OPSS|12.2.1.4.261020|39000033',
         'fmw|/u01/app/fmw/home1|WSM|12.2.1.4.260415|39000099',
-        'fmw|/u01/app/fmw/home1|FMW THIRDPARTY|12.2.1.4.250228|39000040'
+        'fmw|/u01/app/fmw/home1|FMW THIRDPARTY|12.2.1.4.250228|39000040',
+        'fmw|/u01/app/fmw/home1|OTHER|RDA release 26.2-2026421 for OFM 12.2.1.4 SPB|38887908',
+        'fmw|/u01/app/fmw/home1|OTHER|WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)|39426213',
+        'fmw|/u01/app/fmw/home1|OTHER|Coherence Cumulative Patch 12.2.1.4.30|1221430',
+        'fmw|/u01/app/fmw/home1|OSS 19C|12.2.1.4.250228|39024181'
+        'fmw|/u01/app/fmw/home1|JDBC19.30|12.2.1.4.250216|38970574'
     ) | Set-Content -LiteralPath $fmw
     $rFmw = PlanWithWarnings (Read-Manifest $fmw)
     $nf = @($rFmw.Plan | ForEach-Object { $_.Patch })
@@ -292,6 +299,11 @@ try {
     Check (@($rFmw.Warnings | Where-Object { $_ -match 'WSM' }).Count -ge 1) "a family MOS has no row for WARNs instead of being silent"
     Check (@($rFmw.Plan | Where-Object { $_.What -like 'ADF bundle (*' }).Count -eq 1) "the ADF row names the family and home"
     Check ($nf -contains '39000041') "a mixed-case MOS abstract ('FMW Thirdparty Bundle Patch') is planned, not read as current (got $($nf -join ','))"
+    Check (($rFmw.Warnings -join ' ') -notmatch 'family OTHER|no OTHER bundle') "an OTHER line is not looked up as a family called OTHER"
+    Check (($rFmw.Warnings -join ' ') -match 'RDA release 26\.2-2026421') "an OTHER line is named in a warning instead of being dropped"
+    Check (($rFmw.Warnings -join ' ') -notmatch 'WLS STACK PATCH BUNDLE|Coherence Cumulative') "the SPB and Coherence are not warned about again - Get-WlsPlan plans them"
+    Check ($nf -contains '39000043') "a five-part MOS abstract ('12.2.1.4.0.yymmdd') is matched (got $($nf -join ','))"
+    Check ($nf -contains '39000042') "a versioned family token (JDBC19.30) finds the next release's JDBC19.31 bundle (got $($nf -join ','))"
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
