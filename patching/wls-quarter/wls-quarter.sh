@@ -166,6 +166,18 @@ if [ "$have_wls" = 1 ]; then
   log "wls: $WLS_DIR preflight OK"
 fi
 
+# one confirmation for the whole outage, so the children do not each prompt: after it they all run --yes
+what=""
+[ "$have_jdk" = 1 ] && what="JDK"
+[ "$have_spb" = 1 ] && what="${what:+$what + }SPB"
+[ "$have_wls" = 1 ] && what="${what:+$what + }single patches"
+if [ "$DRY" = 0 ] && [ "$YES" = 0 ]; then
+  [ -t 0 ] || die "Non-interactive and --yes not given: refusing to stop WebLogic and apply ($what)"
+  printf 'Preflight OK. Stop WebLogic, apply %s in one outage, then start once? [y/N] ' "$what"
+  ans=""; read -r ans || true
+  case "$ans" in [Yy]*) YES=1; JOPTS+=(--yes); WOPTS+=(--yes);; *) die "aborted - nothing changed";; esac
+fi
+
 # ---- 2. backup -------------------------------------------------------------------------------------------
 log "=== 2/6 backup"
 if [ "$have_spb" = 1 ] || [ "$have_wls" = 1 ]; then wrun backup || die "wls-patch backup failed - nothing changed"; fi

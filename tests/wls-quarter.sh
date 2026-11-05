@@ -122,6 +122,12 @@ runq "$T/root" FAIL_WLS_WLS=1 FAIL_WLS_STOP=1; rc=$?
 [ -z "$(line 'java rollback')" ] && ok || bad "a rollback ran although the recovery stop failed"
 grep -q 'servers are NOT started' "$T/out" && ok || bad "a failed recovery stop did not say nothing was started"
 
+# ---- one confirmation: without --yes and no tty, refuse before any change --------------------------------------
+: >"$T/calls.log"; rm -rf "$T/run"; rm -f "$T/stop.ok"
+bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" </dev/null >"$T/out" 2>&1 && bad "quarter without --yes on a non-tty exited 0" || ok
+grep -q 'Non-interactive and --yes not given' "$T/out" && ok || bad "the no---yes refusal was not named"
+grep -qE '^(java|wls) (stop|apply|start|backup)' "$T/calls.log" && bad "a changing call ran although the quarter refused without --yes" || ok
+
 # ---- dry-run: every changing verb carries --dry-run ----------------------------------------------------------
 : >"$T/calls.log"; rm -rf "$T/run"
 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run >"$T/out" 2>&1 && ok || bad "dry-run failed: $(tail -3 "$T/out")"
