@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.." || exit 1
 GATES=(wls-quarter java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
   secret-argv-gate java-patch-cacerts java-patch-inplace java-patch db-patch-opatch-min db-patch-ru-title
   get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
-  patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch wls-patch-conflict wls-patch-discovery)
+  patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch wls-patch-conflict wls-patch-discovery db-patch-opatch-kit)
 [ $# -gt 0 ] && GATES=("$@")
 out="$(mktemp -d)"; trap 'rm -rf "$out"' EXIT
 start=$SECONDS
