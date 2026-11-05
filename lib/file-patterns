@@ -1,0 +1,10 @@
+# lib/file-patterns - the file-name globs the scripts recognise, one 'key: glob glob ...' per line.
+#
+# One source of truth: lib/oracle-lib.sh's file_patterns() (bash) and get.ps1 read this file, so the JDK
+# tarball java-patch accepts and the artifacts the updaters must not delete cannot drift apart.
+#
+#   jdk     a JDK tarball java-patch will install
+#   staged  a downloaded patch/artifact get.sh, get.ps1 and get-patches must not delete
+#
+jdk:    jdk*.tar.gz jdk*.tgz server-jre*.tar.gz jre*.tar.gz
+staged: patches-* *.zip *.tar.gz *.tgz

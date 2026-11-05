@@ -573,6 +573,25 @@ java_homes() { # every JDK referenced by something on the host, one per line
   } 2>/dev/null | while read -r j; do [ -x "$j/bin/java" ] && (readlink -f "$j" 2>/dev/null || echo "$j"); done | sort -u
 }
 
+# file_patterns <key>: the globs for a key in lib/file-patterns, one per line. A script that cannot
+# recognise its files must say so: a missing file or key is status 1, not an empty match.
+file_patterns() {
+  local key="$1" line k v f="$LIB_DIR/file-patterns"
+  [ -f "$f" ] || { err "file patterns missing: $f"; return 1; }
+  while IFS= read -r line; do
+    case "$line" in ''|\#*) continue;; esac
+    k="${line%%:*}"; v="${line#*:}"
+    k="${k//[[:space:]]/}"
+    [ "$k" = "$key" ] || continue
+    local -a globs; read -ra globs <<<"$v"
+    [ "${#globs[@]}" -gt 0 ] || { err "$f: '$key' names no glob"; return 1; }
+    printf '%s\n' "${globs[@]}"
+    return 0
+  done <"$f"
+  err "$f has no '$key:' line"
+  return 1
+}
+
 listener_homes() { ps_args | grep -E '^[^ ]*/bin/tnslsn[r] ' | awk '{print $1, $2}' | sed 's#/bin/tnslsnr##' | sort -u; } # "home name"
 
 # ---------------------------------------------------------------------------
@@ -818,6 +837,9 @@ lib_selftest() {
   t "okv_field keeps an internal space and trims the ends" 'd=$(mktemp -d); printf "UPDATE_TIMESTAMP=2026-11-02 13:00:00 \n" >"$d/ora"; o=$(okv_field "$d/ora" UPDATE_TIMESTAMP); rm -rf "$d"; [ "$o" = "2026-11-02 13:00:00" ]'
   t "okv_is_rotated: /ssl, /ssl/ and empty are not rotated" '! okv_is_rotated "/x/okv/ssl" && ! okv_is_rotated "/x/okv/ssl/" && ! okv_is_rotated ""'
   t "okv_is_rotated: a subfolder of ssl is rotated" 'okv_is_rotated "/x/okv/ssl/19700101000000000000"'
+  t "file_patterns jdk names the four tarball globs" '[ "$(file_patterns jdk | tr "\n" " ")" = "jdk*.tar.gz jdk*.tgz server-jre*.tar.gz jre*.tar.gz " ]'
+  t "file_patterns staged names the four artifact globs" '[ "$(file_patterns staged | tr "\n" " ")" = "patches-* *.zip *.tar.gz *.tgz " ]'
+  t "file_patterns of an unknown key fails" '! file_patterns nope 2>/dev/null'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]
 }

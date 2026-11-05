@@ -158,9 +158,17 @@ discover() {
 pick_tar() {
   local a="${ARGS[0]:-$TARBALL}"; [ -n "$a" ] || die "which JDK? give the tar.gz (or a directory holding one, or --tar)"
   if [ -d "$a" ]; then
-    local matches kinds
-    matches="$(find "$a" -maxdepth 1 \( -iname 'jdk*.tar.gz' -o -iname 'jdk*.tgz' -o -iname 'server-jre*.tar.gz' -o -iname 'jre*.tar.gz' \) 2>/dev/null)"
-    [ -n "$matches" ] || die "no JDK tarball (jdk*/server-jre*/jre*.tar.gz) in $a"
+    local matches kinds patterns
+    # which names are a JDK tarball is lib/file-patterns 'jdk' (one source of truth: bash and get.ps1 read it)
+    patterns="$(file_patterns jdk)" || die "cannot read the JDK file patterns (lib/file-patterns)"
+    local -a find_args=(); local pattern first=1
+    while IFS= read -r pattern; do
+      [ -n "$pattern" ] || continue
+      [ "$first" = 1 ] || find_args+=( -o )
+      find_args+=( -iname "$pattern" ); first=0
+    done <<<"$patterns"
+    matches="$(find "$a" -maxdepth 1 \( "${find_args[@]}" \) 2>/dev/null)"
+    [ -n "$matches" ] || die "no JDK tarball in $a (lib/file-patterns 'jdk': $(printf '%s' "$patterns" | tr '\n' ' '))"
     # 'sort -V' on the whole name sorts by prefix first ('server-jre' > 'jre' > 'jdk'), so a dir holding more
     # than one kind of JDK would silently install the older one - refuse rather than downgrade
     kinds="$(printf '%s\n' "$matches" | while IFS= read -r f; do b="$(basename "$f")"; printf '%s\n' "${b%%[0-9]*}"; done | sort -u | tr '\n' ' ')"

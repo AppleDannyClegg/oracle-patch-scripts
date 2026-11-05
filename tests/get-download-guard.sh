@@ -20,9 +20,10 @@ pass=0; fail=0
 ok() { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 
-# a payload shaped like GitHub's archive: one top dir holding lib/oracle-lib.sh
+# a payload shaped like GitHub's archive: one top dir holding lib/oracle-lib.sh and the file patterns
 mkdir -p "$T/payload/oracle-patch-scripts-deadbeef/lib"
 printf '#!/bin/sh\nexit 0\n' >"$T/payload/oracle-patch-scripts-deadbeef/lib/oracle-lib.sh"
+cp "$ROOT/lib/file-patterns" "$T/payload/oracle-patch-scripts-deadbeef/lib/file-patterns"
 tar -czf "$T/payload.tar.gz" -C "$T/payload" .
 
 # curl shim: the commits API answers with one sha; every other URL is the archive
