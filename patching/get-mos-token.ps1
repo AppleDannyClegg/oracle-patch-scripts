@@ -120,10 +120,13 @@ if ($Paste) {
     try { Set-Clipboard -Value ' ' } catch {}
     $hist = $false
     if ($env:OS -eq 'Windows_NT') {
-        try { [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType=WindowsRuntime]::ClearHistory(); $hist = $true } catch {}
+        # ClearHistory() returns a bool (False when history is off/refused); the [bool] cast keeps it off the
+        # console and stops us claiming the history was cleared when it was not
+        try { $hist = [bool][Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType=WindowsRuntime]::ClearHistory() } catch {}
     }
     if ($hist) { Write-Host 'clipboard and its history cleared' }
-    else { Write-Host 'clipboard overwritten - if Windows clipboard history (Win+V) is on, clear it there too (Win+V > Clear all)' }
+    elseif ($env:OS -eq 'Windows_NT') { Write-Host 'clipboard overwritten - if Windows clipboard history (Win+V) is on, clear it there too (Win+V > Clear all)' }
+    else { Write-Host 'clipboard overwritten' }
 }
 if (-not $token) { throw 'no token given' }
 
