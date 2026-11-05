@@ -84,7 +84,7 @@ grep -q 'the bundle moved the PSU from 12.2.1.4.260514 to 12.2.1.4.261007' "$(fi
 grep -q 'opatch apply' "$T/opatch.log" && bad "opatch apply ran alongside SPBAT" || ok
 rc="$(run "$OH" verify --oracle-home "$OH" --java-home "$T/jdk")"
 [ "$rc" = 0 ] && ok || bad "verify after an SPB apply exited $rc: $(lastlog)"
-grep -Eq 'SPBAT reported success but the PSU is unchanged|the PSU is still|the bundle moved the PSU|inventory PSU is' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not compare the inventory PSU before/after the bundle: $(lastlog)"
+grep -Eq 'opatch lspatches. is unchanged|the bundle moved the PSU|the inventory changed' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not compare the inventory PSU before/after the bundle: $(lastlog)"
 rc="$(run "$OH" rollback --yes)"
 grep -q -- 'nrollback' "$T/opatch.log" && ok || bad "rollback did not use the SPB's 'opatch nrollback': [$(cat "$T/opatch.log")]"
 grep -q -- '-idFile .*rollback_patchlist.txt' "$T/opatch.log" && ok || bad "nrollback without the README's -idFile: [$(cat "$T/opatch.log")]"
@@ -140,10 +140,10 @@ OH5="$T/oh-noop"; mk_home "$OH5" 13.9.4.2.23
 PD10="$T/patches-noop"; mk_spb "$PD10"; rm -f "$T/psu"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 0\n' "$T" >"$PD10/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
 rc="$(run "$OH5" apply "$PD10" --oracle-home "$OH5" --java-home "$T/jdk" --yes)"
-grep -q 'SPBAT reported success but the PSU is unchanged' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an unchanged PSU after SPBAT was not reported by apply: $(lastlog)"
+grep -q "opatch lspatches' is unchanged" "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an unchanged inventory after SPBAT was not reported by apply: $(lastlog)"
 rc="$(run "$OH5" verify --oracle-home "$OH5" --java-home "$T/jdk")"
 [ "$rc" != 0 ] && ok || bad "verify passed although the bundle never reached the inventory"
-grep -q 'does not show the bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not name the unchanged inventory: $(lastlog)"
+grep -q 'is unchanged after the bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not name the unchanged inventory: $(lastlog)"
 
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
