@@ -100,6 +100,33 @@ Support token in `~/.mos-token` (see the file). The detail is below.
    Expect it to take a while: the backup is a full copy of the Oracle home and the
    WebLogic restart is as slow as it always is.
 
+## Stack Patch Bundles (SPB)
+
+Oracle increasingly ships a quarter as a **WLS Stack Patch Bundle** (a `WLS_SPB_<version>_<ddMMMyy>`
+folder, patch id in the 40-million range) instead of separate PSU zips. It brings its own patches,
+its own OPatch upgrade, and its own installer, `SPBAT`.
+
+Put the SPB zip in the patch folder exactly like a patch zip; nothing else changes.
+
+```bash
+./wls-patch.sh preflight /u01/patches/oct2026    # names the SPB, runs its precheck when OPatch allows
+./wls-patch.sh run /u01/patches/oct2026          # backup > stop > SPBAT apply > start > verify
+```
+
+What is different from a normal patch run:
+
+- The SPB is applied by `SPBAT` (`tools/spbat/generic/SPBAT/spbat.sh`), in its `apply` phase, not by
+  `opatch apply` one patch at a time. The patches inside the SPB are never applied individually.
+- Preflight runs SPBAT's `precheck` phase **only when OPatch is 13.9.4.2.13 or newer** (Oracle's
+  requirement for it). On an older OPatch it says it is skipping the precheck: the `apply` phase
+  upgrades OPatch itself, from any version.
+- An SPB must not be mixed with individual patch zips in the same folder: the individual patches are
+  ignored with a warning, because SPBAT applies the bundle as one unit. Use a separate folder for them.
+- Rollback of an SPB is Oracle's own `opatch nrollback -idFile binary_patches/rollback_patchlist.txt`,
+  which rolls back every patch in present and past bundles. That does **not** undo the OPatch upgrade,
+  and does not re-apply overlay patches you added afterwards; the only complete rollback is restoring
+  the pre-patch backup (`restore`). The script does the `nrollback` and says this.
+
 ## What it does when something goes wrong
 
 | Problem | What the script does |
@@ -115,6 +142,9 @@ Support token in `~/.mos-token` (see the file). The detail is below.
 | Leftover `.lok` files stopping a server starting | Removes them (only for servers that are not running) |
 | Missing `oraInst.loc` | Creates one next to the Oracle home |
 | A server will not stop | Stops and tells you; `--force` kills it. Stopped means the pid is gone **and** no JVM with that `-Dweblogic.Name` is in `ps` any more (a stop script that returned with its server up, or a server NodeManager restarted under a new pid while the script waited, is "still running after stop", exit 1) |
+| An SPB is in the folder with individual patches | Applies the SPB only; says the individual patches were ignored |
+| An SPB's SPBAT precheck fails | Stops before anything changes, with the SPBAT output in the log |
+| An SPB's SPBAT apply fails | Stops and rolls back: `opatch nrollback -idFile` for the bundle, `restore` if that is not enough |
 | `opatch rollback` exits 0 but the patch is still in `opatch lspatches` | Not recorded as rolled back; rollback exits 1 and points at `restore` (same re-read as apply, which trusts the inventory, not the exit status) |
 
 Everything it runs is logged under `~/wls-patch/runs/<timestamp>/wls-patch.log`
@@ -131,9 +161,9 @@ preflight <patch-dir>   check + plan, nothing changed
 heal                    fix the known stuck states listed above
 backup | restore        full tar of ORACLE_HOME + domains / put it back
 stop | start            stop/start node manager, admin, managed servers
-apply <patch-dir>       patches only (servers must already be stopped)
+apply <patch-dir>       patches only (servers must already be stopped); an SPB goes through SPBAT
 verify                  patches in inventory, servers up, console answering
-rollback [ids]          opatch rollback (last run's patches, or the ids given)
+rollback [ids]          opatch rollback (last run's patches, or the ids given); an SPB uses nrollback -idFile
 run <patch-dir>         the whole thing with automatic rollback
 ```
 

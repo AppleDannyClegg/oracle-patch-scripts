@@ -16,6 +16,7 @@
 #   backup                  Tar ORACLE_HOME + domain homes to BACKUP_DIR
 #   stop                    Stop managed servers, admin server, node manager (records what was running)
 #   apply <patch-dir>       OPatch-upgrade first if present, then opatch apply each patch
+#                           (a WLS Stack Patch Bundle in the dir is applied with SPBAT instead, never both)
 #   start                   Start node manager, admin server, previously-running managed servers
 #   verify [patch-dir]      Patches present in inventory, servers up, admin URL answering
 #   rollback [id ...]       opatch rollback (last run's patches in reverse, or given ids)
@@ -462,12 +463,26 @@ prepare_patch_dir() {
   for j in "$ext"/*/opatch_generic.jar "$ext"/opatch_generic.jar; do
     [ -f "$j" ] && printf 'OPATCH|%s|opatch-upgrade\n' "$(dirname "$j")"
   done
+  # a Stack Patch Bundle: SPBAT at <spb>/tools/spbat/generic/SPBAT/spbat.sh. It brings its own patches and
+  # its own OPatch upgrade, so the SPB is one item - never its binary_patches as individual patches as well.
+  local spbs spb
+  spbs="$(find "$ext" -maxdepth 6 -path '*/tools/spbat/generic/SPBAT/spbat.sh' 2>/dev/null | sort)"
+  while IFS= read -r spb; do
+    [ -n "$spb" ] || continue
+    printf 'SPB|%s|spb\n' "${spb%/tools/spbat/generic/SPBAT/spbat.sh}"
+  done <<<"$spbs"
+
   # ordinary patches
   local inv
   while read -r inv; do
     [ -z "$inv" ] && continue
     local p
     p="$(cd "$(dirname "$inv")/../.." && pwd)"
+    # inside an SPB: SPBAT applies it, so it must not also be applied one by one
+    if [ -n "$spbs" ]; then local in_spb=0 s2; while IFS= read -r s2; do [ -n "$s2" ] || continue
+        case "$p" in "${s2%/tools/spbat/generic/SPBAT/spbat.sh}"/*) in_spb=1;; esac; done <<<"$spbs"
+      [ "$in_spb" = 1 ] && continue
+    fi
     printf '%s|%s|patch\n' "$(basename "$p")" "$p"
   done < <(find "$ext" -maxdepth 4 -path '*/etc/config/inventory.xml' 2>/dev/null | sort)
 }
@@ -504,6 +519,29 @@ cmd_preflight() {
   [ -n "$list" ] || { err "No patches found in $pdir (expected *.zip from My Oracle Support)"; return 2; }
   log "Patches found:"
   printf '%s\n' "$list" | tee -a "$LOG_FILE" >&2
+
+  # a Stack Patch Bundle goes through SPBAT: precheck when OPatch is new enough for it, and never together
+  # with individual patches (SPBAT applies the bundle as one unit)
+  local spb_path="" spb_others=""
+  while IFS='|' read -r _ p kind; do
+    [ "$kind" = spb ] && spb_path="$p"
+    [ "$kind" = patch ] && spb_others="${spb_others:+$spb_others }$(basename "$p")"
+  done <<<"$list"
+  if [ -n "$spb_path" ]; then
+    log "Stack Patch Bundle: $spb_path (SPBAT; its own patches and OPatch upgrade, not applied one by one)"
+    [ -n "$spb_others" ] && warn "individual patches in the folder are IGNORED when a Stack Patch Bundle is present: $spb_others (apply them separately with their own patch dir)"
+    local g="$ORACLE_HOME/oui/.globalEnv.properties" gj=""
+    gj="$(sed -n 's/^JAVA_HOME=//p' "$g" 2>/dev/null | head -1)"
+    case "$gj" in "$ORACLE_HOME"/*) err "JAVA_HOME in $g is inside ORACLE_HOME ($gj) - SPBAT refuses that; point it at a JDK outside the home"; problems=$((problems + 1));; esac
+    if [ -n "$OPATCH_VERSION" ] && version_ge "$OPATCH_VERSION" 13.9.4.2.13; then
+      log "SPBAT precheck phase (OPatch $OPATCH_VERSION >= 13.9.4.2.13)"
+      if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $spb_path/tools/spbat/generic/SPBAT/spbat.sh -phase precheck -oracle_home $ORACLE_HOME"
+      else ( cd "$spb_path/tools/spbat/generic/SPBAT" && ./spbat.sh -phase precheck -oracle_home "$ORACLE_HOME" ) >>"$LOG_FILE" 2>&1 || { err "SPBAT precheck failed - review its output in $LOG_FILE before applying"; problems=$((problems + 1)); }
+      fi
+    else
+      warn "SPBAT precheck skipped: OPatch ${OPATCH_VERSION:-unknown} is below 13.9.4.2.13 (the apply phase upgrades OPatch itself, from any version)"
+    fi
+  fi
 
   local has_opatch_upgrade=0 required_opatch=""
   local id path kind
@@ -876,6 +914,23 @@ cmd_apply() {
   [ -n "$list" ] || die "No patches in $pdir"
 
   local id path kind
+
+  # 0. a Stack Patch Bundle: SPBAT applies its patches and upgrades OPatch itself - never the loop below
+  local spb_path=""
+  while IFS='|' read -r _ p kind; do [ "$kind" = spb ] && spb_path="$p"; done <<<"$list"
+  if [ -n "$spb_path" ]; then
+    log "Applying the Stack Patch Bundle with SPBAT: $spb_path"
+    ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) || { err "SPBAT apply failed. See $LOG_FILE and the SPBAT logs"; state_set failed_patch SPB; return 1; }
+    if [ "$DRY_RUN" = 1 ]; then
+      log "dry-run: not recording the SPB as applied"   # a dry run must not change a real run's state
+      return 0
+    fi
+    detect_versions
+    state_set spb_applied "$spb_path"
+    log "SPBAT apply finished (SPB $spb_path)"
+    return 0
+  fi
+
   # 1. OPatch upgrade kit first
   while IFS='|' read -r id path kind; do
     [ "$kind" = opatch-upgrade ] || continue
@@ -923,6 +978,12 @@ cmd_verify() {
   local ok=1
   local expected
   expected="$(state_get applied || true)"
+  # an SPB is applied as one unit by SPBAT; its patches are not in the 'applied' list, so only the servers
+  # are checked - the SPBAT exit status was the apply's gate
+  if [ -n "$(state_get spb_applied || true)" ]; then
+    log "SPB $(basename "$(state_get spb_applied)") was applied by SPBAT - checking the servers"
+    expected=""
+  fi
   if [ -z "$expected" ] && [ -n "$pdir" ]; then
     expected="$(prepare_patch_dir "$pdir" | awk -F'|' '$3=="patch" {print $1}' | tr '\n' ' ')"
   fi
@@ -968,6 +1029,20 @@ cmd_rollback() {
   setup_env
   [ -n "$RUN_DIR" ] || { RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir rollback; }
   local ids="$*"
+  local spb=""; spb="$(state_get spb_applied || true)"
+  if [ -z "$ids" ] && [ -n "$spb" ]; then
+    local rl="$spb/binary_patches/rollback_patchlist.txt" up2
+    [ -f "$rl" ] || { err "SPB rollback list not found ($rl) - restore the pre-patch backup instead ('restore'), which is the only complete rollback of an SPB"; return 1; }
+    up2="$(running_servers)" || die "$PS_UNREADABLE - rollback refused: OPatch must not run under a live JVM"
+    [ -n "$up2" ] && { warn "Servers running - stopping"; cmd_stop || die "Cannot stop servers for rollback"; }
+    confirm "Roll back all patches in the Stack Patch Bundle $spb? (overlay patches applied since must be rolled back first)" || return 1
+    log "Rolling back the Stack Patch Bundle with opatch nrollback ($rl)"
+    if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $ORACLE_HOME/OPatch/opatch nrollback -oh $ORACLE_HOME -idFile $rl"; return 0; fi
+    opatch nrollback -silent -oh "$ORACLE_HOME" -idFile "$rl" || { err "opatch nrollback failed for the SPB. Restore the backup ('restore') for a complete rollback"; return 1; }
+    state_set spb_applied ""
+    log "SPB rollback finished. Overlay patches applied since the SPB are not re-applied - see the SPB README Section 6"
+    return 0
+  fi
   if [ -z "$ids" ]; then
     ids="$(state_get applied || true)"
     # reverse order
@@ -1378,6 +1453,7 @@ cmd_plan() {
     while IFS='|' read -r id path kind; do
       [ -z "$id" ] && continue; any=1
       if [ "$kind" = opatch-upgrade ]; then echo "  OPatch kit : present in $pdir - installed first"; continue; fi
+      if [ "$kind" = spb ]; then echo "  SPB        : $path - applied with SPBAT (precheck then apply), not opatch apply"; continue; fi
       local st="will be applied" min
       printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" && st="already installed - skip"
       min="$(patch_min_opatch "$path" || true)"
