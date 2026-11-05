@@ -14,7 +14,7 @@
 #   download <dir>       Fetch it from MOS into <dir> (or put the tar.gz there yourself: no internet needed)
 #   plan <tar|dir>       What run would do
 #   preflight <tar|dir>  Tarball is a JDK, major matches (--force to change major), product matrix, disk, running JVMs
-#   backup               Copy of every file that will be edited (the old JDK directory is never removed)
+#   backup               Copy of every file that will be edited (an in-place target is renamed aside, see apply)
 #   apply <tar|dir>      Unpack to JAVA_BASE, import extra cacerts aliases from the old store, flip symlink or edit files
 #   restart              Run RESTART_CMDS (or ORDS service) so the JVMs pick up the new JDK
 #   verify               New java -version, references point at it, no running JVM on the old JDK, URLs answer
@@ -203,6 +203,9 @@ cmd_preflight() {
   local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do [ -w "$f" ] || { err "$f is not writable (reference must be edited)"; fail=1; }; done
   local run; if ! run="$(running_on "$OLD_REAL")"; then err "$(ps_unreadable_msg) - cannot tell which JVMs run on the old JDK and need a restart after the switch; preflight refuses"; fail=1; run=""; fi
   [ -n "$run" ] && { log "running on the old JDK (restart needed): $(printf '%s\n' "$run" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; [ "$DO_RESTART" = 1 ] && [ -z "$RESTART_CMDS" ] && [ -z "$(ords_service)" ] && warn "--restart but no RESTART_CMDS and no ORDS service: restarts will have to be done by hand"; }
+  # in-place replaces the JDK's files while those JVMs are still running, so stop them first (or --keep-old, which
+  # leaves the old JDK where it is and only re-points the references)
+  [ "$IN_PLACE" = 1 ] && [ -n "$run" ] && { [ "$FORCE" = 1 ] && warn "in-place: $OLD_JH is replaced while JVMs still run on it (--force) - restart them immediately after" || { err "in-place: JVMs run on $OLD_JH and its files are replaced before the restart - stop them first, or --keep-old"; fail=1; }; }
   [ "$NO_CACERTS" = 0 ] && { local pf; pf="$(cacerts_pw_file)" && { cacerts_aliases "$OLD_JH/bin/keytool" "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" "$pf" >/dev/null 2>&1 || { err "cannot open the old cacerts with CACERTS_PASSWORD: apply will refuse to continue without the CA carry-over (fix the password, or --no-cacerts)"; fail=1; }; rm -f "$pf"; }; }
   [ -f "$OLD_JH/jre/lib/security/local_policy.jar" ] && [ "$NEW_MAJOR" = 8 ] && log "JDK 8: unlimited crypto policy files - JDK 8u161+ has them unlimited by default (crypto.policy=unlimited)"
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"; state_set tarball "$TARBALL"; state_set old_jh "$OLD_JH"; state_set old_real "$OLD_REAL"; state_set new_jh "$NEW_JH"
@@ -258,13 +261,16 @@ cmd_apply() {
     [ "$nf" = 0 ] || die "cacerts: $nf alias(es) failed to import into $nc - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"
   fi
   if [ "$IN_PLACE" = 1 ]; then
-    # the new JDK takes the target's path: the old directory moves into the run dir (a rename, no copy) and
-    # the freshly unpacked one moves onto the same path, so nothing that names $OLD_JH has to change
-    log "replacing $OLD_JH with $NEW_JH (the old JDK moves to $RUN_DIR/old-jdk)"; confirm "mv $OLD_JH $RUN_DIR/old-jdk && mv $NEW_JH $OLD_JH ?" || die "aborted"
+    # the new JDK takes the target's path. The old directory is renamed to a SIBLING - same filesystem, so a
+    # true rename, not a copy - because the run dir can be on another filesystem and a copy would delete the
+    # old JDK's files from under the JVMs still running on it before the restart.
+    oldbak="$OLD_JH.old-$(date +%Y%m%d%H%M%S)"
+    log "replacing $OLD_JH with $NEW_JH (the old JDK is renamed to $oldbak)"; confirm "mv $OLD_JH $oldbak && mv $NEW_JH $OLD_JH ?" || die "aborted"
     if [ "$DRY_RUN" = 1 ]; then :
     else
-      mv "$OLD_JH" "$RUN_DIR/old-jdk" || die "cannot move $OLD_JH aside - nothing changed"
-      mv "$NEW_JH" "$OLD_JH" || die "cannot move $NEW_JH to $OLD_JH - the old JDK is at $RUN_DIR/old-jdk, move it back by hand"
+      mv "$OLD_JH" "$oldbak" || die "cannot rename $OLD_JH to $oldbak - nothing changed"
+      state_set old_jdk "$oldbak"
+      mv "$NEW_JH" "$OLD_JH" || die "cannot move $NEW_JH to $OLD_JH - the old JDK is at $oldbak, rename it back by hand"
       [ -x "$OLD_JH/bin/java" ] || die "$OLD_JH/bin/java missing after the move"
     fi
     NEW_JH="$OLD_JH"
@@ -284,7 +290,7 @@ cmd_apply() {
     [ "$efail" = 0 ] || { state_set apply failed; err "apply: not every file was switched to $NEW_JH (see above); rollback restores the backups"; return 1; }
   fi
   [ -d /usr/java ] && [ -L /usr/java/latest ] && [ "$(readlink -f /usr/java/latest)" = "$OLD_REAL" ] && [ -w /usr/java ] && { log "updating /usr/java/latest"; [ "$DRY_RUN" = 1 ] || ln -sfn "$NEW_JH" /usr/java/latest; }
-  state_set apply ok; state_set new_jh "$NEW_JH"
+  state_set apply ok; state_set new_jh "$NEW_JH"; state_set new_ver "$NEW_VER"
 }
 
 cmd_restart() {
@@ -304,8 +310,10 @@ cmd_verify() {
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
   if [ "$IN_PLACE" = 1 ]; then
-    # the path did not change, so there is nothing to re-point: the new build must simply be there
-    local v; v="$(jdk_version "$newjh")"; [ "$v" = "$NEW_VER" ] && log "$newjh is now $v" || { err "$newjh is $v, expected $NEW_VER"; fail=1; }
+    # the path did not change, so there is nothing to re-point: the new build must simply be there. Read the
+    # build from state - a separate 'verify' invocation has not run pick_tar, so $NEW_VER is empty there.
+    local v nv; v="$(jdk_version "$newjh")"; nv="$(state_get new_ver || true)"; [ -n "$nv" ] || nv="$NEW_VER"
+    [ "$v" = "$nv" ] && log "$newjh is now $v" || { err "$newjh is $v, expected ${nv:-?}"; fail=1; }
   elif [ "$LINKED" = 1 ]; then [ "$(readlink -f "$OLD_JH")" = "$(readlink -f "$newjh")" ] && log "$OLD_JH -> $newjh" || { err "$OLD_JH points at $(readlink -f "$OLD_JH")"; fail=1; }
   else local left; left="$(refs_to "$(state_get old_real)" | grep -c .)"; [ "$left" = 0 ] && log "no reference to the old JDK left" || { err "$left reference(s) still name the old JDK: $(refs_to "$(state_get old_real)" | cut -c1-120 | tr '\n' ';')"; fail=1; }; fi
   local oldrun; if ! oldrun="$(running_on "$(state_get old_real)")"; then err "$(ps_unreadable_msg) - whether anything still runs on the old JDK is NOT known"; fail=1; oldrun=""
@@ -319,14 +327,17 @@ cmd_verify() {
 cmd_rollback() {
   discover; reuse_or_init rollback
   local tgt; tgt="$(state_get link_target || true)"
-  [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || [ -d "$RUN_DIR/old-jdk" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
+  [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || [ -n "$(state_get old_jdk || true)" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
   local rfail=0
-  if [ "$(state_get in_place || true)" = 1 ] && [ -d "$RUN_DIR/old-jdk" ]; then
-    confirm "mv $OLD_JH $RUN_DIR/new-jdk-rollback && mv $RUN_DIR/old-jdk $OLD_JH ?" || die "aborted"
+  if [ "$(state_get in_place || true)" = 1 ] && [ -n "$(state_get old_jdk || true)" ] && [ -d "$(state_get old_jdk || true)" ]; then
+    local oldbak failed; oldbak="$(state_get old_jdk)"; failed="$OLD_JH.failed-$(date +%Y%m%d%H%M%S)"
+    confirm "mv $OLD_JH $failed && mv $oldbak $OLD_JH ?" || die "aborted"
     if [ "$DRY_RUN" = 1 ]; then :
+    elif mv "$OLD_JH" "$failed"; then
+      # only if the new JDK really moved aside: otherwise old-jdk would be moved INTO the directory still there
+      mv "$oldbak" "$OLD_JH" || { err "cannot restore the old JDK from $oldbak (the new one is at $failed)"; rfail=1; }
     else
-      mv "$OLD_JH" "$RUN_DIR/new-jdk-rollback" || { err "cannot move the new JDK aside from $OLD_JH"; rfail=1; }
-      mv "$RUN_DIR/old-jdk" "$OLD_JH" || { err "cannot restore the old JDK from $RUN_DIR/old-jdk"; rfail=1; }
+      err "cannot move the new JDK aside from $OLD_JH - the old JDK is still at $oldbak, nothing was changed"; rfail=1
     fi
   fi
   if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; if [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; then log "symlink restored -> $tgt"; else err "cannot restore the symlink $OLD_JH -> $tgt"; rfail=1; fi; fi
