@@ -42,6 +42,9 @@ ls -d "$T"/java.old-* >/dev/null 2>&1 && ok || bad "the old JDK was not renamed 
 grep -q '^new_ver=1.8.0_511' "$R/state" 2>/dev/null && ok || bad "apply did not record new_ver"
 
 run verify && ok || bad "a separate 'verify --run-dir' failed: $(tail -3 "$OUT")"
+# after a real apply, 'verify --dry-run' is read-only but must still check for real (Baymax P3)
+bash "$S" verify --dry-run --run-dir "$R" --java-home "$T/java" --no-cacerts >"$T/out-vdry.log" 2>&1 && ok || bad "'verify --dry-run' after a real apply failed: $(tail -2 "$T/out-vdry.log")"
+grep -q 'dry-run: would verify' "$T/out-vdry.log" && bad "'verify --dry-run' skipped the read-only checks after a real apply" || ok
 
 # a bare 'rollback --run-dir R' has no --java-home: it must seed OLD_JH from the recorded old_jh
 bash "$S" rollback --run-dir "$R" --yes >>"$OUT" 2>&1 && ok || bad "a bare 'rollback --run-dir' failed: $(tail -3 "$OUT")"

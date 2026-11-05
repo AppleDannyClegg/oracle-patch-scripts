@@ -45,6 +45,7 @@ stub "$NEW" "shared ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 0
 : >"$IMPORTS"
 
 carry() { # <old-dir> <new-dir> <imports-log> ; prints carry_cacerts' rc
+  # shellcheck disable=SC2034  # OLD_JH/NEW_JH/RUN_DIR/LOG_FILE/STATE_FILE/TOOL/CACERTS_PASSWORD are read by the sourced script
   ( . "$T/tree/patching/java-patch/java-patch.sh"
     OLD_JH="$1"; NEW_JH="$2"; RUN_DIR="$T/run"; LOG_FILE="$LOG"; STATE_FILE="$T/state"; TOOL=t
     CACERTS_PASSWORD=x; mkdir -p "$RUN_DIR"

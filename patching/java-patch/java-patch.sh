@@ -327,7 +327,7 @@ cmd_apply() {
     [ "$efail" = 0 ] || { state_set apply failed; err "apply: not every file was switched to $NEW_JH (see above); rollback restores the backups"; return 1; }
   fi
   [ -d /usr/java ] && [ -L /usr/java/latest ] && [ "$(readlink -f /usr/java/latest)" = "$OLD_REAL" ] && [ -w /usr/java ] && { log "updating /usr/java/latest"; [ "$DRY_RUN" = 1 ] || ln -sfn "$NEW_JH" /usr/java/latest; }
-  state_set apply ok; state_set new_jh "$NEW_JH"; state_set new_ver "$NEW_VER"
+  if [ "$DRY_RUN" = 1 ]; then state_set apply dry-run; else state_set apply ok; fi; state_set new_jh "$NEW_JH"; state_set new_ver "$NEW_VER"
 }
 
 cmd_restart() {
@@ -344,9 +344,9 @@ cmd_restart() {
 
 cmd_verify() {
   discover; reuse_or_init verify; local fail=0
-  # a dry run installed nothing, so asserting on it would always fail - say what would be checked, do not assert,
-  # and do not send 'run --dry-run' on to a rollback with nothing recorded
-  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK, no JVM is still on it, and the WLST homes and URLs answer"; return 0; fi
+  # a dry run installed nothing, so asserting on it would always fail; a separate 'verify --dry-run' after a
+  # REAL apply (state apply=ok) is read-only, so it still checks for real (Baymax's rule)
+  if [ "$DRY_RUN" = 1 ] && [ "$(state_get apply || true)" != ok ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK, no JVM is still on it, and the WLST homes and URLs answer"; return 0; fi
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
   if [ "$IN_PLACE" = 1 ]; then
