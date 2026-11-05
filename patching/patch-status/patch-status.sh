@@ -48,8 +48,12 @@ row() {
   local prod="$1" home="$2" inst="$3" date="$4" latest="$5" note="$6" behind status
   if [ -z "$date" ]; then behind="?"; status="UNKNOWN"
   else behind="$(quarters_behind "$date")"; case "$behind" in 0) status="CURRENT";; 1) status="1 behind";; *) status="$behind behind";; esac; fi
-  ROWS="${ROWS}$prod|$home|$inst|${date:-?}|${latest:--}|$behind|$status|$note"$'\n'
-  [ "$DO_REPORT" = 1 ] && { case "$behind" in 0|\?) ;; 1) finding WARN patch "$prod ($home) is one CPU behind: $inst ($date)";; *) finding CRIT patch "$prod ($home) is $behind CPUs behind: $inst ($date)";; esac; }
+  ROWS="${ROWS}$prod|${home}|${inst}|${date:-?}|${latest:--}|$behind|$status|$note"$'\n'
+  # A level that could not be dated is 'unknown', not clean. Without --report the findings are the only thing
+  # that sets the exit code, so a table/cron run over a stale estate used to exit 0; say it in every mode.
+  if [ "$behind" = "?" ]; then
+    [ -n "$home" ] && finding WARN patch "$prod ($home): patch level unknown - $inst${note:+ ($note)}"
+  elif [ "$DO_REPORT" = 1 ]; then case "$behind" in 0) ;; 1) finding WARN patch "$prod ($home) is one CPU behind: $inst ($date)";; *) finding CRIT patch "$prod ($home) is $behind CPUs behind: $inst ($date)";; esac; fi
   return 0
 }
 # lsp_read <opatch> <timeout>: the inventory on stdout, opatch's own status as the return. An lspatches that could not run
