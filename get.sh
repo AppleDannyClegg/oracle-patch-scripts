@@ -19,7 +19,8 @@ resolve_url() {
   local api="https://api.github.com/repos/$REPO/commits/main" json sha
   if command -v curl >/dev/null 2>&1; then json="$(curl -fsSL "$api" 2>/dev/null || true)"
   elif command -v wget >/dev/null 2>&1; then json="$(wget -qO- "$api" 2>/dev/null || true)"; fi
-  sha="$(printf '%s\n' "${json:-}" | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)"
+  # take the FIRST "sha":"<40hex>" - a greedy sed would grab the last one (a parent's) on a minified response
+  sha="$(printf '%s\n' "${json:-}" | grep -oE '"sha" *: *"[0-9a-f]{40}"' | head -1 | cut -d'"' -f4)"
   if [ -n "$sha" ]; then printf 'https://github.com/%s/archive/%s.tar.gz\n' "$REPO" "$sha"
   else printf 'https://github.com/%s/archive/refs/heads/main.tar.gz\n' "$REPO"; fi
 }
