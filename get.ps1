@@ -82,7 +82,7 @@ function Remove-Tree([string] $Path) {
     try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; return } catch {}
     if ($env:OS -eq 'Windows_NT') { $null = cmd /c "rd /s /q `"$Path`"" 2>&1 }
     if (Test-Path -LiteralPath $Path) {
-        throw "cannot delete $Path - a file in it is open in another program. Close it (an editor, a shell, a running script) and re-run, or delete $Path by hand."
+        throw "cannot delete $Path - a file in it is open in another program, or you do not have permission. Close anything using it (an editor, a shell cd'd into the tree, a running script) and re-run, or delete $Path by hand."
     }
 }
 
