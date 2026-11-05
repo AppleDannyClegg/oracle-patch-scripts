@@ -28,6 +28,7 @@ $releaseXml = @'
 <release id="600" status="A" name="12.2.1.4.0">
 <![CDATA[Oracle WebLogic Server 12.2.1.4.0]]></release>
 <release id="601" status="A" name="12.2.1.4.0"><![CDATA[Oracle Coherence 12.2.1.4.0]]></release>
+<release id="610" status="A" name="12.2.1.4.0"><![CDATA[Oracle HTTP Server 12.2.1.4.0]]></release>
 <release id="800" status="A" name="19.0.0.0.0"><![CDATA[Oracle Database 19.0.0.0.0]]></release>
 <release id="700" status="A" name="1.8.0_491"><![CDATA[Oracle JDK 1.8.0_491]]></release>
 <release id="701" status="A" name="1.8.0_481"><![CDATA[Oracle JDK 1.8.0_481]]></release>
@@ -76,6 +77,14 @@ $sha = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().Compute
 $script:asked = @()
 $script:downloadedUrl = $null
 $script:bugXml = $bug.Replace('SHA_HERE', $sha)
+# OHS 12.2.1.4 on Linux x86-64: the real abstract shapes (MOS, 5 Nov 2026) - the DB19C bundle is the current
+# line, the plain one stopped in Jan 2024; the Apache plug-in bundle and a tracking bug are look-alikes
+$ohsRows = '<results>' +
+    (Row 40005842 'OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910' '2026-10-19') +
+    (Row 39611663 'OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260624' '2026-07-20') +
+    (Row 36187026 'OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115' '2024-01-29') +
+    (Row 40030272 'APACHE PLUGIN BUNDLE PATCH FOR DB19C 12.2.1.4.261020' '2026-09-16') +
+    (Row 38832126 'TRACKING BUG FOR BUG 38727102 FOR DEBUGGING' '2026-01-09') + '</results>'
 function Invoke-MosGet([string] $Path) {
     $script:asked += $Path
     if ($Path -like '*metadata?table=aru_releases*') { return $releaseXml }
@@ -83,6 +92,7 @@ function Invoke-MosGet([string] $Path) {
         if ($script:withSpb) { return $wlsRows.Replace('</results>', $spbRows + '</results>') } else { return $wlsRows }
     }
     if ($Path -like '*product=9480&release=800&platform=226*') { return $dbRows }
+    if ($Path -like '*product=10300&release=610&platform=226*') { return $ohsRows }
     if ($Path -like '*product=13964&release=601&platform=2000*') { return $cohRows }
     if ($Path -like '*product=12443&release=701&platform=226*') { return $jdkRows }
     if ($Path -like '*product=12443&release=703&platform=226*') { return $perfRows }
@@ -457,12 +467,27 @@ finally {
       'home|/u01/ohs|ohs|12.2.1.4.0|13.9.4.2.23',
       'patch|/u01/ohs|38000222|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501') | Set-Content -LiteralPath $ohsM
     $m6 = Read-Manifest $ohsM
-    Check (@($m6.Ohs).Count -eq 1 -and $m6.Ohs[0].Home -eq '/u01/fmw' -and $m6.Ohs[0].Release -eq '12.2.1.4.0') "a collocated ohs| line is read: [$(@($m6.Ohs).Count)]"
+    $ohs6 = @($m6.Ohs)
+    Check ($ohs6.Count -eq 1) "a collocated ohs| line is read: [$($ohs6.Count)]"
+    if ($ohs6.Count -eq 1) { Check ($ohs6[0].Home -eq '/u01/fmw' -and $ohs6[0].Release -eq '12.2.1.4.0') "collocated ohs| fields: [$($ohs6[0].Home)] [$($ohs6[0].Release)]" }
     Check (@($m6.Homes | Where-Object { $_.Kind -eq 'ohs' }).Count -eq 1 -and @($m6.Homes[0].Patches).Count -eq 1) "a standalone OHS home and its patch are read"
     $notes6 = @(Get-OhsNotes $m6)
     Check ($notes6.Count -eq 2) "both OHS homes are named for a manual fetch, got $($notes6.Count)"
     Check (@($notes6 | Where-Object { $_ -like '*/u01/ohs (standalone)*' }).Count -eq 1) "the standalone OHS home is named: $($notes6 -join ' / ')"
     Check (@($notes6 | Where-Object { $_ -like '*/u01/fmw (collocated*' }).Count -eq 1) "the collocated OHS home is named: $($notes6 -join ' / ')"
+    # the plan: the newest OHS (NATIVE) bundle for each OHS home, in its own ohs/ folder; never the Apache plug-in
+    $p6 = @(Get-PatchPlan $m6 | Where-Object { $_.Kind -eq 'ohs' })
+    Check ($p6.Count -eq 2) "an OHS bundle planned for each OHS home, got $($p6.Count)"
+    Check (@($p6 | Where-Object { $_.Patch -eq '40005842' }).Count -eq 2) "the newest OHS DB19C bundle 40005842 is planned: $(@($p6 | ForEach-Object { $_.Patch }) -join ',')"
+    Check (@($p6 | Where-Object { $_.For -eq '/u01/ohs' -and $_.Installed -eq '260501' }).Count -eq 1) "the standalone home's installed OHS level is read (260501)"
+    Check (@($p6 | Where-Object { $_.For -eq '/u01/fmw' }).Count -eq 1) "the collocated OHS home gets its own OHS item"
+    Check (-not ($p6 | Where-Object { $_.Patch -eq '40030272' })) "the Apache plug-in bundle is not planned as the OHS bundle"
+    # current: an OHS home already on 260910 plans nothing
+    $ohsCur = Join-Path $tmp 'ohscur.txt'
+    @('host|wl7', 'home|/u01/ohs|ohs|12.2.1.4.0|13.9.4.2.23',
+      'patch|/u01/ohs|40005842|OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910') | Set-Content -LiteralPath $ohsCur
+    $p7 = @(Get-PatchPlan (Read-Manifest $ohsCur) | Where-Object { $_.Kind -eq 'ohs' })
+    Check ($p7.Count -eq 0) "an OHS home on the newest bundle plans nothing, got $($p7.Count)"
 
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

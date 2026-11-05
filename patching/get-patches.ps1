@@ -15,6 +15,9 @@ What it looks up, for everything in the manifest:
   - only when MOS lists no SPB: the WLS PSU and the Coherence cumulative patch one by one
   - FMW Platform Bundle: newest "FMW PLATFORM BUNDLE PATCH <release>.<yymmdd>", where one is installed
   - OPatch kit 28186730 when OPatch is older than 13.9.4.2.0, or older than the downloaded patches' READMEs ask for
+  Oracle HTTP Server home (standalone, or collocated in a WebLogic home)
+  - newest "OHS (NATIVE) [DB19C] BUNDLE PATCH <release>.<yymmdd>" for Linux x86-64, into ohs/ (not the Apache
+    plug-in bundle). No script applies it yet: stop the OHS instances, opatch apply, start them
   Database or client home (e.g. a 19c client)
   - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it when the home's OPatch is
     older than 12.2.0.1.40 or than the RU's README asks for
@@ -62,6 +65,7 @@ $script:PlatformGeneric = 2000
 $script:PlatformLinux = 226
 $script:OPatchKit = '28186730'
 $script:ProductDatabase = 9480
+$script:ProductOhs = 10300
 $script:DbOPatch = '6880880'
 
 # ---- network: the only two functions that talk to MOS --------------------------------------------------
@@ -156,14 +160,13 @@ function Read-Manifest([string] $Path) {
     $m
 }
 
-# Oracle HTTP Server is not planned here yet: name every OHS home (standalone 'home|..|ohs' or collocated
-# 'ohs|<wls home>') so it is fetched by hand, never silently left out of the quarter
+# every OHS home (standalone 'home|..|ohs' or collocated 'ohs|<wls home>'), with how its bundle is applied
 function Get-OhsNotes($Manifest) {
     $all = @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; How = 'standalone' } }) +
         @($Manifest.Ohs | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Release; How = 'collocated in the WebLogic home' } }))
     foreach ($o in $all) {
         $rel = $(if ($o.Release) { $o.Release } else { 'release unknown' })
-        "Oracle HTTP Server $rel at $($o.Home) ($($o.How)): not downloaded - get this quarter's OHS patch from MOS Doc 2806740.2 by hand."
+        "Oracle HTTP Server $rel at $($o.Home) ($($o.How)): its OHS bundle goes in ohs/. No script here applies it yet - stop the OHS instances, opatch apply, start them (see the bundle README)."
     }
 }
 
@@ -412,11 +415,36 @@ function Get-FmwPlan($Manifest) {
     }
 }
 
+# Oracle HTTP Server: the newest 'OHS (NATIVE) [DB19C] BUNDLE PATCH <release>.<yymmdd>' for every OHS home,
+# standalone (home|..|ohs) or collocated in a WebLogic home (ohs|<wls home>). Linux x86-64 only: OHS is native.
+# Exact rows only - the 'APACHE PLUGIN BUNDLE PATCH' (the WebLogic plug-in for Apache) is a look-alike.
+function Get-OhsPlan($Manifest) {
+    $homes = @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; Patches = $_.Patches } }) +
+        @($Manifest.Ohs | ForEach-Object {
+                $o = $_; $w = $Manifest.Wls | Where-Object { $_.Home -eq $o.Home } | Select-Object -First 1
+                [pscustomobject]@{ Home = $o.Home; Release = $o.Release; Patches = $(if ($w) { $w.Patches } else { @() }) } }))
+    foreach ($h in $homes) {
+        if (-not $h.Release) { Write-Warning "$($h.Home): the manifest has no OHS release for this home - get its OHS bundle from MOS Doc 2806740.2 by hand"; continue }
+        $short = ($h.Release.Split('.')[0..3]) -join '.'
+        $esc = [regex]::Escape($short)
+        $rel = Get-ReleaseId "Oracle HTTP Server $(Get-FivePart $h.Release)" -Optional
+        if (-not $rel) { Write-Warning "$($h.Home): MOS has no release 'Oracle HTTP Server $(Get-FivePart $h.Release)' - skipping its OHS bundle"; continue }
+        $rows = @(Get-MosPatchRows $script:ProductOhs $rel $script:PlatformLinux)
+        $pat = "(?i)^OHS \(NATIVE\) (?:DB19C )?BUNDLE PATCH $esc(?:\.0)?\.(\d{6})\s*$"
+        $newest = Select-Newest $rows $pat
+        if (-not $newest) { Write-Warning "$($h.Home): MOS lists no OHS (NATIVE) bundle for $short - check MOS Doc 2806740.2"; continue }
+        $have = Get-InstalledLevel $h $pat
+        $new = [regex]::Match($newest.Abstract, $pat).Groups[1].Value
+        if (-not $have -or $new -gt $have) { New-PlanItem 'ohs' "OHS bundle ($($h.Home))" $have $newest $h.Release $h.Home }
+    }
+}
+
 function Get-PatchPlan($Manifest) {
     foreach ($w in $Manifest.Wls) { Get-WlsPlan $w }
     foreach ($h in ($Manifest.Homes | Where-Object { $_.Kind -eq 'db' })) { Get-DbPlan $h }
     if ($Manifest.Jdks) { Get-JdkPlan $Manifest.Jdks }
     if ($Manifest.Fmw) { Get-FmwPlan $Manifest }
+    if ($Manifest.Ohs -or ($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' })) { Get-OhsPlan $Manifest }
 }
 
 # ---- download ------------------------------------------------------------------------------------------
@@ -563,10 +591,12 @@ function Get-OPatchNeeds($Manifest, $Downloaded) {
         $it = $d.Item
         # not 'spb': a Stack Patch Bundle carries its own OPatch and SPBAT -phase apply upgrades it 'from any version'
         # (real SPB README, 5 Nov 2026) - the OPatch its README names is the one it installs, not a minimum
-        if (-not $it.For -or -not $d.Saved -or $it.Kind -notin @('wls', 'db') -or $it.Patch -in $kits) { continue }
+        if (-not $it.For -or -not $d.Saved -or $it.Kind -notin @('wls', 'db', 'ohs') -or $it.Patch -in $kits) { continue }
         $wls = $Manifest.Wls | Where-Object { $_.Home -eq $it.For } | Select-Object -First 1
         $db = $Manifest.Homes | Where-Object { $_.Home -eq $it.For -and $_.Kind -eq 'db' } | Select-Object -First 1
-        if ($wls) { $installed = $wls.OPatch } elseif ($db) { $installed = $db.OPatch } else { continue }
+        # a standalone OHS home takes the FMW OPatch (13.9.x) like a WebLogic home
+        $ohs = $Manifest.Homes | Where-Object { $_.Home -eq $it.For -and $_.Kind -eq 'ohs' } | Select-Object -First 1
+        if ($wls) { $installed = $wls.OPatch } elseif ($db) { $installed = $db.OPatch } elseif ($ohs) { $installed = $ohs.OPatch } else { continue }
         $min = Get-ZipMinOPatch $d.Saved
         if (-not $min) {
             # the README may be missing, deeper in the zip, or worded in a way this does not read: say so, the server would find out too late
@@ -575,7 +605,7 @@ function Get-OPatchNeeds($Manifest, $Downloaded) {
         }
         $cur = $byHome[$it.For]
         if (-not $cur -or (Get-VersionKey $min) -gt (Get-VersionKey $cur.Min)) {
-            $byHome[$it.For] = [pscustomobject]@{ Home = $it.For; Min = $min; Installed = $installed; Wls = [bool]$wls; Release = $it.Release; From = $it.Patch }
+            $byHome[$it.For] = [pscustomobject]@{ Home = $it.For; Min = $min; Installed = $installed; Wls = [bool]($wls -or $ohs); Folder = $(if ($ohs) { 'ohs' } else { 'wls' }); Release = $it.Release; From = $it.Patch }
         }
     }
     foreach ($n in $byHome.Values) {
@@ -584,7 +614,7 @@ function Get-OPatchNeeds($Manifest, $Downloaded) {
         $have = $Downloaded | Where-Object { $_.Item.Patch -eq $kitNo -and $_.Item.For -eq $n.Home -and $_.Saved } | Select-Object -First 1
         $item = $null
         if (-not $have) {
-            $item = if ($n.Wls) { New-PlanItem 'wls' "OPatch kit ($($n.Home))" $n.Installed ([pscustomobject]@{ Number = $kitNo; Abstract = "OPatch $($n.Min) or later (patch $($n.From)'s README)" }) '13.9.4' $n.Home }
+            $item = if ($n.Wls) { New-PlanItem $n.Folder "OPatch kit ($($n.Home))" $n.Installed ([pscustomobject]@{ Number = $kitNo; Abstract = "OPatch $($n.Min) or later (patch $($n.From)'s README)" }) '13.9.4' $n.Home }
                     else { New-PlanItem 'db' "OPatch for $($n.Home)" $n.Installed ([pscustomobject]@{ Number = $kitNo; Abstract = "OPatch $($n.Min) or later (patch $($n.From)'s README)" }) $n.Release $n.Home }
         }
         [pscustomobject]@{ Home = $n.Home; Min = $n.Min; Installed = $n.Installed; From = $n.From; Item = $item; KitSaved = $(if ($have) { $have.Saved } else { $null }) }
@@ -666,6 +696,7 @@ function Main {
     Write-Host "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:"
     if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { Write-Host "  scp `"$Dest\wls\*.zip`" oracle@$($m.Host):/u01/patches/wls/   then: wls-patch.sh run /u01/patches/wls" }
     if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { Write-Host "  scp `"$Dest\spb\*.zip`" oracle@$($m.Host):/u01/patches/spb/   then: wls-patch.sh run /u01/patches/spb" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'ohs')) { Write-Host "  scp `"$Dest\ohs\*.zip`" oracle@$($m.Host):/u01/patches/ohs/   (apply by hand for now - see the OHS line above)" }
     if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { Write-Host "  scp `"$Dest\db\*.zip`" oracle@$($m.Host):/u01/patches/db/" }
     if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { Write-Host "  scp `"$Dest\jdk\*.tar.gz`" oracle@$($m.Host):/u01/patches/jdk/" }
     if ($failed -gt 0) { Write-Host "$failed download(s) failed - see above." -ForegroundColor Red; exit 1 }
