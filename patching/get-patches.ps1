@@ -192,7 +192,7 @@ function Get-WlsPlan($Wls) {
     $rows = @(Get-MosPatchRows $script:ProductWls $wlsRelease $script:PlatformGeneric -Recommended)
 
     # Stack Patch Bundle first: it carries the PSU and Coherence (and Thirdparty, OSS, JDBC, RDA)
-    $spbPattern = "^WLS STACK PATCH BUNDLE $esc(?:\.0)?\.(\d{6})"
+    $spbPattern = "(?i)^WLS STACK PATCH BUNDLE $esc(?:\.0)?\.(\d{6})"
     $spb = Select-Newest $rows $spbPattern
     if ($spb) {
         $have = Get-InstalledLevel $Wls $spbPattern
@@ -203,7 +203,7 @@ function Get-WlsPlan($Wls) {
     }
 
     # no SPB on MOS: the PSU on its own. Exact PSU rows only, not "(BLR)" / MERGE / OVERLAY look-alikes
-    $psuPattern = "^WLS PATCH SET UPDATE $esc(?:\.0)?\.(\d{6})\s*$"
+    $psuPattern = "(?i)^WLS PATCH SET UPDATE $esc(?:\.0)?\.(\d{6})\s*$"
     if (-not $spb) {
         $newest = Select-Newest $rows $psuPattern
         $have = Get-InstalledLevel $Wls $psuPattern
@@ -214,7 +214,7 @@ function Get-WlsPlan($Wls) {
     }
 
     # FMW Platform Bundle: only where one is installed
-    $bundlePattern = "^FMW PLATFORM BUNDLE PATCH $esc(?:\.0)?\.(\d{6})"
+    $bundlePattern = "(?i)^FMW PLATFORM BUNDLE PATCH $esc(?:\.0)?\.(\d{6})"
     $have = Get-InstalledLevel $Wls $bundlePattern
     if ($have) {
         $newest = Select-Newest $rows $bundlePattern
@@ -293,7 +293,7 @@ function Get-DbPlan($Db) {
         return
     }
     # ends at "(" or the end: the " - CMAN" / " - GSM" RUs are not for this home (as db-patch.sh)
-    $ruPattern = "^Database Release Update\s*:?\s*$major\.(\d+)\.0\.0\.(\d{6})\s*(?:\(|$)"
+    $ruPattern = "(?i)^Database Release Update\s*:?\s*$major\.(\d+)\.0\.0\.(\d{6})\s*(?:\(|$)"
     $rows = @(Get-MosPatchRows $script:ProductDatabase $dbRelease $script:PlatformLinux -Recommended)
     $newest = $rows | Where-Object { $_.Abstract -match $ruPattern } |
         Sort-Object { [regex]::Match($_.Abstract, $ruPattern).Groups[2].Value } -Descending | Select-Object -First 1
