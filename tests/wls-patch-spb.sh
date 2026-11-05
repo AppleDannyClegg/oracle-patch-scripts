@@ -109,6 +109,14 @@ rc="$(run "$OH" preflight "$PD6" --oracle-home "$OH" --java-home "$T/jdk" --yes)
 grep -q 'Stack Patch Bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an SPB zip filed under <dir>/spb/ (get-patches' layout) was not found: $(lastlog)"
 grep -qx -- '-phase precheck -oracle_home '"$OH" "$T/spbat.log" && ok || bad "precheck not reached for a spb/-filed zip: [$(cat "$T/spbat.log")]"
 
+# ---- get-patches also files ordinary patches under <patch-dir>/wls/, which must be found too -------------
+PD9="$T/patches-wls"; mkdir -p "$PD9/wls" "$T/zipwls"
+mkdir -p "$T/zipwls/p39372515_122140_Generic/etc/config"
+echo '<inventory/>' >"$T/zipwls/p39372515_122140_Generic/etc/config/inventory.xml"
+( cd "$T/zipwls" && zip -qr "$PD9/wls/p39372515_122140_Generic.zip" p39372515_122140_Generic ) || bad "could not build the wls/ zip fixture"
+rc="$(run "$OH" preflight "$PD9" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
+grep -q '^p39372515_122140_Generic|' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a patch filed under <dir>/wls/ (get-patches' layout) was not found: $(lastlog)"
+
 # ---- an SPBAT failure stops the apply; nothing is recorded as applied ---------------------------------
 OH3="$T/oh-fail"; mk_home "$OH3" 13.9.4.2.23
 PD4="$T/patches-fail"; mk_spb "$PD4"

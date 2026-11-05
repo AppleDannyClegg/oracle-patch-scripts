@@ -106,8 +106,9 @@ Oracle increasingly ships a quarter as a **WLS Stack Patch Bundle** (a `WLS_SPB_
 folder, patch id in the 40-million range) instead of separate PSU zips. It brings its own patches,
 its own OPatch upgrade, and its own installer, `SPBAT`.
 
-Put the SPB zip in the patch folder exactly like a patch zip; nothing else changes. `get-patches.ps1` files it
-under `<patch-dir>/spb/`, which is read too, so `run /u01/patches` picks it up from there.
+Put the SPB zip in the patch folder exactly like a patch zip; nothing else changes. `get-patches.ps1` files its
+downloads by kind (`wls/`, `spb/`) under the folder it names, and both are read one level down, so
+`run /u01/patches` works on a get-patches-staged tree whatever this quarter shipped.
 
 ```bash
 ./wls-patch.sh preflight /u01/patches/oct2026    # names the SPB, runs its precheck when OPatch allows

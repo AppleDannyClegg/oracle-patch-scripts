@@ -446,9 +446,10 @@ prepare_patch_dir() {
   [ -d "$pdir" ] || die "Patch dir not found: $pdir"
   local ext="$pdir/extracted"
   mkdir -p "$ext"
-  # get-patches files a Stack Patch Bundle zip under <patch-dir>/spb/, so accept zips one level down there
+  # get-patches files its downloads by kind under the patch dir (wls/, spb/), so accept those one level down
+  # too: 'run /u01/patches' then works on a get-patches-staged tree whatever this quarter shipped
   local z
-  for z in "$pdir"/*.zip "$pdir"/spb/*.zip; do
+  for z in "$pdir"/*.zip "$pdir"/wls/*.zip "$pdir"/spb/*.zip; do
     [ -f "$z" ] || continue
     local marker
     marker="$ext/.done-$(basename "$z")"
