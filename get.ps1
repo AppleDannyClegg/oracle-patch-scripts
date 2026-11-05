@@ -38,7 +38,12 @@ $ErrorActionPreference = 'Stop'
 # SSL/TLS secure channel'). Harmless no-op on PowerShell 7.
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 $Repo = 'AppleDannyClegg/oracle-patch-scripts'
-$Url  = "https://github.com/$Repo/archive/refs/heads/main.zip"
+# GitHub's branch archive (archive/refs/heads/main.zip) is CDN-cached and can serve a copy from before your
+# last push - so a run right after a push gets stale scripts. The per-commit archive is immutable, so resolve
+# the branch's commit first; if the API is unreachable, fall back to the (possibly stale) branch archive.
+$sha = $null
+try { $sha = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/commits/main" -Headers @{ 'User-Agent' = 'get.ps1' } -UseBasicParsing).sha } catch { $sha = $null }
+$Url = if ($sha) { "https://github.com/$Repo/archive/$sha.zip" } else { "https://github.com/$Repo/archive/refs/heads/main.zip" }
 if ([string]::IsNullOrWhiteSpace($Dest)) { throw 'destination is empty; omit the argument or pass a folder name' }
 $Dest = $Dest.TrimEnd('\', '/')
 

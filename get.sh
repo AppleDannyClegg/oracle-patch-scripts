@@ -10,8 +10,20 @@
 
 set -euo pipefail
 REPO="AppleDannyClegg/oracle-patch-scripts"
-URL="https://github.com/$REPO/archive/refs/heads/main.tar.gz"
 DEST="${1:-oracle-patch-scripts}"; DEST="${DEST%/}"
+
+# GitHub's branch archive (archive/refs/heads/main.tar.gz) is CDN-cached and can serve a copy from before
+# your last push - so a run right after a push gets stale scripts. The per-commit archive is immutable, so
+# resolve the branch's commit first; if the API is unreachable, fall back to the (possibly stale) branch archive.
+resolve_url() {
+  local api="https://api.github.com/repos/$REPO/commits/main" json sha
+  if command -v curl >/dev/null 2>&1; then json="$(curl -fsSL "$api" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then json="$(wget -qO- "$api" 2>/dev/null || true)"; fi
+  sha="$(printf '%s\n' "${json:-}" | sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1)"
+  if [ -n "$sha" ]; then printf 'https://github.com/%s/archive/%s.tar.gz\n' "$REPO" "$sha"
+  else printf 'https://github.com/%s/archive/refs/heads/main.tar.gz\n' "$REPO"; fi
+}
+URL="$(resolve_url)"
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL"
