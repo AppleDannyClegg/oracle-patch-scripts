@@ -80,6 +80,13 @@ EOF
 #   C4 a db home with no version anywhere (must warn, not fail)
 C="$T/client/19.0.0.0"; A="$T/agent/agent_24.1.0.0.0"
 C2="$T/client2/19.0.0.0"; C3="$T/client3/19.0.0.0"; C4="$T/client4/foo"
+# O: a standalone Oracle HTTP Server home - ohs/ and oracle_common/, no wlserver/; its release is in registry.xml
+O="$T/ohs/fmw"
+mkdir -p "$O/ohs/bin" "$O/oracle_common" "$O/inventory"
+echo '<distribution status="installed" name="Oracle HTTP Server (Standalone)" version="12.2.1.4.0"/>' >"$O/inventory/registry.xml"
+# the collocated shape: OHS installed into the WebLogic home itself
+mkdir -p "$H/ohs/bin"
+echo '<component name="WebLogic Server" version="12.2.1.4.0"/><component name="Oracle Coherence" version="12.2.1.4.0"/><distribution status="installed" name="Oracle HTTP Server (Collocated)" version="12.2.1.4.0"/>' >"$H/inventory/registry.xml"
 # an EM agent home ships rdbms/ as well as sysman/: it must still be read as an agent, not a db home (WF-1)
 mkdir -p "$T/oraInventory/ContentsXML" "$C/bin" "$A/sysman" "$A/rdbms" "$C2/bin" "$C2/inventory/ContentsXML" "$C3/rdbms" "$C4/rdbms"
 printf 'inventory_loc=%s\ninst_group=oinstall\n' "$T/oraInventory" >"$T/oraInst.loc"
@@ -90,6 +97,7 @@ cat >"$T/oraInventory/ContentsXML/inventory.xml" <<EOF2
 <HOME NAME="OraClient19Home2" LOC="$C2" TYPE="O" IDX="3"/>
 <HOME NAME="OraClient19Home3" LOC="$C3" TYPE="O" IDX="4"/>
 <HOME NAME="OraDbHome1" LOC="$C4" TYPE="O" IDX="5"/>
+<HOME NAME="OraOhsHome1" LOC="$O" TYPE="O" IDX="6"/>
 </HOME_LIST>
 EOF2
 cat >"$C/bin/sqlplus" <<'EOF2'
@@ -109,6 +117,7 @@ mk_opatch "$C2" 12.2.0.1.44 "37642901;Database Release Update : 19.27.0.0.250415
 mk_opatch "$C3" 12.2.0.1.44 "37642901;Database Release Update : 19.27.0.0.250415 (37642901)"
 # C4: nothing reads its version
 mk_opatch "$C4" 12.2.0.1.44 "37642901;Database Release Update : 19.27.0.0.250415 (37642901)"
+mk_opatch "$O" 13.9.4.2.23 "38000222;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501"
 chmod +x "$C/bin/sqlplus" "$C2/bin/sqlplus"
 export ORAINST_LOC="$T/oraInst.loc"
 
@@ -151,6 +160,11 @@ if [ -f "$OUT" ]; then
   grep -q "warning: could not read the version of $C4" "$T/run.log" && ok || bad "no warning for a db home with no readable version"
   grep -q "warning: could not read the version of $C2" "$T/run.log" && bad "warned although C2's version came from its inventory" || ok
   grep -q "^home|$H|" "$OUT" && bad "the WebLogic home is listed twice (wls and home lines)" || ok
+  # OHS: a standalone home is kind ohs with its release, never 'other'; a collocated one gets an ohs| line
+  has "$OUT" "home|$O|ohs|12.2.1.4.0|13.9.4.2.23"
+  has "$OUT" "patch|$O|38000222|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501"
+  has "$OUT" "ohs|$H|12.2.1.4.0"
+  grep -q "^ohs|$O|" "$OUT" && bad "OHS: the standalone home also got an ohs| line (it is a home|..|ohs line)" || ok
   grep -q 'OPatch succeeded' "$OUT" && bad "opatch chatter leaked into the manifest" || ok
 else
   bad "no manifest written to $OUT"

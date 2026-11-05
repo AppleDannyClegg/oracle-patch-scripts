@@ -16,7 +16,8 @@
 # Lines (| separated):
 #   host|<name>   created|<date>
 #   wls|<home>|<release>|<OPatch version>|<coherence installed: yes/no>
-#   home|<home>|<kind: db (database or client) / agent (EM agent) / other>|<version, may be empty>|<OPatch version>
+#   home|<home>|<kind: db (database or client) / agent (EM agent) / ohs (standalone Oracle HTTP Server) / other>|<version, may be empty>|<OPatch version>
+#   ohs|<WebLogic home>|<OHS release>   (OHS installed collocated in that WebLogic home)
 #   patch|<home>|<patch number>|<description from opatch lspatches>   (for every home above)
 #   jdk|<java home>|<version>|<major>
 #
@@ -125,8 +126,13 @@ home_kind() {
   # an EM agent home ships an rdbms/ directory too, so its own marks are tested before the db arm: read as
   # a db home it is planned as a database and its version column comes out empty (the wl2 agent line)
   if [ -d "$1/sysman" ] || [[ "$1" == */agent/agent_* ]]; then echo agent
+  elif [ -d "$1/ohs" ]; then echo ohs
   elif [ -x "$1/bin/sqlplus" ] || [ -d "$1/rdbms" ]; then echo db
   else echo other; fi
+}
+# the Oracle HTTP Server release from a home's registry.xml ('Oracle HTTP Server (Standalone)' or '(Collocated)')
+ohs_version() {
+  sed -n 's/.*name="Oracle HTTP Server[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null | head -1
 }
 # version of an installed component from a home's own inventory; the last resort when nothing else reads it
 comp_version() {
@@ -159,6 +165,10 @@ home_version() {
       [ -n "$v" ] || v="$(version_in_path "$h")"
       printf '%s' "$v" ;;
     agent) basename "$h" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 ;;
+    ohs)
+      v="$(ohs_version "$h")"
+      [ -n "$v" ] || v="$(version_in_path "$h")"
+      printf '%s' "$v" ;;
   esac
 }
 
@@ -175,7 +185,7 @@ patch_lines() {
 # ---- manifest -------------------------------------------------------------------------------------------
 # one wls line and its patch lines per WebLogic home
 wls_lines() {
-  local h release opatch lsp coherence err why
+  local h release opatch lsp coherence err why ohs
   for h in $(wls_homes); do
     [ -x "$h/OPatch/opatch" ] || continue
     release="$(wls_version "$h")"
@@ -201,6 +211,11 @@ wls_lines() {
     printf 'wls|%s|%s|%s|%s\n' "$h" "$release" "$opatch" "$coherence"
     patch_lines "$h" "$lsp"
     fmw_lines "$h" "$lsp"
+    if [ -d "$h/ohs" ]; then
+      ohs="$(ohs_version "$h")"
+      [ -n "$ohs" ] || echo "patch-manifest: warning: $h has OHS installed but its release could not be read" >&2
+      printf 'ohs|%s|%s\n' "$h" "$ohs"
+    fi
   done
 }
 
@@ -269,6 +284,7 @@ other_lines() {
     version="$(home_version "$h" "$kind")"
     # get-patches.ps1 needs the version to pick the right Release Update: say so here, do not leave it silent
     [ -n "$version" ] || [ "$kind" != db ] || echo "patch-manifest: warning: could not read the version of $h - get-patches.ps1 will skip its Release Update" >&2
+    [ -n "$version" ] || [ "$kind" != ohs ] || echo "patch-manifest: warning: could not read the OHS release of $h" >&2
     printf 'home|%s|%s|%s|%s\n' "$h" "$kind" "$version" "$opatch"
     patch_lines "$h" "$lsp"
   done

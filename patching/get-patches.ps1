@@ -131,7 +131,7 @@ function Get-FivePart([string] $Version) {
 
 # ---- manifest ------------------------------------------------------------------------------------------
 function Read-Manifest([string] $Path) {
-    $m = [pscustomobject]@{ Host = ''; Wls = @(); Homes = @(); Jdks = @(); Fmw = @() }
+    $m = [pscustomobject]@{ Host = ''; Wls = @(); Homes = @(); Jdks = @(); Fmw = @(); Ohs = @() }
     foreach ($line in (Get-Content -LiteralPath $Path)) {
         if (-not $line.Trim() -or $line.StartsWith('#')) { continue }
         $f = $line.Split('|')
@@ -147,12 +147,24 @@ function Read-Manifest([string] $Path) {
                 $w = @($m.Wls) + @($m.Homes) | Where-Object { $_ -and $_.Home -eq $f[1] } | Select-Object -First 1
                 if ($w) { $w.Patches += [pscustomobject]@{ Id = $f[2]; Description = (($f[3..($f.Count - 1)]) -join '|').Trim() } }
             }
+            'ohs' { $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }) } }
             'jdk' { $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] } }
             'fmw' { $m.Fmw += [pscustomobject]@{ Home = $f[1]; Family = $f[2]; Version = $(if ($f.Count -gt 3) { $f[3] } else { '' }); Patch = $(if ($f.Count -gt 4) { $f[4] } else { '' }) } }
         }
     }
     if (-not $m.Wls -and -not $m.Homes -and -not $m.Jdks) { throw "$Path has no wls or jdk lines - is it a patch-manifest.sh file?" }
     $m
+}
+
+# Oracle HTTP Server is not planned here yet: name every OHS home (standalone 'home|..|ohs' or collocated
+# 'ohs|<wls home>') so it is fetched by hand, never silently left out of the quarter
+function Get-OhsNotes($Manifest) {
+    $all = @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; How = 'standalone' } }) +
+        @($Manifest.Ohs | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Release; How = 'collocated in the WebLogic home' } }))
+    foreach ($o in $all) {
+        $rel = $(if ($o.Release) { $o.Release } else { 'release unknown' })
+        "Oracle HTTP Server $rel at $($o.Home) ($($o.How)): not downloaded - get this quarter's OHS patch from MOS Doc 2806740.2 by hand."
+    }
 }
 
 # ---- MOS lookups ---------------------------------------------------------------------------------------
@@ -623,7 +635,7 @@ function Main {
     $plan = @(Get-PatchPlan $m)
     foreach ($p in $Patch) { $plan += [pscustomobject]@{ Kind = 'wls'; What = 'asked for with -Patch'; Installed = ''; Patch = $p; Abstract = ''; Release = $(if ($m.Wls) { $m.Wls[0].Release } else { '' }) } }
 
-    if ($plan.Count -eq 0 -and -not ($m.Homes | Where-Object { $_.Kind -ne 'db' })) { Write-Host 'Nothing to download: MOS has nothing newer than what is installed.'; return }
+    if ($plan.Count -eq 0 -and -not ($m.Homes | Where-Object { $_.Kind -ne 'db' }) -and -not $m.Ohs) { Write-Host 'Nothing to download: MOS has nothing newer than what is installed.'; return }
     Write-Host ''
     $plan | Format-Table @{ n = 'what'; e = { $_.What } }, @{ n = 'installed'; e = { $_.Installed } }, @{ n = 'patch'; e = { $_.Patch } }, @{ n = 'MOS says'; e = { $_.Abstract } } -AutoSize -Wrap | Out-Host
     if (-not $m.Fmw) { Write-Host 'Not looked up here: FMW product bundles (ADF/OPSS/OWSM...) - the manifest has no fmw| lines; check MOS Doc 2806740.2 and add them with -Patch.' }
@@ -632,6 +644,7 @@ function Main {
         $ru = @($a.Patches | ForEach-Object { $_.Description } | Where-Object { $_ -match 'AGENT' })[0]
         Write-Host "EM agent $($a.Version) at $($a.Home) (installed: $(if ($ru) { $ru } else { 'no agent RU' })): not downloaded - agent RUs (and the agent's JDK) are applied from the OMS."
     }
+    foreach ($n in (Get-OhsNotes $m)) { Write-Host $n }
     foreach ($o in ($m.Homes | Where-Object { $_.Kind -eq 'other' })) { Write-Host "Oracle home $($o.Home): not a kind this script knows - check MOS for it by hand." }
     if ($plan | Where-Object { $_.What -like 'WLS Stack Patch Bundle*' }) { Write-Host 'The Stack Patch Bundle goes in its own folder: wls-patch.sh run applies it with the SPBAT inside it. Do not put single patches (wls/) in the same folder.' }
     if ($PlanOnly) { Write-Host 'OPatch: the minimum each patch needs is in its README, read after the download - -PlanOnly cannot tell whether a newer OPatch kit will be added.'; return }

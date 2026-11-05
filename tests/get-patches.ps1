@@ -451,6 +451,19 @@ try {
     Check ($n12.Count -eq 1 -and $n12[0].Item.Patch -eq '28186730') "WebLogic home on OPatch 12.2.0.1.30, README asks 12.2.0.1.40: the kit is planned, not skipped (got $($n12.Count))"
 }
 finally {
+    # ---- OHS: a standalone and a collocated home are both named for a manual fetch, never dropped ----------
+    $ohsM = Join-Path $tmp 'ohs.txt'
+    @('host|wl6', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.23|no', 'ohs|/u01/fmw|12.2.1.4.0',
+      'home|/u01/ohs|ohs|12.2.1.4.0|13.9.4.2.23',
+      'patch|/u01/ohs|38000222|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501') | Set-Content -LiteralPath $ohsM
+    $m6 = Read-Manifest $ohsM
+    Check (@($m6.Ohs).Count -eq 1 -and $m6.Ohs[0].Home -eq '/u01/fmw' -and $m6.Ohs[0].Release -eq '12.2.1.4.0') "a collocated ohs| line is read: [$(@($m6.Ohs).Count)]"
+    Check (@($m6.Homes | Where-Object { $_.Kind -eq 'ohs' }).Count -eq 1 -and @($m6.Homes[0].Patches).Count -eq 1) "a standalone OHS home and its patch are read"
+    $notes6 = @(Get-OhsNotes $m6)
+    Check ($notes6.Count -eq 2) "both OHS homes are named for a manual fetch, got $($notes6.Count)"
+    Check (@($notes6 | Where-Object { $_ -like '*/u01/ohs (standalone)*' }).Count -eq 1) "the standalone OHS home is named: $($notes6 -join ' / ')"
+    Check (@($notes6 | Where-Object { $_ -like '*/u01/fmw (collocated*' }).Count -eq 1) "the collocated OHS home is named: $($notes6 -join ' / ')"
+
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
