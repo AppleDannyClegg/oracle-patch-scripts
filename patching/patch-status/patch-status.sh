@@ -56,7 +56,9 @@ row() {
 # (wrong ORACLE_HOME, broken inventory, timeout) printed nothing and every caller read that as 'no RU found' - a home it could
 # not read shown as unpatched, the worst direction for this report (Multivac / TARS, 1 Nov 23:22). Callers run it in $(...),
 # so the status comes back only as the return value - never through a variable set inside (a subshell cannot set one).
-lsp_read() { local out rc=0; out="$(to "$2" "$1" lspatches 2>/dev/null)" || rc=$?; printf '%s\n' "$out"; return $rc; }
+# opatch acts on $ORACLE_HOME, not on the binary's own path, so it is scoped to the home the binary belongs to
+# (every caller passes <home>/OPatch/opatch); otherwise every home is read from the exported one.
+lsp_read() { local out rc=0 home; home="$(dirname "$(dirname "$1")")"; out="$(ORACLE_HOME="$home" to "$2" "$1" lspatches 2>/dev/null)" || rc=$?; printf '%s\n' "$out"; return $rc; }
 lsp_unreadable() { printf 'opatch lspatches unreadable (rc %s) - patch level unknown' "$1"; }
 # dates: "Database Release Update 19.24.0.0.240716" -> 2024-07-16 ; "WLS PATCH SET UPDATE 12.2.1.4.240415" -> 2024-04-15
 date_from_desc() { local d; d="$(printf '%s' "$1" | grep -oE '\.[0-9]{6}\b' | tail -1 | tr -d .)"; [ -n "$d" ] && yymmdd_to_date "$d"; }
@@ -88,7 +90,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     local ojvm ojvmdate; ojvm="$(printf '%s\n' "$lsp" | grep -iE 'OJVM' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; ojvmdate="$(db_ru_date_from_desc "$ojvm")"
     local base; base="$("$h/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$base" ] && base="$(sed -n 's/.*name="Oracle Database[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$h/inventory/registry.xml" 2>/dev/null | head -1)"
     local prod="Database home"; [ "$isgrid" = 1 ] && prod="Grid Infrastructure home"
-    local opv; opv="$("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
+    local opv; opv="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     row "$prod" "$h" "${ru:-no RU found (base $base)}" "$rudate" "$(mos_latest_db "$base")" "OPatch $opv${mrp:+; $mrp}"
     [ -n "$ojvm" ] && row "OJVM ($(basename "$h"))" "$h" "$ojvm" "$ojvmdate" "" ""
     printf '%s\n' "$lsp" >"$RAW/lspatches_$(basename "$h").txt" 2>/dev/null
@@ -150,7 +152,7 @@ fmw_homes() {
     local psu; psu="$(printf '%s\n' "$lsp" | grep -i 'WLS PATCH SET UPDATE' | sort | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
     local latest=""; if [ "$USE_MOS" = 1 ] && [ -n "${MOS_CURL[*]:-}" ]; then local short="${v%.*}"; case "$v" in 14.1.*) short="${short%.*}";; esac; latest="$(mos_name_search "WLS PATCH SET UPDATE $short" 2>/dev/null | grep -E "WLS PATCH SET UPDATE $short(\.0)?\.[0-9]{6} *$" | awk -F'|' '{match($2,/[0-9]{6}$/); print substr($2,RSTART,6) "|" $2}' | sort -r | head -1 | cut -d'|' -f2)"; fi
     [ -z "$latest" ] && latest="PSU of $LATEST_CPU"
-    row "WebLogic $v" "$h" "${psu:-no PSU}" "$(date_from_desc "$psu")" "$latest" "OPatch $("$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
+    row "WebLogic $v" "$h" "${psu:-no PSU}" "$(date_from_desc "$psu")" "$latest" "OPatch $(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     case "$v" in 12.1.*|10.3.*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "WebLogic $v in $h is out of Premier Support";; 12.2.1.3*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "WebLogic 12.2.1.3 in $h: no more PSUs (upgrade to 12.2.1.4 / 14.1.x)";; esac
     local b; while read -r b; do
       [ -z "$b" ] && continue; local d ddate; d="$(printf '%s' "$b" | cut -d';' -f2 | sed 's/^ *//')"; ddate="$(date_from_desc "$d")"
