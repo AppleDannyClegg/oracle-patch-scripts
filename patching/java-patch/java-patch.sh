@@ -173,7 +173,7 @@ cmd_inspect() {
 }
 
 cmd_latest() {
-  discover; [ -n "$RUN_DIR" ] || init_run_dir latest; mos_login
+  discover; reuse_or_init latest; mos_login
   local q; case "$OLD_MAJOR" in 8) q="JDK 8U";; *) q="JDK $OLD_MAJOR.0.";; esac
   log "Searching MOS for '$q' ($(mos_platform_name))"
   local rows; rows="$(mos_name_search "$q" | grep -iE "JDK[^|]*\b${OLD_MAJOR}[.u_]" | grep -viE 'windows|solaris|aix|arm|aarch|macos|docs|source' || true)"
@@ -183,14 +183,14 @@ cmd_latest() {
   echo "  newest on MOS: ${best%%|*}  ${best#*|}   (installed: $OLD_VER)"; state_set latest "${best%%|*}"; PATCHES="${best%%|*}"
 }
 cmd_download() {
-  discover; [ -n "$RUN_DIR" ] || init_run_dir download; local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "download needs <dir>"; local id="${ARGS[1]:-${PATCHES:-$(state_get latest 2>/dev/null || true)}}"; [ -n "$id" ] || die "no patch id: run latest first or give one"
+  discover; reuse_or_init download; local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "download needs <dir>"; local id="${ARGS[1]:-${PATCHES:-$(state_get latest 2>/dev/null || true)}}"; [ -n "$id" ] || die "no patch id: run latest first or give one"
   mkdir -p "$dir"; mos_login; local z; z="$(mos_download "$id" "$dir")" || die "download failed"; mos_cleanup
   case "$z" in *.zip) log "unzipping $z"; unzip -q -o "$z" -d "$dir" '*.tar.gz' 2>/dev/null || unzip -q -o "$z" -d "$dir";; esac
   ls -la "$dir"
 }
 
 cmd_preflight() {
-  discover; [ -n "$RUN_DIR" ] || init_run_dir preflight; pick_tar; local fail=0
+  discover; reuse_or_init preflight; pick_tar; local fail=0
   log "Preflight: $OLD_JH ($OLD_VER) -> $NEW_JH ($NEW_VER) from $TARBALL"
   [ -d "$NEW_JH" ] && { [ -x "$NEW_JH/bin/java" ] && log "$NEW_JH already unpacked ($(jdk_version "$NEW_JH"))" || { err "$NEW_JH exists but is not a JDK"; fail=1; }; }
   [ "$NEW_VER" = "$OLD_VER" ] && { [ "$FORCE" = 1 ] && warn "the tarball is the same build as the current JDK ($OLD_VER) - going on because of --force" || { err "the tarball is the same build as the current JDK ($OLD_VER) (--force to reinstall)"; fail=1; }; }
@@ -242,7 +242,9 @@ cmd_backup() {
 
 cmd_apply() {
   discover; reuse_or_init apply; pick_tar
-  case "$(state_get preflight || true)" in ok) ;; failed) [ "$FORCE" = 1 ] || die "preflight FAILED in this run dir ($RUN_DIR): fix it or --force";; *) warn "preflight has not run in this run dir";; esac
+  # a recorded 'failed' means the checks above were seen; with --run-dir the verdict used to be lost (preflight
+  # never initialised the state), so for in-place an absent verdict is now fatal rather than a warning
+  case "$(state_get preflight || true)" in ok) ;; failed) [ "$FORCE" = 1 ] || die "preflight FAILED in this run dir ($RUN_DIR): fix it or --force";; *) [ "$IN_PLACE" = 1 ] && die "in-place: no preflight verdict in this run dir ($RUN_DIR) - run 'preflight' first, so the running-JVM stop and the other checks are seen"; warn "preflight has not run in this run dir";; esac
   [ "$NEW_VER" = "$OLD_VER" ] && { [ "$FORCE" = 1 ] && warn "the tarball is the same build as the current JDK ($OLD_VER) - reinstalling because of --force" || die "the tarball is the same build as the current JDK ($OLD_VER): nothing to do (--force to reinstall)"; }
   [ "$(state_get backup || true)" = ok ] || cmd_backup
   if [ ! -x "$NEW_JH/bin/java" ]; then
@@ -338,7 +340,15 @@ cmd_verify() {
 }
 
 cmd_rollback() {
-  discover; reuse_or_init rollback
+  reuse_or_init rollback
+  # apply can die between its two renames: then $OLD_JH is gone and the old build sits at old_jdk. Put it back
+  # before discover, which needs $OLD_JH/bin/java to exist.
+  local injd; injd="$(state_get old_jdk || true)"
+  if [ -n "$injd" ] && [ -d "$injd" ] && [ -n "${OLD_JH:-}" ] && [ ! -e "$OLD_JH" ]; then
+    confirm "mv $injd $OLD_JH (the apply did not finish)?" || die "aborted"
+    [ "$DRY_RUN" = 1 ] || mv "$injd" "$OLD_JH" || die "cannot restore the old JDK from $injd"
+  fi
+  discover
   local tgt; tgt="$(state_get link_target || true)"
   [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || [ -n "$(state_get old_jdk || true)" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
   local rfail=0
