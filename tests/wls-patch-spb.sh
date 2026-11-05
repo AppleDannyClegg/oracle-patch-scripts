@@ -192,5 +192,17 @@ rc="$(run "$OH8" run "$PD12" --oracle-home "$OH8" --java-home "$T/jdk" --yes --n
 [ "$rc" != 0 ] && ok || bad "run --no-backup with an SPB was not refused"
 grep -q -- '-phase apply' "$T/spbat.log" && bad "run --no-backup with an SPB still ran SPBAT apply" || ok
 
+# ---- recovery uses only THIS run's backup, never BACKUP_DIR/latest (an older backup of the same home) ---------
+OH10="$T/oh-stale"; mk_home "$OH10" 13.9.4.2.23
+PD15="$T/patches-stale"; mk_spb "$PD15"; rm -f "$T/psu" "$T/lsp_fail"
+mkdir -p "$T/bk10/old" && echo "$OH10" >"$T/bk10/old/oracle_home.txt" && tar -czf "$T/bk10/old/oracle_home.tar.gz" -C "$T" oh-stale && ln -sfn "$T/bk10/old" "$T/bk10/latest"
+# SPBAT changes the home, loses this run's backup record, then fails
+printf '#!/bin/sh\ncase "$*" in *-phase\\ apply*) touch "$4/HALF_PATCHED"; for f in %s/wls-patch/runs/*/state; do sed -i.bak "/^backup_dir=/d" "$f"; done; exit 1;; esac\nexit 0\n' "$T" \
+  >"$PD15/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rc="$(run "$OH10" run "$PD15" --oracle-home "$OH10" --java-home "$T/jdk" --yes --backup-dir "$T/bk10")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+grep -q 'ORACLE_HOME restored' "$L" && bad "recovery restored BACKUP_DIR/latest (an older backup), not this run's: $(tail -4 "$L")" || ok
+grep -q 'servers NOT started' "$L" && ok || bad "with no backup recorded for this run, the servers were not left stopped: $(tail -4 "$L")"
+
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

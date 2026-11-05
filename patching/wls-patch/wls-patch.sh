@@ -1534,13 +1534,15 @@ recover_failed_change() { # after a failed apply, or a failed start/verify of a 
   # previous bundle's patches back, so a home reported as 'rolled back' would be running BELOW where it started.
   # Restoring the pre-patch backup is the only complete rollback of a bundle (SPB README, Section 6).
   local bd
-  bd="$(state_get backup_dir || true)"; [ -n "$bd" ] || bd="$(readlink "$BACKUP_DIR/latest" 2>/dev/null || true)"
+  # only THIS run's backup: BACKUP_DIR/latest can be an older backup of the same home (restore only checks the path),
+  # and restoring that would be a silent downgrade
+  bd="$(state_get backup_dir || true)"
   if [ "$NO_BACKUP" = 1 ] || [ -z "$bd" ] || [ ! -d "$bd" ]; then
     err "A Stack Patch Bundle was changed and there is no backup to restore. 'opatch nrollback' is NOT run automatically: it is cumulative and would leave this home below the level it started at. Restore a backup, or re-apply the previous bundle, by hand."
     return 1
   fi
-  err "Restoring the pre-patch backup: an SPB rollback is cumulative and does not put the previous bundle's patches back"
-  ASSUME_YES=1 cmd_restore
+  err "Restoring the pre-patch backup $bd: an SPB rollback is cumulative and does not put the previous bundle's patches back"
+  ASSUME_YES=1 cmd_restore "$bd"
 }
 
 # ---------------------------------------------------------------------------
