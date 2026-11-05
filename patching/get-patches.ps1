@@ -164,24 +164,30 @@ function Read-Manifest([string] $Path) {
             'plat' { if ($f.Count -lt 3 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'plat|' needs <os>|<arch>" }; $m.Platform = "$($f[1])|$($f[2])" }
             'patch_base' { if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'patch_base|' needs a path" }; $m.PatchBase = $f[1] }
             'wls' {
-                if ($f.Count -lt 5) { throw "$Path line '$line': 'wls|' needs home|release|opatch|coherence" }
+                if ($f.Count -lt 5 -or -not $f[1]) { throw "$Path line '$line': 'wls|' needs home|release|opatch|coherence (home is a key)" }
                 $m.Wls += [pscustomobject]@{ Home = $f[1]; Release = $f[2]; OPatch = $f[3]; Coherence = ($f[4] -eq 'yes'); Patches = @() }
             }
             'home' {
-                if ($f.Count -lt 5) { throw "$Path line '$line': 'home|' needs home|kind|version|opatch" }
+                if ($f.Count -lt 5 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'home|' needs home|kind|version|opatch (home and kind are keys)" }
                 $m.Homes += [pscustomobject]@{ Home = $f[1]; Kind = $f[2]; Version = $f[3]; OPatch = $f[4]; Patches = @() }
             }
             'patch' {
-                if ($f.Count -lt 4) { throw "$Path line '$line': 'patch|' needs home|number|description" }
+                if ($f.Count -lt 4 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'patch|' needs home|number|description (home and number are keys)" }
                 $w = @($m.Wls) + @($m.Homes) | Where-Object { $_ -and $_.Home -eq $f[1] } | Select-Object -First 1
                 if ($w) { $w.Patches += [pscustomobject]@{ Id = $f[2]; Description = (($f[3..($f.Count - 1)]) -join '|').Trim() } }
             }
-            'ohs' { $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }) } }
+            'ohs' {
+                if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'ohs|' needs a WebLogic home" }
+                $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }) }
+            }
             'jdk' {
                 if ($f.Count -lt 4 -or -not $f[1] -or -not $f[2] -or -not $f[3]) { throw "$Path line '$line': 'jdk|' needs home|version|major" }
                 $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] }
             }
-            'fmw' { $m.Fmw += [pscustomobject]@{ Home = $f[1]; Family = $f[2]; Version = $(if ($f.Count -gt 3) { $f[3] } else { '' }); Patch = $(if ($f.Count -gt 4) { $f[4] } else { '' }) } }
+            'fmw' {
+                if ($f.Count -lt 3 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'fmw|' needs home|family (home and family are keys; version and patch are optional)" }
+                $m.Fmw += [pscustomobject]@{ Home = $f[1]; Family = $f[2]; Version = $(if ($f.Count -gt 3) { $f[3] } else { '' }); Patch = $(if ($f.Count -gt 4) { $f[4] } else { '' }) }
+            }
         }
     }
     if (-not $m.Host) { throw "$Path has no host| line - is it a patch-manifest.sh file?" }
