@@ -42,16 +42,17 @@ log()  { printf '%s [INFO ] %s\n' "$(ts)" "$*" >&2; }
 warn() { printf '%s [WARN ] %s\n' "$(ts)" "$*" >&2; }
 err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" >&2; }
 die()  { err "$*"; exit 1; }
+optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 PATCH_ROOT=""; JAVA_HOME_ARG=""; ORACLE_HOME_ARG=""; RUN_DIR=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --patch-root) [ $# -ge 2 ] || die "--patch-root needs a dir"; PATCH_ROOT="$2"; shift 2;;
-    --java-home)  [ $# -ge 2 ] || die "--java-home needs a dir"; JAVA_HOME_ARG="$2"; shift 2;;
-    --oracle-home) [ $# -ge 2 ] || die "--oracle-home needs a dir"; ORACLE_HOME_ARG="$2"; shift 2;;
-    --run-dir)    [ $# -ge 2 ] || die "--run-dir needs a dir"; RUN_DIR="$2"; shift 2;;
+    --patch-root) optchk "$@"; PATCH_ROOT="$2"; shift 2;;
+    --java-home)  optchk "$@"; JAVA_HOME_ARG="$2"; shift 2;;
+    --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2;;
+    --run-dir)    optchk "$@"; RUN_DIR="$2"; shift 2;;
     --no-cacerts) NO_CACERTS=1; shift;;
     --force)      FORCE=1; shift;;
     --yes)        YES=1; shift;;
