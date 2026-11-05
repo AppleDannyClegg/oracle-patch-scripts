@@ -123,7 +123,8 @@ export ORAINST_LOC="$T/oraInst.loc"
 
 OUT="$T/manifest.txt"
 # no config from the real host, no real Oracle homes: ORACLE_HOME points at the fake one
-( cd "$T" && HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT" ) >"$T/run.log" 2>&1
+# env -u PATCH_BASE: the default patch_base| check below must not read the tester's own exported PATCH_BASE
+( cd "$T" && env -u PATCH_BASE HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUT" ) >"$T/run.log" 2>&1
 rc=$?
 [ "$rc" = 0 ] && ok || bad "exit $rc on a readable host (want 0): $(tail -3 "$T/run.log")"
 if [ -f "$OUT" ]; then
@@ -301,6 +302,38 @@ GP="$T/gm3/bin"; mkdir -p "$GP"; printf '#!/bin/sh\nexit 1\n' >"$GP/ps"; chmod +
 OUTG3="$T/gm3.txt"
 ( cd "$T" && HOME="$T" PATH="$GP:$PATH" ORAINST_LOC="$T/oraInst.loc" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTG3" ) >"$T/gm3.log" 2>&1
 grep -q 'cannot read the process list' "$T/gm3.log" && ok || bad "GM-3: a failing ps dropped the running JVMs' JDKs without a warning"
+
+# ---- header: plat| and patch_base| for get-patches.ps1, created| with its timezone ----------------
+# its own run: earlier cases rewrite $OUT, and env -u keeps the tester's exported PATCH_BASE out of the default
+OUTH="$T/header.txt"
+( cd "$T" && env -u PATCH_BASE HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTH" ) >"$T/header.log" 2>&1
+grep -qE "^plat\|$(uname -s | tr '[:upper:]' '[:lower:]')\|$(uname -m | tr '[:upper:]' '[:lower:]')$" "$OUTH" && ok || bad "header: no plat|<os>|<arch> line from uname"
+has "$OUTH" "patch_base|/u01/patches"
+grep -qE '^created\|[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} [+-][0-9]{4}$' "$OUTH" && ok || bad "header: created| has no timezone"
+
+# a moved PATCH_BASE is what the manifest names
+OUTPB="$T/pb.txt"
+( cd "$T" && HOME="$T" PATCH_BASE="$T/pb" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTPB" ) >"$T/pb.log" 2>&1
+has "$OUTPB" "patch_base|$T/pb"
+# a trailing slash goes out as given: stripping it is the reader's job, one place
+OUTPS="$T/ps.txt"
+( cd "$T" && HOME="$T" PATCH_BASE="$T/pb/" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTPS" ) >"$T/ps.log" 2>&1
+has "$OUTPS" "patch_base|$T/pb/"
+
+# a PATCH_BASE that is relative, or carries a '|' that would shift every field, writes no manifest
+for pb in "rel/patches" "$T/a|b"; do
+  OUTBAD="$T/pbbad.txt"; rm -f "$OUTBAD"
+  ( cd "$T" && HOME="$T" PATCH_BASE="$pb" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTBAD" ) >"$T/pbbad.log" 2>&1
+  rc=$?
+  [ "$rc" != 0 ] && [ ! -f "$OUTBAD" ] && grep -q 'PATCH_BASE' "$T/pbbad.log" && ok || bad "PATCH_BASE [$pb]: rc $rc, manifest written or no message naming PATCH_BASE"
+done
+
+# a failing uname writes no manifest: get-patches must not guess the platform
+UP="$T/uname/bin"; mkdir -p "$UP"; printf '#!/bin/sh\nexit 1\n' >"$UP/uname"; chmod +x "$UP/uname"
+OUTU="$T/uname.txt"
+( cd "$T" && HOME="$T" PATH="$UP:$PATH" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$OUTU" ) >"$T/uname.log" 2>&1
+rc=$?
+[ "$rc" != 0 ] && [ ! -f "$OUTU" ] && grep -q 'cannot read the platform' "$T/uname.log" && ok || bad "uname failing: rc $rc, manifest written or no 'cannot read the platform'"
 
 echo "patch-manifest gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
