@@ -90,7 +90,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     local ojvm ojvmdate; ojvm="$(printf '%s\n' "$lsp" | grep -iE 'OJVM' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; ojvmdate="$(db_ru_date_from_desc "$ojvm")"
     # sqlplus reads its home from $ORACLE_HOME too: unscoped, the exported home's sqlplus fails and the base
     # version (and with it the latest-RU column) is lost
-    local base; base="$(ORACLE_HOME="$h" "$h/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$base" ] && base="$(sed -n 's/.*name="Oracle Database[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$h/inventory/registry.xml" 2>/dev/null | head -1)"
+    local base; base="$(ORACLE_HOME="$h" LD_LIBRARY_PATH="$h/lib:${LD_LIBRARY_PATH:-}" "$h/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$base" ] && base="$(sed -n 's/.*name="Oracle Database[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$h/inventory/registry.xml" 2>/dev/null | head -1)"
     local prod="Database home"; [ "$isgrid" = 1 ] && prod="Grid Infrastructure home"
     local opv; opv="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     row "$prod" "$h" "${ru:-no RU found (base $base)}" "$rudate" "$(mos_latest_db "$base")" "OPatch $opv${mrp:+; $mrp}"
