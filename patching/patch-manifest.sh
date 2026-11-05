@@ -175,7 +175,7 @@ patch_lines() {
 # ---- manifest -------------------------------------------------------------------------------------------
 # one wls line and its patch lines per WebLogic home
 wls_lines() {
-  local h release opatch lsp coherence err
+  local h release opatch lsp coherence err why
   for h in $(wls_homes); do
     [ -x "$h/OPatch/opatch" ] || continue
     release="$(wls_version "$h")"
@@ -188,7 +188,13 @@ wls_lines() {
     [ -n "$opatch" ] || echo "patch-manifest: warning: could not read the OPatch version of $h - get-patches.ps1 may skip the OPatch kit" >&2
     # keep opatch's own stderr for the die message: rc 28/73/124/1 used to read the same (EM-2/ROY-1)
     err="$(mktemp "${TMPDIR:-/tmp}/patch-manifest.XXXXXX" 2>/dev/null)"
-    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>"${err:-/dev/null}")" || die "opatch lspatches failed in $h${err:+: $(head -1 "$err" 2>/dev/null)} - run it by hand. No manifest written."
+    if ! lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>"${err:-/dev/null}")"; then
+      # read opatch's own reason BEFORE removing the temp file: die exits, so a bare 'rm' after it would
+      # never run and the file would leak (Baymax P3)
+      why=""; [ -n "$err" ] && why="$(head -1 "$err" 2>/dev/null)"
+      rm -f "${err:-}"
+      die "opatch lspatches failed in $h${why:+: $why} - run it by hand. No manifest written."
+    fi
     rm -f "${err:-}"
     coherence=no
     grep -qi 'coherence' "$h/inventory/registry.xml" 2>/dev/null && coherence=yes
@@ -199,7 +205,7 @@ wls_lines() {
 
 # a home line and its patch lines for every other inventory home that has OPatch
 other_lines() {
-  local h kind opatch lsp wls version err
+  local h kind opatch lsp wls version err why
   wls="$(wls_homes)"
   for h in $(inventory_homes | sort -u); do
     [ -x "$h/OPatch/opatch" ] || continue
@@ -208,7 +214,11 @@ other_lines() {
     opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     [ -n "$opatch" ] || echo "patch-manifest: warning: could not read the OPatch version of $h - get-patches.ps1 may skip the OPatch kit" >&2
     err="$(mktemp "${TMPDIR:-/tmp}/patch-manifest.XXXXXX" 2>/dev/null)"
-    lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>"${err:-/dev/null}")" || die "opatch lspatches failed in $h${err:+: $(head -1 "$err" 2>/dev/null)} - run it by hand. No manifest written."
+    if ! lsp="$(ORACLE_HOME="$h" with_timeout 180 "$h/OPatch/opatch" lspatches 2>"${err:-/dev/null}")"; then
+      why=""; [ -n "$err" ] && why="$(head -1 "$err" 2>/dev/null)"
+      rm -f "${err:-}"
+      die "opatch lspatches failed in $h${why:+: $why} - run it by hand. No manifest written."
+    fi
     rm -f "${err:-}"
     version="$(home_version "$h" "$kind")"
     # get-patches.ps1 needs the version to pick the right Release Update: say so here, do not leave it silent

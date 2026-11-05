@@ -177,6 +177,14 @@ has "$OUT2" "patch|$W/client|77777|PATCH-OWNER=client"
 # EM-2 / ROY-1: the die on a failed lspatches must carry opatch's own reason, not just 'it failed'
 grep -q 'PRKC-1044' "$T/run2.log" && ok || bad "EM-2: the die dropped opatch's stderr (no PRKC-1044 in run2.log)"
 
+# P3 (Baymax): the die path must not leak the stderr temp file in $TMPDIR
+PB="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'patch-manifest.*' 2>/dev/null | wc -l | tr -d ' ')"
+touch "$H/OPatch/fail"
+( cd "$T" && HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$T/p3.txt" ) >"$T/p3.log" 2>&1
+rm -f "$H/OPatch/fail"
+PA="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'patch-manifest.*' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$PA" = "$PB" ] && ok || bad "P3: the die path leaked a patch-manifest.* temp file ($PB -> $PA)"
+
 # ---- EM-4: an existing oraInst.loc that yields no readable inventory must stop the run, not silently
 #      drop every inventory home and write a WLS-only manifest with exit 0 (Gort's live P2) -------------
 E4="$T/em4"; mkdir -p "$E4"; printf 'inventory_loc=%s/missing\n' "$E4" >"$E4/oraInst.loc"
