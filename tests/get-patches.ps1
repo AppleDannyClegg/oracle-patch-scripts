@@ -574,6 +574,28 @@ finally {
     @('host|wl1', 'jdk|/j|1.8.0_471|') | Set-Content -LiteralPath $bad
     $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
     Check $threw "an empty jdk| major throws, instead of the JDK vanishing silently (Edi 22:23:24)"
+    @('host|wl1', 'wls||12.2.1.4.0|13.9.4.2.23|yes') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty wls| home throws (key)"
+    @('host|wl1', 'home|/u01/db||19.0.0.0.0|12.2.0.1.44') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty home| kind throws (key; planners filter on Kind)"
+    @('host|wl1', 'home|/u01/db|db|19.0.0.0.0|12.2.0.1.44', 'patch|/u01/db||RU') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty patch| number throws (key)"
+    @('host|wl1', 'ohs||12.2.1.4.0') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty ohs| home throws (key)"
+    @('host|wl1', 'fmw||ADF|12.2.1.4.0|1') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an empty fmw| home throws (key)"
+    # data fields stay optional: an empty wls release reads (Get-WlsPlan warns), an empty patch description reads
+    @('host|wl1', 'wls|/u01/fmw||13.9.4.2.23|yes') | Set-Content -LiteralPath $bad
+    $okData = $false; try { $null = Read-Manifest $bad; $okData = $true } catch {}
+    Check $okData "an empty wls| release still reads (data field)"
+    @('host|wl1', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.23|yes', 'fmw|/u01/fmw|ADF') | Set-Content -LiteralPath $bad
+    $okData = $false; try { $null = Read-Manifest $bad; $okData = $true } catch {}
+    Check $okData "an fmw| line with no version/patch still reads (data fields)"
 
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
