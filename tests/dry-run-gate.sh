@@ -16,7 +16,17 @@ cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
 T="$(mktemp -d)"; STUB="$T/stub"; export DRY_LOG="$T/log" ANSWERS="$T/answers"; mkdir -p "$STUB" "$T/home"; : >"$ANSWERS"
 trap 'rm -rf "$T"' EXIT
-alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+# alarm <secs> <cmd...>: a deadline via GNU timeout where present (OL7/OL8), perl otherwise (macOS).
+# timeout exits 124; perl's alarm is SIGALRM (142) or SIGKILL (137).
+if command -v timeout >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; timeout "$t" "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; gtimeout "$t" "$@"; }
+elif command -v perl >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$t" "$@"; }
+else
+  alarm() { shift; "$@"; }   # no deadline tool: run without one
+fi
 for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl escli crontab pgrep ps; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
@@ -52,7 +62,7 @@ for s in "${scripts[@]}"; do
     ( CMD="$c"; readonly CMD; ARGS=""; [ -f "tests/dry-run-env/$tool.sh" ] && . "tests/dry-run-env/$tool.sh"; : >"$T/env.ok"; a="ARGS_${CMD//-/_}"; extra="${!a-$ARGS}"
       # shellcheck disable=SC2086
       HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 alarm 60 bash "$s" "$CMD" $extra --dry-run --yes ) >"$T/out" 2>&1; rc=$?
-    if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $c: hung (60 s)"; fail=$((fail+1)); continue; fi
+    if [ $rc = 124 ] || [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $c: hung (60 s)"; fail=$((fail+1)); continue; fi
     if [ ! -f "$T/env.ok" ]; then echo "FAIL $tool $c: tests/dry-run-env/$tool.sh did not source to the end: $(grep -v '^$' "$T/out" | tail -1 | cut -c1-160)"; fail=$((fail+1)); continue; fi
     # a run that only probed (pgrep, systemctl list-units/show/status/is-active) never reached a tool that could change anything: not exercised
     if ! grep -vE '^TOOL (pgrep |systemctl (list-units|show|status|is-active|is-enabled))' "$DRY_LOG" | grep -q '^TOOL '; then nx=$((nx+1)); nxlist="$nxlist $tool:$c"; continue; fi

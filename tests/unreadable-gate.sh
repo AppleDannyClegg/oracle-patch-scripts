@@ -20,7 +20,17 @@ cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
 T="$(mktemp -d)"; STUB="$T/stub"; export GATE_LOG="$T/log" GATE_MODE=""; mkdir -p "$STUB" "$T/home" "$T/oh"
 trap 'rm -rf "$T"' EXIT
-alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+# alarm <secs> <cmd...>: a deadline via GNU timeout where present (OL7/OL8), perl otherwise (macOS).
+# timeout exits 124; perl's alarm is SIGALRM (142) or SIGKILL (137).
+if command -v timeout >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; timeout "$t" "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; gtimeout "$t" "$@"; }
+elif command -v perl >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$t" "$@"; }
+else
+  alarm() { shift; "$@"; }   # no deadline tool: run without one
+fi
 # the domain tools fail; coreutils stay real (a PATH where mkdir fails proves nothing); ps shows one database and its listener so
 # discovery works and the SQL layer is what fails
 cat >"$STUB/_stub" <<'STUB'
@@ -82,7 +92,7 @@ for s in "${scripts[@]}"; do
     # ps mode: PROC_DIR points the lib's /proc fallback (8efec99) at an empty dir, so a Linux box with /proc behaves like this Mac without it
     mkdir -p "$T/noproc"; procdir=/proc; [ "$mode" = ps ] && procdir="$T/noproc"
     GATE_MODE="$mode" PROC_DIR="$procdir" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 ORACLE_HOME="$T/oh" SQL_CMD="$STUB/sqlplus -S" alarm 180 bash "$s" $margs >"$T/stdout" 2>&1; rc=$?
-    if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $mode: hung (180 s): last tool call $(grep '^TOOL\|^FAILED' "$GATE_LOG" | tail -1 | cut -c1-80)"; fail=$((fail+1)); fverdict=$((fverdict+1)); continue; fi
+    if [ $rc = 124 ] || [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $mode: hung (180 s): last tool call $(grep '^TOOL\|^FAILED' "$GATE_LOG" | tail -1 | cut -c1-80)"; fail=$((fail+1)); fverdict=$((fverdict+1)); continue; fi
     export GATE_MODE="$mode"
     if [ "$mode" = ps ]; then calls="$(grep -c '^FAILED ps' "$GATE_LOG")"; failed="$calls"   # a failed ps is the failed read; sqlplus calls say what discovery found
     else calls="$(grep -c '^TOOL sqlplus' "$GATE_LOG")"; failed="$(grep -c '^FAILED sqlplus' "$GATE_LOG")"; fi
