@@ -10,8 +10,8 @@ Oracle Support, ready to copy to the server. Runs in the PowerShell that ships w
 What it looks up, for everything in the manifest:
   WebLogic home
   - WLS Stack Patch Bundle (SPB): newest "WLS STACK PATCH BUNDLE <release>.<yymmdd>" in MOS's Recommended
-    list. One download carrying the PSU, Coherence, FMW Thirdparty, OSS, JDBC and RDA patches; it is
-    applied with the spbat.sh inside it (see its readme), not with wls-patch.sh.
+    list. One download carrying the PSU, Coherence, FMW Thirdparty, OSS, JDBC and RDA patches;
+    'wls-patch.sh run <dir>' applies it with the SPBAT inside it, reading <dir>/spb/ too.
   - only when MOS lists no SPB: the WLS PSU and the Coherence cumulative patch one by one
   - FMW Platform Bundle: newest "FMW PLATFORM BUNDLE PATCH <release>.<yymmdd>", where one is installed
   - OPatch kit 28186730 when OPatch is older than 13.9.4.2.0, or older than the downloaded patches' READMEs ask for
@@ -240,7 +240,7 @@ function Get-WlsPlan($Wls) {
     if ($spb) {
         $have = Get-InstalledLevel $Wls $spbPattern
         if (-not $have -or [regex]::Match($spb.Abstract, $spbPattern).Groups[1].Value -gt $have) {
-            # its own folder: wls-patch.sh run applies every zip in wls/, and an SPB is applied with spbat.sh
+            # its own folder: an SPB is never mixed with single patches - wls-patch.sh applies it with its SPBAT
             New-PlanItem 'spb' "WLS Stack Patch Bundle ($($Wls.Home))" $have $spb $release $Wls.Home
         }
     }
@@ -633,7 +633,7 @@ function Main {
         Write-Host "EM agent $($a.Version) at $($a.Home) (installed: $(if ($ru) { $ru } else { 'no agent RU' })): not downloaded - agent RUs (and the agent's JDK) are applied from the OMS."
     }
     foreach ($o in ($m.Homes | Where-Object { $_.Kind -eq 'other' })) { Write-Host "Oracle home $($o.Home): not a kind this script knows - check MOS for it by hand." }
-    if ($plan | Where-Object { $_.What -like 'WLS Stack Patch Bundle*' }) { Write-Host 'The Stack Patch Bundle is applied with the spbat.sh inside it (see its readme), not with wls-patch.sh.' }
+    if ($plan | Where-Object { $_.What -like 'WLS Stack Patch Bundle*' }) { Write-Host 'The Stack Patch Bundle goes in its own folder: wls-patch.sh run applies it with the SPBAT inside it. Do not put single patches (wls/) in the same folder.' }
     if ($PlanOnly) { Write-Host 'OPatch: the minimum each patch needs is in its README, read after the download - -PlanOnly cannot tell whether a newer OPatch kit will be added.'; return }
 
     $failed = 0
@@ -651,8 +651,8 @@ function Main {
 
     Write-Host ''
     Write-Host "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:"
-    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { Write-Host "  scp `"$Dest\wls\*.zip`" oracle@$($m.Host):/u01/patches/wls/" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { Write-Host "  scp `"$Dest\spb\*.zip`" oracle@$($m.Host):/u01/patches/spb/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { Write-Host "  scp `"$Dest\wls\*.zip`" oracle@$($m.Host):/u01/patches/wls/   then: wls-patch.sh run /u01/patches/wls" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { Write-Host "  scp `"$Dest\spb\*.zip`" oracle@$($m.Host):/u01/patches/spb/   then: wls-patch.sh run /u01/patches/spb" }
     if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { Write-Host "  scp `"$Dest\db\*.zip`" oracle@$($m.Host):/u01/patches/db/" }
     if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { Write-Host "  scp `"$Dest\jdk\*.tar.gz`" oracle@$($m.Host):/u01/patches/jdk/" }
     if ($failed -gt 0) { Write-Host "$failed download(s) failed - see above." -ForegroundColor Red; exit 1 }
