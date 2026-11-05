@@ -731,13 +731,15 @@ function Read-MosToken([string] $Path) {
 }
 
 function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
-    # the whole hint block, so patch_base| can be asserted on it (Cerebro seam suite): one string per kind
+    # the whole hint block, so patch_base| can be asserted on it (Cerebro seam suite): one string per kind.
+    # $Base (patch_base|, or the /u01/patches fallback) is normalised HERE, so a trailing slash cannot make '//'
+    $b = if ($Base) { $Base.TrimEnd('/') } else { '/u01/patches' }
     $out = @()
-    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { $out += "  scp `"$Dest\wls\*.zip`" oracle@${HostName}:$Base/wls/   then: wls-patch.sh run $Base/wls" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { $out += "  scp `"$Dest\spb\*.zip`" oracle@${HostName}:$Base/spb/   then: wls-patch.sh run $Base/spb" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'ohs')) { $out += "  scp `"$Dest\ohs\*.zip`" oracle@${HostName}:$Base/ohs/   (apply by hand for now - see the OHS line above)" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { $out += "  scp `"$Dest\db\*.zip`" oracle@${HostName}:$Base/db/" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { $out += "  scp `"$Dest\jdk\*.tar.gz`" oracle@${HostName}:$Base/jdk/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { $out += "  scp `"$Dest\wls\*.zip`" oracle@${HostName}:$b/wls/   then: wls-patch.sh run $b/wls" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { $out += "  scp `"$Dest\spb\*.zip`" oracle@${HostName}:$b/spb/   then: wls-patch.sh run $b/spb" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'ohs')) { $out += "  scp `"$Dest\ohs\*.zip`" oracle@${HostName}:$b/ohs/   (apply by hand for now - see the OHS line above)" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { $out += "  scp `"$Dest\db\*.zip`" oracle@${HostName}:$b/db/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { $out += "  scp `"$Dest\jdk\*.tar.gz`" oracle@${HostName}:$b/jdk/" }
     $out
 }
 
