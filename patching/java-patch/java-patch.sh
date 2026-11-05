@@ -120,7 +120,8 @@ discover() {
   [ "$LINKED" = 0 ] && [ "$KEEP_OLD" = 0 ] && IN_PLACE=1
   OLD_VER="$(jdk_version "$OLD_JH")"; OLD_MAJOR="$(java_major_of "$OLD_JH")"
   [ -z "$JAVA_BASE" ] && JAVA_BASE="$(dirname "$OLD_REAL")"
-  REFS="$(refs_to "$OLD_JH"; [ "$OLD_REAL" != "$OLD_JH" ] && refs_to "$OLD_REAL")"
+  # in place the JDK keeps its path, so no reference file names a different path: do not even look for them
+  if [ "$IN_PLACE" = 1 ]; then REFS=""; else REFS="$(refs_to "$OLD_JH"; [ "$OLD_REAL" != "$OLD_JH" ] && refs_to "$OLD_REAL")"; fi
 }
 # tar handling: TARBALL from ARGS/--tar/dir; NEW_* from it
 pick_tar() {
@@ -159,7 +160,8 @@ cmd_inspect() {
   echo "Target JDK      : $OLD_JH$([ "$LINKED" = 1 ] && echo " -> $OLD_REAL (symlink: switch = flip the link)") $OLD_VER ($(jdk_vendor "$OLD_JH")) major $OLD_MAJOR, base $JAVA_BASE"
   echo "JDKs on host    :"; local j; for j in $(java_homes); do printf '  %-50s %-14s %s  running JVMs: %s\n' "$j" "$(jdk_version "$j")" "$([ "$j" = "$OLD_REAL" ] && echo '[target]' || echo '        ')" "$(jvm_names "$j")"; done
   echo "/usr/java       : $(ls -l /usr/java/latest /usr/java/default 2>/dev/null | awk '{print $9" -> "$11}' | tr '\n' ';' || true) alternatives: $(readlink -f "$(command -v java 2>/dev/null || echo /nonexistent)" 2>/dev/null)"
-  echo "Referenced in   :"; printf '%s\n' "$REFS" | grep . | sed 's/^/  /' | cut -c1-200; [ -z "$REFS" ] && echo "  (nothing names $OLD_JH explicitly$([ "$LINKED" = 1 ] && echo '; everything goes through the symlink'))"
+  if [ "$IN_PLACE" = 1 ]; then echo "Referenced in   : (in place: $OLD_JH keeps its path, so no reference file is read or edited)"
+  else echo "Referenced in   :"; printf '%s\n' "$REFS" | grep . | sed 's/^/  /' | cut -c1-200; [ -z "$REFS" ] && echo "  (nothing names $OLD_JH explicitly$([ "$LINKED" = 1 ] && echo '; everything goes through the symlink'))"; fi
   local h; for h in $(wls_homes); do echo "WebLogic $h : $(wls_version "$h") uses $(wls_java_home "$h") ; supported JDK major: $(for m in 8 11 17 21; do wls_major_ok "$(wls_version "$h")" $m && printf '%s ' $m; done)"; done
   # lib 487f88f: ords_detect sets ORDS_PS_UNREADABLE=1 when the process list could not be read - 'not running' is not known then
   if ords_detect >/dev/null 2>&1; then local ej; ej="$([ -n "$ORDS_PID" ] && dirname "$(dirname "$(readlink -f "/proc/$ORDS_PID/exe" 2>/dev/null)")")"; [ -z "$ej" ] && [ "${ORDS_PS_UNREADABLE:-0}" = 1 ] && ej="? ($(ps_unreadable_msg) - whether ORDS runs, and on which JDK, is NOT known)"; echo "ORDS ${ORDS_VER:-?}      : ${ORDS_HOME:-?} service $(ords_service) running on ${ej:-not running} ; supported JDK major: $(for m in 8 11 17 21; do ords_major_ok "${ORDS_VER:-}" $m && printf '%s ' $m; done)"; fi
@@ -220,21 +222,28 @@ cmd_plan() {
   discover; pick_tar
   echo "PLAN: $OLD_JH ($OLD_VER) -> $([ "$IN_PLACE" = 1 ] && echo "$OLD_JH (in place)" || echo "$NEW_JH") ($NEW_VER)"
   echo "  1. preflight   JDK tarball, major $OLD_MAJOR->$NEW_MAJOR, WebLogic/ORDS matrix, disk in $JAVA_BASE, who runs on the old JDK"
-  echo "  2. backup      $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | grep -c .) reference file(s) copied to the run dir$([ "$IN_PLACE" = 1 ] && echo "; the old JDK is renamed to $OLD_JH.old-<stamp>" || echo "; the old JDK stays at $OLD_REAL")"
+  if [ "$IN_PLACE" = 1 ]; then echo "  2. backup      none: in place, no reference file is read or edited; the old JDK is renamed to $OLD_JH.old-<stamp>"
+  else echo "  2. backup      $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | grep -c .) reference file(s) copied to the run dir; the old JDK stays at $OLD_REAL"; fi
   echo "  3. apply       tar -xzf $(basename "$TARBALL") -C $JAVA_BASE ; keytool import of CA aliases present only in the old cacerts$([ "$NO_CACERTS" = 1 ] && echo ' (skipped)')"
   if [ "$IN_PLACE" = 1 ]; then echo "                 mv $OLD_JH $OLD_JH.old-<stamp> ; mv $NEW_JH $OLD_JH   (the new JDK takes $OLD_JH, no file edits)"
   elif [ "$LINKED" = 1 ]; then echo "                 ln -sfn $NEW_JH $OLD_JH   (symlink flip, no file edits)"
   else echo "                 sed $OLD_JH -> $NEW_JH in: $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | tr '\n' ' ')"; fi
   echo "  4. restart     $([ "$DO_RESTART" = 1 ] && echo "${RESTART_CMDS:-ORDS service $(ords_service)}" || { [ "$IN_PLACE" = 1 ] && echo 'not requested (--restart): the path now serves the NEW JDK - restart anything that ran on it' || echo 'not requested (--restart): JVMs keep the old JDK until restarted'; })"
-  echo "  5. verify      $NEW_JH/bin/java -version, references, running JVMs' /proc/pid/exe, URLs: ${CHECK_URLS:-${USER_ORDS_URL:-none}}"
+  local refcol="references, "; [ "$IN_PLACE" = 1 ] && refcol=""
+  echo "  5. verify      $NEW_JH/bin/java -version, ${refcol}running JVMs' /proc/pid/exe, URLs: ${CHECK_URLS:-${USER_ORDS_URL:-none}}"
   local rl; if [ "$IN_PLACE" = 1 ]; then rl="the old JDK is renamed back from $OLD_JH.old-<stamp>"; else rl="symlink back / files restored from the run dir"; fi
   echo "  rollback       $rl, restart again"
 }
 
 cmd_backup() {
   discover; reuse_or_init backup; mkdir -p "$RUN_DIR/files"
-  # a copy that failed used to be recorded as backed up all the same, and rollback would have found nothing to restore
-  local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do cp -p "$f" "$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')" || die "cannot back up $f into $RUN_DIR/files (cp failed): nothing changed"; state_append backed_files "$f"; done
+  # in place the JDK keeps its path, so no reference file names a different path and none needs editing.
+  # Backing them up anyway would let a rollback overwrite a reference file the operator changed after apply.
+  local f
+  if [ "$IN_PLACE" != 1 ]; then
+    # a copy that failed used to be recorded as backed up all the same, and rollback would have found nothing to restore
+    for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do cp -p "$f" "$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')" || die "cannot back up $f into $RUN_DIR/files (cp failed): nothing changed"; state_append backed_files "$f"; done
+  fi
   [ "$LINKED" = 1 ] && state_set link_target "$OLD_REAL"
   [ "$IN_PLACE" = 1 ] && state_set in_place 1
   log "backed up $(state_get backed_files | wc -w | tr -d ' ') file(s) to $RUN_DIR/files"; state_set backup ok
@@ -352,7 +361,7 @@ cmd_rollback() {
   discover
   local tgt; tgt="$(state_get link_target || true)"
   [ -n "$tgt" ] || [ -n "$(state_get backed_files || true)" ] || [ -n "$(state_get old_jdk || true)" ] || die "nothing to roll back in $RUN_DIR: no backup recorded there (the run dir of the apply: --run-dir DIR)"
-  local rfail=0
+  local rfail=0 residue=""
   if [ "$(state_get in_place || true)" = 1 ] && [ -n "$(state_get old_jdk || true)" ] && [ -d "$(state_get old_jdk || true)" ]; then
     local oldbak failed; oldbak="$(state_get old_jdk)"; failed="$OLD_JH.failed-$(date +%Y%m%d%H%M%S)"
     confirm "mv $OLD_JH $failed && mv $oldbak $OLD_JH ?" || die "aborted"
@@ -360,18 +369,22 @@ cmd_rollback() {
     elif mv "$OLD_JH" "$failed"; then
       # only if the new JDK really moved aside: otherwise old-jdk would be moved INTO the directory still there
       mv "$oldbak" "$OLD_JH" || { err "cannot restore the old JDK from $oldbak (the new one is at $failed)"; rfail=1; }
+      [ "$rfail" = 0 ] && residue="$failed"
     else
       err "cannot move the new JDK aside from $OLD_JH - the old JDK is still at $oldbak, nothing was changed"; rfail=1
     fi
   fi
-  if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; if [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" "$OLD_JH"; then log "symlink restored -> $tgt"; else err "cannot restore the symlink $OLD_JH -> $tgt"; rfail=1; fi; fi
+  if [ -n "$tgt" ]; then confirm "ln -sfn $tgt $OLD_JH (back to the old JDK)?" || die "aborted"; if [ "$DRY_RUN" = 1 ]; then log "would restore the symlink $OLD_JH -> $tgt"; elif ln -sfn "$tgt" "$OLD_JH"; then log "symlink restored -> $tgt"; else err "cannot restore the symlink $OLD_JH -> $tgt"; rfail=1; fi; fi
   # a missing or uncopyable backup used to be skipped silently and the rollback still said ok
   local f b; for f in $(state_get backed_files || true); do b="$RUN_DIR/files/$(printf '%s' "$f" | tr '/' '_')"
-    if [ -f "$b" ]; then log "restoring $f"; if [ "$DRY_RUN" = 1 ] || cp -p "$b" "$f"; then :; else err "cannot restore $f from $b"; rfail=1; fi
+    if [ -f "$b" ]; then if [ "$DRY_RUN" = 1 ]; then log "would restore $f"; else log "restoring $f"; fi; if [ "$DRY_RUN" = 1 ] || cp -p "$b" "$f"; then :; else err "cannot restore $f from $b"; rfail=1; fi
     else err "no backup of $f in $RUN_DIR/files - not restored"; rfail=1; fi
   done
   [ -L /usr/java/latest ] && [ -n "$tgt" ] && [ -w /usr/java ] && { [ "$DRY_RUN" = 1 ] || ln -sfn "$tgt" /usr/java/latest; }
-  log "the new JDK stays unpacked at $(state_get new_jh || echo '?') (harmless); restarting"
+  # name where the abandoned new build ends up: a rollback parks it at $OLD_JH.failed-<stamp> and nothing
+  # removes it, so it must not be left for the operator to find on their own
+  if [ -n "$residue" ]; then log "the new build being rolled back from is at $residue - delete it when you are done";
+  else log "the new JDK stays unpacked at $(state_get new_jh || echo '?') (harmless); restarting"; fi
   # the files are back; the rollback is only "ok" when the services came back up on the old JDK as well
   if [ "$rfail" != 0 ]; then cmd_restart || true; state_set rollback failed; err "rollback incomplete: not every file is back on the old JDK (see above) - check them and the services by hand (see $LOG_FILE)"; return 1
   elif cmd_restart; then state_set rollback ok; log "rolled back"

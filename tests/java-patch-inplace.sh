@@ -37,9 +37,22 @@ grep -q '^new_ver=1.8.0_511' "$R/state" 2>/dev/null && ok || bad "apply did not 
 
 run verify && ok || bad "a separate 'verify --run-dir' failed: $(tail -3 "$OUT")"
 
-run rollback --yes && ok || bad "rollback failed: $(tail -2 "$OUT")"
+# a bare 'rollback --run-dir R' has no --java-home: it must seed OLD_JH from the recorded old_jh
+bash "$S" rollback --run-dir "$R" --yes >>"$OUT" 2>&1 && ok || bad "a bare 'rollback --run-dir' failed: $(tail -3 "$OUT")"
 [ "$(ver)" = 'openjdk version "1.8.0_471" 2024-07-16' ] && ok || bad "rollback did not restore the old build (got: $(ver))"
 [ -e "$T/java/old-jdk" ] && bad "rollback nested the old JDK inside the path" || ok
+# the abandoned new build is parked at <path>.failed-<stamp>; the output must name it
+ls -d "$T"/java.failed-* >/dev/null 2>&1 && ok || bad "rollback did not park the new build at a .failed-<stamp> sibling"
+grep -q 'the new build being rolled back from is at .*\.failed-' "$OUT" && ok || bad "rollback did not name the .failed-<stamp> residue"
+
+# cycle isolation: a bare 'preflight' (no --run-dir) must start a FRESH run dir, not reuse the previous
+# cycle's dir through the 'latest' link - a reused 'backup=ok' would skip the next cycle's backup and a
+# rollback would restore older files. Seed a previous cycle's dir and point 'latest' at it.
+H="$T/home"; RB="$H/java-patch/runs"; prev="$RB/20260101-000000-run"
+mkdir -p "$prev"; printf 'backup=ok\nbacked_files=/u01/x/setDomainEnv.sh\n' >"$prev/state"
+ln -sfn "$prev" "$RB/latest"
+HOME="$H" bash "$S" preflight "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts >>"$OUT" 2>&1 && ok || bad "no---run-dir preflight failed: $(tail -2 "$OUT")"
+grep -q '^preflight=' "$prev/state" && bad "no---run-dir preflight reused the previous cycle's run dir (wrote into latest)" || ok
 
 echo "java-patch in-place gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
