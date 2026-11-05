@@ -236,7 +236,10 @@ cmd_preflight() {
   [ "$GRID" = 1 ] && { [ -n "$GRID_HOME" ] || { err "--grid but no Grid home"; fail=1; }; $SUDO "$GRID_HOME/OPatch/opatchauto" version >/dev/null 2>&1 || { err "--grid needs 'sudo -n $GRID_HOME/OPatch/opatchauto' for this user"; fail=1; }; }
   [ "$IS_RAC" = 1 ] && [ "$ROLLING" = 0 ] && warn "RAC without --rolling: every instance of these databases will be stopped (full outage)"
   [ -n "$OOP" ] && { [ -e "$OOP" ] && { err "--oop target $OOP already exists"; fail=1; }; local pfree; pfree="$(df -Pm "$(dirname "$OOP")" | awk 'NR==2{print $4}')"; [ "$pfree" -lt "$(( $(du -sm "$HOME_DIR" | cut -f1) + 4096 ))" ] && { err "not enough space for the out-of-place clone at $OOP"; fail=1; }; }
-  pgrep -f 'oracle.opatch.OPatch|OPatch/opatch|datapatch' >/dev/null 2>&1 && { err "another opatch/datapatch is running"; fail=1; }
+  case "$(opatch_running 'oracle.opatch.OPatch|OPatch/opatch|datapatch'; echo $?)" in
+    0) err "another opatch/datapatch is running"; fail=1;;
+    2) err "cannot tell whether another opatch/datapatch is running (pgrep failed)"; fail=1;;
+  esac
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"
   [ "$fail" = 0 ] && { log "Preflight OK"; return 0; } || { err "Preflight FAILED - see $LOG_FILE"; return 1; }
 }
@@ -322,6 +325,36 @@ cmd_stop() {
   else state_set stopped failed; err "stop INCOMPLETE: a database or listener of $HOME_DIR is still running - nothing in this home can be patched until it is down"; return 1; fi
 }
 
+# the OPatch kit (p6880880) over <target>/OPatch. The kit is unzipped into a scratch dir inside <target> first and
+# swapped in only once it holds a runnable OPatch/opatch, so a failed unzip (no unzip, no space, a corrupt kit)
+# leaves the home's OPatch as it was; the old OPatch is kept under the run dir. A kit whose version cannot be read
+# is refused rather than installed blind (audit 5 Nov 2026: the old order moved OPatch out first).
+install_opatch_kit() {
+  local target="$1" zip="$2" kitv tmp old
+  kitv="$(unzip -p "$zip" OPatch/version.txt 2>/dev/null | sed -n 's/^OPATCH_VERSION:*//p' | head -1)"
+  [ -n "$kitv" ] || die "cannot read OPatch/version.txt from $(basename "$zip") (unzip missing, or the kit is unreadable) - $target/OPatch left as it is"
+  version_ge "$OPATCH_VERSION" "$kitv" && return 0
+  log "upgrading OPatch $OPATCH_VERSION to $kitv in $target"; confirm "Replace $target/OPatch?" || die "aborted"
+  [ "$DRY_RUN" = 1 ] && return 0
+  tmp="$target/.opatch-kit.$$"; rm -rf "$tmp"
+  mkdir -p "$tmp" && unzip -q "$zip" -d "$tmp" >>"$LOG_FILE" 2>&1 && [ -x "$tmp/OPatch/opatch" ] \
+    || { rm -rf "$tmp"; die "the OPatch kit $(basename "$zip") did not unzip to a runnable OPatch/opatch - $target/OPatch left as it is"; }
+  old="$RUN_DIR/OPatch.old.$(date +%s)"
+  mv "$target/OPatch" "$old" || { rm -rf "$tmp"; die "cannot move $target/OPatch aside - left as it is"; }
+  if ! mv "$tmp/OPatch" "$target/OPatch"; then
+    rm -rf "${target:?}/OPatch"
+    mv "$old" "$target/OPatch" && { rm -rf "$tmp"; die "could not put the new OPatch in place - the old one is back in $target/OPatch"; }
+    die "could not put the new OPatch in place AND could not put the old one back: it is at $old - mv it to $target/OPatch"
+  fi
+  rm -rf "$tmp"; log "OPatch $kitv installed in $target; the old one is at $old"
+}
+
+# 0 = an opatch/datapatch matching <pattern> runs; 1 = none; 2 = pgrep failed, so it is not known (never 'none')
+opatch_running() {
+  local rc; pgrep -f "${1:-oracle.opatch.OPatch|OPatch/opatch}" >/dev/null 2>&1; rc=$?
+  case "$rc" in 0) return 0;; 1) return 1;; *) return 2;; esac
+}
+
 cmd_apply() {
   setup_env; reuse_or_init apply
   local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "apply needs <patch-dir>"; prepare_patch_dir "$dir"
@@ -331,12 +364,11 @@ cmd_apply() {
     [ "$DRY_RUN" = 1 ] || { cp -a "$HOME_DIR" "$OOP" || die "clone failed"; env ORACLE_HOME="$OOP" "$OOP/oui/bin/runInstaller" -silent -clone ORACLE_HOME="$OOP" ORACLE_HOME_NAME="OraDB_oop_$(date +%s)" ORACLE_BASE="${ORACLE_BASE:-$(dirname "$(dirname "$HOME_DIR")")}" >>"$LOG_FILE" 2>&1 || die "clone registration (runInstaller -clone) failed"; }
     target="$OOP"; state_set oop_home "$OOP"
   fi
-  if [ -n "${OPATCH_ZIP:-}" ]; then
-    local kitv; kitv="$(unzip -p "$OPATCH_ZIP" OPatch/version.txt 2>/dev/null | sed -n 's/^OPATCH_VERSION:*//p' | head -1)"
-    if ! version_ge "$OPATCH_VERSION" "${kitv:-99}"; then log "upgrading OPatch to ${kitv:-?} in $target"; confirm "Replace $target/OPatch?" || die "aborted"
-      [ "$DRY_RUN" = 1 ] || { mv "$target/OPatch" "$RUN_DIR/OPatch.old.$(date +%s)" && unzip -q "$OPATCH_ZIP" -d "$target" || die "OPatch kit install failed"; }; fi
-  fi
-  pgrep -f 'oracle.opatch.OPatch|OPatch/opatch' >/dev/null 2>&1 && die "another opatch is running"
+  [ -n "${OPATCH_ZIP:-}" ] && install_opatch_kit "$target" "$OPATCH_ZIP"
+  case "$(opatch_running; echo $?)" in
+    0) die "another opatch is running";;
+    2) die "cannot tell whether another opatch is running (pgrep failed) - not applying";;
+  esac
   local p; for p in $PATCH_PATHS; do
     local id; id="$(basename "$p")"
     printf '%s\n' "$INSTALLED" | grep -q "^$id;" && [ -z "$OOP" ] && { log "$id already installed, skipping"; continue; }
@@ -503,7 +535,9 @@ cmd_cleanup() {
 
 cmd_heal() {
   setup_env; reuse_or_init heal; local did=0
-  if opatch_locked && ! pgrep -f 'OPatch/opatch|oracle.opatch' >/dev/null; then log "removing stale OPatch lock"; confirm "rm $HOME_DIR/.patch_storage/patch_locked ?" && { [ "$DRY_RUN" = 1 ] || rm -f "$HOME_DIR/.patch_storage/patch_locked"; did=1; }; fi
+  local orun; orun="$(opatch_running 'OPatch/opatch|oracle.opatch'; echo $?)"
+  opatch_locked && [ "$orun" = 2 ] && warn "OPatch lock present, but whether an opatch runs is not known (pgrep failed) - lock left in place"
+  if opatch_locked && [ "$orun" = 1 ]; then log "removing stale OPatch lock"; confirm "rm $HOME_DIR/.patch_storage/patch_locked ?" && { [ "$DRY_RUN" = 1 ] || rm -f "$HOME_DIR/.patch_storage/patch_locked"; did=1; }; fi
   local s; for s in $SIDS; do up "$s" && sql_ok "$s" || continue
     local bad; bad="$(sql_val "$s" "(select count(*) from dba_registry_sqlpatch where status not in ('SUCCESS','IGNORED'))")"
     [ -z "$bad" ] && warn "$s: could not read dba_registry_sqlpatch - datapatch state unknown, not clean"
