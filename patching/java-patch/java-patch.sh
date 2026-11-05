@@ -115,10 +115,23 @@ discover() {
 # tar handling: TARBALL from ARGS/--tar/dir; NEW_* from it
 pick_tar() {
   local a="${ARGS[0]:-$TARBALL}"; [ -n "$a" ] || die "which JDK? give the tar.gz (or a directory holding one, or --tar)"
-  if [ -d "$a" ]; then local n; n="$(find "$a" -maxdepth 1 \( -iname 'jdk*.tar.gz' -o -iname 'jdk*.tgz' -o -iname 'server-jre*.tar.gz' -o -iname 'jre*.tar.gz' \) 2>/dev/null | sort -V | tail -1)"; [ -n "$n" ] || die "no JDK tarball (jdk*/server-jre*/jre*.tar.gz) in $a"; TARBALL="$n"; else TARBALL="$a"; fi
+  if [ -d "$a" ]; then
+    local matches kinds
+    matches="$(find "$a" -maxdepth 1 \( -iname 'jdk*.tar.gz' -o -iname 'jdk*.tgz' -o -iname 'server-jre*.tar.gz' -o -iname 'jre*.tar.gz' \) 2>/dev/null)"
+    [ -n "$matches" ] || die "no JDK tarball (jdk*/server-jre*/jre*.tar.gz) in $a"
+    # 'sort -V' on the whole name sorts by prefix first ('server-jre' > 'jre' > 'jdk'), so a dir holding more
+    # than one kind of JDK would silently install the older one - refuse rather than downgrade
+    kinds="$(printf '%s\n' "$matches" | while IFS= read -r f; do b="$(basename "$f")"; printf '%s\n' "${b%%[0-9]*}"; done | sort -u | tr '\n' ' ')"
+    [ "$(printf '%s\n' "$kinds" | wc -w)" = 1 ] || die "$a holds more than one kind of JDK tarball ($kinds)- pass the exact tarball, not the directory"
+    TARBALL="$(printf '%s\n' "$matches" | sort -V | tail -1)"
+  else TARBALL="$a"; fi
   [ -f "$TARBALL" ] || die "$TARBALL not found"
-  local top; top="$(tar -tzf "$TARBALL" 2>/dev/null | head -1 | cut -d/ -f1)"; [ -n "$top" ] || die "$TARBALL is not a readable tar.gz"
-  tar -tzf "$TARBALL" 2>/dev/null | grep -qE "^$top/bin/java$" || die "$TARBALL has no $top/bin/java - not a JDK tarball"
+  local listing top
+  # read the listing once: 'tar -tzf | grep -q' ends grep on the match, tar takes SIGPIPE, and with pipefail
+  # (lib/oracle-lib.sh) the pipeline returns 141 - a real JDK then died as 'not a JDK tarball'
+  listing="$(tar -tzf "$TARBALL" 2>/dev/null)"; [ -n "$listing" ] || die "$TARBALL is not a readable tar.gz"
+  top="${listing%%$'\n'*}"; top="${top%%/*}"
+  printf '%s\n' "$listing" | grep -E "^$top/bin/java$" >/dev/null || die "$TARBALL has no $top/bin/java - not a JDK tarball"
   NEW_JH="$JAVA_BASE/$top"
   NEW_VER="$(tar -xzOf "$TARBALL" "$top/release" 2>/dev/null | sed -n 's/^JAVA_VERSION="\([^"]*\)".*/\1/p' | head -1)"
   [ -z "$NEW_VER" ] && NEW_VER="$(printf '%s' "$top" | grep -oE '[0-9][0-9._u]+' | head -1 | sed 's/^1\.8\.0_/8u/')"
