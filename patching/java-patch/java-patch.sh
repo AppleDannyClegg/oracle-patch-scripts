@@ -227,7 +227,8 @@ cmd_plan() {
   else echo "                 sed $OLD_JH -> $NEW_JH in: $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | tr '\n' ' ')"; fi
   echo "  4. restart     $([ "$DO_RESTART" = 1 ] && echo "${RESTART_CMDS:-ORDS service $(ords_service)}" || { [ "$IN_PLACE" = 1 ] && echo 'not requested (--restart): the path now serves the NEW JDK - restart anything that ran on it' || echo 'not requested (--restart): JVMs keep the old JDK until restarted'; })"
   echo "  5. verify      $NEW_JH/bin/java -version, references, running JVMs' /proc/pid/exe, URLs: ${CHECK_URLS:-${USER_ORDS_URL:-none}}"
-  echo "  rollback       $([ "$IN_PLACE" = 1 ] && echo 'the old JDK is renamed back from $OLD_JH.old-<stamp>' || echo 'symlink back / files restored from the run dir'), restart again"
+  local rl; if [ "$IN_PLACE" = 1 ]; then rl="the old JDK is renamed back from $OLD_JH.old-<stamp>"; else rl="symlink back / files restored from the run dir"; fi
+  echo "  rollback       $rl, restart again"
 }
 
 cmd_backup() {
@@ -265,6 +266,10 @@ cmd_apply() {
     [ "$nf" = 0 ] || die "cacerts: $nf alias(es) failed to import into $nc - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"
   fi
   if [ "$IN_PLACE" = 1 ]; then
+    # preflight's stop is not enough on its own: a separate 'apply --force' skips its verdict, and an apply with
+    # no preflight only warns - so re-check here, and --force does not touch this
+    local r; r="$(running_on "$OLD_REAL")" || die "cannot read the process list - cannot tell whether JVMs run on $OLD_JH; refusing the in-place swap"
+    [ -z "$r" ] || die "in-place: JVMs run on $OLD_JH - stop them first, or --keep-old (--force does not waive this)"
     # the new JDK takes the target's path. The old directory is renamed to a SIBLING - same filesystem, so a
     # true rename, not a copy - because the run dir can be on another filesystem and a copy would delete the
     # old JDK's files from under the JVMs still running on it before the restart.
@@ -323,6 +328,7 @@ cmd_verify() {
   # in-place: the old build now lives at $OLD_JH.old-<stamp>, so a JVM still on it has its exe there - checking
   # the path would instead match the JVMs that were correctly restarted onto the new build
   local oldref; [ "$IN_PLACE" = 1 ] && oldref="$(state_get old_jdk || true)"; [ -n "$oldref" ] || oldref="$(state_get old_real)"
+  oldref="$(readlink -f "$oldref" 2>/dev/null || printf '%s' "$oldref")"   # canonical: running_on compares /proc/pid/exe
   local oldrun; if ! oldrun="$(running_on "$oldref")"; then err "$(ps_unreadable_msg) - whether anything still runs on the old JDK is NOT known"; fail=1; oldrun=""
   elif [ -n "$oldrun" ]; then warn "still running on the OLD JDK (restart them): $(printf '%s\n' "$oldrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; else log "no JVM runs on the old JDK"; fi
   local newrun; newrun="$(running_on "$(readlink -f "$newjh")" 2>/dev/null)" || newrun=""; [ -n "$newrun" ] && log "running on the new JDK: $(printf '%s\n' "$newrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"
