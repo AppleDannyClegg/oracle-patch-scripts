@@ -62,6 +62,27 @@ for spec in "server-jre-8u511-linux-x64.tar.gz|jdk1.8.0_511|1.8.0_511" \
   [ "$got_ver" = "$ver" ] && ok || bad "pick_tar read version '$got_ver' from $name, want $ver"
 done
 
+# ---- the JDK root is found from bin/java, not the first listing entry ---------------------------------
+# OBDX ab-br-dev-obdx-wl1, 5 Nov 2026: jdk-8u511-internal-bin-b00-...-debug.tar.gz died 'has no
+# jdk1.8.0_511/bin/java' because the JDK is nested (jdk1.8.0_511/jdk1.8.0_511/bin/java), so the first
+# entry's root is jdk1.8.0_511 but bin/java is a level below it.
+mk_java_tar "$T/nested" 'jdk-8u511-internal-nested.tar.gz' 'jdk1.8.0_511/jdk1.8.0_511' '1.8.0_511'
+first="$(tar -tzf "$T/nested/jdk-8u511-internal-nested.tar.gz" | head -1)"
+[ "${first%%/*}" = 'jdk1.8.0_511' ] && ok || bad "the nested fixture's first entry is not jdk1.8.0_511/ ('$first')"
+out="$(pick "$T/nested")"
+got_ver="${out#*|}"
+[ -n "$out" ] && ok || bad "pick_tar rejected a nested JDK tarball: $(tail -1 "$T/pick.err")"
+[ "$got_ver" = '1.8.0_511' ] && ok || bad "pick_tar read version '$got_ver' from a nested tarball, want 1.8.0_511"
+
+# a tarball made with 'tar -C <dir> .' prefixes every name with './'
+mkdir -p "$T/src-dot/jdk1.8.0_511/bin" "$T/src-dot/jdk1.8.0_511/lib"; : >"$T/src-dot/jdk1.8.0_511/bin/java"
+printf 'JAVA_VERSION="1.8.0_511"\n' >"$T/src-dot/jdk1.8.0_511/release"
+( cd "$T/src-dot" && tar -czf "$T/dot.tar.gz" . )
+out="$(pick "$T/dot.tar.gz")"
+got_ver="${out#*|}"
+[ -n "$out" ] && ok || bad "pick_tar rejected a './'-prefixed JDK tarball: $(tail -1 "$T/pick.err")"
+[ "$got_ver" = '1.8.0_511' ] && ok || bad "pick_tar read version '$got_ver' from a './'-prefixed tarball, want 1.8.0_511"
+
 # ---- die paths ---------------------------------------------------------------------------------------
 mkdir -p "$T/empty"
 out="$(pick "$T/empty")"
