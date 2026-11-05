@@ -160,8 +160,8 @@ function Read-Manifest([string] $Path) {
         if ($known -notcontains $f[0]) { throw "$Path line '$line': unrecognised line type '$($f[0])' - is it a patch-manifest.sh file?" }
         switch ($f[0]) {
             'host' { if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'host|' needs a name" }; $m.Host = $f[1] }
-            'created' { if ($f.Count -lt 2) { throw "$Path line '$line': 'created|' needs a date" }; $m.Created = $f[1] }
-            'plat' { if ($f.Count -lt 3) { throw "$Path line '$line': 'plat|' needs <os>|<arch>" }; $m.Platform = "$($f[1])|$($f[2])" }
+            'created' { if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'created|' needs a date" }; $m.Created = $f[1] }
+            'plat' { if ($f.Count -lt 3 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'plat|' needs <os>|<arch>" }; $m.Platform = "$($f[1])|$($f[2])" }
             'patch_base' { if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'patch_base|' needs a path" }; $m.PatchBase = $f[1] }
             'wls' {
                 if ($f.Count -lt 5) { throw "$Path line '$line': 'wls|' needs home|release|opatch|coherence" }
@@ -178,7 +178,7 @@ function Read-Manifest([string] $Path) {
             }
             'ohs' { $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }) } }
             'jdk' {
-                if ($f.Count -lt 4) { throw "$Path line '$line': 'jdk|' needs home|version|major" }
+                if ($f.Count -lt 4 -or -not $f[1] -or -not $f[2] -or -not $f[3]) { throw "$Path line '$line': 'jdk|' needs home|version|major" }
                 $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] }
             }
             'fmw' { $m.Fmw += [pscustomobject]@{ Home = $f[1]; Family = $f[2]; Version = $(if ($f.Count -gt 3) { $f[3] } else { '' }); Patch = $(if ($f.Count -gt 4) { $f[4] } else { '' }) } }
@@ -747,7 +747,7 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
 # it can be tested (Cerebro 22:18:37); returns the warning text, or '' for fresh/absent/unparseable.
 function Get-ManifestFreshnessWarning([string] $Created, [datetimeoffset] $Now) {
     if (-not $Created) { return '' }
-    $made = $null; try { $made = [datetimeoffset]::Parse($Created, [Globalization.CultureInfo]::InvariantCulture) } catch { return '' }
+    $made = $null; try { $made = [datetimeoffset]::Parse($Created, [Globalization.CultureInfo]::InvariantCulture) } catch { return "the manifest's created| value '$Created' did not parse - cannot tell how old the manifest is; check the producer" }
     if ($null -eq $made) { return '' }
     $age = ($Now - $made).TotalDays
     if ($age -gt 14) { return "the manifest was made $([int][math]::Floor($age)) days ago ($Created) - the host may have changed since; re-run patch-manifest.sh if in doubt" }
