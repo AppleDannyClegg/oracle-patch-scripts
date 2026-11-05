@@ -128,7 +128,8 @@ select 'CTRL|APEX|applications without SSL required (Rejoin Sessions / Deep link
 
 pdb_controls() { # per container: accounts, PUBLIC grants, APEX
   local sid="$1"
-  db_is_cdb "$sid" || return 0
+  local cdb; cdb="$(db_cdb "$sid")"
+  [ "$cdb" = YES ] || { [ "$cdb" = UNKNOWN ] && control "$sid" "" "CDB state readable (v\$database.cdb)" FAIL "v\$database.cdb could not be read - the per-PDB controls were NOT evaluated"; return 0; }
   local p pdbs; pdbs="$(db_pdbs "$sid")" || control "$sid" "" "PDB list readable (v\$pdbs)" FAIL "v\$pdbs could not be read - the per-PDB controls were NOT evaluated"
   [ -n "${PDB:-}" ] && pdbs="$(printf '%s\n%s\n' "$PDB" "$pdbs" | awk '!s[$0]++')"
   for p in $pdbs; do with_pdb "$p" db_controls "$sid" "$sid/$p"; done
@@ -143,7 +144,7 @@ network_controls() {
     [ -z "$v" ] && control "net/$lsn" "2.1.x" "SQLNET.ALLOWED_LOGON_VERSION_SERVER set explicitly" INFO "not set"
     v="$(grep -iE '^\s*SQLNET.ENCRYPTION_SERVER' "$sq" 2>/dev/null | sed 's/.*=//; s/[[:space:]]//g')"; control "net/$lsn" "2.1.x" "SQLNET.ENCRYPTION_SERVER REQUIRED (native network encryption)" "$([[ "${v^^}" == *REQUIRED* ]] && echo PASS || echo FAIL)" "value: ${v:-unset}"
     v="$(grep -iE '^\s*SQLNET.CRYPTO_CHECKSUM_SERVER' "$sq" 2>/dev/null | sed 's/.*=//; s/[[:space:]]//g')"; control "net/$lsn" "2.1.x" "SQLNET.CRYPTO_CHECKSUM_SERVER REQUIRED" "$([[ "${v^^}" == *REQUIRED* ]] && echo PASS || echo FAIL)" "value: ${v:-unset}"
-    v="$(grep -iE '^\s*SQLNET.ENCRYPTION_TYPES_SERVER' "$sq" 2>/dev/null | sed 's/.*=//')"; [[ "${v^^}" == *AES* ]] || [ -z "$v" ] && [[ "${v^^}" != *AES* ]] && control "net/$lsn" "2.1.x" "encryption types restricted to AES" INFO "value: ${v:-unset (all algorithms)}"
+    v="$(grep -iE '^\s*SQLNET.ENCRYPTION_TYPES_SERVER' "$sq" 2>/dev/null | sed 's/.*=//')"; if [ -z "$v" ] || [[ "${v^^}" != *AES* ]]; then control "net/$lsn" "2.1.x" "encryption types restricted to AES" INFO "value: ${v:-unset (all algorithms)}"; else control "net/$lsn" "2.1.x" "encryption types restricted to AES" PASS "value: $v"; fi
     v="$(grep -iE '^\s*SQLNET.EXPIRE_TIME' "$sq" 2>/dev/null | grep -oE '[0-9]+' | head -1)"; control "net/$lsn" "2.1.x" "SQLNET.EXPIRE_TIME set (dead connection detection)" "$([ -n "$v" ] && echo PASS || echo FAIL)" "value: ${v:-unset}"
     v="$(grep -iE '^\s*TCP.VALIDNODE_CHECKING' "$sq" 2>/dev/null | sed 's/.*=//; s/[[:space:]]//g')"; control "net/$lsn" "2.1.x" "TCP.VALIDNODE_CHECKING with INVITED_NODES" "$([[ "${v^^}" == *YES* ]] && echo PASS || echo INFO)" "value: ${v:-unset}"
     grep -qiE '^\s*SEC_PROTOCOL_ERROR_FURTHER_ACTION|^\s*SQLNET.INBOUND_CONNECT_TIMEOUT' "$sq" 2>/dev/null && control "net/$lsn" "2.1.x" "SQLNET.INBOUND_CONNECT_TIMEOUT set" PASS "set" || control "net/$lsn" "2.1.x" "SQLNET.INBOUND_CONNECT_TIMEOUT set" FAIL "unset (default 60 s; set it, and INBOUND_CONNECT_TIMEOUT_<listener> in listener.ora)"
@@ -205,7 +206,7 @@ okv_controls() {
     local d sc loc host upd wal age; d="$(dirname "$(dirname "$f")")"; sc="okv/$(basename "$d")"
     loc="$(okv_field "$f" SSL_WALLET_LOC)"; host="$(okv_field "$f" OKV_HOSTNAME)"; upd="$(okv_field "$f" UPDATE_TIMESTAMP)"
     [ -n "$loc" ] || loc="$d/ssl"; wal="$loc/ewallet.p12"
-    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "echo '== $f'; grep -vE '^#|^\$' '$f' | redact; echo; ls -la '$loc' '$d/conf' 2>/dev/null"
+    section_sh "okv_$(hash8 "$f")" "echo '== $f'; grep -vE '^#|^\$' '$f' | redact; echo; ls -la '$loc' '$d/conf' 2>/dev/null"
     if okv_is_rotated "$loc"; then control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - rotated: a subfolder of ssl/"
     else control "$sc" "" "endpoint wallet location (SSL_WALLET_LOC)" INFO "$loc - not rotated: the original ssl/ wallet"; fi
     control "$sc" "" "OKV_HOSTNAME (node last talked to) / UPDATE_TIMESTAMP" INFO "${host:-?} / ${upd:-?}"

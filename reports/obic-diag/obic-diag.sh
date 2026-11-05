@@ -57,6 +57,7 @@ obic_servers() {
 
 # eureka_apps <json>: one "NAME|STATUS[,STATUS]|instances" line per registered application.
 eureka_apps() {
+  command -v python3 >/dev/null 2>&1 || { finding WARN obic "python3 is not on PATH - the Eureka /apps JSON could not be parsed (install python3, or the registry state is unknown)"; return 1; }
   python3 -c '
 import sys,json
 try: d=json.load(sys.stdin)
@@ -78,6 +79,7 @@ discovery_check() {
     return 0
   fi
   kv "discovery url" "$DISCOVERY_URL"
+  command -v curl >/dev/null 2>&1 || { finding CRIT obic "curl is not on PATH - the discovery service $DISCOVERY_URL was NOT checked"; return 0; }
   local tmp; tmp="$RAW/discovery_apps.json"
   local code; code="$(to 15 curl -sk -m 15 -H 'Accept: application/json' -o "$tmp" -w '%{http_code}' "$DISCOVERY_URL/apps" 2>/dev/null)"
   kv "GET /apps" "${code:-none}"
@@ -145,10 +147,12 @@ obic_servers_check() {
   kv "obic servers" "$(printf '%s' "$names" | tr '\n' ' ')"
   kv_end
   local s pid jh ver rel cf
+  local pl rc=0; pl="$(ps -eo pid,args 2>/dev/null)" || rc=$?
   for s in $names; do
     h3 "$s"
     obic_jdk_mismatch "$s"
-    pid="$(ps -eo pid,args 2>/dev/null | grep "[w]eblogic.Server" | grep -- "-Dweblogic.Name=$s\b" | awk '{print $1}' | head -1)"
+    if [ "$rc" != 0 ]; then finding WARN obic "$s: cannot read the process list (ps failed) - whether it runs is NOT checked"; continue; fi
+    pid="$(printf '%s\n' "$pl" | grep "[w]eblogic.Server" | grep -- "-Dweblogic.Name=$s\b" | awk '{print $1}' | head -1)"
     if [ -z "$pid" ]; then
       # last Node Manager line for this server decides 'never started' vs 'last start FAILED'
       local nm last when; nm="${DOMAIN_HOME:-/nonexistent}/nodemanager/nodemanager.log"

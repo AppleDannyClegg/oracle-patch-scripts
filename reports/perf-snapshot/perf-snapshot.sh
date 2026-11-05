@@ -268,7 +268,9 @@ main() {
     db_live "$s"; live_samples "$s"
     [ "$PACK_OK" = 1 ] && db_hist "$s"
     [ -n "$SQL_ID" ] && sql_deep_dive "$s" "$SQL_ID"
-    if db_is_cdb "$s"; then local p pdbs; pdbs="$(db_pdbs "$s")" || finding WARN db "$s: v\$pdbs could not be read - the per-PDB sections were NOT collected"; for p in $(printf '%s\n' "$pdbs" | head -8); do
+    local cdb; cdb="$(db_cdb "$s")"
+    if [ "$cdb" = UNKNOWN ]; then finding WARN db "$s: v\$database.cdb could not be read - the per-PDB sections were NOT collected"
+    elif [ "$cdb" = YES ]; then local p pdbs; pdbs="$(db_pdbs "$s")" || finding WARN db "$s: v\$pdbs could not be read - the per-PDB sections were NOT collected"; for p in $(printf '%s\n' "$pdbs" | head -8); do
       with_pdb "$p" sqlsec "$s" "pdb_${p}_top" "$s/$p: top SQL and sessions in this PDB now" "select * from (select sql_id, plan_hash_value, executions, round(elapsed_time/1e6) elapsed_s, round(elapsed_time/greatest(executions,1)/1000) avg_ms, buffer_gets, substr(regexp_replace(sql_text,'\s+',' '),1,60) sql_text from v\$sqlstats where con_id=sys_context('userenv','con_id') order by elapsed_time desc) where rownum<=10;
 select nvl(username,'bg') username, count(*) sessions, sum(decode(status,'ACTIVE',1,0)) active from v\$session where type='USER' and con_id=sys_context('userenv','con_id') group by nvl(username,'bg') order by 2 desc fetch first 10 rows only;"
     done; fi
