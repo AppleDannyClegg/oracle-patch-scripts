@@ -71,5 +71,11 @@ unscoped="$(grep -nE '"\$[A-Za-z_][A-Za-z0-9_]*/bin/sqlplus" -V' "$SCRIPT" | gre
 noloader="$(grep -nE '"\$[A-Za-z_][A-Za-z0-9_]*/bin/sqlplus" -V' "$SCRIPT" | grep -vE 'ORACLE_HOME=.*LD_LIBRARY_PATH=' || true)"
 [ -z "$noloader" ] && ok || bad "home sqlplus -V invoked without its own LD_LIBRARY_PATH (lint): $noloader"
 
+# static guard (a lint): sql_lines runs the string verbatim through SQL*Plus, so a statement with no
+# terminator is never executed and returns empty with rc 0 - which the APEX read then treated as absence.
+# Every sql_lines call in this file passes a literal statement and must end it with ';'.
+unterminated="$(grep -n 'sql_lines' "$SCRIPT" | grep -v ';"' || true)"
+[ -z "$unterminated" ] && ok || bad "sql_lines statement without a ';' terminator (lint): $unterminated"
+
 echo "patch-status oracle-home gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
