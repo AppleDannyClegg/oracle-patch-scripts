@@ -77,6 +77,21 @@ $sha = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().Compute
 $script:asked = @()
 $script:downloadedUrl = $null
 $script:bugXml = $bug.Replace('SHA_HERE', $sha)
+# a JDK patch serving a production tarball AND an internal/debug one for the same release: the debug file is
+# listed first, so a plain 'Select -First 1' would take it
+$bugJdk = @'
+<results><patch has_prereqs="n"><name>39555001</name><release id="704" name="1.8.0_511"/>
+<platform id="226"><![CDATA[Linux x86-64]]></platform>
+<files>
+<file><name>jdk-8u511-internal-bin-b00-linux-x64-debug-05_nov_2026.tar.gz</name><size>17</size>
+<download_url host="https://updates.oracle.com"><![CDATA[/Orion/Download/process_form/jdk-8u511-internal-bin-b00-linux-x64-debug-05_nov_2026.tar.gz?aru=1]]></download_url>
+<digest type="SHA-256">SHA_HERE</digest></file>
+<file><name>jdk-8u511-linux-x64.tar.gz</name><size>17</size>
+<download_url host="https://updates.oracle.com"><![CDATA[/Orion/Download/process_form/jdk-8u511-linux-x64.tar.gz?aru=1]]></download_url>
+<digest type="SHA-256">SHA_HERE</digest></file>
+</files></patch></results>
+'@
+$script:bugXmlJdk = $bugJdk.Replace('SHA_HERE', $sha)
 # OHS 12.2.1.4 on Linux x86-64: the real abstract shapes (MOS, 5 Nov 2026) - the DB19C bundle is the current
 # line, the plain one stopped in Jan 2024; the Apache plug-in bundle and a tracking bug are look-alikes
 $ohsRows = '<results>' +
@@ -98,6 +113,7 @@ function Invoke-MosGet([string] $Path) {
     if ($Path -like '*product=12443&release=703&platform=226*') { return $perfRows }
     if ($Path -like '*product=12443&*') { return '<results></results>' }
     if ($Path -like '*search?bug=39000002*') { return $script:bugXml }
+    if ($Path -like '*search?bug=39555001*') { return $script:bugXmlJdk }
     throw "unexpected MOS call $Path"
 }
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
@@ -250,6 +266,12 @@ try {
     try { Save-MosPatch -Patch '39000002' -Dest $dest2 -Release '12.2.1.4.0' | Out-Null } catch { $threw = $true }
     Check $threw "SHA-256 mismatch throws"
     Check (@(Get-ChildItem -LiteralPath $dest2 -ErrorAction SilentlyContinue).Count -eq 0) "SHA-256 mismatch leaves no file"
+
+    # ---- a JDK patch with a production and an internal/debug artifact picks the production one ---------
+    $dest3 = Join-Path $tmp 'jdk'
+    $saved3 = ''
+    try { $saved3 = Save-MosPatch -Patch '39555001' -Dest $dest3 -Release '1.8.0_511' } catch { Check $false "the JDK download threw: $($_.Exception.Message)" }
+    Check ((Split-Path -Leaf $saved3) -eq 'jdk-8u511-linux-x64.tar.gz') "a JDK patch with a production and a debug artifact picks the production one, got [$saved3]"
     # ---- a db home with no version in the manifest: warn and skip, do not abort the whole run ---------
     # Get-PatchPlan is a simple function (no CmdletBinding), so capture warnings off stream 3, not -WarningVariable
     function PlanWithWarnings($Manifest) {

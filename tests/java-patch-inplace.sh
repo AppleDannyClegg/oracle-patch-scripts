@@ -84,5 +84,17 @@ ln -sfn "$prev" "$RB/latest"
 HOME="$H" bash "$S" preflight "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts >>"$OUT" 2>&1 && ok || bad "no---run-dir preflight failed: $(tail -2 "$OUT")"
 grep -q '^preflight=' "$prev/state" && bad "no---run-dir preflight reused the previous cycle's run dir (wrote into latest)" || ok
 
+# a tarball whose bin/java does not run must be refused at apply, before the in-place rename
+mkdir -p "$T/src/jdk-1.8.0_531/bin"; : >"$T/src/jdk-1.8.0_531/bin/java"; chmod +x "$T/src/jdk-1.8.0_531/bin/java"
+printf 'JAVA_VERSION="1.8.0_531"\n' >"$T/src/jdk-1.8.0_531/release"
+tar -czf "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" -C "$T/src" jdk-1.8.0_531
+R3="$T/run-dud"
+bash "$S" preflight "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --run-dir "$R3" >>"$OUT" 2>&1 && ok || bad "preflight of a bin/java-that-does-not-run tarball failed: $(tail -2 "$OUT")"
+before="$(ver)"; olds_before="$(ls -d "$T"/java.old-* 2>/dev/null | wc -l | tr -d ' ')"
+bash "$S" apply "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --yes --run-dir "$R3" >>"$T/out-dud.log" 2>&1 && bad "apply accepted a tarball whose bin/java does not run" || ok
+grep -q 'not a runnable JDK' "$T/out-dud.log" && ok || bad "the run-less tarball did not name 'not a runnable JDK'"
+[ "$(ver)" = "$before" ] && ok || bad "the run-less tarball changed the target JDK"
+[ "$(ls -d "$T"/java.old-* 2>/dev/null | wc -l | tr -d ' ')" = "$olds_before" ] && ok || bad "the run-less tarball left a rename behind"
+
 echo "java-patch in-place gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
