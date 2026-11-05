@@ -38,7 +38,8 @@ press Generate token (valid 60 minutes) and save it as %USERPROFILE%\.mos-token 
 MOS no longer takes the account password.
 
 Files keep Oracle's names (p<number>_<release>_<platform>.zip), which wls-patch.sh matches on. A JDK patch
-zip is unpacked to its .tar.gz, which is what java-patch.sh wants. Every file is SHA-256 checked.
+zip is unpacked to its .tar.gz, which is what java-patch.sh wants. Every file is SHA-256 checked; a file with
+no SHA-256 in the MOS record is refused, not kept.
 #>
 [CmdletBinding()]
 param(
@@ -68,10 +69,24 @@ $script:ProductDatabase = 9480
 $script:ProductOhs = 10300
 $script:DbOPatch = '6880880'
 
+# the debug/internal markers in an Oracle artifact name. A fastdebug/'internal-bin' build is not what the
+# patch tools install (java-patch refuses it), so never plan or pick one when a production file exists.
+$script:DevBuild = '(?i)internal|debug|fastdebug|early[_ ]access'
+
 # ---- network: the only two functions that talk to MOS --------------------------------------------------
 function Invoke-MosGet([string] $Path) {
-    $resp = Invoke-WebRequest -Uri ($script:MosBase + $Path) -Headers $script:MosHeaders -UseBasicParsing
-    [string] $resp.Content
+    # a single 500 or a stalled connection aborted the whole plan mid-run; bound each call and retry
+    $last = $null
+    for ($i = 1; $i -le 3; $i++) {
+        try {
+            $r = Invoke-WebRequest -Uri ($script:MosBase + $Path) -Headers $script:MosHeaders -UseBasicParsing -TimeoutSec 60
+            return [string] $r.Content
+        } catch {
+            $last = $_
+            if ($i -lt 3) { Start-Sleep -Seconds 5 }
+        }
+    }
+    throw "MOS call failed after 3 tries: $Path - $($last.Exception.Message)"
 }
 
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
@@ -135,27 +150,48 @@ function Get-FivePart([string] $Version) {
 
 # ---- manifest ------------------------------------------------------------------------------------------
 function Read-Manifest([string] $Path) {
-    $m = [pscustomobject]@{ Host = ''; Wls = @(); Homes = @(); Jdks = @(); Fmw = @(); Ohs = @() }
+    $m = [pscustomobject]@{ Host = ''; Platform = ''; PatchBase = ''; Created = ''; Wls = @(); Homes = @(); Jdks = @(); Fmw = @(); Ohs = @() }
+    # a manifest is machine-written, so a line this function does not know is a wrong/truncated file, not noise:
+    # throwing beats planning a subset of the host and calling it done (the plan would look complete)
+    $known = @('host', 'created', 'plat', 'patch_base', 'wls', 'home', 'ohs', 'patch', 'jdk', 'fmw')
     foreach ($line in (Get-Content -LiteralPath $Path)) {
         if (-not $line.Trim() -or $line.StartsWith('#')) { continue }
         $f = $line.Split('|')
+        if ($known -notcontains $f[0]) { throw "$Path line '$line': unrecognised line type '$($f[0])' - is it a patch-manifest.sh file?" }
         switch ($f[0]) {
-            'host' { $m.Host = $f[1] }
+            'host' { if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'host|' needs a name" }; $m.Host = $f[1] }
+            'created' { if ($f.Count -lt 2) { throw "$Path line '$line': 'created|' needs a date" }; $m.Created = $f[1] }
+            'plat' { if ($f.Count -lt 3) { throw "$Path line '$line': 'plat|' needs <os>|<arch>" }; $m.Platform = "$($f[1])|$($f[2])" }
+            'patch_base' { if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'patch_base|' needs a path" }; $m.PatchBase = $f[1] }
             'wls' {
+                if ($f.Count -lt 5) { throw "$Path line '$line': 'wls|' needs home|release|opatch|coherence" }
                 $m.Wls += [pscustomobject]@{ Home = $f[1]; Release = $f[2]; OPatch = $f[3]; Coherence = ($f[4] -eq 'yes'); Patches = @() }
             }
             'home' {
+                if ($f.Count -lt 5) { throw "$Path line '$line': 'home|' needs home|kind|version|opatch" }
                 $m.Homes += [pscustomobject]@{ Home = $f[1]; Kind = $f[2]; Version = $f[3]; OPatch = $f[4]; Patches = @() }
             }
             'patch' {
+                if ($f.Count -lt 4) { throw "$Path line '$line': 'patch|' needs home|number|description" }
                 $w = @($m.Wls) + @($m.Homes) | Where-Object { $_ -and $_.Home -eq $f[1] } | Select-Object -First 1
                 if ($w) { $w.Patches += [pscustomobject]@{ Id = $f[2]; Description = (($f[3..($f.Count - 1)]) -join '|').Trim() } }
             }
             'ohs' { $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }) } }
-            'jdk' { $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] } }
+            'jdk' {
+                if ($f.Count -lt 4) { throw "$Path line '$line': 'jdk|' needs home|version|major" }
+                $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] }
+            }
             'fmw' { $m.Fmw += [pscustomobject]@{ Home = $f[1]; Family = $f[2]; Version = $(if ($f.Count -gt 3) { $f[3] } else { '' }); Patch = $(if ($f.Count -gt 4) { $f[4] } else { '' }) } }
         }
     }
+    if (-not $m.Host) { throw "$Path has no host| line - is it a patch-manifest.sh file?" }
+    # the platform decides which MOS files are fetched; the manifest records it (patch-manifest.sh plat|). An
+    # old manifest has none: assume Linux x86-64 but say so. An unknown one is refused, not guessed
+    if ($m.Platform) {
+        if ($m.Platform.ToLower() -in @('linux|x86_64', 'linux|amd64')) { $script:PlatformLinux = 226 }
+    # a bare "unknown platform" tells the operator nothing; name what was read and where to write the manifest
+        else { throw "$Path was written on $($m.Platform) - get-patches.ps1 downloads Linux x86-64 patches only; run patch-manifest.sh on the server" }
+    } else { Write-Warning "$Path has no plat| line (patch-manifest.sh predates it) - assuming Linux x86-64"; $script:PlatformLinux = 226 }
     if (-not $m.Wls -and -not $m.Homes -and -not $m.Jdks) { throw "$Path has no wls or jdk lines - is it a patch-manifest.sh file?" }
     $m
 }
@@ -317,9 +353,17 @@ function Get-JdkPlan($Jdks) {
         $found = $null
         foreach ($r in $candidates) {
             $rows = @(Get-MosPatchRows $script:ProductJdk $r.Id $script:PlatformLinux)
-            if ($rows.Count -gt 0) { $found = [pscustomobject]@{ Release = $r; Row = ($rows | Sort-Object Date -Descending | Select-Object -First 1) }; break }
+            # the newest release can list only an internal/debug artifact: skip it and take the newest release
+            # with a production file, or the host is patched to a build java-patch will refuse (OBDX 5 Nov 2026)
+            foreach ($row in ($rows | Sort-Object Date -Descending)) {
+                $files = @(Get-MosFiles $row.Number)
+                if (@($files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' -and $_.Name -notmatch $script:DevBuild }).Count -gt 0) {
+                    $found = [pscustomobject]@{ Release = $r; Row = $row }; break
+                }
+            }
+            if ($found) { break }
         }
-        if (-not $found) { Write-Warning "JDK ${major}: no Linux x86-64 patch in the newest MOS releases - get it from MOS Doc 1439822.2 and pass -Patch"; continue }
+        if (-not $found) { Write-Warning "JDK ${major}: no release with a production (non-internal/debug) Linux x86-64 file - get it from MOS Doc 1439822.2 and pass -Patch"; continue }
         $newVersion = $found.Release.Label.Substring('Oracle JDK '.Length)
         if ((Get-VersionKey $newVersion) -gt (Get-VersionKey $oldest.Version)) {
             New-PlanItem 'jdk' "JDK $major (oldest here: $($oldest.Home))" $oldest.Version $found.Row $newVersion
@@ -460,10 +504,12 @@ function Get-PatchPlan($Manifest) {
 }
 
 # ---- download ------------------------------------------------------------------------------------------
-# fetch one patch's file for Linux (or Generic), preferring $Release; returns the saved path
-function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
+# one patch's downloadable files from MOS (name, url, sha, release, platform)
+function Get-MosFiles([string] $Patch) {
     $xml = Remove-Cdata ((Invoke-MosGet "/Orion/Services/search?bug=$Patch") -replace "[`r`n]", '')
     if ($xml -match '<html') { throw "MOS returned a web page for $Patch - the token was not accepted (expired or mis-pasted?)" }
+    # a body cut mid-file still yields a name+url with an empty digest, so guard completeness like Get-MosReleases
+    if ($xml.TrimEnd() -notmatch '</results>$') { throw "the MOS response for patch $Patch arrived incomplete - run again" }
     $files = @()
     foreach ($blk in ($xml -split '<patch ' | Select-Object -Skip 1)) {
         $rel = [regex]::Match($blk, '<release[^>]*name="([^"]*)"').Groups[1].Value
@@ -481,7 +527,12 @@ function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
         }
     }
     if ($files.Count -eq 0) { throw "patch ${Patch}: no downloadable files (not entitled, or the number is wrong)" }
+    $files
+}
 
+# fetch one patch's file for Linux (or Generic), preferring $Release; returns the saved path
+function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
+    $files = @(Get-MosFiles $Patch)
     $forUs = @($files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' })
     if ($forUs.Count -eq 0) { $forUs = $files }
     $pick = $null
@@ -492,7 +543,7 @@ function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
             # Oracle lists a production artifact and sometimes an internal/debug one for the same release. A
             # fastdebug/'internal-bin' tarball is not what a patch tool installs (java-patch refuses it), so
             # prefer the production file; if only a debug one exists, say so rather than quietly take it.
-            $dev = '(?i)internal|debug|fastdebug|early[_ ]access'
+            $dev = $script:DevBuild
             $production = @($matching | Where-Object { $_.Name -notmatch $dev })
             $pool = if ($production.Count) { $production } else { Write-Warning "patch ${Patch}: only an internal/debug artifact is listed for release '$Release' - it is not a production JDK: $($matching[0].Name)"; $matching }
             # the patch tools take an archive (.zip, .tar.gz); an .rpm/.exe/.deb is for a package manager
@@ -505,16 +556,20 @@ function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
         $list = ($forUs | ForEach-Object { "    $($_.Name)  release $($_.Release)  ($($_.Platform))" }) -join "`n"
         throw "patch $Patch has several files and none is for release '$Release':`n$list"
     }
+    # an unverified file is not installed, and the check is on $pick BEFORE $Dest is created or a .part is
+    # written: both the reuse and the mismatch checks below are pointless without a digest, and MOS always
+    # gives one for a downloadable file - so a missing one is a wrong patch response (or a cut-off body)
+    if (-not $pick.Sha) { throw "patch ${Patch}: no SHA-256 in the MOS record for $($pick.Name) - run again; if it persists, pass -Patch ${Patch}" }
 
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
     $out = Join-Path $Dest $pick.Name
-    if ((Test-Path -LiteralPath $out) -and $pick.Sha -and ((Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLower() -eq $pick.Sha)) {
+    if ((Test-Path -LiteralPath $out) -and ((Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLower() -eq $pick.Sha)) {
         Write-Host "  $($pick.Name) already here and verified"
         return $out
     }
     Write-Host "  downloading $($pick.Name)"
     Invoke-MosDownload $pick.Url "$out.part"
-    if ($pick.Sha -and ((Get-FileHash -LiteralPath "$out.part" -Algorithm SHA256).Hash.ToLower() -ne $pick.Sha)) {
+    if (((Get-FileHash -LiteralPath "$out.part" -Algorithm SHA256).Hash.ToLower() -ne $pick.Sha)) {
         Remove-Item -LiteralPath "$out.part" -Force
         throw "SHA-256 mismatch for $($pick.Name) - deleted it, try again"
     }
@@ -675,9 +730,26 @@ function Read-MosToken([string] $Path) {
     $t.Trim()
 }
 
+function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
+    # the whole hint block, so patch_base| can be asserted on it (Cerebro seam suite): one string per kind
+    $out = @()
+    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { $out += "  scp `"$Dest\wls\*.zip`" oracle@${HostName}:$Base/wls/   then: wls-patch.sh run $Base/wls" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { $out += "  scp `"$Dest\spb\*.zip`" oracle@${HostName}:$Base/spb/   then: wls-patch.sh run $Base/spb" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'ohs')) { $out += "  scp `"$Dest\ohs\*.zip`" oracle@${HostName}:$Base/ohs/   (apply by hand for now - see the OHS line above)" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { $out += "  scp `"$Dest\db\*.zip`" oracle@${HostName}:$Base/db/" }
+    if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { $out += "  scp `"$Dest\jdk\*.tar.gz`" oracle@${HostName}:$Base/jdk/" }
+    $out
+}
+
 function Main {
     if (-not $Manifest) { throw 'Pass -Manifest <the file patch-manifest.sh wrote on the server>' }
     $m = Read-Manifest $Manifest
+    # the manifest carries the server's $PATCH_BASE; PATCH_BASE can be exported with a trailing slash
+    $script:ServerBase = if ($m.PatchBase) { $m.PatchBase.TrimEnd('/') } else { '/u01/patches' }
+    if ($m.Created) {
+        $made = $null; try { $made = [datetimeoffset]::Parse($m.Created, [Globalization.CultureInfo]::InvariantCulture) } catch {}
+        if ($made -and ([datetimeoffset]::UtcNow - $made).TotalDays -gt 14) { Write-Warning "the manifest was made $([int]([datetimeoffset]::UtcNow - $made).TotalDays) days ago ($($m.Created)) - the host may have changed since; re-run patch-manifest.sh if in doubt" }
+    }
     if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
 
     $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
@@ -717,11 +789,7 @@ function Main {
 
     Write-Host ''
     Write-Host "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:"
-    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { Write-Host "  scp `"$Dest\wls\*.zip`" oracle@$($m.Host):/u01/patches/wls/   then: wls-patch.sh run /u01/patches/wls" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { Write-Host "  scp `"$Dest\spb\*.zip`" oracle@$($m.Host):/u01/patches/spb/   then: wls-patch.sh run /u01/patches/spb" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'ohs')) { Write-Host "  scp `"$Dest\ohs\*.zip`" oracle@$($m.Host):/u01/patches/ohs/   (apply by hand for now - see the OHS line above)" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { Write-Host "  scp `"$Dest\db\*.zip`" oracle@$($m.Host):/u01/patches/db/" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { Write-Host "  scp `"$Dest\jdk\*.tar.gz`" oracle@$($m.Host):/u01/patches/jdk/" }
+    Get-UploadHints $m.Host $Dest $script:ServerBase | ForEach-Object { Write-Host $_ }
     if ($failed -gt 0) { Write-Host "$failed download(s) failed - see above." -ForegroundColor Red; exit 1 }
 }
 

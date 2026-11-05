@@ -62,6 +62,14 @@ $cohRows = '<results>' +
     (Row 39000011 'Coherence 12.2.1.4 Cumulative Patch 32 (12.2.1.4.32)' '2026-07-15') +
     (Row 39000010 'Coherence 12.2.1.4 Cumulative Patch 33 (12.2.1.4.33)' '2026-10-20') + '</results>'
 $jdkRows = '<results>' + (Row 39000020 'Oracle JDK 8 Update 481 for Linux x86-64' '2026-10-20') + '</results>'
+# the 8u481 patch's files: Get-JdkPlan now fetches them to require a production (non-internal/debug) artifact
+$jdkBug481 = @'
+<results><patch has_prereqs="n"><name>39000020</name><release id="701" name="1.8.0_481"/>
+<platform id="226"><![CDATA[Linux x86-64]]></platform>
+<files><file><name>jdk-8u481-linux-x64.tar.gz</name><size>17</size>
+<download_url host="https://updates.oracle.com"><![CDATA[/Orion/Download/process_form/jdk-8u481-linux-x64.tar.gz?aru=1]]></download_url>
+<digest type="SHA-256">SHA_HERE</digest></file></files></patch></results>
+'@
 # the Performance build has a newer number and a download: only the name filter keeps it out
 $perfRows = '<results>' + (Row 39000029 'Oracle JDK 8 Update 499 Performance for Linux x86-64' '2026-10-28') + '</results>'
 $bug = @'
@@ -92,6 +100,15 @@ $bugJdk = @'
 </files></patch></results>
 '@
 $script:bugXmlJdk = $bugJdk.Replace('SHA_HERE', $sha)
+$script:bugXmlJdk481 = $jdkBug481.Replace('SHA_HERE', $sha)
+# a file block with NO <digest>: the MOS record is incomplete (or the body was cut) - must be refused, not kept
+$bugNoSha = @'
+<results><patch has_prereqs="n"><name>30966770</name><release id="600" name="12.2.1.4.0"/>
+<platform id="226"><![CDATA[Linux x86-64]]></platform>
+<files><file><name>p30966770_122140_Linux-x86-64.zip</name><size>17</size>
+<download_url host="https://updates.oracle.com"><![CDATA[/Orion/Download/process_form/p30966770_122140_Linux-x86-64.zip?aru=1]]></download_url>
+</file></files></patch></results>
+'@
 # OHS 12.2.1.4 on Linux x86-64: the real abstract shapes (MOS, 5 Nov 2026) - the DB19C bundle is the current
 # line, the plain one stopped in Jan 2024; the Apache plug-in bundle and a tracking bug are look-alikes
 $ohsRows = '<results>' +
@@ -113,7 +130,9 @@ function Invoke-MosGet([string] $Path) {
     if ($Path -like '*product=12443&release=703&platform=226*') { return $perfRows }
     if ($Path -like '*product=12443&*') { return '<results></results>' }
     if ($Path -like '*search?bug=39000002*') { return $script:bugXml }
+    if ($Path -like '*search?bug=39000020*') { return $script:bugXmlJdk481 }
     if ($Path -like '*search?bug=39555001*') { return $script:bugXmlJdk }
+    if ($Path -like '*search?bug=30966770*') { return $bugNoSha }
     throw "unexpected MOS call $Path"
 }
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
@@ -266,6 +285,17 @@ try {
     try { Save-MosPatch -Patch '39000002' -Dest $dest2 -Release '12.2.1.4.0' | Out-Null } catch { $threw = $true }
     Check $threw "SHA-256 mismatch throws"
     Check (@(Get-ChildItem -LiteralPath $dest2 -ErrorAction SilentlyContinue).Count -eq 0) "SHA-256 mismatch leaves no file"
+
+    # ---- a file with no SHA-256 in the record is refused, not downloaded or kept (Weyland [P1]) ---------------
+    # NB: this must run BEFORE the OPatch section defines a mock Save-MosPatch (~:490), which shadows the real one
+    $destNo = Join-Path $tmp 'nosha'
+    $script:downloadedUrl = $null
+    $threw = $false; $msg = ''
+    try { Save-MosPatch -Patch '30966770' -Dest $destNo -Release '12.2.1.4.0' | Out-Null } catch { $threw = $true; $msg = $_.Exception.Message }
+    Check $threw "a file with no SHA-256 digest in the record throws (got [$msg])"
+    Check ($msg -match 'no SHA-256') "the refusal names the missing digest: [$msg]"
+    Check ($null -eq $script:downloadedUrl) "the unverifiable file is not even downloaded"
+    Check (@(Get-ChildItem -LiteralPath $destNo -ErrorAction SilentlyContinue).Count -eq 0) "the unverifiable file is not kept"
 
     # ---- a JDK patch with a production and an internal/debug artifact picks the production one ---------
     $dest3 = Join-Path $tmp 'jdk'
@@ -519,6 +549,31 @@ finally {
       'patch|/u01/ohs|40005842|OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910') | Set-Content -LiteralPath $ohsCur
     $p7 = @(Get-PatchPlan (Read-Manifest $ohsCur) | Where-Object { $_.Kind -eq 'ohs' })
     Check ($p7.Count -eq 0) "an OHS home on the newest bundle plans nothing, got $($p7.Count)"
+
+    # ---- Read-Manifest refuses a garbled/unknown line, a short line, and an unknown platform (Weyland [P2]) ---
+    $bad = Join-Path $tmp 'bad.txt'
+    @('host|wl1', 'wsl|/u01/wls|12.2.1.4.0|13.9.4.2.0|yes', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an unknown line type (wsl|) throws instead of being ignored"
+    @('host|wl1', 'wls|/u01/wls', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "a truncated wls| line throws"
+    @('host|wl1', 'plat|solaris|sparc', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "an unknown plat| throws (refuse to plan for the wrong platform)"
+    @('jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
+    $threw = $false; try { Read-Manifest $bad | Out-Null } catch { $threw = $true }
+    Check $threw "a manifest with no host| line throws"
+
+    # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
+    $hintDest = Join-Path $tmp 'hint'
+    foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }
+    $h = @(Get-UploadHints 'wl1' $hintDest '/u02/patches')
+    Check ($h.Count -eq 5) "five upload hints for five kinds, got $($h.Count)"
+    Check (@($h | Where-Object { $_ -match '/u01/patches' }).Count -eq 0) "the hint block names no /u01/patches when patch_base is /u02/patches"
+    Check (@($h | Where-Object { $_ -match '/u02/patches/(wls|spb|ohs|db|jdk)/' }).Count -eq 5) "each hint target uses patch_base"
+    Check (@($h | Where-Object { $_ -match 'wls-patch.sh run /u02/patches/(wls|spb)' }).Count -eq 2) "the run text on the wls/spb hints uses patch_base"
+    Check (@($h | Where-Object { $_ -like '*wl1*' }).Count -eq 5) "every hint names the manifest host"
 
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
