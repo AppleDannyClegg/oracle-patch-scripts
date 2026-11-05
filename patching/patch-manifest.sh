@@ -200,7 +200,40 @@ wls_lines() {
     grep -qi 'coherence' "$h/inventory/registry.xml" 2>/dev/null && coherence=yes
     printf 'wls|%s|%s|%s|%s\n' "$h" "$release" "$opatch" "$coherence"
     patch_lines "$h" "$lsp"
+    fmw_lines "$h" "$lsp"
   done
+}
+
+# the FMW product bundles applied to a WLS home, one line per family, so get-patches.ps1 can plan them.
+# The family is the text before 'BUNDLE PATCH' in opatch lspatches, so it is read from the real patch
+# description rather than a hard-coded list (ADF, OPSS, OWSM, JRF, MDS, SOA, OSB, ...). FMW PLATFORM is
+# skipped: Get-WlsPlan already plans the FMW Platform Bundle. A bundle-shaped line that does NOT fit
+# '<FAMILY> BUNDLE PATCH' (WLS STACK PATCH BUNDLE, Coherence Cumulative Patch, RDA ... SPB) is emitted as
+# family OTHER rather than dropped silently, so the consumer sees it. 'fmw|<home>|<family>|<version>|<id>'
+fmw_lines() {
+  local h="$1" lsp="$2" line id desc up fam ver
+  # the families patch-status.sh :169 already names, as a regression net for a bundle patch that is not
+  # '<FAMILY> BUNDLE PATCH' (BI PATCH, OHS, Coherence, ...): surfaced as OTHER, never dropped silently
+  local shaped='Coherence|ADF BUNDLE|OPSS BUNDLE|OWSM BUNDLE|SOA BUNDLE|OSB BUNDLE|OHS|FMW PLATFORM|JDEV|WebCenter|OAM BUNDLE|OIM BUNDLE|FORMS|REPORTS|BI PATCH'
+  while IFS= read -r line; do
+    case "$line" in [0-9]*';'*) ;; *) continue;; esac
+    id="${line%%;*}"; desc="${line#*;}"
+    desc="${desc#"${desc%%[! ]*}"}"
+    up="$(printf '%s' "$desc" | tr '[:lower:]' '[:upper:]')"
+    case "$up" in
+      *" BUNDLE PATCH "*)
+        fam="${up%% BUNDLE PATCH*}"; ver="${up#*BUNDLE PATCH }"; ver="${ver%% *}"
+        [ "$fam" = "FMW PLATFORM" ] && continue
+        printf 'fmw|%s|%s|%s|%s\n' "$h" "$fam" "$ver" "$id" ;;
+      *BUNDLE*|*SPB*|*CUMULATIVE*PATCH*)
+        printf 'fmw|%s|OTHER|%s|%s\n' "$h" "$desc" "$id" ;;
+      *)
+        printf '%s' "$up" | grep -qiE "$shaped" && printf 'fmw|%s|OTHER|%s|%s\n' "$h" "$desc" "$id" ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$lsp" | tr -d '\r')
+EOF
+  return 0
 }
 
 # a home line and its patch lines for every other inventory home that has OPatch

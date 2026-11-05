@@ -44,6 +44,10 @@ case "$1" in
     echo "38102345;WLS PATCH SET UPDATE 12.2.1.4.260514"
     echo "37984123;Coherence 12.2.1.4 Cumulative Patch 30 (12.2.1.4.30)"
     echo "36946553; FMW PLATFORM BUNDLE PATCH 12.2.1.4.240812"
+    echo "39426213;WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)"
+    echo "38887908;RDA release 26.2-2026421 for OFM 12.2.1.4 SPB"
+    echo "38000001;ADF BUNDLE PATCH 12.2.1.4.260514"
+    echo "38000002;OPSS BUNDLE PATCH 12.2.1.4.260514"
     echo
     echo "OPatch succeeded." ;;
 esac
@@ -114,6 +118,14 @@ if [ -f "$OUT" ]; then
   has "$OUT" "patch|$H|37984123|Coherence 12.2.1.4 Cumulative Patch 30 (12.2.1.4.30)"
   has "$OUT" "patch|$H|36946553|FMW PLATFORM BUNDLE PATCH 12.2.1.4.240812"
   has "$OUT" "jdk|$T/jdk|1.8.0_471|8"
+  # FMW product bundles: family derived from the real lspatches description, not a hard-coded list
+  has "$OUT" "fmw|$H|ADF|12.2.1.4.260514|38000001"
+  has "$OUT" "fmw|$H|OPSS|12.2.1.4.260514|38000002"
+  grep -q "^fmw|$H|OWSM|" "$OUT" && bad "FMW: emitted a family that is not installed (OWSM)" || ok
+  grep -q "^fmw|$H|FMW PLATFORM|" "$OUT" && bad "FMW: emitted FMW PLATFORM, which Get-WlsPlan already plans" || ok
+  # a bundle-shaped line that does not fit '<FAMILY> BUNDLE PATCH' must surface as OTHER, not vanish
+  grep -q "^fmw|$H|OTHER|WLS STACK PATCH BUNDLE 12.2.1.4.260522" "$OUT" && ok || bad "FMW: the WLS STACK PATCH BUNDLE was dropped silently"
+  grep -q "^fmw|$H|OTHER|RDA release 26.2-2026421 for OFM 12.2.1.4 SPB|" "$OUT" && ok || bad "FMW: the RDA SPB line was dropped silently"
   grep -q '^host|' "$OUT" && ok || bad "manifest has no host line"
   has "$OUT" "home|$C|db|19.27.0.0.0|12.2.0.1.44"
   has "$OUT" "patch|$C|37642901|Database Release Update : 19.27.0.0.250415 (37642901)"
@@ -177,13 +189,14 @@ has "$OUT2" "patch|$W/client|77777|PATCH-OWNER=client"
 # EM-2 / ROY-1: the die on a failed lspatches must carry opatch's own reason, not just 'it failed'
 grep -q 'PRKC-1044' "$T/run2.log" && ok || bad "EM-2: the die dropped opatch's stderr (no PRKC-1044 in run2.log)"
 
-# P3 (Baymax): the die path must not leak the stderr temp file in $TMPDIR
-PB="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'patch-manifest.*' 2>/dev/null | wc -l | tr -d ' ')"
+# P3 (Baymax): the die path must not leak the stderr temp file. Private TMPDIR so the count is not
+# raced by another seat's run (GERTY/Ash/Roy) - the fix must leave ITS OWN tmpdir empty.
+P3TMP="$T/p3tmp"; mkdir -p "$P3TMP"
 touch "$H/OPatch/fail"
-( cd "$T" && HOME="$T" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$T/p3.txt" ) >"$T/p3.log" 2>&1
+( cd "$T" && HOME="$T" TMPDIR="$P3TMP" ORACLE_HOME="$H" JAVA_HOME="$T/jdk" bash "$SCRIPT" --out "$T/p3.txt" ) >"$T/p3.log" 2>&1
 rm -f "$H/OPatch/fail"
-PA="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'patch-manifest.*' 2>/dev/null | wc -l | tr -d ' ')"
-[ "$PA" = "$PB" ] && ok || bad "P3: the die path leaked a patch-manifest.* temp file ($PB -> $PA)"
+P3LEFT="$(find "$P3TMP" -maxdepth 1 -name 'patch-manifest.*' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$P3LEFT" = 0 ] && ok || bad "P3: the die path leaked a patch-manifest.* temp file into its own TMPDIR ($P3LEFT)"
 
 # ---- EM-4: an existing oraInst.loc that yields no readable inventory must stop the run, not silently
 #      drop every inventory home and write a WLS-only manifest with exit 0 (Gort's live P2) -------------
