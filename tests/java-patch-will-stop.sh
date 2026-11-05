@@ -76,5 +76,33 @@ grep -q 'cannot read the process list' "$T/err" && ok || bad "the unreadable pro
 grep -q 'apply still refuses\|does not waive this\|JVMs run on' "$T/aerr" && ok || bad "apply did not hard-die under a running JVM: $(cat "$T/aerr")"
 grep -q '1\.8\.0_471' "$T/jdk/bin/java" && ok || bad "the old JDK java was replaced by apply under a running JVM"
 
+# a rollback under a live JVM is refused too (Ash's root-cause P2): the in-place move is the apply hazard
+mkdir -p "$T/oldjdk/bin"; printf '#!/bin/sh\ntrue\n' >"$T/oldjdk/bin/java"; chmod +x "$T/oldjdk/bin/java"
+rm -rf "$T/rbrun"; mkdir -p "$T/rbrun"
+printf 'in_place=1\nold_jdk=%s\nold_real=%s\nold_jh=%s\nbackup=ok\n' "$T/oldjdk" "$T/jdk" "$T/jdk" >"$T/rbrun/state"
+# shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
+( PATH="$T/bin:$PATH"
+  . "$T/tree/patching/java-patch/java-patch.sh"
+  RUN_DIR="$T/rbrun"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; JSON_OUT=0; VERBOSE=0
+  OLD_JH="$T/jdk"; OLD_REAL="$T/jdk"
+  cmd_rollback >/dev/null 2>"$T/rberr"; printf 'rc=%s\n' "$?" ) >"$T/rbout" 2>&1
+grep -q 'rc=0' "$T/rbout" && bad "rollback ran under a live JVM" || ok
+grep -q 'JVMs run on' "$T/rberr" && ok || bad "the rollback refusal was not named"
+[ -d "$T/oldjdk" ] && [ -d "$T/jdk" ] && ok || bad "rollback moved a JDK under a live JVM"
+
+# a symlinked parent (/u01 -> a data mount) must not read as 'no JVM runs': running_on compares canonical /proc/pid/exe
+ln -sfn "$T" "$T/sym"
+rm -rf "$T/rbrun2"; mkdir -p "$T/rbrun2"
+printf 'in_place=1\nold_jdk=%s\nold_real=%s\nold_jh=%s\nbackup=ok\n' "$T/oldjdk" "$T/sym/jdk" "$T/sym/jdk" >"$T/rbrun2/state"
+# shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
+( PATH="$T/bin:$PATH"
+  . "$T/tree/patching/java-patch/java-patch.sh"
+  RUN_DIR="$T/rbrun2"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; JSON_OUT=0; VERBOSE=0
+  OLD_JH="$T/sym/jdk"; OLD_REAL="$T/sym/jdk"
+  cmd_rollback >/dev/null 2>"$T/rberr2"; printf 'rc=%s\n' "$?" ) >"$T/rbout2" 2>&1
+grep -q 'rc=0' "$T/rbout2" && bad "rollback ran under a live JVM through a symlinked parent" || ok
+grep -q 'JVMs run on' "$T/rberr2" && ok || bad "the symlinked-parent rollback refusal was not named"
+[ -d "$T/jdk" ] && [ -d "$T/oldjdk" ] && ok || bad "rollback moved a JDK under a live JVM through a symlinked parent"
+
 echo "java-patch will-stop gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -121,9 +121,12 @@ carry_cacerts() {
 # restart, or a verify that says nothing is left on the old JDK, because ps failed, is the false success this guards
 ps_unreadable_msg() { printf '%s' "cannot read the process list (ps failed, $PROC_DIR unreadable)"; }
 running_on() {
+  # the argument is canonicalised here: /proc/pid/exe is canonical, so a JDK reached through a symlinked
+  # parent (/u01 -> a data mount) would otherwise never match and the caller would read 'no JVM runs'
+  local target; target="$(readlink -f "$1" 2>/dev/null)"; [ -n "$target" ] || target="$1"   # empty would make the pattern '/*' and match every JVM
   local l; l="$(ps_pid_args)" || return 1
   printf '%s\n' "$l" | awk '$2 ~ /\/bin\/java$/ {print $1}' | while read -r p; do local exe; exe="$(readlink -f "/proc/$p/exe" 2>/dev/null)"; [ -z "$exe" ] && exe="$(readlink -f "$(ps -o args= -p "$p" | awk '{print $1}')" 2>/dev/null)"
-    case "$exe" in "$1"/*) printf '%s %s\n' "$p" "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -oE 'weblogic\.Name=[^ ]+|ords\.war|ords serve|oracle\.dbtools[^ ]*|NodeManager|ServiceManager|adminsrvr|distsrvr|recvsrvr|pmsrvr|emagent' | head -1 | sed 's/weblogic.Name=//')";; esac; done
+    case "$exe" in "$target"/*) printf '%s %s\n' "$p" "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -oE 'weblogic\.Name=[^ ]+|ords\.war|ords serve|oracle\.dbtools[^ ]*|NodeManager|ServiceManager|adminsrvr|distsrvr|recvsrvr|pmsrvr|emagent' | head -1 | sed 's/weblogic.Name=//')";; esac; done
 }
 jvm_count() { local l; l="$(running_on "$1")" || { printf 'null'; return 1; }; printf '%s' "$l" | grep -c .; return 0; }   # 'null' in the JSON, status 1, when the list is unreadable
 jvm_names() { local l; l="$(running_on "$1")" || { printf '? (%s)' "$(ps_unreadable_msg)"; return 1; }; printf '%s\n' "$l" | awk '{print $2}' | tr '\n' ' '; }
@@ -381,6 +384,10 @@ cmd_rollback() {
   local injd; injd="$(state_get old_jdk || true)"
   [ -n "${OLD_JH:-}" ] || OLD_JH="$(state_get old_jh || true)"   # a bare 'rollback --run-dir R' has no --java-home
   if [ -n "$injd" ] && [ -d "$injd" ] && [ -n "${OLD_JH:-}" ] && [ ! -e "$OLD_JH" ]; then
+    # the same hazard apply refuses: moving the old build back under a JVM that runs on it
+    local rin
+    rin="$(running_on "$injd")" || die "cannot read the process list - cannot tell whether JVMs run on $injd; refusing the in-place restore"
+    [ -z "$rin" ] || die "in-place: JVMs run on the old build $injd - stop them first"
     confirm "mv $injd $OLD_JH (the apply did not finish)?" || die "aborted"
     [ "$DRY_RUN" = 1 ] || mv "$injd" "$OLD_JH" || die "cannot restore the old JDK from $injd"
   fi
@@ -390,6 +397,14 @@ cmd_rollback() {
   local rfail=0 residue=""
   if [ "$(state_get in_place || true)" = 1 ] && [ -n "$(state_get old_jdk || true)" ] && [ -d "$(state_get old_jdk || true)" ]; then
     local oldbak failed; oldbak="$(state_get old_jdk)"; failed="$OLD_JH.failed-$(date +%Y%m%d%H%M%S)"
+    # an in-place rollback renames the JDK directories under whatever JVMs are live - exactly the hazard apply
+    # refuses (:299-300). Refuse here too: stop them first (wls-patch restore stops them itself, and the
+    # composed quarter stops before it calls this). running_on canonicalises its argument itself.
+    local rr
+    rr="$(running_on "$OLD_JH")" || die "cannot read the process list - cannot tell whether JVMs run on $OLD_JH; refusing the in-place rollback"
+    [ -z "$rr" ] || die "in-place: JVMs run on $OLD_JH - stop them first (an in-place rollback moves the JDK under live JVMs)"
+    rr="$(running_on "$oldbak")" || die "cannot read the process list - cannot tell whether JVMs run on $oldbak; refusing the in-place rollback"
+    [ -z "$rr" ] || die "in-place: JVMs run on the old build $oldbak - stop them first"
     confirm "mv $OLD_JH $failed && mv $oldbak $OLD_JH ?" || die "aborted"
     if [ "$DRY_RUN" = 1 ]; then :
     elif mv "$OLD_JH" "$failed"; then
