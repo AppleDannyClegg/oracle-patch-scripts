@@ -173,7 +173,7 @@ cmd_inspect() {
 }
 
 cmd_latest() {
-  discover; reuse_or_init latest; mos_login
+  discover; init_run_dir latest; mos_login
   local q; case "$OLD_MAJOR" in 8) q="JDK 8U";; *) q="JDK $OLD_MAJOR.0.";; esac
   log "Searching MOS for '$q' ($(mos_platform_name))"
   local rows; rows="$(mos_name_search "$q" | grep -iE "JDK[^|]*\b${OLD_MAJOR}[.u_]" | grep -viE 'windows|solaris|aix|arm|aarch|macos|docs|source' || true)"
@@ -183,14 +183,14 @@ cmd_latest() {
   echo "  newest on MOS: ${best%%|*}  ${best#*|}   (installed: $OLD_VER)"; state_set latest "${best%%|*}"; PATCHES="${best%%|*}"
 }
 cmd_download() {
-  discover; reuse_or_init download; local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "download needs <dir>"; local id="${ARGS[1]:-${PATCHES:-$(state_get latest 2>/dev/null || true)}}"; [ -n "$id" ] || die "no patch id: run latest first or give one"
+  discover; init_run_dir download; local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "download needs <dir>"; local id="${ARGS[1]:-${PATCHES:-$(state_get latest 2>/dev/null || true)}}"; [ -n "$id" ] || die "no patch id: run latest first or give one"
   mkdir -p "$dir"; mos_login; local z; z="$(mos_download "$id" "$dir")" || die "download failed"; mos_cleanup
   case "$z" in *.zip) log "unzipping $z"; unzip -q -o "$z" -d "$dir" '*.tar.gz' 2>/dev/null || unzip -q -o "$z" -d "$dir";; esac
   ls -la "$dir"
 }
 
 cmd_preflight() {
-  discover; reuse_or_init preflight; pick_tar; local fail=0
+  discover; init_run_dir preflight; pick_tar; local fail=0
   log "Preflight: $OLD_JH ($OLD_VER) -> $NEW_JH ($NEW_VER) from $TARBALL"
   [ -d "$NEW_JH" ] && { [ -x "$NEW_JH/bin/java" ] && log "$NEW_JH already unpacked ($(jdk_version "$NEW_JH"))" || { err "$NEW_JH exists but is not a JDK"; fail=1; }; }
   [ "$NEW_VER" = "$OLD_VER" ] && { [ "$FORCE" = 1 ] && warn "the tarball is the same build as the current JDK ($OLD_VER) - going on because of --force" || { err "the tarball is the same build as the current JDK ($OLD_VER) (--force to reinstall)"; fail=1; }; }
