@@ -111,7 +111,7 @@ live_facts() { # no pack/report: what sqlplus/opatch on this host say
   if [ "$ps_ok" = 0 ]; then warn "cannot read the process list (ps failed, $PROC_DIR unreadable) - ${SID:+databases other than $SID, }WebLogic and ORDS were NOT discovered; the Environment section is incomplete${SID:+}${SID:-; pass --sid SID for the database facts}"
     echo "DISCOVERY=NOT done - cannot read the process list (ps failed, $PROC_DIR unreadable)" >>"$FACTS_FILE"; fi
   if [ -n "$SID" ]; then sids="$SID"; elif [ "$ps_ok" = 1 ]; then sids="$(db_instances)" || true; fi
-  { echo "HOST=$HOST"; echo "FQDN=$(hostname -f 2>/dev/null || hostname)"; echo "OS=$(sed -n 's/^PRETTY_NAME="\(.*\)"/\1/p' /etc/os-release 2>/dev/null | head -1 || uname -sr) kernel $(uname -r)"
+  { echo "HOST=$HOST"; echo "FQDN=$(hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n)"; echo "OS=$(sed -n 's/^PRETTY_NAME="\(.*\)"/\1/p' /etc/os-release 2>/dev/null | head -1 || uname -sr) kernel $(uname -r)"
     for sid in $sids; do
       # a failed sql_ok was a silent 'continue': the database vanished from the SR (unreadable gate connect mode)
       if ! sql_ok "$sid"; then warn "$sid: sqlplus / as sysdba does not answer (instance down, no home for $sid in oratab, or SQL_CONNECT wrong) - version, name and patch facts NOT collected; fill them in by hand"
@@ -228,7 +228,7 @@ write_sr() {
     [ -n "$(fact WLS_VERSION)" ] && printf -- '- WebLogic: %s; JDK: %s\n' "$(fact WLS_VERSION)" "$(fact WLS_JAVA || echo '?')"
     [ -n "$(fact ORDS_VERSION)" ] && printf -- '- ORDS: %s\n' "$(fact ORDS_VERSION)"; [ -n "$(facts_like APEX_)" ] && printf -- '- APEX: %s\n' "$(facts_like APEX_ | head -1 | cut -d= -f2)"
     [ -n "$(fact GG_HOME)" ] && printf -- '- GoldenGate home: %s\n' "$(fact GG_HOME)"; [ -n "$(fact EXADATA)" ] && printf -- '- Exadata: %s\n' "$(fact EXADATA)"
-    printf -- '- Host: %s (%s), OS: %s\n' "$(fact HOST || echo "$HOST")" "$(fact FQDN || hostname)" "$(fact OS || echo 'TODO OS release and kernel')"
+    printf -- '- Host: %s (%s), OS: %s\n' "$(fact HOST || echo "$HOST")" "$(fact FQDN || hostname 2>/dev/null || uname -n)" "$(fact OS || echo 'TODO OS release and kernel')"
     [ -n "$(facts_like LISTENER_)" ] && printf -- '- Listeners: %s\n' "$(facts_like LISTENER_ | cut -d= -f1 | sed 's/LISTENER_//' | tr '\n' ' ')"
     printf -- '- RAC / Data Guard / Exadata / ZDLRA / OKV in use: TODO\n- Support Identifier (CSI): %s\n- Company / site: %s\n\n' "${SR_CSI:-TODO}" "${SR_COMPANY:-TODO}"
     printf '## Recent Changes\n\n'; local ch; ch="$(recent_changes)"; [ -n "$ch" ] && printf '%s\n' "$ch" || echo "- TODO: patches, parameter changes, deployments, OS updates, hardware/network changes in the last 30 days (none known?)"; echo

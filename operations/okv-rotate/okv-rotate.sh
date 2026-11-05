@@ -252,7 +252,7 @@ okv_standby_check() {
 # cmd_plan: the ordered steps for this node, read-only. The console step is manual, so plan is the runbook
 # printed for the node in front of you, with the live state filled in and the 22:32 timing caveat.
 cmd_plan() {
-  local node="${OKV_NODE:-$(hostname -s)}" f loc host ts
+  local node="${OKV_NODE:-$(hostname -s 2>/dev/null || uname -n)}" f loc host ts
   printf 'OKV endpoint certificate rotation - plan for %s\n\n' "$node"
   f="$(okv_ora_file)" || { printf 'no okvclient.ora found: set OKV_HOME or --ora before planning\n'; return 1; }
   loc="$(okv_field "$f" SSL_WALLET_LOC)"; host="$(okv_field "$f" OKV_HOSTNAME)"; ts="$(okv_field "$f" UPDATE_TIMESTAMP)"
@@ -339,7 +339,7 @@ EOF
 cmd_run() { cmd_check || true; cmd_wait || return $?; cmd_verify; }
 
 cmd_check() {
-  local node="${OKV_NODE:-$(hostname -s)}" od
+  local node="${OKV_NODE:-$(hostname -s 2>/dev/null || uname -n)}" od
   od="${CERT_OUT:-$HOME/okv-rotate}/$(date '+%Y%m%d-%H%M%S')-${node}"
   report_init "$od"
   [ "$DO_REPORT" = 1 ] && { h1 "OKV endpoint certificate rotation - $node"; para "Read-only. Console rotation is step 2 of the runbook and is not done here."; }
@@ -399,7 +399,7 @@ cmd_wait() {
 
 # verify = check plus the explicit step-4/5 assertions, as an exit code for the change window
 cmd_verify() {
-  local node="${OKV_NODE:-$(hostname -s)}" od; log "verifying $node"; VERIFY_STRICT=1
+  local node="${OKV_NODE:-$(hostname -s 2>/dev/null || uname -n)}" od; log "verifying $node"; VERIFY_STRICT=1
   od="$RUN_DIR/report"; report_init "$od"
   okv_check_node
   rm -rf "$od"
