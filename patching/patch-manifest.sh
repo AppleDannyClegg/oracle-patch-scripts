@@ -66,10 +66,20 @@ wls_homes() {
   } 3>&2 2>/dev/null | while read -r h; do [ -d "$h/wlserver" ] && echo "$h"; done | sort -u
 }
 
+# wls_version <home>: the WebLogic release. registry.xml (<home>/inventory/ from 12c, <home>/ for 10.3.6): the version
+# on the tag named WebLogic Server or Fusion Middleware Infrastructure, attributes in any order, the tag on any number
+# of lines; then wlserver/.product.properties; then any WebLogic-release-shaped version in the 12c registry (a
+# co-installed product of the same release). OPatch's 13.9 is never read as a release. Kept IDENTICAL in
+# patch-manifest.sh, wls-patch.sh and lib/oracle-lib.sh (they are self-contained): tests/wls-version.sh checks it.
 wls_version() {
-  local v
-  v="$(sed -n 's/.*name="WebLogic Server"[^>]*version="\([0-9.]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null | head -1)"
-  [ -n "$v" ] || v="$(sed -n 's/^WLS_PRODUCT_VERSION=//p' "$1/wlserver/.product.properties" 2>/dev/null)"
+  local v="" r rel='(10\.3|12\.[12]|14\.1)\.[0-9.]+'
+  for r in "$1/inventory/registry.xml" "$1/registry.xml"; do
+    [ -f "$r" ] || continue
+    v="$(tr '\n' ' ' <"$r" | grep -oE '<[^>]*name="(Oracle )?(WebLogic Server|Fusion Middleware Infrastructure)[^"]*"[^>]*>' | grep -oE "version=\"$rel\"" | head -1 | cut -d'"' -f2)"
+    [ -n "$v" ] && break
+  done
+  [ -n "$v" ] || v="$(sed -n 's/^WLS_PRODUCT_VERSION=//p' "$1/wlserver/.product.properties" 2>/dev/null | head -1)"
+  [ -n "$v" ] || [ ! -f "$1/inventory/registry.xml" ] || v="$(tr '\n' ' ' <"$1/inventory/registry.xml" | grep -oE "version=\"$rel\"" | head -1 | cut -d'"' -f2)"
   printf '%s' "$v"
 }
 

@@ -243,6 +243,23 @@ discover_java_home() {
   return 1
 }
 
+# wls_version <home>: the WebLogic release. registry.xml (<home>/inventory/ from 12c, <home>/ for 10.3.6): the version
+# on the tag named WebLogic Server or Fusion Middleware Infrastructure, attributes in any order, the tag on any number
+# of lines; then wlserver/.product.properties; then any WebLogic-release-shaped version in the 12c registry (a
+# co-installed product of the same release). OPatch's 13.9 is never read as a release. Kept IDENTICAL in
+# patch-manifest.sh, wls-patch.sh and lib/oracle-lib.sh (they are self-contained): tests/wls-version.sh checks it.
+wls_version() {
+  local v="" r rel='(10\.3|12\.[12]|14\.1)\.[0-9.]+'
+  for r in "$1/inventory/registry.xml" "$1/registry.xml"; do
+    [ -f "$r" ] || continue
+    v="$(tr '\n' ' ' <"$r" | grep -oE '<[^>]*name="(Oracle )?(WebLogic Server|Fusion Middleware Infrastructure)[^"]*"[^>]*>' | grep -oE "version=\"$rel\"" | head -1 | cut -d'"' -f2)"
+    [ -n "$v" ] && break
+  done
+  [ -n "$v" ] || v="$(sed -n 's/^WLS_PRODUCT_VERSION=//p' "$1/wlserver/.product.properties" 2>/dev/null | head -1)"
+  [ -n "$v" ] || [ ! -f "$1/inventory/registry.xml" ] || v="$(tr '\n' ' ' <"$1/inventory/registry.xml" | grep -oE "version=\"$rel\"" | head -1 | cut -d'"' -f2)"
+  printf '%s' "$v"
+}
+
 detect_versions() {
   WLS_FAMILY="unknown"
   if [ -x "$ORACLE_HOME/OPatch/opatch" ]; then
@@ -251,17 +268,8 @@ detect_versions() {
     WLS_FAMILY="bsu"
   fi
 
-  # WebLogic version from registry.xml (most reliable, no JVM needed)
-  if [ -f "$ORACLE_HOME/inventory/registry.xml" ]; then
-    WLS_VERSION="$(sed -n 's/.*name="WebLogic Server"[^>]*version="\([0-9.]*\)".*/\1/p' "$ORACLE_HOME/inventory/registry.xml" | head -1)"
-    [ -z "$WLS_VERSION" ] && WLS_VERSION="$(grep -o 'version="[0-9.]*"' "$ORACLE_HOME/inventory/registry.xml" | head -1 | cut -d'"' -f2)"
-  fi
-  if [ -z "$WLS_VERSION" ] && [ -f "$ORACLE_HOME/wlserver/.product.properties" ]; then
-    WLS_VERSION="$(sed -n 's/^WLS_PRODUCT_VERSION=//p' "$ORACLE_HOME/wlserver/.product.properties")"
-  fi
-  if [ -z "$WLS_VERSION" ] && [ -f "$ORACLE_HOME/registry.xml" ]; then # 10.3.6 style
-    WLS_VERSION="$(sed -n 's/.*name="WebLogic Server"[^>]*version="\([0-9.]*\)".*/\1/p' "$ORACLE_HOME/registry.xml" | head -1)"
-  fi
+  # WebLogic version from registry.xml (most reliable, no JVM needed), then .product.properties
+  WLS_VERSION="$(wls_version "$ORACLE_HOME")"
 
   if [ "$WLS_FAMILY" = opatch ]; then
     OPATCH_VERSION="$("$ORACLE_HOME/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p' | head -1)"
