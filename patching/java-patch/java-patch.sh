@@ -115,7 +115,7 @@ discover() {
 # tar handling: TARBALL from ARGS/--tar/dir; NEW_* from it
 pick_tar() {
   local a="${ARGS[0]:-$TARBALL}"; [ -n "$a" ] || die "which JDK? give the tar.gz (or a directory holding one, or --tar)"
-  if [ -d "$a" ]; then local n; n="$(find "$a" -maxdepth 1 -iname 'jdk*.tar.gz' -o -maxdepth 1 -iname 'jdk*.tgz' 2>/dev/null | sort -V | tail -1)"; [ -n "$n" ] || die "no jdk*.tar.gz in $a"; TARBALL="$n"; else TARBALL="$a"; fi
+  if [ -d "$a" ]; then local n; n="$(find "$a" -maxdepth 1 \( -iname 'jdk*.tar.gz' -o -iname 'jdk*.tgz' -o -iname 'server-jre*.tar.gz' -o -iname 'jre*.tar.gz' \) 2>/dev/null | sort -V | tail -1)"; [ -n "$n" ] || die "no JDK tarball (jdk*/server-jre*/jre*.tar.gz) in $a"; TARBALL="$n"; else TARBALL="$a"; fi
   [ -f "$TARBALL" ] || die "$TARBALL not found"
   local top; top="$(tar -tzf "$TARBALL" 2>/dev/null | head -1 | cut -d/ -f1)"; [ -n "$top" ] || die "$TARBALL is not a readable tar.gz"
   tar -tzf "$TARBALL" 2>/dev/null | grep -qE "^$top/bin/java$" || die "$TARBALL has no $top/bin/java - not a JDK tarball"
