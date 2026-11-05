@@ -220,8 +220,16 @@ other_products() {
     sql_ok "$sid" || continue
     local pdbs=""; db_is_cdb "$sid" && pdbs="$(db_pdbs "$sid")" || pdbs="$sid"
     local p; for p in $pdbs; do
-      local av; av="$(with_pdb "$p" sql_val "$sid" "(select version_no||'|'||to_char(patch_applied_on,'YYYY-MM-DD') from apex_release)" 2>/dev/null)"
-      [ -z "$av" ] && continue
+      # an empty read is 'APEX not installed' (ORA-00942 on apex_release); any other failure is a read that
+      # did not happen, and its level is unknown - not absent (A-S2)
+      local av arc=0 aerr="$RAW/apex_${sid}_${p}.err"; av="$(with_pdb "$p" sql_lines "$sid" "(select version_no||'|'||to_char(patch_applied_on,'YYYY-MM-DD') from apex_release)" 2>"$aerr")" || arc=$?
+      if [ -z "$av" ]; then
+        [ "$arc" != 0 ] && ! grep -qiE 'ORA-00942' "$aerr" 2>/dev/null && {
+          local why; why="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$aerr" 2>/dev/null | cut -c1-80)"
+          row "APEX $sid/$p" "$sid" "apex_release unreadable (rc $arc)" "" "" "apex_release could not be read${why:+: $why} - APEX level unknown, not current" reported
+          finding WARN patch "APEX $sid/$p: apex_release could not be read (rc $arc${why:+, $why}) - its level is unknown, not absent"; }
+        continue
+      fi
       local latest=""; [ "$NO_NET" = 0 ] && latest="$(to 30 curl -sS https://download.oracle.com/otn_software/apex/ 2>/dev/null | grep -oE 'apex_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/apex_//' | sort -V | tail -1)"
       [ -z "$latest" ] && [ "$NO_NET" = 0 ] && latest="$(to 30 curl -sSI https://download.oracle.com/otn_software/apex/apex-latest.zip 2>/dev/null | grep -i 'content-disposition' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
       row "APEX $sid/$p" "$sid" "${av%%|*}" "${av#*|}" "${latest:-(public site not checked)}" "$([ -n "$latest" ] && ! version_ge "${av%%|*}" "$latest" && echo "newer release available: $latest")"
