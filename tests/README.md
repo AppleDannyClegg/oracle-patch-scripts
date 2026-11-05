@@ -4,6 +4,11 @@ Behavioural and static gates for the scripts in this repo. All of them need no d
 anywhere with bash; the container harness is the only one that needs docker. See the "Gates" section
 of the top-level [README](../README.md) for the full description of what each one proves.
 
+Run them all at once with `bash tests/run-all.sh` (or name a few: `bash tests/run-all.sh wls-quarter optchk-gate`). It runs
+every offline gate in parallel plus get-patches.ps1 (when pwsh is installed) and the tree-wide shellcheck, then prints
+one line per gate with its time and exit code. The docker gates are left out. false-success-gate is the long pole
+(about 22 minutes); the rest finish within about 2 minutes.
+
 | Gate | Kind | Proves |
 |---|---|---|
 | `check-parse.sh` | static | every value option's `case` arm calls `optchk` |
