@@ -211,7 +211,7 @@ wls_lines() {
 # '<FAMILY> BUNDLE PATCH' (WLS STACK PATCH BUNDLE, Coherence Cumulative Patch, RDA ... SPB) is emitted as
 # family OTHER rather than dropped silently, so the consumer sees it. 'fmw|<home>|<family>|<version>|<id>'
 fmw_lines() {
-  local h="$1" lsp="$2" line id desc up fam ver
+  local h="$1" lsp="$2" line id desc up fam ver acc=""
   # the families patch-status.sh :169 already names, as a regression net for a bundle patch that is not
   # '<FAMILY> BUNDLE PATCH' (BI PATCH, OHS, Coherence, ...): surfaced as OTHER, never dropped silently
   local shaped='Coherence|ADF BUNDLE|OPSS BUNDLE|OWSM BUNDLE|SOA BUNDLE|OSB BUNDLE|OHS|FMW PLATFORM|JDEV|WebCenter|OAM BUNDLE|OIM BUNDLE|FORMS|REPORTS|BI PATCH'
@@ -224,15 +224,21 @@ fmw_lines() {
       *" BUNDLE PATCH "*)
         fam="${up%% BUNDLE PATCH*}"; ver="${up#*BUNDLE PATCH }"; ver="${ver%% *}"
         [ "$fam" = "FMW PLATFORM" ] && continue
-        printf 'fmw|%s|%s|%s|%s\n' "$h" "$fam" "$ver" "$id" ;;
+        acc="${acc}${fam}|${ver}|${id}"$'\n' ;;
       *BUNDLE*|*SPB*|*CUMULATIVE*PATCH*)
-        printf 'fmw|%s|OTHER|%s|%s\n' "$h" "$desc" "$id" ;;
+        acc="${acc}OTHER|${desc}|${id}"$'\n' ;;
       *)
-        printf '%s' "$up" | grep -qiE "$shaped" && printf 'fmw|%s|OTHER|%s|%s\n' "$h" "$desc" "$id" ;;
+        printf '%s' "$up" | grep -qiE "$shaped" && acc="${acc}OTHER|${desc}|${id}"$'\n' ;;
     esac
   done <<EOF
 $(printf '%s\n' "$lsp" | tr -d '\r')
 EOF
+  [ -n "$acc" ] || return 0
+  # one line per family, keeping the greatest version, so two patches of the same family do not plan twice
+  printf '%s' "$acc" | awk -F'|' -v h="$h" '
+    $1=="OTHER" { print "fmw|" h "|OTHER|" $2 "|" $3; next }
+    { if (!($1 in best) || $2 > best[$1]) { best[$1]=$2; out[$1]="fmw|" h "|" $1 "|" $2 "|" $3 } }
+    END { for (k in out) print out[k] }' | sort
   return 0
 }
 

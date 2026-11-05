@@ -47,6 +47,8 @@ case "$1" in
     echo "39426213;WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)"
     echo "38887908;RDA release 26.2-2026421 for OFM 12.2.1.4 SPB"
     echo "38000001;ADF BUNDLE PATCH 12.2.1.4.260514"
+    echo "38000006;ADF BUNDLE PATCH 12.2.1.4.250101"
+    echo "38000005;JDBC19.30 BUNDLE PATCH 12.2.1.4.260216"
     echo "38000002;OPSS BUNDLE PATCH 12.2.1.4.260514"
     echo
     echo "OPatch succeeded." ;;
@@ -126,6 +128,11 @@ if [ -f "$OUT" ]; then
   # a bundle-shaped line that does not fit '<FAMILY> BUNDLE PATCH' must surface as OTHER, not vanish
   grep -q "^fmw|$H|OTHER|WLS STACK PATCH BUNDLE 12.2.1.4.260522" "$OUT" && ok || bad "FMW: the WLS STACK PATCH BUNDLE was dropped silently"
   grep -q "^fmw|$H|OTHER|RDA release 26.2-2026421 for OFM 12.2.1.4 SPB|" "$OUT" && ok || bad "FMW: the RDA SPB line was dropped silently"
+  # a versioned family token is emitted as-is; the consumer normalises it (a850512)
+  has "$OUT" "fmw|$H|JDBC19.30|12.2.1.4.260216|38000005"
+  # two patches of the same family: one line, the newest (Baymax P3)
+  [ "$(grep -c "^fmw|$H|ADF|" "$OUT")" = 1 ] && ok || bad "FMW: two ADF patches gave more than one fmw| line"
+  grep -q "^fmw|$H|ADF|12.2.1.4.250101" "$OUT" && bad "FMW: kept the older ADF line instead of the newest" || ok
   grep -q '^host|' "$OUT" && ok || bad "manifest has no host line"
   has "$OUT" "home|$C|db|19.27.0.0.0|12.2.0.1.44"
   has "$OUT" "patch|$C|37642901|Database Release Update : 19.27.0.0.250415 (37642901)"
