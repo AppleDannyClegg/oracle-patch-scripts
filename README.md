@@ -6,7 +6,7 @@ folders, `patching/`, `operations/` and `reports/`, one sub-folder per script wi
 `*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch` and
 `oracle-diag` sources `lib/oracle-lib.sh` from the top of the tree (two levels up), so copy the whole
 tree (`get.sh`, or `get.ps1` on Windows, does it) or a script folder together with `lib/`, never a single file.
-`get.sh` lays the tree down in `$PATCH_BASE/scripts` (default `/u01/patches/scripts`; `get.ps1` uses `.\patches\scripts`).
+`get.sh` lays the tree down in `$PATCH_BASE/scripts` (default `/u01/patches/scripts`; `get.ps1` uses `%USERPROFILE%\patches\scripts`).
 `$PATCH_BASE` is also where every download lands - the manifest and the patch zips, one subfolder per
 kind - so one folder holds everything (see [Where to put the files](#servers-without-internet-access)).
 
@@ -87,7 +87,7 @@ recent one. The last line of `run` is either `SUCCESS ...` or an error naming th
 
 ## Getting the scripts
 
-One line fetches everything into `$PATCH_BASE/scripts` (`/u01/patches/scripts` by default, `\.\patches\scripts` on Windows), no git or GitHub account needed.
+One line fetches everything into `$PATCH_BASE/scripts` (`/u01/patches/scripts` by default, `%USERPROFILE%\patches\scripts` on Windows), no git or GitHub account needed.
 
 **Mac, Linux or WSL** (bash):
 
