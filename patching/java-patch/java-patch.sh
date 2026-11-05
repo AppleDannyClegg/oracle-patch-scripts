@@ -122,7 +122,7 @@ pick_tar() {
     # 'sort -V' on the whole name sorts by prefix first ('server-jre' > 'jre' > 'jdk'), so a dir holding more
     # than one kind of JDK would silently install the older one - refuse rather than downgrade
     kinds="$(printf '%s\n' "$matches" | while IFS= read -r f; do b="$(basename "$f")"; printf '%s\n' "${b%%[0-9]*}"; done | sort -u | tr '\n' ' ')"
-    [ "$(printf '%s\n' "$kinds" | wc -w)" = 1 ] || die "$a holds more than one kind of JDK tarball ($kinds)- pass the exact tarball, not the directory"
+    [ "$(printf '%s\n' "$kinds" | wc -w | tr -d ' ')" = 1 ] || die "$a holds more than one kind of JDK tarball ($kinds)- pass the exact tarball, not the directory"
     TARBALL="$(printf '%s\n' "$matches" | sort -V | tail -1)"
   else TARBALL="$a"; fi
   [ -f "$TARBALL" ] || die "$TARBALL not found"
