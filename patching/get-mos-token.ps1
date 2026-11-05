@@ -115,10 +115,15 @@ if ($Paste) {
         Start-Sleep -Milliseconds 500
     }
     if (-not $token) { throw 'no token appeared on the clipboard - re-run with -Paste' }
-    # take it off the clipboard now: Windows clipboard history (Win+V) and cloud sync keep it readable
-    # by anything on the machine after this script exits
+    # overwrite the live clipboard, then try to drop the Windows Win+V history entry too (and cloud sync may
+    # already have mirrored it) - and be honest when we cannot clear the history
     try { Set-Clipboard -Value ' ' } catch {}
-    Write-Host 'cleared the clipboard'
+    $hist = $false
+    if ($env:OS -eq 'Windows_NT') {
+        try { [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType=WindowsRuntime]::ClearHistory(); $hist = $true } catch {}
+    }
+    if ($hist) { Write-Host 'clipboard and its history cleared' }
+    else { Write-Host 'clipboard overwritten - if Windows clipboard history (Win+V) is on, clear it there too (Win+V > Clear all)' }
 }
 if (-not $token) { throw 'no token given' }
 
