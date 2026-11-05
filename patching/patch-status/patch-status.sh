@@ -122,13 +122,24 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     # dba_registry_sqlpatch - and THAT read's status is kept: both used to be '2>/dev/null' with the status dropped, so a database
     # whose registry could not be read (ORA-00942, ORA-01031, SQL_TIMEOUT) had no datapatch row at all - the only report whose job is
     # 'every home against the quarter' omitted the database silently (Marvin 23:42 run, Multivac 23:45 line ref, 1 Nov)
-    local rows rrc=0; rows="$(sql_lines "$sid" "select con||'|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from (select (select name from v\$containers c where c.con_id=p.con_id) con, p.* from cdb_registry_sqlpatch p where p.action='APPLY' and p.description not like '%OJVM%') group by con order by con;" 2>/dev/null)" || true
-    local rerr=""
-    if [ -z "$rows" ]; then rows="$(sql_lines "$sid" "select '$sid|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from dba_registry_sqlpatch where action='APPLY' and description not like '%OJVM%';" 2>"$RAW/registry_$sid.err")" || rrc=$?
-      rerr="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$RAW/registry_$sid.err" 2>/dev/null | cut -c1-80)"; fi
+    # the cdb view's OWN status is kept now: when it fails on a CDB (a permission or timeout, not a missing view),
+    # falling back to dba_registry_sqlpatch reads the root only and every PDB's datapatch level silently vanishes
+    local rows rrc=0 crc=0; rows="$(sql_lines "$sid" "select con||'|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from (select (select name from v\$containers c where c.con_id=p.con_id) con, p.* from cdb_registry_sqlpatch p where p.action='APPLY' and p.description not like '%OJVM%') group by con order by con;" 2>"$RAW/registry_${sid}_cdb.err")" || crc=$?
+    local rerr="" rview="cdb_registry_sqlpatch"
+    if [ -z "$rows" ]; then
+      # an empty read is the non-CDB case (no such view) - but only fall back when that is what happened: a CDB
+      # whose cdb read failed must say so, not switch to a root-only view and look complete
+      if [ "$crc" = 0 ] || ! db_is_cdb "$sid"; then
+        rows="$(sql_lines "$sid" "select '$sid|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from dba_registry_sqlpatch where action='APPLY' and description not like '%OJVM%';" 2>"$RAW/registry_$sid.err")" || rrc=$?
+        rerr="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$RAW/registry_$sid.err" 2>/dev/null | cut -c1-80)"; rview="dba_registry_sqlpatch"
+      else
+        rrc="$crc"; rview="cdb_registry_sqlpatch"
+        rerr="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$RAW/registry_${sid}_cdb.err" 2>/dev/null | cut -c1-80)"
+      fi
+    fi
     local home; home="$(db_home_of "$sid")"
-    [ "$rrc" = 0 ] || { row "Database $sid" "$home" "datapatch level unreadable (rc $rrc)" "" "" "registry_sqlpatch could not be read${rerr:+: $rerr} - run datapatch -prereq / query dba_registry_sqlpatch by hand" reported
-      finding WARN patch "Database $sid: dba_registry_sqlpatch could not be read (rc $rrc${rerr:+, $rerr}) - its datapatch level is unknown, not current"; continue; }
+    [ "$rrc" = 0 ] || { row "Database $sid" "$home" "datapatch level unreadable (rc $rrc)" "" "" "$rview could not be read${rerr:+: $rerr} - run datapatch -prereq / query dba_registry_sqlpatch by hand" reported
+      finding WARN patch "Database $sid: $rview could not be read (rc $rrc${rerr:+, $rerr}) - its datapatch level is unknown, not current${rview:+ (the root-only dba_ view was NOT substituted)}"; continue; }
     local homeru homelsp hrc=0 hnote=""; homelsp="$(lsp_read "$home/OPatch/opatch" 120)" || hrc=$?
     # a home whose lspatches failed cannot be compared with the registry: the row says so instead of rendering clean with an
     # empty note (Colossus 23:33 - warn() goes to the terminal and the log, never to the table or FINDINGS)
