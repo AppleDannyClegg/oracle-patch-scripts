@@ -1,0 +1,4 @@
+# Shell scripts must keep LF on every platform. With Git for Windows' default core.autocrlf=true a
+# checked-out *.sh gets CRLF, and a CRLF shebang makes the kernel look for 'bash\r' ("no such file or
+# directory"). Force LF for shell scripts, so a clone behaves like the tree get.sh/get.ps1 download.
+*.sh text eol=lf
