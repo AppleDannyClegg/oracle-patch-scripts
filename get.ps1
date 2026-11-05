@@ -100,7 +100,19 @@ try {
 
     $moved = $false
     if (Test-Path -LiteralPath $Dest) {
-        if (Test-Path -LiteralPath "$Dest.old") { Remove-Tree "$Dest.old" }
+        if (Test-Path -LiteralPath "$Dest.old") {
+            # never force-delete downloaded patches: get-patches.ps1 defaults its output to .\patches-<host>,
+            # inside this tree, so the previous copy can hold multi-GB zips. Keep it aside and say so instead.
+            $keep = @(Get-ChildItem -LiteralPath "$Dest.old" -Force -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -like 'patches-*' -or $_.Name -like '*.zip' -or $_.Name -like '*.tar.gz' -or $_.Name -like '*.tgz' })
+            if ($keep.Count) {
+                $aside = "$Dest.old-" + (Get-Date -Format 'yyyyMMddHHmmss')
+                Move-Item -LiteralPath "$Dest.old" -Destination $aside
+                Write-Host "kept the previous copy as $aside (it holds $(($keep | ForEach-Object { $_.Name }) -join ', ')) - delete it when you are done, or run get-patches.ps1 with -Dest outside the tree"
+            } else {
+                Remove-Tree "$Dest.old"
+            }
+        }
         Move-Item -LiteralPath $Dest -Destination "$Dest.old"
         Write-Host "previous copy moved to $Dest.old"
         $moved = $true
