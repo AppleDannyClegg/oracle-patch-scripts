@@ -935,6 +935,10 @@ cmd_apply() {
   while IFS='|' read -r _ p kind; do [ "$kind" = spb ] && spb_path="$p"; done <<<"$list"
   if [ -n "$spb_path" ]; then
     log "Applying the Stack Patch Bundle with SPBAT: $spb_path"
+    # remember the PSU level so verify can tell whether the inventory actually moved (the bundle's own date and
+    # the PSU version inside it are not comparable strings - an SPB is dated later than the PSU it carries)
+    local before0="${PSU_LEVEL:-none}"
+    [ "$DRY_RUN" = 1 ] || state_set psu_before "$before0"
     ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) || { err "SPBAT apply failed. See $LOG_FILE and the SPBAT logs"; state_set failed_patch SPB; return 1; }
     if [ "$DRY_RUN" = 1 ]; then
       log "dry-run: not recording the SPB as applied"   # a dry run must not change a real run's state
@@ -942,6 +946,15 @@ cmd_apply() {
     fi
     detect_versions
     state_set spb_applied "$spb_path"
+    # SPBAT's exit status alone is weak: say straight away whether the inventory moved. A WARN here rather than a
+    # verify ERROR, because 'run' treats a verify failure as a reason to roll back - and re-applying a bundle that
+    # is already installed legitimately changes nothing.
+    if [ -n "$before0" ] && [ "$before0" != none ] && [ "${PSU_LEVEL:-}" = "$before0" ]; then
+      warn "SPBAT reported success but the PSU is unchanged at ${PSU_LEVEL:-none} (bundle $(basename "$spb_path")) - if this bundle was already applied that is expected; if not, read the SPBAT log"
+      state_set spb_psu_unchanged 1
+    elif [ -n "$before0" ] && [ "$before0" != none ]; then
+      log "the bundle moved the PSU from $before0 to ${PSU_LEVEL:-none}"
+    fi
     log "SPBAT apply finished (SPB $spb_path)"
     return 0
   fi
@@ -1002,13 +1015,12 @@ cmd_verify() {
     # version (WLS_SPB_12.2.1.4.<V>), so a partial SPBAT that exits 0 is not read as success
     local rci=0
     "$ORACLE_HOME/OPatch/opatch" lspatches >/dev/null 2>&1 || rci=$?
-    local want_spb=""
-    want_spb="$(basename "$(state_get spb_applied)" | sed -n 's/^WLS_SPB_\([0-9][0-9.]*\)$/\1/p')"
     if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
-    elif [ -n "$want_spb" ] && [ -n "$PSU_LEVEL" ] && version_ge "$PSU_LEVEL" "$want_spb"; then
-      log "inventory PSU $PSU_LEVEL is at or above the bundle's $want_spb"
+    elif [ -z "$PSU_LEVEL" ]; then err "the inventory reports no WLS Patch Set Update after an SPB apply - SPBAT said success; read its log"; ok=0
+    elif [ "$(state_get spb_psu_unchanged || true)" = 1 ]; then
+      warn "the PSU is still $(state_get psu_before) - SPBAT reported success but the inventory has not moved (apply said so; check the SPBAT log unless this bundle was already applied)"
     else
-      warn "inventory PSU is '${PSU_LEVEL:-none}' and the bundle is '${want_spb:-unknown}' - SPBAT reported success; if the bundle's PSU is not there, read its log"
+      log "inventory PSU is $PSU_LEVEL (was $(state_get psu_before || echo unknown) before the bundle)"
     fi
   fi
   if [ -z "$expected" ] && [ -n "$pdir" ]; then

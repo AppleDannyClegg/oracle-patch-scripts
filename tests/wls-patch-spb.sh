@@ -78,10 +78,12 @@ grep -q -- '-phase precheck' "$T/spbat.log" && bad "SPBAT precheck ran on an OPa
 PD3="$T/patches-apply"; mk_spb "$PD3"; : >"$T/spbat.log"; : >"$T/opatch.log"
 rc="$(run "$OH" apply "$PD3" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
 grep -qx -- '-phase apply -oracle_home '"$OH" "$T/spbat.log" && ok || bad "SPBAT apply not run/arg-spaced: [$(cat "$T/spbat.log")]"
+# the stub inventory never moves, so apply must SAY so rather than treat the exit status as success
+grep -q 'SPBAT reported success but the PSU is unchanged' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an unchanged PSU after SPBAT was not reported: $(lastlog)"
 grep -q 'opatch apply' "$T/opatch.log" && bad "opatch apply ran alongside SPBAT" || ok
 rc="$(run "$OH" verify --oracle-home "$OH" --java-home "$T/jdk")"
 [ "$rc" = 0 ] && ok || bad "verify after an SPB apply exited $rc: $(lastlog)"
-grep -Eq 'inventory PSU .*bundle|inventory PSU is' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not compare the inventory PSU with the bundle: $(lastlog)"
+grep -Eq 'SPBAT reported success but the PSU is unchanged|the PSU is still|the bundle moved the PSU|inventory PSU is' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not compare the inventory PSU before/after the bundle: $(lastlog)"
 rc="$(run "$OH" rollback --yes)"
 grep -q -- 'nrollback' "$T/opatch.log" && ok || bad "rollback did not use the SPB's 'opatch nrollback': [$(cat "$T/opatch.log")]"
 grep -q -- '-idFile .*rollback_patchlist.txt' "$T/opatch.log" && ok || bad "nrollback without the README's -idFile: [$(cat "$T/opatch.log")]"
