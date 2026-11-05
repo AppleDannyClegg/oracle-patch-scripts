@@ -18,7 +18,7 @@ What it looks up, for everything in the manifest:
   Database or client home (e.g. a 19c client)
   - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it when the home's OPatch is
     older than 12.2.0.1.40 or than the RU's README asks for
-  OPatch: after the downloads, each PSU/SPB/RU README's "OPatch ... or later" is compared with the OPatch the
+  OPatch: after the downloads, each PSU/RU README's (an SPB brings and installs its own OPatch) "OPatch ... or later" is compared with the OPatch the
   manifest says is installed (the same rule wls-patch.sh and db-patch.sh apply on the server), and the kit is
   fetched and checked against it here, so a too-old OPatch is not first found on a server with no internet.
   EM agent home
@@ -336,14 +336,17 @@ function Get-DbPlan($Db) {
         return
     }
     # ends at "(" or the end: the " - CMAN" / " - GSM" RUs are not for this home (as db-patch.sh)
-    $ruPattern = "(?i)^Database Release Update\s*:?\s*$major\.(\d+)\.0\.0\.(\d{6})\s*(?:\(|$)"
+    # MOS titled RUs '19.N.0.0.<yymmdd>' up to 19.32 and '19.33.0.0.0' from 19.33 on (live, 5 Nov 2026), so the
+    # RU number N orders them, and the date only breaks a tie
+    $ruPattern = "(?i)^Database Release Update\s*:?\s*$major\.(\d+)\.0\.0\.(\d{6}|0)\s*(?:\(|$)"
+    $ruKey = { param([string] $t) $g = [regex]::Match($t, $ruPattern).Groups; [int64]$g[1].Value * 1000000 + [int64]$g[2].Value }
     $rows = @(Get-MosPatchRows $script:ProductDatabase $dbRelease $script:PlatformLinux -Recommended)
     $newest = $rows | Where-Object { $_.Abstract -match $ruPattern } |
-        Sort-Object { [regex]::Match($_.Abstract, $ruPattern).Groups[2].Value } -Descending | Select-Object -First 1
+        Sort-Object { & $ruKey $_.Abstract } -Descending | Select-Object -First 1
     $have = @($Db.Patches | Where-Object { $_.Description -match $ruPattern } |
-            ForEach-Object { [regex]::Match($_.Description, $ruPattern).Groups[2].Value } | Sort-Object -Descending)[0]
+            ForEach-Object { & $ruKey $_.Description } | Sort-Object -Descending)[0]
     if (-not $newest) { Write-Warning "$($Db.Home): MOS lists no Database Release Update for $major - get it from MOS Doc 2118136.2 and pass -Patch"; return }
-    if (-not $have -or [regex]::Match($newest.Abstract, $ruPattern).Groups[2].Value -gt $have) {
+    if (-not $have -or (& $ruKey $newest.Abstract) -gt $have) {
         $installed = @($Db.Patches | Where-Object { $_.Description -match $ruPattern } | ForEach-Object { $_.Description })[0]
         $release = "$major.0.0.0.0"
         New-PlanItem 'db' "Database Release Update ($($Db.Home))" $installed $newest $release $Db.Home
@@ -546,7 +549,9 @@ function Get-OPatchNeeds($Manifest, $Downloaded) {
     $byHome = @{}
     foreach ($d in $Downloaded) {
         $it = $d.Item
-        if (-not $it.For -or -not $d.Saved -or $it.Kind -notin @('wls', 'spb', 'db') -or $it.Patch -in $kits) { continue }
+        # not 'spb': a Stack Patch Bundle carries its own OPatch and SPBAT -phase apply upgrades it 'from any version'
+        # (real SPB README, 5 Nov 2026) - the OPatch its README names is the one it installs, not a minimum
+        if (-not $it.For -or -not $d.Saved -or $it.Kind -notin @('wls', 'db') -or $it.Patch -in $kits) { continue }
         $wls = $Manifest.Wls | Where-Object { $_.Home -eq $it.For } | Select-Object -First 1
         $db = $Manifest.Homes | Where-Object { $_.Home -eq $it.For -and $_.Kind -eq 'db' } | Select-Object -First 1
         if ($wls) { $installed = $wls.OPatch } elseif ($db) { $installed = $db.OPatch } else { continue }

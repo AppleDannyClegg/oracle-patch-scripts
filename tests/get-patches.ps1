@@ -155,6 +155,19 @@ try {
     $jdkItem = $plan | Where-Object { $_.Kind -eq 'jdk' } | Select-Object -First 1
     Check ($jdkItem.Installed -eq '1.8.0_471') "JDK compared with the WebLogic JDK, not the EM agent's: [$($jdkItem.Installed)]"
 
+    # ---- from 19.33 MOS titles the RU with no date: 'DATABASE RELEASE UPDATE 19.33.0.0.0' (live, 5 Nov 2026) ----
+    $savedDbRows = $script:dbRows
+    $script:dbRows = $script:dbRows.Replace('</results>', (Row 39600008 'DATABASE RELEASE UPDATE 19.33.0.0.0' '2026-10-10') + '</results>')
+    $n33 = @(Get-PatchPlan $m | ForEach-Object { $_.Patch })
+    Check ($n33 -contains '39600008') "an undated RU title 19.33.0.0.0 is found and is newer than 19.31.0.0.261031 (got $($n33 -join ','))"
+    Check (-not ($n33 -contains '39600003')) "the dated 19.31 RU is not planned once 19.33 is listed"
+    $on33 = Join-Path $tmp 'on33.txt'
+    @('host|wl6', 'home|/stage/client/app/product/19.0.0.0|db|19.33.0.0.0|12.2.0.1.52',
+      'patch|/stage/client/app/product/19.0.0.0|39600008|Database Release Update : 19.33.0.0.0 (39600008)') | Set-Content -LiteralPath $on33
+    $p33 = @(Get-PatchPlan (Read-Manifest $on33) | Where-Object { $_.Kind -eq 'db' })
+    Check ($p33.Count -eq 0) "a home already on the undated 19.33 RU plans no RU, got $(@($p33 | ForEach-Object { $_.Patch }) -join ',')"
+    $script:dbRows = $savedDbRows
+
     # ---- Coherence already at the newest: nothing to fetch --------------------------------------------
     $cohCurrent = Join-Path $tmp 'cohcurrent.txt'
     @('host|wl4', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.23|yes', 'patch|/u01/fmw|39000002|WLS PATCH SET UPDATE 12.2.1.4.261020',
@@ -381,6 +394,15 @@ try {
     $unknown = Join-Path $tmp 'opatch-unknown.txt'
     @('host|wl-op3', 'wls|/u01/fmw|12.2.1.4.0||no') | Set-Content -LiteralPath $unknown
     Check (@(Get-OPatchNeeds (Read-Manifest $unknown) @($got[0])).Count -eq 1) "an unreadable installed OPatch with a README minimum: the kit is added"
+
+    # an SPB brings its own OPatch and SPBAT -phase apply upgrades it 'from any version' (real SPB README, 5 Nov
+    # 2026): the OPatch it installs is not a minimum, so no kit is added for it
+    $spbZip = New-TestZip (Join-Path $zd 'p39500002_122140_Generic.zip') @{ 'WLS_SPB_12.2.1.4.261020/README.html' = '<h3>3.4 Check OPatch Version</h3><p>The Critical Patch Update program includes OPATCH 13.9.4.2.25 FOR FMW/WLS 12.2.1.4.0. The WebLogic Server Patch Set Update requires OPatch 13.9.4.2.13 or later in order to successfully apply new updates.</p><p>Note : OPatch will be upgraded to OPATCH 13.9.4.2.25 from any version if only running SPBAT -phase apply .</p>' }
+    $onSpb = Join-Path $tmp 'opatch-spb.txt'
+    @('host|wl-spb', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.13|no') | Set-Content -LiteralPath $onSpb
+    $spbGot = @([pscustomobject]@{ Item = (New-PlanItem 'spb' 'WLS Stack Patch Bundle (/u01/fmw)' '' ([pscustomobject]@{ Number = '39500002'; Abstract = 'x' }) '12.2.1.4.0' '/u01/fmw'); Saved = $spbZip })
+    $spbNeeds = @(Get-OPatchNeeds (Read-Manifest $onSpb) $spbGot)
+    Check ($spbNeeds.Count -eq 0) "an SPB on OPatch 13.9.4.2.13: no kit for the 13.9.4.2.25 the SPB installs itself, got $(@($spbNeeds | ForEach-Object { "$($_.Min) $($_.Item.Patch)" }) -join ',')"
     # the kit is already planned for that home (old-floor rule): it is not added twice, but the need is still reported
     $already = @($got[0]) + @([pscustomobject]@{ Item = (New-PlanItem 'wls' 'OPatch kit (/u01/fmw)' '13.9.4.2.10' ([pscustomobject]@{ Number = '28186730'; Abstract = 'OPatch 13.9.4.x' }) '13.9.4' '/u01/fmw'); Saved = $wlsKit })
     $na = @(Get-OPatchNeeds $mo $already)
