@@ -547,7 +547,7 @@ diag_adr() { # ADR incidents and problems for the instance
   local sid="$1" home; home="$(oratab_home "$sid")"; [ -z "$home" ] && home="${ORACLE_HOME:-}"
   [ -x "$home/bin/adrci" ] || return 0
   h3 "ADR incidents / problems ($sid, last ${DIAG_DAYS} days)"
-  section "adr_${sid}" env ORACLE_HOME="$home" ORACLE_SID="$sid" "$home/bin/adrci" exec="set home $(ls -d "${ORACLE_BASE:-/u01/app/oracle}"/diag/rdbms/*/"$sid" 2>/dev/null | head -1 | sed "s#^${ORACLE_BASE:-/u01/app/oracle}/##"); show problem -last 10; show incident -last 20 -p \"create_time > systimestamp - interval '$DIAG_DAYS' day\""
+  section "adr_${sid}" env ORACLE_HOME="$home" ORACLE_SID="$sid" "$home/bin/adrci" exec="set home $(ls -d "${ORACLE_BASE:-/u01/app/oracle}"/diag/rdbms/*/"$sid" 2>/dev/null | head -1 | sed "s#^${ORACLE_BASE:-/u01/app/oracle}/##"); show problem -last 10; show incident -last 20 -p \"create_time > systimestamp - $DIAG_DAYS\""
   # adrci output that is missing, empty, without its 'ADR Home =' header or carrying a DIA- error is unread, not 'no incidents'
   # (Daneel 1 Nov 22:55: grep -c on a file adrci never wrote says 0, and the report showed clean for the SID it could not read)
   local raw="$RAW/adr_${sid}.txt" inc
@@ -555,7 +555,10 @@ diag_adr() { # ADR incidents and problems for the instance
     local why; why="$(grep -oE 'DIA-[0-9]+[^\n]{0,60}' "$raw" 2>/dev/null | head -1)"
     finding WARN db "$sid: ADR could not be read (${why:-no adrci output}) - incidents unknown, not 0 (raw/adr_${sid}.txt)"; return 0
   fi
-  inc="$(grep -cE '^[0-9]+ +[0-9]+ +ORA-' "$raw" 2>/dev/null)"
+  # Count rows in the 'show incident' LIST only (between the INCIDENT_ID and PROBLEM_ID headers):
+  # incident rows are '<id>  ORA 800  <time>' - one id, then adrci's space-separated error id ('ORA 800'),
+  # not the ORA-600 form; 'show problem' rows share the shape and would overcount outside the list.
+  inc="$(awk '/^INCIDENT_ID/{f=1;next} /^PROBLEM_ID/{f=0} f && /^[0-9]+ +ORA[- ]?[0-9]+/{n++} END{print n+0}' "$raw" 2>/dev/null)"
   [ "${inc:-0}" -gt 0 ] && finding WARN db "$sid: $inc ADR incident(s) in the last $DIAG_DAYS days (adrci output in raw/adr_${sid}.txt) - 'adrci> ips pack' for an SR"
 }
 
@@ -565,7 +568,17 @@ diag_adr() { # ADR incidents and problems for the instance
 diag_apex_in() { # <sid> <container label>  (PDB_SET already exported by caller)
   local sid="$1" con="$2" tag="${2//[^A-Za-z0-9]/_}"
   local ver; ver="$(sqlval "$sid" "(select version_no from apex_release)" 2>/dev/null)"
-  [ -z "$ver" ] && { para "_APEX not installed in ${con}_"; return 0; }
+  if [ -z "$ver" ]; then
+    # Empty is either 'no APEX' or a failed query. apex_release absent raises ORA-00942; anything
+    # else is unreadable and must not read as 'not installed' (empty-vs-absent, slice 2).
+    local why; why="$(sql "$sid" "set heading off\nwhenever sqlerror exit 1\nselect version_no from apex_release;" 2>/dev/null | grep -oE '(ORA|SP2)-[0-9]+' | head -1)"
+    if [ "$why" = ORA-00942 ]; then
+      para "_APEX not installed in ${con}_"
+    else
+      finding WARN db "$sid: apex_release unreadable (${why:-no answer}) - APEX state unknown, not absent"
+    fi
+    return 0
+  fi
   say "apex $sid/$con"
   h3 "APEX in $con (version $ver)"
   sqlsec "$sid" "apex_${tag}" "APEX $con: release, schema, accounts, jobs" "select version_no, patch_applied_on, api_compatibility from apex_release;
@@ -603,6 +616,9 @@ select 'CHECK|INFO|more than one APEX schema present ('||listagg(username,',') w
 diag_pdbs() { # per-container checks for a CDB
   local sid="$1" pdbs p
   local cdb; cdb="$(sqlval "$sid" "(select cdb from v\$database)" 2>/dev/null)"
+  # Empty is a FAILED query, not a NO: an unreadable v$database must not silently take the
+  # non-CDB path and skip every PDB check (empty-vs-FALSE, board review slice 2).
+  [ -z "$cdb" ] && { finding WARN db "$sid: v\$database unreadable - CDB/PDB layout unknown, per-container checks skipped"; return 0; }
   if [ "$cdb" != YES ]; then
     h3 "APEX / per-schema checks (non-CDB)"
     diag_apex_in "$sid" "$sid"; return
@@ -897,11 +913,27 @@ diag_dgbroker() { # <sid>
   local sid="$1" home; home="$(oratab_home "$sid")"; [ -z "$home" ] && home="${ORACLE_HOME:-}"
   [ -x "$home/bin/dgmgrl" ] || return 0
   local on; on="$(sqlval "$sid" "(select value from v\$parameter where name='dg_broker_start')" 2>/dev/null)"
+  # Empty is a FAILED query, not a FALSE setting: sqlval is empty-on-failure, so an unreadable
+  # dg_broker_start must not read as 'broker not started' (the section would vanish silently).
+  [ -z "$on" ] && { finding WARN db "$sid: dg_broker_start unreadable - Data Guard broker state unknown, not off"; return 0; }
   [ "$on" = TRUE ] || return 0
   h2 "Data Guard broker ($sid)"
-  local dbun; dbun="$(sqlval "$sid" "(select db_unique_name from v\$database)")"
+  local dbun; dbun="$(sqlval "$sid" "(select db_unique_name from v\$database)" 2>/dev/null)"
+  [ -z "$dbun" ] && finding WARN db "$sid: db_unique_name unreadable - the per-database broker section may be incomplete (raw/dg_${sid}.txt)"
   section_sh "dg_${sid}" "ORACLE_HOME='$home' ORACLE_SID='$sid' PATH=\"$home/bin:\$PATH\" timeout 120 '$home/bin/dgmgrl' -silent / 'show configuration verbose' 2>&1; echo; ORACLE_HOME='$home' ORACLE_SID='$sid' timeout 120 '$home/bin/dgmgrl' -silent / 'show database verbose $dbun' 2>&1 | head -80"
-  grep -qE 'Configuration Status:' "$RAW/dg_${sid}.txt" && ! grep -qE 'SUCCESS' "$RAW/dg_${sid}.txt" && finding CRIT db "$sid: Data Guard broker configuration status is not SUCCESS: $(grep -E 'ORA-|Error|Warning' "$RAW/dg_${sid}.txt" | head -2 | tr '\n' ' ')"
+  # Gate on the value parsed off the 'Configuration Status:' line itself. The old whole-file
+  # '! grep SUCCESS' was satisfied by the second dgmgrl's own 'Database Status: SUCCESS' in the
+  # same raw file, so a WARNING/ERROR configuration read healthy (board review, dg lane).
+  local st; st="$(sed -n 's/^Configuration Status:[[:space:]]*//p' "$RAW/dg_${sid}.txt" | head -1 | sed 's/[[:space:]]*$//')"
+  if [ -z "$st" ]; then
+    if grep -qE 'Configuration details cannot be determined' "$RAW/dg_${sid}.txt"; then
+      finding WARN db "$sid: no Data Guard broker configuration on this instance (see raw/dg_${sid}.txt)"
+    else
+      finding WARN db "$sid: dgmgrl did not answer - broker status not evaluated (raw/dg_${sid}.txt)"
+    fi
+  elif [ "$st" != SUCCESS ]; then
+    finding CRIT db "$sid: Data Guard broker configuration status is '$st': $(grep -E 'ORA-|Error|Warning' "$RAW/dg_${sid}.txt" | head -2 | tr '\n' ' ')"
+  fi
   grep -qE 'ORA-16[0-9]{3}' "$RAW/dg_${sid}.txt" && finding WARN db "$sid: broker reports $(grep -oE 'ORA-16[0-9]{3}' "$RAW/dg_${sid}.txt" | sort -u | tr '\n' ' ')"
 }
 
@@ -916,23 +948,38 @@ diag_rman() { # <sid>: configuration, failures, need-backup; read-only
   section_sh "rman_${sid}" "set -o pipefail; ORACLE_HOME='$home' ORACLE_SID='$sid' PATH=\"$home/bin:\$PATH\" timeout 180 '$home/bin/rman' target / <<'R' 2>&1 | grep -vE '^$|^RMAN>|^Recovery Manager|^Copyright|^connected|^Using target'
 set echo off;
 show all;
-list failure;
 report need backup;
 report unrecoverable;
 list backup summary;
 R"
+  # 'list failure' runs in its OWN section: Data Recovery Advisor is desupported on 23ai and not
+  # supported on RAC, so its RMAN-01009 error would otherwise drag the main batch's recorded exit
+  # to non-zero (and the did-not-answer WARN with it) on every such host - noise Gen learns to
+  # ignore. The detail gate moves with it (board review, slice 2).
+  section_sh "rman_${sid}_dra" "set -o pipefail; ORACLE_HOME='$home' ORACLE_SID='$sid' PATH=\"$home/bin:\$PATH\" timeout 60 '$home/bin/rman' target / <<'R' 2>&1 | grep -vE '^$|^RMAN>|^Recovery Manager|^Copyright|^connected|^Using target'
+set echo off;
+list failure;
+R"
+  grep -qE '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_dra.txt" && finding CRIT db "$sid: RMAN 'list failure' reports a failure (Data Recovery Advisor): $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}_dra.txt" | head -2 | cut -c1-120 | tr '\n' ';')"
   # Either shape of a dead rman reads as a finding: a non-zero recorded exit (timeout 124, exec
   # failure 126/127 - no RMAN- line is printed), or an RMAN- error line on a zero exit. The [exit N]
   # line is section()'s record; an unparseable/missing value fails closed to the WARN.
   local rstat; rstat="$(sed -n 's/^\[exit \([0-9]*\)\]$/\1/p' "$RAW/rman_${sid}.txt" | tail -1)"
   { [ "${rstat:-1}" != 0 ] || grep -qE '^RMAN-[0-9]{3}' "$RAW/rman_${sid}.txt"; } && finding WARN db "$sid: rman did not answer cleanly (exit ${rstat:-unknown}; see raw/rman_${sid}.txt) - the RMAN section was not fully evaluated"
-  grep -qE '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}.txt" && finding CRIT db "$sid: RMAN 'list failure' reports a failure (Data Recovery Advisor): $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}.txt" | head -2 | cut -c1-120 | tr '\n' ';')"
   grep -qE 'libra\.so|RA_WALLET|SBT_LIBRARY' "$RAW/rman_${sid}.txt" && {
     kv "ZDLRA" "configured (SBT channel uses libra.so)"
     local rahost; rahost="$(grep -oE "RA_WALLET=[^']*" "$RAW/rman_${sid}.txt" | head -1)"; kv "RA wallet" "$rahost"; kv_end
-    local lastsbt; lastsbt="$(sql "$sid" "set heading off\nselect to_char(max(start_time),'YYYY-MM-DD HH24:MI') from v\$rman_backup_job_details where output_device_type like '%SBT%' and status like 'COMPLETED%';" 2>/dev/null | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//')"
-    kv "last completed SBT (ZDLRA) backup" "${lastsbt:-none in controlfile}"; kv_end
-    [ -z "$lastsbt" ] && finding WARN db "$sid: ZDLRA SBT channel is configured but no completed SBT backup is recorded in the controlfile"
+    # A FAILED query must not read as 'no SBT backup in the controlfile': capture first, error-gate,
+    # then treat the empty result as the genuine 'none' (empty-vs-FAILED, board review slice 2).
+    local lastsbt; lastsbt="$(sql "$sid" "set heading off\nselect to_char(max(start_time),'YYYY-MM-DD HH24:MI') from v\$rman_backup_job_details where output_device_type like '%SBT%' and status like 'COMPLETED%';" 2>/dev/null)"
+    if printf '%s\n' "$lastsbt" | grep -qE '(ORA|SP2)-[0-9]+'; then
+      kv "last completed SBT (ZDLRA) backup" "unreadable (query error)"; kv_end   # sql() output is not captured to raw here, so no file pointer
+      finding WARN db "$sid: the ZDLRA last-backup query failed - SBT backup history unknown, not 'none'"
+    else
+      lastsbt="$(printf '%s\n' "$lastsbt" | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^ *//')"
+      kv "last completed SBT (ZDLRA) backup" "${lastsbt:-none in controlfile}"; kv_end
+      [ -z "$lastsbt" ] && finding WARN db "$sid: ZDLRA SBT channel is configured but no completed SBT backup is recorded in the controlfile"
+    fi
     local ratns; ratns="$(grep -oE "RA_WALLET=[^']*" "$RAW/rman_${sid}.txt" | head -1)"; [ -n "$ratns" ] && section "rman_${sid}_ra_tnsping" env ORACLE_HOME="$home" "$home/bin/tnsping" "$(sqlval "$sid" "(select regexp_substr(max(handle),'[^/]+$') from v\$backup_piece where device_type='SBT_TAPE' and rownum=1)" 2>/dev/null | head -1)" 2>/dev/null
   }
   grep -qE '^Report of files' "$RAW/rman_${sid}.txt" && grep -qE '^[0-9]+ +[0-9]+ +(\+|/)' "$RAW/rman_${sid}.txt" && finding WARN db "$sid: 'report need backup' lists files outside the redundancy/recovery window"
@@ -1095,7 +1142,17 @@ keytool_pwfile_rm() { [ -n "${KT_PWF:-}" ] && rm -f "$KT_PWF"; KT_PWF=""; }
 diag_okv() {
   local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora 2>/dev/null | sort -u | head -5)"
   [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
-  [ -z "$conf" ] && return 0
+  if [ -z "$conf" ]; then
+    # The estate runs OKV for TDE (CLAUDE.md), so a discovery miss reads as 'unknown', not 'no
+    # OKV on this node'. Gated on tde_configuration naming OKV as the keystore so
+    # WebLogic/OHS-only hosts stay quiet (board review slice 2).
+    local sids; sids="$(db_instances)" || { finding WARN okv "cannot read the process list - OKV discovery unknown, not absent"; return 0; }
+    # tde_configuration carries KEYSTORE_CONFIGURATION=OKV when OKV is the keystore (covers OKV|FILE
+    # and FILE|OKV); wallet_root alone is set for FILE-based TDE too, so it must not gate this WARN.
+    local tde; tde="$(for s in $sids; do sql "$s" "set heading off\nselect 'OKV-CONFIGURED' from v\$parameter where name='tde_configuration' and upper(value) like '%KEYSTORE_CONFIGURATION=OKV%' and rownum=1;" 2>/dev/null; done)"
+    printf '%s\n' "$tde" | grep -q '^OKV-CONFIGURED' && finding WARN okv "no okvclient.ora found via the known paths or wallet_root, but tde_configuration names OKV as the keystore - OKV health unknown (wrong OKV_HOME, unenrolled client?)"
+    return 0
+  fi
   say "key vault"; h1 "Oracle Key Vault client"
   # not "for f in $conf": a space in an OKV path word-split it (Mother 13:46:44). The list comes in on fd 3, not stdin:
   # okvutil inside the loop prompts for the wallet password when there is no autologin and would read the next ora
