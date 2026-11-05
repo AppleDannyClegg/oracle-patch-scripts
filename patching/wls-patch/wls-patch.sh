@@ -441,34 +441,44 @@ EOF
 # ---------------------------------------------------------------------------
 # Unzips any *.zip in the patch dir into <patch-dir>/extracted and lists patch dirs
 # (dirs that contain etc/config/inventory.xml). Prints: id|path|kind
+# A dry run must not touch the patch folder but still has to see inside its zips: a zip not yet unzipped into
+# <patch-dir>/extracted is unzipped into DRY_EXT (a scratch dir made at start-up, removed on exit), and discovery
+# reads both. patch_ext_roots prints the dirs discovery reads, one per line.
+patch_ext_roots() {
+  if [ "$DRY_RUN" = 1 ] && [ -n "${DRY_EXT:-}" ]; then
+    [ -d "$1/extracted" ] && echo "$1/extracted"
+    echo "$DRY_EXT"
+  else echo "$1/extracted"; fi
+}
 prepare_patch_dir() {
   local pdir="$1"
   [ -d "$pdir" ] || die "Patch dir not found: $pdir"
   local ext="$pdir/extracted"
-  mkdir -p "$ext"
+  if [ "$DRY_RUN" = 1 ] && [ -n "${DRY_EXT:-}" ]; then mkdir -p "$DRY_EXT"; else mkdir -p "$ext"; fi
+  local roots=(); local r
+  while IFS= read -r r; do roots+=("$r"); done < <(patch_ext_roots "$pdir")
   # get-patches files its downloads by kind under the patch dir (wls/, spb/), so accept those one level down
   # too: 'run /u01/patches' then works on a get-patches-staged tree whatever this quarter shipped
   local z
   for z in "$pdir"/*.zip "$pdir"/wls/*.zip "$pdir"/spb/*.zip; do
     [ -f "$z" ] || continue
-    local marker
-    marker="$ext/.done-$(basename "$z")"
-    if [ ! -f "$marker" ]; then
-      log "Unzipping $(basename "$z")"
-      if [ "$DRY_RUN" = 1 ]; then continue; fi
-      unzip -oq "$z" -d "$ext" >>"$LOG_FILE" 2>&1 || die "unzip failed for $z (corrupt download?)"
-      touch "$marker"
-    fi
+    [ -f "$ext/.done-$(basename "$z")" ] && continue
+    local to="$ext"
+    if [ "$DRY_RUN" = 1 ] && [ -n "${DRY_EXT:-}" ]; then to="$DRY_EXT"; [ -f "$to/.done-$(basename "$z")" ] && continue; fi
+    log "Unzipping $(basename "$z")$([ "$to" = "$ext" ] || echo " (dry run: into a scratch dir, removed on exit)")"
+    unzip -oq "$z" -d "$to" >>"$LOG_FILE" 2>&1 || die "unzip failed for $z (corrupt download?)"
+    touch "$to/.done-$(basename "$z")"
   done
   # OPatch upgrade kit
   local j
-  for j in "$ext"/*/opatch_generic.jar "$ext"/opatch_generic.jar; do
+  for r in "${roots[@]}"; do for j in "$r"/*/opatch_generic.jar "$r"/opatch_generic.jar; do
     [ -f "$j" ] && printf 'OPATCH|%s|opatch-upgrade\n' "$(dirname "$j")"
-  done
+  done; done
   # a Stack Patch Bundle: SPBAT at <spb>/tools/spbat/generic/SPBAT/spbat.sh. It brings its own patches and
   # its own OPatch upgrade, so the SPB is one item - never its binary_patches as individual patches as well.
+  # No -maxdepth: a real zip may wrap its payload in a top-level dir (the first real-host run, 5 Nov 2026).
   local spbs spb
-  spbs="$(find "$ext" -maxdepth 6 -path '*/tools/spbat/generic/SPBAT/spbat.sh' 2>/dev/null | sort)"
+  spbs="$(find "${roots[@]}" -path '*/tools/spbat/generic/SPBAT/spbat.sh' 2>/dev/null | sort)"
   while IFS= read -r spb; do
     [ -n "$spb" ] || continue
     printf 'SPB|%s|spb\n' "${spb%/tools/spbat/generic/SPBAT/spbat.sh}"
@@ -486,7 +496,7 @@ prepare_patch_dir() {
       [ "$in_spb" = 1 ] && continue
     fi
     printf '%s|%s|patch\n' "$(basename "$p")" "$p"
-  done < <(find "$ext" -maxdepth 4 -path '*/etc/config/inventory.xml' 2>/dev/null | sort)
+  done < <(find "${roots[@]}" -path '*/etc/config/inventory.xml' 2>/dev/null | sort)
 }
 
 patch_description() {
@@ -1222,7 +1232,7 @@ cmd_heal() {
 # Coherence release instead. Same code as lib/oracle-lib.sh (this script stays self-contained).
 # ---------------------------------------------------------------------------
 MOS_TOKEN_FILE="${MOS_TOKEN_FILE:-$HOME/.mos-token}"; MOS_CFG=""; MOS_CURL=(); MOS_REL=""
-mos_cleanup() { [ -n "$MOS_CFG" ] && rm -f "$MOS_CFG"; return 0; }
+mos_cleanup() { [ -n "$MOS_CFG" ] && rm -f "$MOS_CFG"; [ -n "${DRY_EXT:-}" ] && rm -rf "$DRY_EXT"; return 0; }
 mos_token_hint() { printf 'log in to My Oracle Support in a browser, open %s/Orion/GenToken/get_token, press Generate token (it lasts 60 minutes) and save it as %s (chmod 600) or in MOS_TOKEN' "$MOS_BASE" "$MOS_TOKEN_FILE"; }
 epoch_hm() { date -d "@$1" '+%H:%M' 2>/dev/null || date -r "$1" '+%H:%M' 2>/dev/null || echo "$1"; }
 mos_login() {
@@ -1510,7 +1520,17 @@ cmd_plan() {
       [ -n "$min" ] && [ -n "$OPATCH_VERSION" ] && ! version_ge "$OPATCH_VERSION" "$min" && st="$st (needs OPatch $min, have $OPATCH_VERSION)"
       printf '  Patch %s : %-60s %s\n' "$id" "$(patch_description "$path" | cut -c1-60)" "$st"
     done <<<"$list"
-    [ -z "$list" ] && echo "  Folder $pdir holds no patch zips"
+    if [ -z "$list" ]; then
+      local zf haszip=0
+      for zf in "$pdir"/*.zip "$pdir"/wls/*.zip "$pdir"/spb/*.zip; do [ -f "$zf" ] && haszip=1; done
+      if [ "$haszip" = 1 ]; then
+        echo "  Folder $pdir : its zips unzipped, but no SPB or patch layout was found"
+        echo "  (looked for */tools/spbat/generic/SPBAT/spbat.sh and */etc/config/inventory.xml). It holds:"
+        local er; while IFS= read -r er; do (cd "$er" && find . -mindepth 1 -maxdepth 2 ! -name '.done-*' | sort | head -20 | sed 's#^\./#    #'); done < <(patch_ext_roots "$pdir")
+      else
+        echo "  Folder $pdir holds no patch zips"
+      fi
+    fi
   fi
   [ $any = 0 ] && echo "  No patch folder or numbers given. Use:  plan <patch-dir>   or   plan --latest   or   plan --patches N,N"
   case "$WLS_VERSION" in
@@ -1655,7 +1675,7 @@ main() {
       --java-home) optchk "$@";  optchk "$@";  optchk "$@"; CLI_JAVA_HOME="$2"; shift 2 ;;
       --admin-url) optchk "$@";  optchk "$@";  optchk "$@"; CLI_ADMIN_URL="$2"; shift 2 ;;
       --backup-dir) optchk "$@";  optchk "$@"; CLI_BACKUP_DIR="$2"; shift 2 ;;
-      --run-dir)   optchk "$@";  optchk "$@";  optchk "$@"; RUN_DIR="$2"; shift 2 ;;
+      --run-dir)   optchk "$@"; RUN_DIR="$2"; shift 2 ;;
       --dry-run)     DRY_RUN=1; shift ;;
       --yes|-y)      ASSUME_YES=1; shift ;;
       --no-backup)   NO_BACKUP=1; shift ;;
@@ -1681,6 +1701,7 @@ main() {
   [ -n "${CLI_PATCHES:-}" ]     && PATCHES="$CLI_PATCHES"
   [ "$PATCHES" = latest ] && { PATCHES=""; USE_LATEST=1; }
   export ORACLE_HOME DOMAIN_HOME JAVA_HOME ADMIN_URL
+  if [ "$DRY_RUN" = 1 ]; then DRY_EXT="$(mktemp -d)"; trap mos_cleanup EXIT; fi
   case "$cmd" in
     inspect)   cmd_inspect "${args[0]:-}" ;;
     plan)      cmd_plan "${args[0]:-}" ;;
