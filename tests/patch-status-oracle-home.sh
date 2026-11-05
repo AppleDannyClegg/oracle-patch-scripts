@@ -66,6 +66,10 @@ case "$rb" in *'12.2.1.4.250415'*) ok;; *) bad "home B carries the wrong PSU, no
 # command - the SP2-0750/SP2-0667 class fixed in the loader-path commit. It is a source check, not a run.
 unscoped="$(grep -nE '"\$[A-Za-z_][A-Za-z0-9_]*/bin/sqlplus" -V' "$SCRIPT" | grep -v 'ORACLE_HOME=' || true)"
 [ -z "$unscoped" ] && ok || bad "home sqlplus -V invoked without ORACLE_HOME (lint): $unscoped"
+# the same call needs the home's lib first: with another home's LD_LIBRARY_PATH it loads the wrong
+# libclntsh and prints nothing (the loader-path fix). Fires on a3b482a, silent on the fixed bytes.
+noloader="$(grep -nE '"\$[A-Za-z_][A-Za-z0-9_]*/bin/sqlplus" -V' "$SCRIPT" | grep -vE 'ORACLE_HOME=.*LD_LIBRARY_PATH=' || true)"
+[ -z "$noloader" ] && ok || bad "home sqlplus -V invoked without its own LD_LIBRARY_PATH (lint): $noloader"
 
 echo "patch-status oracle-home gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
