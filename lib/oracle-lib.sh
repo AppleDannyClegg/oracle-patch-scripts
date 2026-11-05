@@ -562,8 +562,28 @@ ggsci() {
   (cd "$OGG_HOME" && export ORACLE_HOME="$h" LD_LIBRARY_PATH="$OGG_HOME:$h/lib:${LD_LIBRARY_PATH:-}" && printf '%s\n' "$q" | to "${CMD_TIMEOUT}" ./ggsci 2>&1 | grep -vE '^GGSCI|^$' || [ "${PIPESTATUS[1]}" = 0 ])
 }
 
-java_version_of() { "$1/bin/java" -version 2>&1 | head -1 | sed -n 's/.*version "\([^"]*\)".*/\1/p'; }
-java_major_of() { local v; v="$(java_version_of "$1")"; local j="${v%%.*}"; [ "$j" = 1 ] && { j="${v#1.}"; j="${j%%.*}"; }; printf '%s' "$j"; }
+# --- JDK version: one source of truth, byte-identical in lib and patch-manifest (tests/jdk-version.sh) ---
+# The JVM can print 'Picked up JAVA_TOOL_OPTIONS: ...' as its first stderr line, and a hung java can block
+# forever: unset the three override vars, take the line that carries the version, and bound it with timeout(1)
+# where it exists (PM-7/EM-5).
+java_version_of() {
+  local out
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout -k 5 30 env -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS -u JDK_JAVA_OPTIONS "$1/bin/java" -version 2>&1)"
+  else
+    out="$(env -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS -u JDK_JAVA_OPTIONS "$1/bin/java" -version 2>&1)"
+  fi
+  printf '%s\n' "$out" | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1
+}
+
+# 1.8.0_471 -> 8, 17.0.13 -> 17
+java_major_of() {
+  local v j
+  v="$(java_version_of "$1")"
+  j="${v%%.*}"
+  if [ "$j" = 1 ]; then j="${v#1.}"; j="${j%%.*}"; fi
+  printf '%s' "$j"
+}
 java_homes() { # every JDK referenced by something on the host, one per line
   { local h; for h in $(wls_homes); do wls_java_home "$h"; echo; done
     ps_pid_args | awk '$2 ~ /\/bin\/java$/ {print $2}' | sed 's#/bin/java$##' | while read -r j; do readlink -f "$j" 2>/dev/null || echo "$j"; done

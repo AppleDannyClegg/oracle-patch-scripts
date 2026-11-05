@@ -109,12 +109,18 @@ java_homes() {
   } 2>/dev/null | while read -r j; do [ -x "$j/bin/java" ] && (readlink -f "$j" 2>/dev/null || echo "$j"); done | sort -u
 }
 
+# --- JDK version: one source of truth, byte-identical in lib and patch-manifest (tests/jdk-version.sh) ---
+# The JVM can print 'Picked up JAVA_TOOL_OPTIONS: ...' as its first stderr line, and a hung java can block
+# forever: unset the three override vars, take the line that carries the version, and bound it with timeout(1)
+# where it exists (PM-7/EM-5).
 java_version_of() {
-  # the JVM can print 'Picked up JAVA_TOOL_OPTIONS: ...' as its first stderr line, and a hung java can block
-  # forever: take the first line that actually carries a version, with the three override vars unset, under a
-  # timeout (PM-7, EM-5). head -1 alone used to read the 'Picked up' line and drop every jdk| line.
-  with_timeout 30 env -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS -u JDK_JAVA_OPTIONS "$1/bin/java" -version 2>&1 \
-    | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1
+  local out
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout -k 5 30 env -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS -u JDK_JAVA_OPTIONS "$1/bin/java" -version 2>&1)"
+  else
+    out="$(env -u JAVA_TOOL_OPTIONS -u _JAVA_OPTIONS -u JDK_JAVA_OPTIONS "$1/bin/java" -version 2>&1)"
+  fi
+  printf '%s\n' "$out" | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1
 }
 
 # 1.8.0_471 -> 8, 17.0.13 -> 17
