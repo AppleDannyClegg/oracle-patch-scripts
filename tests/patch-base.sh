@@ -32,6 +32,7 @@ grep -q 'PATCH_BASE/db' patching/db-patch/db-patch.sh && ok || bad "db-patch dow
 grep -q 'PATCH_BASE/jdk' patching/java-patch/java-patch.sh && ok || bad "java-patch download default is not \$PATCH_BASE/jdk"
 grep -q 'PATCH_BASE/scripts' get.sh && ok || bad "get.sh does not default the tree to \$PATCH_BASE/scripts"
 grep -q "Join-Path \$env:PATCH_BASE 'scripts'" get.ps1 && ok || bad "get.ps1 does not default the tree to PATCH_BASE/scripts"
+grep -q "Join-Path (Join-Path \$HOME 'patches') 'scripts'" get.ps1 && ok || bad "get.ps1's Windows default is not \$HOME\\patches\\scripts (an absolute, findable path)"
 grep -q 'Join-Path \$base \$m.Host' patching/get-patches.ps1 && ok || bad "get-patches.ps1 default Dest is not PATCH_BASE/<host>"
 
 echo "patch-base gate: $pass passed, $fail failed"
