@@ -206,6 +206,12 @@ build; running; rm -rf "$T/backup"; rc="$(runr --yes)"
 build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; rc="$(runr --yes)"
 [ "$rc" = 0 ] && [ -z "$(acts)" ] && grep -q 'already installed' "$T/out" && ok || bad "already installed: rc $rc, actions [$(acts)]"
 
+# a backup that fails (tar cannot write it): refused, nothing stopped, the partial backup removed (Cerebro P3)
+build; running; RT="$(command -v tar)"; printf '#!/bin/sh\ncase "$*" in *-czf*) [ -e "%s/tar.fail" ] && exit 2;; esac\nexec "%s" "$@"\n' "$T" "$RT" >"$T/stub/tar"; chmod +x "$T/stub/tar"; touch "$T/tar.fail"
+rc="$(runr --yes)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && nobackup && ! st | grep -q '^applied=' && grep -q 'backup failed - nothing was stopped' "$T/out" && ok || bad "backup failure: rc $rc, actions [$(acts)], backup $(find "$T/backup" -mindepth 1 | head -2 | tr '\n' ' ')"
+rm -f "$T/stub/tar" "$T/tar.fail"
+
 # dry run on a folder holding only the zip: nothing stopped, nothing applied, patch folder and backup dir untouched
 build; running; (cd "$PD" && zip -qr ../p40005842_122140_Linux-x86-64.zip 40005842) && rm -rf "$PD/40005842" && mv "$T/patches/p40005842_122140_Linux-x86-64.zip" "$PD/"
 before="$(cd "$PD" && find . | sort)"; rc="$(runr --dry-run --yes)"
