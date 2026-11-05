@@ -97,18 +97,17 @@ if ($Paste) {
     $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)).Trim()
 } else {
     Write-Host 'waiting for a token on the clipboard... (Ctrl+C to stop)'
-    # a re-run usually happens right after a script said 'expired', so the OLD token may still be on the
-    # clipboard: ignore whatever is there at the start, and ignore a token whose exp has already passed
-    $initial = (Get-Clipboard -Raw -ErrorAction SilentlyContinue)
-    if ($initial) { $initial = $initial.Trim() }
+    # a fresh token may already be on the clipboard (copy first, then run - the natural order) so it is
+    # accepted; only a token whose exp has already passed is skipped, so a re-run after 'expired' waits for
+    # a new copy instead of 401ing. $warned just stops the 'already expired' line repeating.
+    $warned = ''
     for ($i = 0; $i -lt 900; $i++) {
         $c = Get-Clipboard -Raw -ErrorAction SilentlyContinue
         if ($c) { $c = $c.Trim() }
-        if ($c -and $c -ne $initial -and (Test-TokenShape $c)) {
+        if ($c -and (Test-TokenShape $c)) {
             $exp = Get-JwtExpiry $c
             if ($exp -and $exp -le (Get-Date)) {
-                Write-Host 'the token on the clipboard has already expired - copy a fresh one from the page'
-                $initial = $c   # do not warn about the same one again
+                if ($c -ne $warned) { Write-Host 'the token on the clipboard has already expired - copy a fresh one from the page'; $warned = $c }
                 $c = $null
             } else { $token = $c; break }
         }
