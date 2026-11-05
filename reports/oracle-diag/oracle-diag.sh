@@ -101,6 +101,17 @@ redact() {
   fi
 }
 
+# The 600-mode password temp files (CACERTS_PASSWORD / OKV_WALLET_PASSWORD) must not survive a kill or
+# Ctrl-C. Both paths are recorded in script-level vars - the okv one is a function-local, so a trap that
+# interpolated it would expand nothing (board review slice 4, TARS/Roy). The INT/TERM handlers must
+# re-raise/exit: a trap that only cleans up swallows the signal, the run carries on and exits 0, so a
+# Ctrl-C or a kill would read as a clean run (Baymax S4-1).
+KT_PWF=""; OKV_PWF=""
+cleanup_pwfiles() { [ -n "${KT_PWF:-}" ] && rm -f "$KT_PWF"; [ -n "${OKV_PWF:-}" ] && rm -f "$OKV_PWF"; }
+trap cleanup_pwfiles EXIT
+trap 'cleanup_pwfiles; trap - INT; kill -INT $$' INT
+trap 'cleanup_pwfiles; exit 143' TERM
+
 # section <name> <cmd...>: run a command, full output to raw/<name>.txt, up to DIAG_LINES lines into the report
 section() {
   local name="$1"; shift
@@ -261,7 +272,7 @@ sql() {
 sqlsec() {
   local sid="$1" name="$2" title="$3" q="$4" f
   f="$RAW/db_${sid}_${name}.txt"
-  { printf -- '-- %s\n%s\n\n' "$title" "$q"; sql "$sid" "$q"; } >"$f" 2>&1
+  { printf -- '-- %s\n%s\n\n' "$title" "$q"; sql "$sid" "$q"; } 2>&1 | redact >"$f"
   h3 "$title"
   local n; n="$(wc -l <"$f" | tr -d ' ')"
   fence_start
@@ -299,6 +310,9 @@ diag_db_env() {
   section_sh ora_inventory "for l in /etc/oraInst.loc /var/opt/oracle/oraInst.loc; do [ -f \$l ] && { echo \"== \$l\"; cat \$l; inv=\$(sed -n 's/^inventory_loc=//p' \$l); echo; echo 'Homes:'; grep -oE 'HOME NAME=\"[^\"]*\" LOC=\"[^\"]*\"( TYPE=\"[^\"]*\")?( IDX=\"[0-9]*\")?( CRS=\"true\")?' \$inv/ContentsXML/inventory.xml 2>/dev/null; }; done"
   section_sh ora_processes "ps -eo pid,user,etime,rss,args 2>/dev/null | grep -E '_pmon_|tnslsnr|ora_[a-z0-9]+_|asm_|ocssd|crsd|evmd|ohasd|mgr |extract |replicat |java .*(weblogic|ords|ohs|emagent|oms|tfa|okv|avagent)|httpd|opmn|tuxedo|tmboot|timesten|cmadmin' | grep -v grep | awk '{\$5=substr(\$0, index(\$0,\$5)); print \$1, \$2, \$3, \$4\"K\", substr(\$5,1,120)}' | sort -k5 | head -80"
   section_sh ora_homes_versions "for h in \$(grep -hvE '^\s*#|^\s*$' /etc/oratab /var/opt/oracle/oratab 2>/dev/null | cut -d: -f2 | sort -u); do echo \"== \$h\"; [ -x \$h/bin/sqlplus ] && \$h/bin/sqlplus -V 2>/dev/null | grep -i version; [ -x \$h/OPatch/opatch ] && { echo -n 'OPatch: '; \$h/OPatch/opatch version 2>/dev/null | head -1; timeout 120 \$h/OPatch/opatch lspatches 2>/dev/null | head -40; }; echo; done"
+  # section() kills at $CMD_TIMEOUT (default 60s) before the per-home 'timeout 120' can finish with 2+ homes,
+  # so a cut-off patch listing must not read as complete (Legion L3, board review slice 4)
+  grep -qE '^\[exit 124\]$' "$RAW/ora_homes_versions.txt" 2>/dev/null && finding WARN opatch "Oracle-home patch listing was cut off by the ${CMD_TIMEOUT}s section timeout - later homes' patches were not checked (raw/ora_homes_versions.txt)"
   local n; n="$(db_instances | wc -l | tr -d ' ')"
   kv "running instances" "$(db_instances | tr '\n' ' ')"; kv_end
   if grep -qE '^[^#].*:Y' /etc/oratab 2>/dev/null; then
@@ -1017,7 +1031,12 @@ diag_em() {
     [ -x "$ah/bin/emctl" ] || continue
     say "em agent"; h1 "Enterprise Manager agent ($ah)"
     section "em_agent_status" "$ah/bin/emctl" status agent
-    grep -qE 'Agent is Running and Ready' "$RAW/em_agent_status.txt" || finding CRIT em "EM agent is not 'Running and Ready' - OEM is blind to this host"
+    if ! grep -qE 'Agent is Running and Ready' "$RAW/em_agent_status.txt"; then
+      # an emctl that never answered (command not found, timeout) leaves only the '[exit N]' line: that is
+      # 'state unknown', not 'stopped' - do not assert a stopped agent from an empty read (Legion L6)
+      if [ "$(grep -cvE '^\[exit [0-9]+\]$|^$' "$RAW/em_agent_status.txt" 2>/dev/null)" -eq 0 ]; then finding WARN em "emctl did not answer - EM agent state unknown (raw/em_agent_status.txt)"
+      else finding CRIT em "EM agent is not 'Running and Ready' - OEM is blind to this host"; fi
+    fi
     local up; up="$(sed -n 's/^Last successful upload *: *//p' "$RAW/em_agent_status.txt")"; [ -n "$up" ] && { local us; us="$(date -d "$up" +%s 2>/dev/null)"; [ -n "$us" ] && [ $(( ($(date +%s) - us) / 60 )) -gt 60 ] && finding WARN em "EM agent last successful upload was $up - more than an hour ago (upload blocked? OMS down?)"; }
     grep -qE 'Heartbeat Status *: *(Ok|OK)' "$RAW/em_agent_status.txt" || finding WARN em "EM agent heartbeat status is not Ok"
     section_sh em_agent_log "tail -50 '$ah'/sysman/log/gcagent.log 2>/dev/null | grep -iE 'error|warn|fail' | tail -30; echo; echo 'targets:'; '$ah/bin/emctl' config agent listtargets 2>/dev/null | head -40"
@@ -1120,8 +1139,8 @@ okv_endpoint_cert() {
   # wallet or the date cannot be read, the file age stands in - an unreadable read is a WARN plus the age, never silence
   if [ -n "${OKV_WALLET_PASSWORD:-}" ] && command -v openssl >/dev/null 2>&1; then
     # the password reaches openssl through a 600-mode file, not its environment or command line (the tree's rule)
-    local pf; pf="$(mktemp "${TMPDIR:-/tmp}/okv.XXXXXX" 2>/dev/null)"; [ -n "$pf" ] && { chmod 600 "$pf"; printf '%s' "$OKV_WALLET_PASSWORD" >"$pf"; }
-    [ -n "$pf" ] && exp="$( { openssl pkcs12 -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null || openssl pkcs12 -legacy -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null; } | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"; rm -f "$pf"
+    local pf; pf="$(mktemp "${TMPDIR:-/tmp}/okv.XXXXXX" 2>/dev/null)"; [ -n "$pf" ] && { chmod 600 "$pf"; printf '%s' "$OKV_WALLET_PASSWORD" >"$pf"; OKV_PWF="$pf"; }
+    [ -n "$pf" ] && exp="$( { openssl pkcs12 -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null || openssl pkcs12 -legacy -in "$wal" -nokeys -clcerts -passin "file:$pf" 2>/dev/null; } | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"; rm -f "$pf"; OKV_PWF=""
     if [ -z "$exp" ]; then finding WARN okv "could not read $wal with OKV_WALLET_PASSWORD (wrong password, or an openssl that cannot open this p12) - endpoint certificate expiry unknown, file age $age days"; okv_age_finding "$wal" "$age" "$f"
     else
       kv "endpoint certificate notAfter" "$exp"; local es; es="$(date -d "$exp" +%s 2>/dev/null || date -j -f '%b %d %T %Y %Z' "$exp" +%s 2>/dev/null)"
@@ -1140,7 +1159,10 @@ okv_endpoint_cert() {
 keytool_pwfile() { KT_PWF="$(mktemp "${TMPDIR:-/tmp}/kt.XXXXXX")"; chmod 600 "$KT_PWF"; printf '%s' "${CACERTS_PASSWORD:-changeit}" >"$KT_PWF"; }
 keytool_pwfile_rm() { [ -n "${KT_PWF:-}" ] && rm -f "$KT_PWF"; KT_PWF=""; }
 diag_okv() {
-  local conf; conf="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora 2>/dev/null | sort -u | head -5)"
+  local conf all; all="$(ls "${WALLET_ROOT:-/nonexistent}"/okv/conf/okvclient.ora /u01/app/oracle/okv/*/conf/okvclient.ora /u01/app/oracle/admin/*/okv/conf/okvclient.ora /opt/oracle/okv/*/conf/okvclient.ora "${OKV_HOME:-/nonexistent}"/conf/okvclient.ora /u01/app/oracle/product/*/dbhome*/flex_tde_wallet/okv/conf/okvclient.ora "${ORACLE_HOME:-/nonexistent}"/flex_tde_wallet/okv/conf/okvclient.ora 2>/dev/null | sort -u)"
+  conf="$(printf '%s\n' "$all" | head -5)"
+  # more candidates than we check must not read as 'these are all of them' (Baymax C-F2, board review slice 4)
+  [ "$(printf '%s\n' "$all" | grep -c .)" -gt 5 ] && finding WARN okv "more than 5 okvclient.ora candidates on this host - only the first 5 are checked ($(printf '%s\n' "$all" | head -8 | tr '\n' ' '))"
   [ -z "$conf" ] && { conf="$(for s in $(db_instances); do sql "$s" "set heading off\nselect value||'/okv/conf/okvclient.ora' from v\$parameter where name='wallet_root' and value is not null;" 2>/dev/null | sed '/^[[:space:]]*$/d;s/^ *//'; done | sort -u | while read -r f; do [ -f "$f" ] && echo "$f"; done)"; }
   if [ -z "$conf" ]; then
     # The estate runs OKV for TDE (CLAUDE.md), so a discovery miss reads as 'unknown', not 'no
@@ -1159,7 +1181,7 @@ diag_okv() {
   # path as it (Mother 13:53:13), so it also gets </dev/null.
   local f; while IFS= read -r f <&3; do
     h2 "$f"
-    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for e in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' '); do s=\${e%%:*}; p=\${e#*:}; [ \"\$p\" = \"\$e\" ] && p=5696; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
+    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f'; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (per-entry ports):'; for e in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' '); do s=\${e%%:*}; p=\${e#*:}; [ \"\$p\" = \"\$e\" ] && p=5696; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
     local raw; raw="$RAW/okv_$(printf '%s' "$f" | md5sum | cut -c1-8).txt"
     local nok nbad; nok="$(grep -cE '^  [^ ]+:[0-9]+ OK$' "$raw")"; nbad="$(grep -cE '^  [^ ]+:[0-9]+ UNREACHABLE$' "$raw")"   # only the server lines, not okvutil's text
     [ "$nbad" -gt 0 ] && { if [ "$nok" = 0 ]; then finding CRIT okv "No Oracle Key Vault server in $f is reachable on its port - TDE keystore cannot be opened after a restart"; else finding WARN okv "$nbad of $((nok + nbad)) Key Vault servers in $f unreachable (HA degraded)"; fi; }
@@ -1325,7 +1347,7 @@ main() {
   skipped wls  || diag_wls
   diag_grid; diag_goldengate; diag_em; diag_ahf; diag_exadata; diag_exascale; diag_okv; diag_misc_products
   h1 "Environment of the user that ran this"
-  section_sh env_user "env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)' | redact 2>/dev/null || env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)'; echo; cat ~/.bash_profile ~/.profile 2>/dev/null | grep -vE '^\s*#|^\s*$' | grep -iE 'export|ORACLE|JAVA|PATH' | head -30"
+  section_sh env_user "env | grep -E '^(ORACLE|ORA_|TNS_ADMIN|JAVA_HOME|PATH|LD_LIBRARY|NLS_|DOMAIN_HOME|MW_HOME|WL_HOME|OGG|OKV|TUXCONFIG|APPL_TOP|PS_HOME)'; echo; cat ~/.bash_profile ~/.profile 2>/dev/null | grep -vE '^\s*#|^\s*$' | grep -iE 'export|ORACLE|JAVA|PATH' | head -30"
   local secs=$(( $(date +%s) - t0 ))
   write_header "$REPORT" "$OUT/REPORT.md" "$secs"
   rm -f "$REPORT"
