@@ -107,7 +107,9 @@ collect_db() {
   local pack=0 v; if [ "$NO_PACK" = 0 ]; then
     if v="$(sql_rows "$sid" "" "$sid" "control_management_pack_access" "select upper(value) from v\$parameter where name='control_management_pack_access';")"; then [[ "$v" == *DIAGNOSTIC* ]] && pack=1; fi; fi
   # tablespaces: root (or non-CDB) and each PDB
-  local containers="" p pdbs; if db_is_cdb "$sid"; then pdbs="$(db_pdbs "$sid")" || finding WARN db "$sid: v\$pdbs could not be read - the PDBs' tablespaces were NOT forecast"
+  local containers="" p pdbs cdb; cdb="$(db_cdb "$sid")"
+  if [ "$cdb" = UNKNOWN ]; then finding WARN db "$sid: v\$database.cdb could not be read - the PDBs' tablespaces were NOT forecast"; containers="$sid"
+  elif [ "$cdb" = YES ]; then pdbs="$(db_pdbs "$sid")" || finding WARN db "$sid: v\$pdbs could not be read - the PDBs' tablespaces were NOT forecast"
     containers="CDB\$ROOT $(printf '%s\n' "$pdbs" | tr '\n' ' ')"; [ -n "${PDB:-}" ] && containers="$containers $PDB"; else containers="$sid"; fi
   for p in $containers; do
     local label="$sid"; [ "$p" != "$sid" ] && [ "$p" != 'CDB$ROOT' ] && label="$sid/$p"

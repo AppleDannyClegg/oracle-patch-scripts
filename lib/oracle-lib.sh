@@ -86,6 +86,13 @@ require_cmd() { local c; for c in "$@"; do command -v "$c" >/dev/null 2>&1 || di
 have() { command -v "$1" >/dev/null 2>&1; }
 
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '; }
+# hash8 <string>: a short stable hash for section/file names. md5sum is GNU, macOS has md5, some hosts only shasum/cksum.
+hash8() {
+  if command -v md5sum >/dev/null 2>&1; then printf '%s' "$1" | md5sum | cut -c1-8
+  elif command -v md5 >/dev/null 2>&1; then printf '%s' "$1" | md5 -q | cut -c1-8
+  elif command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum | cut -c1-8
+  else printf '%s' "$1" | cksum | cut -d' ' -f1; fi
+}
 # version_ge <a> <b>: 0 if dotted-numeric a >= b
 version_ge() {
   local a b i; IFS='.' read -r -a a <<<"$1"; IFS='.' read -r -a b <<<"$2"
@@ -284,6 +291,12 @@ sql_script() {
   (cd "$dir" && printf 'whenever sqlerror exit 1\nconnect %s\nwhenever sqlerror continue\n%s\nset echo off\n@%s %s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB_SET:-}" "$script" "$*" | ORACLE_SID="$sid" ORACLE_HOME="$home" LD_LIBRARY_PATH="$home/lib:${LD_LIBRARY_PATH:-}" PATH="$home/bin:$PATH" NLS_LANG="${NLS_LANG:-AMERICAN_AMERICA.AL32UTF8}" to "${SQL_SCRIPT_TIMEOUT:-0}" $cmd -L /nolog) >>"$LOG_FILE" 2>&1   # a failed login exits 1 (without the whenever, sqlplus carries on 'Not connected' and exits 0)
 }
 db_is_cdb() { [ "$(sql_val "$1" "(select cdb from v\$database)" 2>/dev/null)" = YES ]; }
+# db_cdb <sid>: YES / NO / UNKNOWN. db_is_cdb cannot tell 'not a CDB' from 'the read failed' (both return 1), so a
+# caller that skips the per-PDB work on 1 silently skips it on a failed read too. Use this where the difference matters.
+db_cdb() {
+  local v; v="$(sql_lines "$1" "select cdb from v\$database;" 2>/dev/null)" || { printf 'UNKNOWN'; return 1; }
+  [ "$v" = YES ] && printf 'YES' || printf 'NO'
+}
 db_pdbs() { sql_lines "$1" "select name from v\$pdbs where open_mode like 'READ%' and name<>'PDB\$SEED' order by con_id;" 2>/dev/null; }
 # with_pdb <pdb> <function> [args]: run a function with PDB_SET exported (empty pdb = root)
 with_pdb() { local p="$1"; shift; if [ -n "$p" ] && [ "$p" != CDB\$ROOT ]; then PDB_SET="alter session set container=$p;" "$@"; else PDB_SET="" "$@"; fi; }

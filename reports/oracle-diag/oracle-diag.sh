@@ -59,6 +59,13 @@ to() { local s="$1"; shift; if [ "$HAVE_TIMEOUT" = 1 ]; then timeout -k 5 "$s" "
 ords_setting() { local v; v="$(sed -n "s/^$1=//p" "${ORDS_CONFIG:-/nonexistent}/global/standalone/standalone.properties" 2>/dev/null | head -1)"; [ -z "$v" ] && v="$(sed -n "s/.*<entry key=\"$1\">\([^<]*\)<.*/\1/p" "${ORDS_CONFIG:-/nonexistent}/global/settings.xml" 2>/dev/null | head -1)"; printf '%s' "$v"; }
 # url_sni_rejected <url>: 0 when an https URL gets Jetty's "400 Invalid SNI" - the host in the URL is not in the certificate (ORDS 22+ standalone checks SNI); body read into a variable so grep -q cannot SIGPIPE curl under pipefail
 url_sni_rejected() { case "$1" in https://*) local b; b="$(curl -sk -m 15 "$1" 2>/dev/null)"; grep -qi 'Invalid SNI' <<<"$b";; *) return 1;; esac; }
+# hash8 <string>: short stable hash for section names; md5sum is GNU, macOS has md5, some hosts only shasum/cksum
+hash8() {
+  if command -v md5sum >/dev/null 2>&1; then printf '%s' "$1" | md5sum | cut -c1-8
+  elif command -v md5 >/dev/null 2>&1; then printf '%s' "$1" | md5 -q | cut -c1-8
+  elif command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum | cut -c1-8
+  else printf '%s' "$1" | cksum | cut -d' ' -f1; fi
+}
 
 # finding <CRIT|WARN|INFO> <area> <text>
 # Findings go to $OUT/findings.txt, not only to a variable: most are raised inside "cmd | while read" loops,
@@ -292,6 +299,15 @@ PROC_DIR="${PROC_DIR:-/proc}"
 ps_args() {
   local out f
   out="$(ps -eo args 2>/dev/null)" || out="$(for f in "$PROC_DIR"/[0-9]*/cmdline; do [ -r "$f" ] || continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done)"
+  if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+    [ -e "${RAW:-/nonexistent}/.ps_unreadable" ] || { err "cannot read the process list (ps failed and $PROC_DIR is unreadable) - 'nothing running' cannot be concluded"; [ -d "${RAW:-}" ] && : >"$RAW/.ps_unreadable"; }
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+ps_pid_args() {
+  local out f p
+  out="$(ps -eo pid,args 2>/dev/null)" || out="$(for f in "$PROC_DIR"/[0-9]*/cmdline; do [ -r "$f" ] || continue; p="${f#"$PROC_DIR"/}"; printf '%s ' "${p%/cmdline}"; tr '\0' ' ' <"$f" 2>/dev/null; echo; done)"
   if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
     [ -e "${RAW:-/nonexistent}/.ps_unreadable" ] || { err "cannot read the process list (ps failed and $PROC_DIR is unreadable) - 'nothing running' cannot be concluded"; [ -d "${RAW:-}" ] && : >"$RAW/.ps_unreadable"; }
     return 1
@@ -664,7 +680,8 @@ diag_ords() {
   h1 "ORDS"
   if [ -z "${ORDS_HOME:-}" ]; then local c; c="$(command -v ords 2>/dev/null)"; [ -n "$c" ] && ORDS_HOME="$(cd "$(dirname "$c")/.." && pwd)"; fi
   [ -z "${ORDS_HOME:-}" ] && for d in /opt/oracle/ords /opt/ords /u01/ords /u01/app/oracle/ords "$HOME/ords"; do [ -x "$d/bin/ords" ] && { ORDS_HOME="$d"; break; }; done
-  local pid; pid="$(pgrep -f 'ords.war|ords serve|ords --config|ords\.standalone|oracle.dbtools' 2>/dev/null | head -1)"
+  local pl ok=1 pid=""; pl="$(ps_pid_args 2>/dev/null)" || ok=0
+  [ "$ok" = 1 ] && pid="$(printf '%s\n' "$pl" | grep -E 'ords\.war|ords serve|ords --config|ords\.standalone|oracle\.dbtools' | awk '{print $1}' | head -1)"
   if [ -z "${ORDS_HOME:-}" ] && [ -z "$pid" ]; then para "_ORDS not found on this host (no bin/ords, no ORDS java process)_"; return 0; fi
   [ -z "${ORDS_CONFIG:-}" ] && [ -n "$pid" ] && ORDS_CONFIG="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 's/.*--config \([^ ]*\).*/\1/p; s/.*-Dconfig.url=\([^ ]*\).*/\1/p' | head -1)"
   [ -z "${ORDS_CONFIG:-}" ] && for d in /etc/ords/config /opt/oracle/ords/config "${ORDS_HOME:-/nonexistent}/config" "$(dirname "$(readlink -f "${ORDS_HOME:-/nonexistent}")")/config"; do [ -f "$d/global/settings.xml" ] && { ORDS_CONFIG="$d"; break; }; done
@@ -673,7 +690,8 @@ diag_ords() {
   kv "running pid" "${pid:-NOT RUNNING}"; kv "service" "$(systemctl list-units --type=service --all --no-legend 2>/dev/null | grep -i ords | awk '{print $1, $3, $4}' | head -1)"
   [ -n "$pid" ] && { kv "java" "$(readlink -f "/proc/$pid/exe" 2>/dev/null)"; kv "owner / started / rss" "$(ps -o user=,lstart=,rss= -p "$pid" 2>/dev/null)"; kv "open files" "$(ls "/proc/$pid/fd" 2>/dev/null | wc -l | tr -d ' ') of $(grep -s 'Max open files' "/proc/$pid/limits" | awk '{print $4}')"; kv "heap / jvm args" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -oE -- '-X[a-z]+[0-9a-zA-Z:=/]*|-D[a-zA-Z.]+=[^ ]*' | grep -v -i password | tr '\n' ' ')"; }
   kv "java on PATH" "$(java -version 2>&1 | head -1)"; kv_end
-  [ -z "$pid" ] && finding CRIT ords "ORDS is not running on this host"
+  if [ "$ok" = 0 ]; then finding WARN ords "cannot read the process list (ps failed) - whether ORDS runs is NOT checked"
+  elif [ -z "$pid" ]; then finding CRIT ords "ORDS is not running on this host"; fi
   if [ -n "${ORDS_CONFIG:-}" ]; then
     h2 "ORDS configuration (passwords redacted)"
     section_sh ords_settings "cat '$ORDS_CONFIG/global/settings.xml' 2>/dev/null; for p in '$ORDS_CONFIG'/databases/*/; do echo; echo \"== pool \$(basename \$p)\"; cat \$p/pool.xml 2>/dev/null; ls -la \$p 2>/dev/null; done; echo; echo '== standalone'; cat '$ORDS_CONFIG/global/standalone/standalone.properties' 2>/dev/null; echo; ls -la '$ORDS_CONFIG/global' '$ORDS_CONFIG/global/standalone' 2>/dev/null; echo; echo 'doc_root / wallet / keystore:'; ls -la '$ORDS_CONFIG'/global/doc_root '$ORDS_CONFIG'/global/standalone/*.jks '$ORDS_CONFIG'/databases/*/wallet 2>/dev/null"
@@ -706,8 +724,10 @@ diag_ords() {
   [ -z "$url" ] && { local port sport; port="$(ords_setting standalone.http.port)"; sport="$(ords_setting standalone.https.port)"; if [ -n "$sport" ]; then url="https://$(hostname -f 2>/dev/null || echo "$HOST"):$sport/ords/"; else url="http://localhost:${port:-8080}/ords/"; fi; }
   local uhost; uhost="$(printf '%s' "$url" | sed -E 's#https?://([^/:]+).*#\1#')"; local uhp; uhp="$(printf '%s' "$url" | sed -E 's#https?://([^/]+).*#\1#')"; case "$uhp" in *:*) ;; *) uhp="$uhp:443";; esac
   section_sh ords_curl "for u in '$url' '${url%/}/_/landing' '${url%/}/r/apex' '${url%/}/apex' '${url%/}/../i/apex_version.txt' '${url%/}/_/db-api/stable/metadata-catalog/'; do printf '%-70s ' \"\$u\"; curl -sk -o /dev/null -m 15 -w '%{http_code} %{time_total}s %{redirect_url}\n' \"\$u\" 2>&1 || echo 'curl failed'; done; echo; echo 'TLS certificate (if https):'; echo | openssl s_client -connect '$uhp' -servername '$uhost' 2>/dev/null | openssl x509 -noout -dates -subject 2>/dev/null"
-  local code; code="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$url" 2>/dev/null)"
+  local code; if ! command -v curl >/dev/null 2>&1; then finding WARN ords "curl is not on PATH - the ORDS endpoint was NOT checked"
+  else code="$(curl -sk -o /dev/null -m 15 -w '%{http_code}' "$url" 2>/dev/null)"
   case "$code" in 200|30[0-9]) ;; 503) finding CRIT ords "ORDS answers 503 at $url - usually the database pool is down (locked user, wrong password, DB/listener down)";; 404) finding WARN ords "ORDS answers 404 at $url - running but the pool/APEX path may be wrong";; 400) if url_sni_rejected "$url"; then finding WARN ords "ORDS rejects $url with 400 Invalid SNI - the host in the URL is not in its certificate; use the certificate's hostname in ORDS_URL (ORDS itself is up)"; else finding WARN ords "ORDS answers HTTP 400 at $url"; fi;; 000|"") [ -n "$pid" ] && finding CRIT ords "ORDS process is running but $url does not answer";; *) finding WARN ords "ORDS answers HTTP $code at $url";; esac
+  fi
   [ "$THREADS" = 1 ] && [ -n "$pid" ] && jvm_threads "ords" "$pid"
 }
 
@@ -870,6 +890,7 @@ diag_wls_domain() {
     # the admin often binds the host address, not loopback (e.g. [::ffff:192.0.2.10]:44110),
     # so probe localhost AND the host's own FQDN + first IPv4, on both the plain and the SSL port
     h_fqdn="$(hostname -f 2>/dev/null || echo "$HOST")"; h_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')"
+    [ -z "$h_ip" ] && h_ip="$(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^127\.' | head -1)"
     for h in localhost "$h_fqdn" ${h_ip:+"$h_ip"}; do
       cands="$cands http://$h:${admin_port:-7001}"
       [ -n "$admin_ssl" ] && cands="$cands https://$h:$admin_ssl"
@@ -1181,8 +1202,8 @@ diag_okv() {
   # path as it (Mother 13:53:13), so it also gets </dev/null.
   local f; while IFS= read -r f <&3; do
     h2 "$f"
-    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f'; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (per-entry ports):'; for e in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' '); do s=\${e%%:*}; p=\${e#*:}; [ \"\$p\" = \"\$e\" ] && p=5696; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
-    local raw; raw="$RAW/okv_$(printf '%s' "$f" | md5sum | cut -c1-8).txt"
+    section_sh "okv_$(hash8 "$f")" "grep -vE '^#|^$' '$f'; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (per-entry ports):'; for e in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' '); do s=\${e%%:*}; p=\${e#*:}; [ \"\$p\" = \"\$e\" ] && p=5696; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
+    local raw; raw="$RAW/okv_$(hash8 "$f").txt"
     local nok nbad; nok="$(grep -cE '^  [^ ]+:[0-9]+ OK$' "$raw")"; nbad="$(grep -cE '^  [^ ]+:[0-9]+ UNREACHABLE$' "$raw")"   # only the server lines, not okvutil's text
     [ "$nbad" -gt 0 ] && { if [ "$nok" = 0 ]; then finding CRIT okv "No Oracle Key Vault server in $f is reachable on its port - TDE keystore cannot be opened after a restart"; else finding WARN okv "$nbad of $((nok + nbad)) Key Vault servers in $f unreachable (HA degraded)"; fi; }
     grep -qiE 'okvutil.*(error|fail|unable)|Cannot connect|Unable to connect|Connection refused' "$raw" && finding WARN okv "okvutil list failed against Key Vault (wallet password needed, endpoint not enrolled, or no server reachable)"
@@ -1209,7 +1230,8 @@ diag_misc_products() {
     found="$found OHS"; h2 "Oracle HTTP Server"
     section_sh ohs_status "ps -eo pid,etime,rss,args | grep -E '[h]ttpd' | head -10 | cut -c1-160; echo; [ -n '$opmn' ] && \$(dirname '$opmn')/opmnctl status -l 2>&1; for i in $ohs; do echo \"== \$i\"; grep -E '^Listen|^ServerName|SSLEngine|WebLogicCluster|WebLogicHost|WebLogicPort|MatchExpression|WLProxySSL|ErrorLog|LogLevel' \$i/httpd.conf \$i/ssl.conf \$i/mod_wl_ohs.conf \$i/moduleconf/*.conf 2>/dev/null | head -40; d=\$(echo \$i | sed 's#/config/fmwconfig.*##'); n=\$(basename \$i); echo; echo 'errors:'; ls -t \$d/servers/\$n/logs/*.log 2>/dev/null | head -3; done"
     for i in $ohs; do local d n; d="$(printf '%s' "$i" | sed 's#/config/fmwconfig.*##')"; n="$(basename "$i")"; for lf in $(ls -t "$d/servers/$n/logs/"*.log 2>/dev/null | head -2); do recent_errors "ohs_${n}_$(basename "$lf" .log)" "$lf" '\[error\]|\[crit\]|\[alert\]|\[emerg\]|OHS-[0-9]+|failure of server APACHE bridge|NO_PROCESS|ssl_error' >/dev/null; grep -qE 'failure of server APACHE bridge|NO_PROCESS' "$RAW/ohs_${n}_$(basename "$lf" .log).errors" 2>/dev/null && finding CRIT ohs "$n: mod_wl_ohs cannot reach WebLogic (failure of server APACHE bridge) - back-end down or wrong WebLogicCluster"; done; done
-    ps -eo args | grep -qE '[h]ttpd' || finding CRIT ohs "OHS is configured but no httpd process is running"
+    if ps_args >/dev/null 2>&1; then ps_args | grep -qE '[h]ttpd' || finding CRIT ohs "OHS is configured but no httpd process is running"
+    else finding WARN ohs "cannot read the process list (ps failed) - whether httpd runs is NOT checked"; fi
   fi
   # OUD / OID / IDM
   if ps -eo args | grep -qE '[o]rg.opends.server.core.DirectoryServer|[o]idldapd|[o]idmon|[o]racle.oud'; then

@@ -215,9 +215,12 @@ select 'CHECK|WARN|guaranteed restore point '||name||' is '||round(sysdate-time)
   if [ -z "$inv" ]; then finding WARN db "$sid: cannot count invalid objects (cdb_objects query returned nothing)"; else printf '%s' "$inv" >"$OUT/invalid_${sid}.txt"; fi
   if [ -n "$inv" ] && [ -n "$PREV" ] && [ -f "$PREV/invalid_${sid}.txt" ]; then local pinv; pinv="$(cat "$PREV/invalid_${sid}.txt")"; [ "${inv:-0}" -gt "$((${pinv:-0}+10))" ] && finding WARN db "$sid: invalid objects went from $pinv to $inv"; fi
   check_alert_log "$sid"
-  # per PDB: accounts + tablespaces
-  if db_is_cdb "$sid"; then
-    local p pdbs; pdbs="$(db_pdbs "$sid")"; [ -n "${PDB:-}" ] && pdbs="$(printf '%s\n%s\n' "$PDB" "$pdbs" | awk '!s[$0]++')"
+  # per PDB: accounts + tablespaces (a v$database read that fails is UNKNOWN, not 'not a CDB' - Vision audit)
+  local cdb; cdb="$(db_cdb "$sid")"
+  if [ "$cdb" = UNKNOWN ]; then finding WARN db "$sid: v\$database.cdb could not be read - the per-PDB checks were NOT run"
+  elif [ "$cdb" = YES ]; then
+    local p pdbs; pdbs="$(db_pdbs "$sid")" || finding WARN db "$sid: v\$pdbs could not be read - the per-PDB checks were NOT run"
+    [ -n "${PDB:-}" ] && pdbs="$(printf '%s\n%s\n' "$PDB" "$pdbs" | awk '!s[$0]++')"
     for p in $pdbs; do
       with_pdb "$p" sql_checks "$sid" "$sid/$p" "select 'CHECK|'||case when pct>=$TS_CRIT then 'CRIT' else 'WARN' end||'|tablespace '||tablespace_name||' '||pct||'% of max' from (select t.tablespace_name, round(u.used_mb*100/f.max_mb) pct from dba_tablespaces t join (select tablespace_name, sum(greatest(bytes, decode(autoextensible,'YES',maxbytes,bytes)))/1048576 max_mb from dba_data_files group by tablespace_name) f on f.tablespace_name=t.tablespace_name join (select tablespace_name, sum(bytes)/1048576 used_mb from dba_segments group by tablespace_name) u on u.tablespace_name=t.tablespace_name where t.contents<>'TEMPORARY') where pct>=$TS_WARN;
 select 'CHECK|CRIT|'||username||' is '||account_status from dba_users where username in ('APEX_PUBLIC_USER','ORDS_PUBLIC_USER','APEX_LISTENER','APEX_REST_PUBLIC_USER','ORDS_METADATA') and account_status<>'OPEN';
@@ -239,13 +242,20 @@ check_middleware() {
       400) if url_sni_rejected "$ORDS_URL"; then finding WARN ords "ORDS rejects $ORDS_URL with 400 Invalid SNI: the host in the URL is not in its certificate - set ORDS_URL to the certificate's hostname (ORDS itself is up)"; else [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP 400 at $ORDS_URL"; fi;;
       *) [ -n "$ORDS_PID" ] && finding CRIT ords "ORDS answers HTTP ${code:-none} at $ORDS_URL";; esac
   fi
+  local ps_ok=1; ps_pid_args >/dev/null 2>&1 || ps_ok=0
   local h d; for h in $(wls_homes); do for d in $(wls_domains "$h"); do
     local cfg="$d/config/config.xml" running; running="$(wls_running "$d")"
     kv "WebLogic $(basename "$d")" "running: $(printf '%s\n' "$running" | awk '{print $1}' | tr '\n' ' ')"
-    [ -z "$running" ] && finding CRIT wls "$(basename "$d"): no server JVM running"
-    [ -z "$(nodemanager_pid)" ] && finding WARN wls "Node Manager not running"
+    if [ "$ps_ok" = 0 ]; then finding WARN wls "$(basename "$d"): cannot read the process list (ps failed) - whether its servers / Node Manager run is NOT checked"
+    else
+      [ -z "$running" ] && finding CRIT wls "$(basename "$d"): no server JVM running"
+      [ -z "$(nodemanager_pid)" ] && finding WARN wls "Node Manager not running"
+    fi
     local admin port url; admin="$(wls_admin_name "$d")"; port="$(wls_servers "$d" | awk -v a="$admin" '$1==a{print $2}')"; url="${ADMIN_URL:-http://localhost:${port:-7001}}"
-    [ -n "$running" ] && [ "$(url_code "$url/weblogic/ready")" != 200 ] && finding WARN wls "$(basename "$d"): $url/weblogic/ready not 200"
+    if [ -n "$running" ]; then
+      if ! command -v curl >/dev/null 2>&1; then finding WARN wls "$(basename "$d"): curl is not on PATH - the readiness URL was NOT checked"
+      elif [ "$(url_code "$url/weblogic/ready")" != 200 ]; then finding WARN wls "$(basename "$d"): $url/weblogic/ready not 200"; fi
+    fi
     [ -d "$d/servers" ] && [ ! -r "$d/servers" ] && finding WARN wls "$(basename "$d"): $d/servers is not readable by $(id -un) - server logs NOT checked"
     local s; for s in "$d"/servers/*/logs/*.log; do [ -f "$s" ] || continue; local sn; sn="$(basename "$(dirname "$(dirname "$s")")")"
       [ -r "$s" ] || { finding WARN wls "$sn: $s is not readable by $(id -un) - errors since last run NOT checked"; continue; }   # -f alone read an unopenable log as 0 new error lines
@@ -270,10 +280,13 @@ check_middleware() {
     else kv "Grid" "$online of 3 CRS components online"; [ "$online" -lt 3 ] && finding CRIT grid "only $online of 3 CRS components online: $(grep -vi 'is online' "$RAW/crs_check.txt" | grep -v '^$' | head -1 | cut -c1-100)"; fi
   fi
   if ogg_detect && [ -x "${OGG_HOME:-/nonexistent}/ggsci" ]; then
-    ggsci "info all" >"$RAW/ogg.txt" 2>&1
-    grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg.txt" | grep -qE 'ABENDED|STOPPED' && finding CRIT ogg "GoldenGate not running: $(grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg.txt" | grep -E 'ABENDED|STOPPED' | awk '{print $2}' | tr '\n' ' ')"
-    grep -q 'MANAGER.*RUNNING' "$RAW/ogg.txt" || finding CRIT ogg "GoldenGate manager not running"
-    kv "GoldenGate" "$(grep -cE 'RUNNING' "$RAW/ogg.txt") running, $(grep -cE 'ABENDED|STOPPED' "$RAW/ogg.txt") down"
+    local grc=0; ggsci "info all" >"$RAW/ogg.txt" 2>&1 || grc=$?
+    if [ "$grc" != 0 ]; then finding WARN ogg "ggsci 'info all' could not run (rc $grc: $(head -1 "$RAW/ogg.txt" | cut -c1-80)) - GoldenGate state NOT checked"
+    else
+      grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg.txt" | grep -qE 'ABENDED|STOPPED' && finding CRIT ogg "GoldenGate not running: $(grep -E '^(EXTRACT|REPLICAT)' "$RAW/ogg.txt" | grep -E 'ABENDED|STOPPED' | awk '{print $2}' | tr '\n' ' ')"
+      grep -q 'MANAGER.*RUNNING' "$RAW/ogg.txt" || finding CRIT ogg "GoldenGate manager not running"
+      kv "GoldenGate" "$(grep -cE 'RUNNING' "$RAW/ogg.txt") running, $(grep -cE 'ABENDED|STOPPED' "$RAW/ogg.txt") down"
+    fi
   fi
   kv_end
 }

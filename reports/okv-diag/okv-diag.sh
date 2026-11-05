@@ -114,10 +114,10 @@ diag_okv_client() {
   local f; while IFS= read -r f <&3; do
     [ -f "$f" ] || { finding WARN okv "$f does not exist"; continue; }
     h2 "$f"
-    section "okv_conf_$(printf '%s' "$f" | md5sum | cut -c1-8)" grep -vE '^#|^$' "$f"
+    section "okv_conf_$(hash8 "$f")" grep -vE '^#|^$' "$f"
     local d; d="$(dirname "$(dirname "$f")")"
-    section "okv_dir_$(printf '%s' "$f" | md5sum | cut -c1-8)" ls -la "$d/bin" "$d/ssl" "$d/lib"
-    local rname; rname="okv_reach_$(printf '%s' "$f" | md5sum | cut -c1-8)"
+    section "okv_dir_$(hash8 "$f")" ls -la "$d/bin" "$d/ssl" "$d/lib"
+    local rname; rname="okv_reach_$(hash8 "$f")"
     local rfile="$RAW/$rname.txt" nok nbad
     { server_reachable "$f"; } >"$rfile" 2>&1
     fence_start; head -n "$DIAG_LINES" "$rfile" >>"$REPORT"; fence_end
@@ -130,8 +130,10 @@ diag_okv_client() {
     elif [ "${nbad:-0}" -gt 0 ]; then
       if [ "${nok:-0}" = 0 ]; then finding CRIT okv "no Oracle Key Vault server in $f is reachable - TDE cannot open the keystore after a restart"; else finding WARN okv "$nbad of $((nok + nbad)) Key Vault servers in $f unreachable (HA degraded)"; fi
     fi
-    [ -x "$d/bin/okvutil" ] && section "okvutil_$(printf '%s' "$f" | md5sum | cut -c1-8)" "$d/bin/okvutil" list || finding WARN okv "$d/bin/okvutil is missing or not executable - cannot check the client's view of Key Vault"
-    grep -qiE 'okvutil.*(error|fail|unable)|Cannot connect|Unable to connect|Connection refused' "$RAW/okvutil_$(printf '%s' "$f" | md5sum | cut -c1-8).txt" 2>/dev/null && finding WARN okv "okvutil list failed against Key Vault (wallet password needed, endpoint not enrolled, or no server reachable)"
+    local un; un="okvutil_$(hash8 "$f")"
+    if [ -x "$d/bin/okvutil" ]; then section "$un" "$d/bin/okvutil" list
+    else finding WARN okv "$d/bin/okvutil is missing or not executable - cannot check the client's view of Key Vault"; fi
+    grep -qiE 'okvutil.*(error|fail|unable)|Cannot connect|Unable to connect|Connection refused' "$RAW/$un.txt" 2>/dev/null && finding WARN okv "okvutil list failed against Key Vault (wallet password needed, endpoint not enrolled, or no server reachable)"
     endpoint_cert "$f"
   done 3<<<"$confs"
   # PKCS#11: report the state whether or not the library was found. A discovery that returned nothing used to
