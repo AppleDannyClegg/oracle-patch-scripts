@@ -344,6 +344,7 @@ cmd_rollback() {
   # apply can die between its two renames: then $OLD_JH is gone and the old build sits at old_jdk. Put it back
   # before discover, which needs $OLD_JH/bin/java to exist.
   local injd; injd="$(state_get old_jdk || true)"
+  [ -n "${OLD_JH:-}" ] || OLD_JH="$(state_get old_jh || true)"   # a bare 'rollback --run-dir R' has no --java-home
   if [ -n "$injd" ] && [ -d "$injd" ] && [ -n "${OLD_JH:-}" ] && [ ! -e "$OLD_JH" ]; then
     confirm "mv $injd $OLD_JH (the apply did not finish)?" || die "aborted"
     [ "$DRY_RUN" = 1 ] || mv "$injd" "$OLD_JH" || die "cannot restore the old JDK from $injd"
