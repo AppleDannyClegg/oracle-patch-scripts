@@ -465,21 +465,30 @@ finally {
     $ohsM = Join-Path $tmp 'ohs.txt'
     @('host|wl6', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.23|no', 'ohs|/u01/fmw|12.2.1.4.0',
       'home|/u01/ohs|ohs|12.2.1.4.0|13.9.4.2.23',
-      'patch|/u01/ohs|38000222|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501') | Set-Content -LiteralPath $ohsM
+      'patch|/u01/ohs|39611663|OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260624',
+      'home|/u01/ohsold|ohs|12.2.1.4.0|13.9.4.2.23',
+      'patch|/u01/ohsold|36187026|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115') | Set-Content -LiteralPath $ohsM
     $m6 = Read-Manifest $ohsM
     $ohs6 = @($m6.Ohs)
     Check ($ohs6.Count -eq 1) "a collocated ohs| line is read: [$($ohs6.Count)]"
     if ($ohs6.Count -eq 1) { Check ($ohs6[0].Home -eq '/u01/fmw' -and $ohs6[0].Release -eq '12.2.1.4.0') "collocated ohs| fields: [$($ohs6[0].Home)] [$($ohs6[0].Release)]" }
-    Check (@($m6.Homes | Where-Object { $_.Kind -eq 'ohs' }).Count -eq 1 -and @($m6.Homes[0].Patches).Count -eq 1) "a standalone OHS home and its patch are read"
+    Check (@($m6.Homes | Where-Object { $_.Kind -eq 'ohs' }).Count -eq 2 -and @($m6.Homes[0].Patches).Count -eq 1) "the standalone OHS homes and their patches are read"
     $notes6 = @(Get-OhsNotes $m6)
-    Check ($notes6.Count -eq 2) "both OHS homes are named for a manual fetch, got $($notes6.Count)"
+    Check ($notes6.Count -eq 3) "every OHS home is named, got $($notes6.Count)"
     Check (@($notes6 | Where-Object { $_ -like '*/u01/ohs (standalone)*' }).Count -eq 1) "the standalone OHS home is named: $($notes6 -join ' / ')"
     Check (@($notes6 | Where-Object { $_ -like '*/u01/fmw (collocated*' }).Count -eq 1) "the collocated OHS home is named: $($notes6 -join ' / ')"
     # the plan: the newest OHS (NATIVE) bundle for each OHS home, in its own ohs/ folder; never the Apache plug-in
-    $p6 = @(Get-PatchPlan $m6 | Where-Object { $_.Kind -eq 'ohs' })
-    Check ($p6.Count -eq 2) "an OHS bundle planned for each OHS home, got $($p6.Count)"
+    $all6 = @(Get-PatchPlan $m6 3>&1)
+    $w6 = @($all6 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $p6 = @($all6 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] -and $_.Kind -eq 'ohs' })
+    Check ($p6.Count -eq 2) "an OHS bundle planned for the DB19C home and the collocated one, got $($p6.Count)"
+    # the DB19C bundle 'must be applied only to an Oracle Fusion Middleware home where the Oracle Database Client 12c has
+    # been upgraded to 19c' (40005842 README, Section 2): a home on the plain line is not planned it, and is told why
+    Check (-not ($p6 | Where-Object { $_.For -eq '/u01/ohsold' })) "a home on the plain OHS line is NOT planned the DB19C bundle"
+    Check (@($w6 | Where-Object { "$_" -like '*/u01/ohsold*KB585169*' }).Count -eq 1) "the plain-line home warns about the DB client 19c upgrade (KB585169): $(@($w6) -join ' / ')"
+    Check (@($w6 | Where-Object { "$_" -like '*/u01/fmw*no OHS bundle installed*KB585169*' }).Count -eq 1) "a home with no OHS bundle yet warns to confirm the DB client 19c upgrade: $(@($w6) -join ' / ')"
     Check (@($p6 | Where-Object { $_.Patch -eq '40005842' }).Count -eq 2) "the newest OHS DB19C bundle 40005842 is planned: $(@($p6 | ForEach-Object { $_.Patch }) -join ',')"
-    Check (@($p6 | Where-Object { $_.For -eq '/u01/ohs' -and $_.Installed -eq '260501' }).Count -eq 1) "the standalone home's installed OHS level is read (260501)"
+    Check (@($p6 | Where-Object { $_.For -eq '/u01/ohs' -and $_.Installed -eq '260624' }).Count -eq 1) "the standalone home's installed OHS level is read (260624)"
     Check (@($p6 | Where-Object { $_.For -eq '/u01/fmw' }).Count -eq 1) "the collocated OHS home gets its own OHS item"
     Check (-not ($p6 | Where-Object { $_.Patch -eq '40030272' })) "the Apache plug-in bundle is not planned as the OHS bundle"
     # current: an OHS home already on 260910 plans nothing

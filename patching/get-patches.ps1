@@ -434,6 +434,18 @@ function Get-OhsPlan($Manifest) {
         $newest = Select-Newest $rows $pat
         if (-not $newest) { Write-Warning "$($h.Home): MOS lists no OHS (NATIVE) bundle for $short - check MOS Doc 2806740.2"; continue }
         $have = Get-InstalledLevel $h $pat
+        # the series matters, not only the date: the DB19C bundle 'must be applied only to an Oracle Fusion Middleware
+        # home where the Oracle Database Client 12c has been upgraded to 19c' (40005842 README, Section 2, KB585169).
+        # Follow the series the home is on; a home on the plain line is not planned a DB19C bundle
+        $haveDb19 = @($h.Patches | Where-Object { $_.Description -match '(?i)^OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE' }).Count -gt 0
+        $havePlain = @($h.Patches | Where-Object { $_.Description -match '(?i)^OHS \(NATIVE\) BUNDLE PATCH' }).Count -gt 0
+        if ($newest.Abstract -match '(?i)DB19C' -and -not $haveDb19) {
+            if ($havePlain) {
+                Write-Warning "$($h.Home): on the plain OHS bundle line ($have) - the current bundle $($newest.Number) is the DB19C one, which needs the home's Database Client upgraded to 19c first (KB585169). Not planned: do that upgrade, then run again."
+                continue
+            }
+            Write-Warning "$($h.Home): no OHS bundle installed - $($newest.Number) is a DB19C bundle; confirm this home's Database Client was upgraded to 19c (KB585169) before applying it."
+        }
         $new = [regex]::Match($newest.Abstract, $pat).Groups[1].Value
         if (-not $have -or $new -gt $have) { New-PlanItem 'ohs' "OHS bundle ($($h.Home))" $have $newest $h.Release $h.Home }
     }
