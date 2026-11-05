@@ -320,7 +320,10 @@ cmd_verify() {
     [ "$v" = "$nv" ] && log "$newjh is now $v" || { err "$newjh is $v, expected ${nv:-?}"; fail=1; }
   elif [ "$LINKED" = 1 ]; then [ "$(readlink -f "$OLD_JH")" = "$(readlink -f "$newjh")" ] && log "$OLD_JH -> $newjh" || { err "$OLD_JH points at $(readlink -f "$OLD_JH")"; fail=1; }
   else local left; left="$(refs_to "$(state_get old_real)" | grep -c .)"; [ "$left" = 0 ] && log "no reference to the old JDK left" || { err "$left reference(s) still name the old JDK: $(refs_to "$(state_get old_real)" | cut -c1-120 | tr '\n' ';')"; fail=1; }; fi
-  local oldrun; if ! oldrun="$(running_on "$(state_get old_real)")"; then err "$(ps_unreadable_msg) - whether anything still runs on the old JDK is NOT known"; fail=1; oldrun=""
+  # in-place: the old build now lives at $OLD_JH.old-<stamp>, so a JVM still on it has its exe there - checking
+  # the path would instead match the JVMs that were correctly restarted onto the new build
+  local oldref; [ "$IN_PLACE" = 1 ] && oldref="$(state_get old_jdk || true)"; [ -n "$oldref" ] || oldref="$(state_get old_real)"
+  local oldrun; if ! oldrun="$(running_on "$oldref")"; then err "$(ps_unreadable_msg) - whether anything still runs on the old JDK is NOT known"; fail=1; oldrun=""
   elif [ -n "$oldrun" ]; then warn "still running on the OLD JDK (restart them): $(printf '%s\n' "$oldrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; else log "no JVM runs on the old JDK"; fi
   local newrun; newrun="$(running_on "$(readlink -f "$newjh")" 2>/dev/null)" || newrun=""; [ -n "$newrun" ] && log "running on the new JDK: $(printf '%s\n' "$newrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"
   local u; for u in ${CHECK_URLS//,/ } ${USER_ORDS_URL:-}; do local c; c="$(url_code "$u" 15)"; [[ "$c" =~ ^(200|30[0-9]|401|403)$ ]] && log "$u: HTTP $c" || { err "$u: HTTP ${c:-none}"; fail=1; }; done
@@ -367,7 +370,8 @@ cmd_run() {
   cmd_apply || { cmd_rollback; die "FAILED: apply (rolled back). Log: $LOG_FILE"; }
   [ "$DO_RESTART" = 1 ] && cmd_restart
   if ! cmd_verify; then err "verify failed"; confirm "Roll back to $OLD_VER?" && cmd_rollback; die "FAILED: verify. Log: $LOG_FILE"; fi
-  echo "SUCCESS: $OLD_JH now $NEW_VER ($NEW_JH); old JDK kept at $OLD_REAL. $([ "$DO_RESTART" = 1 ] || echo 'Restart the JVMs to pick it up. ')Log: $LOG_FILE"
+  local oldkept; oldkept="$(state_get old_jdk || true)"; [ -n "$oldkept" ] || oldkept="$OLD_REAL"
+  echo "SUCCESS: $OLD_JH now $NEW_VER ($NEW_JH); old JDK kept at $oldkept. $([ "$DO_RESTART" = 1 ] || echo 'Restart the JVMs to pick it up. ')Log: $LOG_FILE"
 }
 
 main() {
