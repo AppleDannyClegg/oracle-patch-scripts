@@ -237,7 +237,14 @@ EOF
   # one line per family, keeping the greatest version, so two patches of the same family do not plan twice
   printf '%s' "$acc" | awk -F'|' -v h="$h" '
     $1=="OTHER" { print "fmw|" h "|OTHER|" $2 "|" $3; next }
-    { if (!($1 in best) || $2 > best[$1]) { best[$1]=$2; out[$1]="fmw|" h "|" $1 "|" $2 "|" $3 } }
+    {
+      # dedupe on the version-stripped base, so 'JDBC19.30' and 'JDBC19.31' are one family (P3c)
+      base=$1; sub(/[0-9][0-9.]*$/,"",base); sub(/ +$/,"",base); if (base=="") base=$1
+      # compare the trailing yymmdd, not the whole string: a 5-part '...0.270101' beats a 4-part
+      # '...260514' only by its date, which a text compare gets wrong (P3b)
+      vkey=$2; if (match(vkey,/[0-9]{6}$/)) vkey=substr(vkey,RSTART,6)
+      if (!(base in best) || vkey > best[base]) { best[base]=vkey; out[base]="fmw|" h "|" $1 "|" $2 "|" $3 }
+    }
     END { for (k in out) print out[k] }' | sort
   return 0
 }

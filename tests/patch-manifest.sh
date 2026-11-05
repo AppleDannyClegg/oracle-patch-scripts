@@ -47,8 +47,9 @@ case "$1" in
     echo "39426213;WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)"
     echo "38887908;RDA release 26.2-2026421 for OFM 12.2.1.4 SPB"
     echo "38000001;ADF BUNDLE PATCH 12.2.1.4.260514"
-    echo "38000006;ADF BUNDLE PATCH 12.2.1.4.250101"
+    echo "38000006;ADF BUNDLE PATCH 12.2.1.4.0.270101"
     echo "38000005;JDBC19.30 BUNDLE PATCH 12.2.1.4.260216"
+    echo "38000008;JDBC19.31 BUNDLE PATCH 12.2.1.4.270101"
     echo "38000002;OPSS BUNDLE PATCH 12.2.1.4.260514"
     echo
     echo "OPatch succeeded." ;;
@@ -121,18 +122,19 @@ if [ -f "$OUT" ]; then
   has "$OUT" "patch|$H|36946553|FMW PLATFORM BUNDLE PATCH 12.2.1.4.240812"
   has "$OUT" "jdk|$T/jdk|1.8.0_471|8"
   # FMW product bundles: family derived from the real lspatches description, not a hard-coded list
-  has "$OUT" "fmw|$H|ADF|12.2.1.4.260514|38000001"
+  has "$OUT" "fmw|$H|ADF|12.2.1.4.0.270101|38000006"
   has "$OUT" "fmw|$H|OPSS|12.2.1.4.260514|38000002"
   grep -q "^fmw|$H|OWSM|" "$OUT" && bad "FMW: emitted a family that is not installed (OWSM)" || ok
   grep -q "^fmw|$H|FMW PLATFORM|" "$OUT" && bad "FMW: emitted FMW PLATFORM, which Get-WlsPlan already plans" || ok
   # a bundle-shaped line that does not fit '<FAMILY> BUNDLE PATCH' must surface as OTHER, not vanish
   grep -q "^fmw|$H|OTHER|WLS STACK PATCH BUNDLE 12.2.1.4.260522" "$OUT" && ok || bad "FMW: the WLS STACK PATCH BUNDLE was dropped silently"
   grep -q "^fmw|$H|OTHER|RDA release 26.2-2026421 for OFM 12.2.1.4 SPB|" "$OUT" && ok || bad "FMW: the RDA SPB line was dropped silently"
-  # a versioned family token is emitted as-is; the consumer normalises it (a850512)
-  has "$OUT" "fmw|$H|JDBC19.30|12.2.1.4.260216|38000005"
-  # two patches of the same family: one line, the newest (Baymax P3)
+  # a versioned family token is emitted as-is; the consumer normalises it (a850512). Two JDBC versions are one family (P3c)
+  has "$OUT" "fmw|$H|JDBC19.31|12.2.1.4.270101|38000008"
+  [ "$(grep -c "^fmw|$H|JDBC" "$OUT")" = 1 ] && ok || bad "FMW: two JDBC versions gave more than one fmw| line"
+  # two patches of the same family: one line, the newest by yymmdd, across 4-part and 5-part shapes (P3b)
   [ "$(grep -c "^fmw|$H|ADF|" "$OUT")" = 1 ] && ok || bad "FMW: two ADF patches gave more than one fmw| line"
-  grep -q "^fmw|$H|ADF|12.2.1.4.250101" "$OUT" && bad "FMW: kept the older ADF line instead of the newest" || ok
+  grep -q "^fmw|$H|ADF|12.2.1.4.260514" "$OUT" && bad "FMW: kept the older ADF line instead of the newer 5-part one" || ok
   grep -q '^host|' "$OUT" && ok || bad "manifest has no host line"
   has "$OUT" "home|$C|db|19.27.0.0.0|12.2.0.1.44"
   has "$OUT" "patch|$C|37642901|Database Release Update : 19.27.0.0.250415 (37642901)"
