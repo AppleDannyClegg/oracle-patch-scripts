@@ -226,7 +226,7 @@ other_products() {
     local p; for p in $pdbs; do
       # an empty read is 'APEX not installed' (ORA-00942 on apex_release); any other failure is a read that
       # did not happen, and its level is unknown - not absent (A-S2)
-      local av arc=0 aerr="$RAW/apex_${sid}_${p}.err"; av="$(with_pdb "$p" sql_lines "$sid" "(select version_no||'|'||to_char(patch_applied_on,'YYYY-MM-DD') from apex_release)" 2>"$aerr")" || arc=$?
+      local av arc=0 aerr="$RAW/apex_${sid}_${p}.err"; av="$(with_pdb "$p" sql_lines "$sid" "select version_no||'|'||to_char(patch_applied_on,'YYYY-MM-DD') from apex_release;" 2>"$aerr")" || arc=$?
       if [ -z "$av" ]; then
         [ "$arc" != 0 ] && ! grep -qiE 'ORA-00942' "$aerr" 2>/dev/null && {
           local why; why="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$aerr" 2>/dev/null | cut -c1-80)"
