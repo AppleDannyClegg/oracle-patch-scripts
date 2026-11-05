@@ -127,8 +127,15 @@ recover() {
     return 0
   fi
   if [ "$wls_attempted" = 1 ]; then
-    log "recovering: wls-patch restore (an SPB's nrollback is cumulative - restore is the only complete rollback)"
-    wrun restore || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
+    # this quarter's own backup only: a bare 'restore' falls back to BACKUP_DIR/latest, which can be an older
+    # backup of the same home (Gort 15:18:19)
+    local bd; bd="$(sed -n 's/^backup_dir=//p' "$WLS_RUN/state" 2>/dev/null | tail -1)"
+    if [ -z "$bd" ]; then
+      err "no wls-patch backup recorded in $WLS_RUN - not restoring anything automatically"; rec=0
+    else
+      log "recovering: wls-patch restore $bd (an SPB's nrollback is cumulative - restore is the only complete rollback)"
+      wrun restore "$bd" || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
+    fi
   fi
   if [ "$java_attempted" = 1 ] && java_changed; then
     log "recovering: java-patch rollback"

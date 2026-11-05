@@ -32,6 +32,7 @@ case "\$1" in
     esac
     [ "\$who" = java ] && [ -n "\${FAIL_JAVA_APPLY:-}" ] && { [ -n "\$rd" ] && echo "old_jdk=/tmp/x.old-1" >>"\$rd/state"; exit 1; }
     [ -n "\$rd" ] && echo "apply=ok" >>"\$rd/state" ;;
+  backup) [ "\$who" = wls ] && [ -n "\$rd" ] && [ -z "\${NO_BACKUP_STATE:-}" ] && echo "backup_dir=$T/bk-quarter" >>"\$rd/state" ;;
   restore) [ -n "\${FAIL_WLS_RESTORE:-}" ] && exit 1 ;;
   rollback) [ -n "\${FAIL_JAVA_ROLLBACK:-}" ] && exit 1 ;;
   verify) [ "\$who" = java ] && [ -n "\${FAIL_JAVA_VERIFY:-}" ] && exit 1 ;;
@@ -126,6 +127,14 @@ grep -q 'servers are NOT started' "$T/out" && ok || bad "a failed recovery stop 
 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run >"$T/out" 2>&1 && ok || bad "dry-run failed: $(tail -3 "$T/out")"
 miss="$(grep -E '^(java|wls) (stop|apply|start|backup|restore|rollback)' "$T/calls.log" | grep -v -- '--dry-run')"
 [ -z "$miss" ] && ok || bad "a changing call ran without --dry-run: $miss"
+
+# ---- recovery restores THIS quarter's backup, never a bare 'restore' (which falls back to BACKUP_DIR/latest) ----
+mkroot "$T/rootbk"
+runq "$T/rootbk" FAIL_WLS_SPB=1
+grep -q "^wls restore $T/bk-quarter " "$T/calls.log" && ok || bad "recovery did not restore the quarter's own backup_dir: [$(grep restore "$T/calls.log")]"
+runq "$T/rootbk" FAIL_WLS_SPB=1 NO_BACKUP_STATE=1
+grep -q '^wls restore' "$T/calls.log" && bad "with no backup_dir recorded, recovery still ran a bare restore" || ok
+grep -q '^wls start' "$T/calls.log" && bad "with no backup to restore, the servers were started" || ok
 
 echo "wls-quarter gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
