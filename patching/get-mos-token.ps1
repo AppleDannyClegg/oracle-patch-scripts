@@ -44,8 +44,12 @@ function Get-JwtExpiry([string] $Token) {
 }
 
 function Test-MosToken([string] $Token) {
+    if ([string]::IsNullOrWhiteSpace($Token)) { return [pscustomobject]@{ Ok = $false; Code = $null; Message = 'no token to check' } }
     try {
         $r = Invoke-WebRequest -Uri "$MosBase/Orion/Services/search?bug=6880880" -Headers @{ Authorization = "Bearer $Token" } -UseBasicParsing -TimeoutSec 60
+        # with NO (or empty) Authorization the request redirects to the OCI IAM login page and comes back 200
+        # text/html - so a 200 alone is not an acceptance, the body must be MOS data (Gort, live)
+        if ($r.Content -match '<html') { return [pscustomobject]@{ Ok = $false; Code = [int]$r.StatusCode; Message = 'a login page came back (HTML), not MOS data - the token was not accepted' } }
         return [pscustomobject]@{ Ok = $true; Code = [int]$r.StatusCode }
     } catch {
         $code = $null
