@@ -487,7 +487,18 @@ function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
     $pick = $null
     if ($Release) {
         $tag = '_' + $Release.Replace('.', '')
-        $pick = $forUs | Where-Object { $_.Release.StartsWith($Release) -or $_.Name.Contains($tag) } | Select-Object -First 1
+        $matching = @($forUs | Where-Object { $_.Release.StartsWith($Release) -or $_.Name.Contains($tag) })
+        if ($matching.Count -gt 0) {
+            # Oracle lists a production artifact and sometimes an internal/debug one for the same release. A
+            # fastdebug/'internal-bin' tarball is not what a patch tool installs (java-patch refuses it), so
+            # prefer the production file; if only a debug one exists, say so rather than quietly take it.
+            $dev = '(?i)internal|debug|fastdebug|early[_ ]access'
+            $production = @($matching | Where-Object { $_.Name -notmatch $dev })
+            $pool = if ($production.Count) { $production } else { Write-Warning "patch ${Patch}: only an internal/debug artifact is listed for release '$Release' - it is not a production JDK: $($matching[0].Name)"; $matching }
+            # the patch tools take an archive (.zip, .tar.gz); an .rpm/.exe/.deb is for a package manager
+            $archives = @($pool | Where-Object { $_.Name -match '(?i)\.(zip|t(ar\.)?gz)$' })
+            $pick = if ($archives.Count) { $archives | Select-Object -First 1 } else { $pool | Select-Object -First 1 }
+        }
     }
     if (-not $pick -and $forUs.Count -eq 1) { $pick = $forUs[0] }
     if (-not $pick) {

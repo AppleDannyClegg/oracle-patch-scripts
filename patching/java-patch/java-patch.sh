@@ -307,7 +307,15 @@ cmd_apply() {
     log "unpacking $TARBALL into $JAVA_BASE"; confirm "tar -xzf into $JAVA_BASE (new dir $NEW_JH)?" || die "aborted"
     [ "$DRY_RUN" = 1 ] || { tar -xzf "$TARBALL" -C "$JAVA_BASE" || die "unpack failed"; [ -x "$NEW_JH/bin/java" ] || die "$NEW_JH/bin/java missing after unpack"; }
   fi
-  [ "$DRY_RUN" = 1 ] || log "new JDK: $(jdk_version "$NEW_JH") ($(jdk_vendor "$NEW_JH"))"
+  if [ "$DRY_RUN" = 1 ]; then
+    log "new JDK: $(jdk_version "$NEW_JH") ($(jdk_vendor "$NEW_JH"))"
+  else
+    local newver jerr
+    jerr="$("$NEW_JH/bin/java" -version 2>&1 || true)"
+    newver="$(printf '%s\n' "$jerr" | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1)"
+    [ -n "$newver" ] || die "the JDK unpacked to $NEW_JH but $NEW_JH/bin/java -version printed no version - $TARBALL is not a runnable JDK (a fastdebug-only or incomplete build, or bin/java linked against something absent). java said: $(printf '%s' "$jerr" | head -3 | tr '\n' ' '). Nothing was moved; fix the tarball and retry."
+    log "new JDK: $newver ($(jdk_vendor "$NEW_JH"))"
+  fi
   if [ "$NO_CACERTS" = 0 ] && [ "$DRY_RUN" = 0 ]; then
     local oc nc; oc="$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"; nc="$NEW_JH/$([ -f "$NEW_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"
     local pf; pf="$(cacerts_pw_file)" || die "cannot create the keytool password file under ${TMPDIR:-/tmp}"
@@ -376,7 +384,7 @@ cmd_verify() {
     # the path did not change, so there is nothing to re-point: the new build must simply be there. Read the
     # build from state - a separate 'verify' invocation has not run pick_tar, so $NEW_VER is empty there.
     local v nv; v="$(jdk_version "$newjh")"; nv="$(state_get new_ver || true)"; [ -n "$nv" ] || nv="$NEW_VER"
-    [ "$v" = "$nv" ] && log "$newjh is now $v" || { err "$newjh is $v, expected ${nv:-?}"; fail=1; }
+    [ "$v" = "$nv" ] && log "$newjh is now $v" || { [ -n "$v" ] && err "$newjh is $v, expected ${nv:-?}" || err "$newjh/bin/java -version printed nothing (the JDK does not run); expected ${nv:-?}"; fail=1; }
   elif [ "$LINKED" = 1 ]; then [ "$(readlink -f "$OLD_JH")" = "$(readlink -f "$newjh")" ] && log "$OLD_JH -> $newjh" || { err "$OLD_JH points at $(readlink -f "$OLD_JH")"; fail=1; }
   else local left; left="$(refs_to "$(state_get old_real)" | grep -c .)"; [ "$left" = 0 ] && log "no reference to the old JDK left" || { err "$left reference(s) still name the old JDK: $(refs_to "$(state_get old_real)" | cut -c1-120 | tr '\n' ';')"; fail=1; }; fi
   # in-place: the old build now lives at $OLD_JH.old-<stamp>, so a JVM still on it has its exe there - checking
