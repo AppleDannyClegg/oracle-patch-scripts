@@ -431,7 +431,7 @@ cmd_reinstate() {
   confirm "Reinstate $old as a standby of $PRIMARY?" || die "aborted"
   [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: dgmgrl> reinstate database $old"; return 0; }
   local out; out="$(dgm_as "$conn" "$DG_SWITCH_TIMEOUT" "reinstate database $old")"; printf '%s\n' "$out" | redact >>"$LOG_FILE"; printf '%s\n' "$out" | redact | grep -vE '^[[:space:]]*$' | tail -10 | sed 's/^/  dgmgrl: /' >&2
-  if printf '%s' "$out" | grep -qiE 'Reinstatement of database .* succeeded|succeeded'; then log "reinstated: $old is a standby again; run verify"; state_set reinstate ok
+  if printf '%s' "$out" | grep -qi 'Reinstatement of database .* succeeded'; then log "reinstated: $old is a standby again; run verify"; state_set reinstate ok
   else err "reinstate failed. ORA-16795 / ORA-38729 = no flashback data back to the failover SCN: rebuild $old with RMAN duplicate for standby, then 'enable database $old'"; state_set reinstate failed; return 1; fi
 }
 

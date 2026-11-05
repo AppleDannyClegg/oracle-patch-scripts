@@ -225,7 +225,7 @@ gg_set_alias() { # <alias> <user> <password>
   # dircrd.bak is what rollback restores: no copy, no change (its status used to be dropped)
   [ -d "$RUN_DIR/dircrd.bak" ] || cp -rp "$OGG_HOME/dircrd" "$RUN_DIR/dircrd.bak" 2>>"$LOG_FILE" || { err "cannot back up $OGG_HOME/dircrd into the run dir: credential store alias $1 left unchanged"; return 1; }
   local out; out="$(ggsci "alter credentialstore replace user $2 password $3 alias $1")"; printf '%s\n' "$out" | redact >>"$LOG_FILE"
-  printf '%s' "$out" | grep -qiE 'successfully|Credential store altered' && state_append gg_alias_changed "$1" || { err "ggsci alter credentialstore failed: $(printf '%s' "$out" | tail -1)"; return 1; }
+  printf '%s' "$out" | grep -qi 'Credential store altered' && state_append gg_alias_changed "$1" || { err "ggsci alter credentialstore failed: $(printf '%s' "$out" | tail -1)"; return 1; }
 }
 
 cmd_reset() {
