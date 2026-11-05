@@ -113,9 +113,12 @@ cmd_latest() {
   local major="${DB_VERSION%%.*}" found="" rows
   mos_login
   log "Searching MOS for the newest Database Release Update $major"
-  rows="$(mos_name_search "Database Release Update $major" | grep -iE "^[0-9]{8}\|Database Release Update $major\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ *\(" || true)"   # plain RU rows: the " - CMAN" / " - GSM" variants are not for the database home
+  # plain RU rows: the " - CMAN" / " - GSM" variants are not for the database home. Newer MOS titles are
+  # undated ('DATABASE RELEASE UPDATE 19.33.0.0.0'), so the yymmdd is no longer required - order by the RU
+  # version instead, which increases with every update and is present in both shapes.
+  rows="$(mos_name_search "Database Release Update $major" | grep -iE "^[0-9]{8}\|[Dd]atabase [Rr]elease [Uu]pdate $major\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | grep -viE ' - (CMAN|GSM)' || true)"
   if [ -n "$rows" ]; then
-    local ru; ru="$(printf '%s\n' "$rows" | awk -F'|' '{match($2,/[0-9]{6}/); print substr($2,RSTART,6) "|" $0}' | sort -r | head -1 | cut -d'|' -f2-)"
+    local ru; ru="$(printf '%s\n' "$rows" | awk -F'|' '{v=$2; match(v,/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/); print substr(v,RSTART,RLENGTH) "|" $0}' | sort -V | tail -1 | cut -d'|' -f2-)"
     local ru_level; ru_level="$(printf '%s' "${ru#*|}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
     if [ -n "$RU_LEVEL" ] && version_ge "$RU_LEVEL" "$ru_level"; then log "  newest RU is ${ru%%|*} (${ru#*|}) - already at $RU_LEVEL"
     else log "  newest RU: ${ru%%|*}  ${ru#*|}  (installed: ${RU_LEVEL:-none})"; found="${ru%%|*}"; fi
@@ -167,7 +170,10 @@ prepare_patch_dir() {
   [ -n "$PATCH_IDS" ] || die "no OPatch patches found under $dir"
 }
 patch_desc() { sed -n 's/.*<description>\(.*\)<\/description>.*/\1/p' "$1/etc/config/inventory.xml" 2>/dev/null | head -1; }
-patch_min_opatch() { grep -oE 'OPatch[^0-9]*[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$1"/README.* "$1"/README.html 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1; }
+# a real RU/PSU README names the database version too ('select OPatch for DB 19.0.0.0.0'), and a
+# bare five-part match took that as the minimum: only an OPatch-shaped number after a case-sensitive
+# 'OPatch' counts (the same shape get-patches uses)
+patch_min_opatch() { grep -oE 'OPatch[^0-9]*(12\.2\.0\.1|13\.9\.[0-9]+)(\.[0-9]+)+' "$1"/README.* "$1"/README.html 2>/dev/null | grep -oE '(12\.2\.0\.1|13\.9\.[0-9]+)(\.[0-9]+)+' | sort -V | tail -1; }
 patch_is_rolling() { grep -qiE 'rolling="true"|<rolling>true' "$1"/etc/config/inventory.xml 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
