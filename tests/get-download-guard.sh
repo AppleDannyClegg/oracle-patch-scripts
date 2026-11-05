@@ -57,5 +57,21 @@ grep -q 'kept the previous copy as' "$T/run-6.log" && bad "kept an old copy that
 asides="$(find "$T" -maxdepth 1 -name 'dest2.old-*' | wc -l | tr -d ' ')"
 [ "$asides" = 0 ] && ok || bad "a clean old copy was set aside $asides time(s) - the guard fires without downloads"
 
+# ---- get.ps1's keep scan: a lint, not an integration (it needs a cmdlet mock or a network to run for real) --
+if command -v pwsh >/dev/null 2>&1; then
+  mkdir -p "$T/psold/patching/patches-host1/wls"
+  printf 'zip' >"$T/psold/patching/patches-host1/wls/p1.zip"
+  cat >"$T/keep-lint.ps1" <<'PS'
+$src = Get-Content -Raw -LiteralPath $env:GETPS
+if ($src -notmatch 'Get-ChildItem -LiteralPath "\$Dest\.old" -Recurse') { 'NO-RECURSE'; exit }
+$keep = @(Get-ChildItem -LiteralPath $env:PSOLD -Recurse -Force | Where-Object { $_.Name -like 'patches-*' -or $_.Name -like '*.zip' -or $_.Name -like '*.tar.gz' -or $_.Name -like '*.tgz' })
+if ($keep.Count -ge 1) { 'OK' } else { 'NO-MATCH' }
+PS
+  ps_out="$(GETPS="$ROOT/get.ps1" PSOLD="$T/psold" pwsh -NoProfile -File "$T/keep-lint.ps1" 2>/dev/null)"
+  [ "$ps_out" = OK ] && ok || bad "get.ps1 keep scan: expected -Recurse and a nested match, got [$ps_out]"
+else
+  echo "skip: pwsh not installed - get.ps1 keep-scan lint not run (the bash guard above is still gated)"
+fi
+
 echo "get-download guard: $pass passed, $fail failed"
 [ "$fail" = 0 ]
