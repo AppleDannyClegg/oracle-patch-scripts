@@ -19,7 +19,17 @@ cd "$(dirname "$0")/.." || exit 1
 exec </dev/null
 T="$(mktemp -d)"; STUB="$T/stub"; export DRY_LOG="$T/log" ANSWERS="$T/answers" FAIL_RE=""; mkdir -p "$STUB"; : >"$ANSWERS"
 trap 'rm -rf "$T"' EXIT
-alarm() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+# alarm <secs> <cmd...>: a deadline via GNU timeout where present (OL7/OL8), perl otherwise (macOS).
+# timeout exits 124; perl's alarm is SIGALRM (142) or SIGKILL (137).
+if command -v timeout >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; timeout "$t" "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; gtimeout "$t" "$@"; }
+elif command -v perl >/dev/null 2>&1; then
+  alarm() { local t="$1"; shift; perl -e 'alarm shift; exec @ARGV' "$t" "$@"; }
+else
+  alarm() { shift; "$@"; }   # no deadline tool: run without one
+fi
 # a changing call, on one line 'tool argv | stdin': the same verbs tests/dry-run-gate.sh forbids under --dry-run
 CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add|crosscheck|change|catalog|kill|send .*(handlecollisions|nohandlecollisions|forcestop))|^escli .*(chvault|rmfile|mkvault|rmvault|chfile|mkfile|chpool)|^dgmgrl .*\| *(.*; *)?(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)'
 for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl escli crontab pgrep ps; do
@@ -90,7 +100,7 @@ for s in "${scripts[@]}"; do
       FAIL_RE="$(sed -n 1p "$T/case")" HOME="$T/home" PATH="$STUB:$PATH" OFFLINE=1 alarm 120 bash "$s" "$CMD" $extra --yes ) >"$T/out" 2>&1; rc=$?
     # a process the env file started to stand in for ORDS (pgrep.txt) is ours: end it if the script did not
     [ -s "$T/pgrep.txt" ] && while read -r pid; do kill "$pid" 2>/dev/null; done <"$T/pgrep.txt"
-    if [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $label: hung (120 s)"; fail=$((fail+1)); continue; fi
+    if [ $rc = 124 ] || [ $rc = 142 ] || [ $rc = 137 ]; then echo "FAIL $tool $label: hung (120 s)"; fail=$((fail+1)); continue; fi
     if [ ! -f "$T/env.ok" ]; then echo "FAIL $tool $label: tests/dry-run-env/$tool.sh did not source to the end: $(grep -v '^$' "$T/out" | tail -1 | cut -c1-160)"; fail=$((fail+1)); continue; fi
     ok_re="$(sed -n 2p "$T/case")"
     if ! grep -q '^FAILED ' "$DRY_LOG"; then nx=$((nx+1)); nxlist="$nxlist $tool:$label"; continue; fi
