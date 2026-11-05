@@ -36,6 +36,14 @@ OPatch utility version 12.2.0.1.52')"
 out="$(patch_min_opatch "$T/$p")"
 [ "$out" = 12.2.0.1.52 ] && ok || bad "the real README shape: want 12.2.0.1.52, got [$out]"
 
+p="$(mk paren 'Download and install OPatch (patch 6880880) 12.2.0.1.52 or later first.')"
+out="$(patch_min_opatch "$T/$p")"
+[ "$out" = 12.2.0.1.52 ] && ok || bad "a patch parenthetical between OPatch and the version: want 12.2.0.1.52, got [$out]"
+
+p="$(mk psu 'OPatch 12.2.0.1.52 or later. The PSU is 13.9.4.2.260522.')"
+out="$(patch_min_opatch "$T/$p")"
+[ "$out" = 12.2.0.1.52 ] && ok || bad "a PSU build number later on the line must not become the minimum: want 12.2.0.1.52, got [$out]"
+
 p="$(mk onlydb 'Use OPatch for DB 19.0.0.0.0 to check this database.')"
 out="$(patch_min_opatch "$T/$p")"
 [ -z "$out" ] && ok || bad "a database version with no OPatch number must not be the minimum: got [$out]"

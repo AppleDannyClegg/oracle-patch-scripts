@@ -173,7 +173,7 @@ patch_desc() { sed -n 's/.*<description>\(.*\)<\/description>.*/\1/p' "$1/etc/co
 # a real RU/PSU README names the database version too ('select OPatch for DB 19.0.0.0.0'), and a
 # bare five-part match took that as the minimum: only an OPatch-shaped number after a case-sensitive
 # 'OPatch' counts (the same shape get-patches uses)
-patch_min_opatch() { grep -oE 'OPatch[^0-9]*(12\.2\.0\.1|13\.9\.[0-9]+)(\.[0-9]+)+' "$1"/README.* "$1"/README.html 2>/dev/null | grep -oE '(12\.2\.0\.1|13\.9\.[0-9]+)(\.[0-9]+)+' | sort -V | tail -1; }
+patch_min_opatch() { grep -oE 'OPatch( \(patch [0-9]+\))?[^0-9]*(12\.2\.0\.1|13\.9\.[0-9]+)(\.[0-9]+)+' "$1"/README.* "$1"/README.html 2>/dev/null | grep -oE '(12\.2\.0\.1|13\.9\.[0-9]+)(\.[0-9]+)+' | sort -V | tail -1; }
 patch_is_rolling() { grep -qiE 'rolling="true"|<rolling>true' "$1"/etc/config/inventory.xml 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
