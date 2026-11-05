@@ -105,9 +105,15 @@ redact() {
 section() {
   local name="$1"; shift
   local f="$RAW/$name.txt" rc n
-  { printf '$ %s\n' "$*"; to "$CMD_TIMEOUT" "$@" 2>&1; rc=$?; printf '\n[exit %s]\n' "$rc"; } | redact >"$f"
+  # The echoed '$ <command>' line deliberately does NOT go into the raw file: consumers grep these
+  # files, and a command can carry the very pattern a consumer greps for - the dmesg fallback's
+  # own grep contains 'killed process', so the host check matched its own echo and raised phantom
+  # CRITs on every sudo-capable host (found live in review, 5 Nov 2026). The command still
+  # reaches REPORT.md below; raw/ holds command output only.
+  { to "$CMD_TIMEOUT" "$@" 2>&1; rc=$?; printf '\n[exit %s]\n' "$rc"; } | redact >"$f"
   n="$(wc -l <"$f" | tr -d ' ')"
   fence_start
+  printf '$ %s\n' "$*" | redact >>"$REPORT"
   if [ "$n" -gt "$DIAG_LINES" ]; then head -n "$DIAG_LINES" "$f" >>"$REPORT"; printf '... (%s lines total, full output in raw/%s.txt)\n' "$n" "$name" >>"$REPORT"
   else cat "$f" >>"$REPORT"; fi
   fence_end
@@ -894,7 +900,7 @@ diag_dgbroker() { # <sid>
   [ "$on" = TRUE ] || return 0
   h2 "Data Guard broker ($sid)"
   local dbun; dbun="$(sqlval "$sid" "(select db_unique_name from v\$database)")"
-  section_sh "dg_${sid}" "ORACLE_HOME='$home' ORACLE_SID='$sid' PATH='$home/bin:\$PATH' timeout 120 '$home/bin/dgmgrl' -silent / 'show configuration verbose' 2>&1; echo; ORACLE_HOME='$home' ORACLE_SID='$sid' timeout 120 '$home/bin/dgmgrl' -silent / 'show database verbose $dbun' 2>&1 | head -80"
+  section_sh "dg_${sid}" "ORACLE_HOME='$home' ORACLE_SID='$sid' PATH=\"$home/bin:\$PATH\" timeout 120 '$home/bin/dgmgrl' -silent / 'show configuration verbose' 2>&1; echo; ORACLE_HOME='$home' ORACLE_SID='$sid' timeout 120 '$home/bin/dgmgrl' -silent / 'show database verbose $dbun' 2>&1 | head -80"
   grep -qE 'Configuration Status:' "$RAW/dg_${sid}.txt" && ! grep -qE 'SUCCESS' "$RAW/dg_${sid}.txt" && finding CRIT db "$sid: Data Guard broker configuration status is not SUCCESS: $(grep -E 'ORA-|Error|Warning' "$RAW/dg_${sid}.txt" | head -2 | tr '\n' ' ')"
   grep -qE 'ORA-16[0-9]{3}' "$RAW/dg_${sid}.txt" && finding WARN db "$sid: broker reports $(grep -oE 'ORA-16[0-9]{3}' "$RAW/dg_${sid}.txt" | sort -u | tr '\n' ' ')"
 }
@@ -903,16 +909,24 @@ diag_rman() { # <sid>: configuration, failures, need-backup; read-only
   local sid="$1" home; home="$(oratab_home "$sid")"; [ -z "$home" ] && home="${ORACLE_HOME:-}"
   [ -x "$home/bin/rman" ] || return 0
   h2 "RMAN ($sid): configuration, failures, ZDLRA / SBT"
-  section_sh "rman_${sid}" "ORACLE_HOME='$home' ORACLE_SID='$sid' PATH='$home/bin:\$PATH' timeout 180 '$home/bin/rman' target / <<'R' 2>&1 | grep -vE '^$|^RMAN>|^Recovery Manager|^Copyright|^connected|^Using target'
+  # 'set -o pipefail' INSIDE the snippet: bash -c does not inherit the parent's, and the pipeline
+  # ends in grep, so without it the recorded [exit] is grep's rc, not rman's - a dead or timed-out
+  # rman read as [exit 0]. No trailing 'true' for the same reason (it forced [exit 0] on every
+  # run; the RMAN- guard below is the honest negative branch instead).
+  section_sh "rman_${sid}" "set -o pipefail; ORACLE_HOME='$home' ORACLE_SID='$sid' PATH=\"$home/bin:\$PATH\" timeout 180 '$home/bin/rman' target / <<'R' 2>&1 | grep -vE '^$|^RMAN>|^Recovery Manager|^Copyright|^connected|^Using target'
 set echo off;
 show all;
 list failure;
 report need backup;
 report unrecoverable;
 list backup summary;
-R
-true"
-  grep -qE 'Failure ID|CRITICAL|HIGH' "$RAW/rman_${sid}.txt" && finding CRIT db "$sid: RMAN 'list failure' reports a failure (Data Recovery Advisor): $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}.txt" | head -2 | cut -c1-120 | tr '\n' ';')"
+R"
+  # Either shape of a dead rman reads as a finding: a non-zero recorded exit (timeout 124, exec
+  # failure 126/127 - no RMAN- line is printed), or an RMAN- error line on a zero exit. The [exit N]
+  # line is section()'s record; an unparseable/missing value fails closed to the WARN.
+  local rstat; rstat="$(sed -n 's/^\[exit \([0-9]*\)\]$/\1/p' "$RAW/rman_${sid}.txt" | tail -1)"
+  { [ "${rstat:-1}" != 0 ] || grep -qE '^RMAN-[0-9]{3}' "$RAW/rman_${sid}.txt"; } && finding WARN db "$sid: rman did not answer cleanly (exit ${rstat:-unknown}; see raw/rman_${sid}.txt) - the RMAN section was not fully evaluated"
+  grep -qE '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}.txt" && finding CRIT db "$sid: RMAN 'list failure' reports a failure (Data Recovery Advisor): $(grep -E '^[0-9]+ +(CRITICAL|HIGH)' "$RAW/rman_${sid}.txt" | head -2 | cut -c1-120 | tr '\n' ';')"
   grep -qE 'libra\.so|RA_WALLET|SBT_LIBRARY' "$RAW/rman_${sid}.txt" && {
     kv "ZDLRA" "configured (SBT channel uses libra.so)"
     local rahost; rahost="$(grep -oE "RA_WALLET=[^']*" "$RAW/rman_${sid}.txt" | head -1)"; kv "RA wallet" "$rahost"; kv_end
@@ -921,7 +935,7 @@ true"
     [ -z "$lastsbt" ] && finding WARN db "$sid: ZDLRA SBT channel is configured but no completed SBT backup is recorded in the controlfile"
     local ratns; ratns="$(grep -oE "RA_WALLET=[^']*" "$RAW/rman_${sid}.txt" | head -1)"; [ -n "$ratns" ] && section "rman_${sid}_ra_tnsping" env ORACLE_HOME="$home" "$home/bin/tnsping" "$(sqlval "$sid" "(select regexp_substr(max(handle),'[^/]+$') from v\$backup_piece where device_type='SBT_TAPE' and rownum=1)" 2>/dev/null | head -1)" 2>/dev/null
   }
-  grep -qE 'report need backup' "$RAW/rman_${sid}.txt" && grep -qE '^[0-9]+ +[0-9]+ +(\+|/)' "$RAW/rman_${sid}.txt" && finding WARN db "$sid: 'report need backup' lists files outside the redundancy/recovery window"
+  grep -qE '^Report of files' "$RAW/rman_${sid}.txt" && grep -qE '^[0-9]+ +[0-9]+ +(\+|/)' "$RAW/rman_${sid}.txt" && finding WARN db "$sid: 'report need backup' lists files outside the redundancy/recovery window"
 }
 
 diag_goldengate() {
@@ -1006,7 +1020,11 @@ diag_exascale() {
   section_sh exascale_cluster "$esc $w lscluster --detail 2>&1 | head -40; echo; $esc $w lsservice -l 2>&1 | head -40"
   section_sh exascale_pools "$esc $w lsstoragepool --detail 2>&1; echo; $esc $w lspooldisk -l 2>&1 | head -60"
   section_sh exascale_vaults "$esc $w lsvault --detail 2>&1; echo; $esc $w lsvolume -l 2>&1 | head -40; echo 'cluster alerts:'; $esc $w lsclusteralert -l 2>&1 | tail -30"
-  grep -qiE '^\$ |error|unable|denied' "$RAW/exascale_cluster.txt" && ! grep -qE '^[[:space:]]*(name|guid|version)[[:space:]]' "$RAW/exascale_cluster.txt" && { finding WARN exascale "escli cannot reach Exascale control services (wallet / --ctrl; see exascale_cluster)"; return 0; }
+  # No name/guid/version line means escli produced nothing readable - a silent failure (command
+  # not found, a bare timeout, a wallet prompt) reads the same as an empty answer, so WARN on the
+  # missing data alone. (The old first grep leaned on the '$ ' header line, which section() no
+  # longer writes into raw - dropping it here keeps this gate's real behaviour unchanged.)
+  ! grep -qE '^[[:space:]]*(name|guid|version)[[:space:]]' "$RAW/exascale_cluster.txt" && { finding WARN exascale "escli cannot reach Exascale control services (wallet / --ctrl; see exascale_cluster)"; return 0; }
   awk 'function b(v,  u,n,m){ if (v=="unlimited") return "unlimited"; n=v; u=""; if (v ~ /[A-Za-z]+$/) { match(v,/[A-Za-z]+$/); u=toupper(substr(v,RSTART)); n=substr(v,1,RSTART-1) } m=1; if (u ~ /^K/) m=1024; else if (u ~ /^M/) m=1048576; else if (u ~ /^G/) m=1073741824; else if (u ~ /^T/) m=1099511627776; else if (u ~ /^P/) m=1125899906842624; return n*m }
     function out(  i){ if (name=="") return; split("HC EF XT",t," "); for (i in t) { u=b(used[t[i]]); p=b(prov[t[i]]); if (u==0 || p=="unlimited" || p==0) continue; printf "%s|%s|%d\n", name, t[i], u*100/p } name=""; delete used; delete prov }
     /^[[:space:]]*$/ { out(); next } $1=="name" { out(); name=$2 } $1 ~ /^spaceUsed(HC|EF|XT)$/ { used[substr($1,10)]=$2 } $1 ~ /^spaceProv(HC|EF|XT)$/ { prov[substr($1,10)]=$2 } END { out() }' "$RAW/exascale_vaults.txt" >"$RAW/exascale_vaults.csv"
