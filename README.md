@@ -111,6 +111,11 @@ so the temp zip is removed even when an earlier step fails.) It also
 assumes the archive unpacks to `oracle-patch-scripts-main` (GitHub names the folder `<repo>-<branch>`),
 so adjust the `ren` if the repository or default branch is renamed.
 
+For anything that reads My Oracle Support (the patch tools' `latest`/`download`, and `get-patches.ps1`), the
+bearer token needs a browser login. On Windows, `patching\get-mos-token.ps1` opens the token page, takes the
+token from the clipboard (or `-Paste`), writes `%USERPROFILE%\.mos-token` where the tools look, and checks it
+against MOS before you run anything.
+
 The scripts are bash, so to *run* them on Windows use Git Bash or WSL; `get.ps1` skips the library
 self-test on Windows for that reason. It also prints the server-side `chmod -R +x` you need after
 `scp`-ing the tree from Windows, which has no Unix executable bit.

@@ -92,7 +92,9 @@ Write-Host 'log in if asked, press Generate token, then copy it (it lasts 60 min
 
 $token = $null
 if ($Paste) {
-    $token = (Read-Host 'paste the MOS token').Trim()
+    # -AsSecureString so the token is not echoed to the console or a PowerShell transcript
+    $sec = Read-Host 'paste the MOS token' -AsSecureString
+    $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)).Trim()
 } else {
     Write-Host 'waiting for a token on the clipboard... (Ctrl+C to stop)'
     for ($i = 0; $i -lt 900; $i++) {
@@ -102,6 +104,10 @@ if ($Paste) {
         Start-Sleep -Milliseconds 500
     }
     if (-not $token) { throw 'no token appeared on the clipboard - re-run with -Paste' }
+    # take it off the clipboard now: Windows clipboard history (Win+V) and cloud sync keep it readable
+    # by anything on the machine after this script exits
+    try { Set-Clipboard -Value ' ' } catch {}
+    Write-Host 'cleared the clipboard'
 }
 if (-not $token) { throw 'no token given' }
 
@@ -120,6 +126,7 @@ $header = "# MOS token - generated $(Get-Date -Format 'yyyy-MM-dd HH:mm')" + $(i
 # lock it to the current user (Windows only; harmless elsewhere)
 if ($env:OS -eq 'Windows_NT') {
     $me = "$env:USERDOMAIN\$env:USERNAME"
-    $null = icacls "$TokenFile" /inheritance:r /grant:r "${me}:F" 2>&1
+    icacls "$TokenFile" /inheritance:r /grant:r "${me}:F" > $null 2>&1
+    if ($LASTEXITCODE -ne 0) { Write-Warning "could not restrict $TokenFile to $me (icacls rc $LASTEXITCODE) - check its permissions by hand" }
 }
 Write-Host "wrote $TokenFile"
