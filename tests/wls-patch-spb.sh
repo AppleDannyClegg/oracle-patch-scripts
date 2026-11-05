@@ -28,7 +28,7 @@ mk_home() { # <dir> <opatch version>
 echo "\$*" >>"$T/opatch.log"
 case "\$1" in
   version) echo "OPatch Version: $2" ;;
-  lspatches) echo "39372515;WLS PATCH SET UPDATE 12.2.1.4.260514" ;;
+  lspatches) echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)" ;;
 esac
 exit 0
 EOF
@@ -47,6 +47,8 @@ mk_spb() { # <patch dir>
   cat >"$spb/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >>"$T/spbat.log"
+# like the real bundle: the apply phase puts its PSU into the inventory
+case "\$*" in *-phase\ apply*) echo 12.2.1.4.261007 >"$T/psu";; esac
 exit 0
 EOF
   chmod +x "$spb/tools/spbat/generic/SPBAT/spbat.sh"
@@ -75,11 +77,10 @@ grep -q 'precheck skipped' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | t
 grep -q -- '-phase precheck' "$T/spbat.log" && bad "SPBAT precheck ran on an OPatch below the minimum" || ok
 
 # ---- apply routes to SPBAT and records it, and rollback uses the README's nrollback ------------------
-PD3="$T/patches-apply"; mk_spb "$PD3"; : >"$T/spbat.log"; : >"$T/opatch.log"
+PD3="$T/patches-apply"; mk_spb "$PD3"; rm -f "$T/psu"; : >"$T/spbat.log"; : >"$T/opatch.log"
 rc="$(run "$OH" apply "$PD3" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
 grep -qx -- '-phase apply -oracle_home '"$OH" "$T/spbat.log" && ok || bad "SPBAT apply not run/arg-spaced: [$(cat "$T/spbat.log")]"
-# the stub inventory never moves, so apply must SAY so rather than treat the exit status as success
-grep -q 'SPBAT reported success but the PSU is unchanged' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an unchanged PSU after SPBAT was not reported: $(lastlog)"
+grep -q 'the bundle moved the PSU from 12.2.1.4.260514 to 12.2.1.4.261007' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a moved PSU after SPBAT was not reported: $(lastlog)"
 grep -q 'opatch apply' "$T/opatch.log" && bad "opatch apply ran alongside SPBAT" || ok
 rc="$(run "$OH" verify --oracle-home "$OH" --java-home "$T/jdk")"
 [ "$rc" = 0 ] && ok || bad "verify after an SPB apply exited $rc: $(lastlog)"
@@ -133,6 +134,16 @@ rc="$(run "$OH" apply "$PD5" --oracle-home "$OH" --java-home "$T/jdk" --yes --dr
 [ "$rc" = 0 ] && ok || bad "dry-run apply exited $rc: $(lastlog)"
 grep -q -- '-phase apply' "$T/spbat.log" && bad "a dry run executed SPBAT apply" || ok
 grep -rq '^spb_applied=' "$T/dryrun" 2>/dev/null && bad "a dry run recorded spb_applied in the state" || ok
+
+# ---- an SPB whose apply changes nothing in the inventory fails verify (Gort's ruling), and is not rolled back --
+OH5="$T/oh-noop"; mk_home "$OH5" 13.9.4.2.23
+PD10="$T/patches-noop"; mk_spb "$PD10"; rm -f "$T/psu"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 0\n' "$T" >"$PD10/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rc="$(run "$OH5" apply "$PD10" --oracle-home "$OH5" --java-home "$T/jdk" --yes)"
+grep -q 'SPBAT reported success but the PSU is unchanged' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an unchanged PSU after SPBAT was not reported by apply: $(lastlog)"
+rc="$(run "$OH5" verify --oracle-home "$OH5" --java-home "$T/jdk")"
+[ "$rc" != 0 ] && ok || bad "verify passed although the bundle never reached the inventory"
+grep -q 'does not show the bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "verify did not name the unchanged inventory: $(lastlog)"
 
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -950,7 +950,7 @@ cmd_apply() {
     # verify ERROR, because 'run' treats a verify failure as a reason to roll back - and re-applying a bundle that
     # is already installed legitimately changes nothing.
     if [ -n "$before0" ] && [ "$before0" != none ] && [ "${PSU_LEVEL:-}" = "$before0" ]; then
-      warn "SPBAT reported success but the PSU is unchanged at ${PSU_LEVEL:-none} (bundle $(basename "$spb_path")) - if this bundle was already applied that is expected; if not, read the SPBAT log"
+      warn "SPBAT reported success but the PSU is unchanged at ${PSU_LEVEL:-none} (bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
       state_set spb_psu_unchanged 1
     elif [ -n "$before0" ] && [ "$before0" != none ]; then
       log "the bundle moved the PSU from $before0 to ${PSU_LEVEL:-none}"
@@ -1011,14 +1011,14 @@ cmd_verify() {
   if [ -n "$(state_get spb_applied || true)" ]; then
     log "SPB $(basename "$(state_get spb_applied)") was applied by SPBAT - checking the servers"
     expected=""
-    # the exit status alone is a weak gate: re-read the inventory and compare the PSU level with the bundle's own
-    # version (WLS_SPB_12.2.1.4.<V>), so a partial SPBAT that exits 0 is not read as success
+    # the exit status alone is a weak gate: re-read the inventory, and fail when it cannot be read, reports no PSU,
+    # or never moved from the level apply recorded before SPBAT (so a partial SPBAT that exits 0 is not success)
     local rci=0
     "$ORACLE_HOME/OPatch/opatch" lspatches >/dev/null 2>&1 || rci=$?
     if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
     elif [ -z "$PSU_LEVEL" ]; then err "the inventory reports no WLS Patch Set Update after an SPB apply - SPBAT said success; read its log"; ok=0
     elif [ "$(state_get spb_psu_unchanged || true)" = 1 ]; then
-      warn "the PSU is still $(state_get psu_before) - SPBAT reported success but the inventory has not moved (apply said so; check the SPBAT log unless this bundle was already applied)"
+      err "the PSU is still $(state_get psu_before): SPBAT reported success but the inventory does not show the bundle. If it was already installed re-applying changes nothing; otherwise read the SPBAT log. Nothing was observed to change, so 'run' will not roll back automatically"; ok=0
     else
       log "inventory PSU is $PSU_LEVEL (was $(state_get psu_before || echo unknown) before the bundle)"
     fi
@@ -1579,6 +1579,12 @@ cmd_run() {
   fi
 
   err "Start/verify failed after patching"
+  # an SPB that left the inventory unchanged changed nothing we can see: rolling the bundle back could hit patches
+  # from earlier bundles (the README's idFile is cumulative), so leave the home alone and say so
+  if [ "$(state_get spb_psu_unchanged || true)" = 1 ]; then
+    err "The Stack Patch Bundle left the PSU at $(state_get psu_before) - nothing is rolled back automatically. Check the SPBAT log and the servers before doing anything else."
+    return 1
+  fi
   if [ "$FORCE" = 1 ] || confirm "Roll back the patches and restart on the old binaries?"; then
     cmd_stop || true
     ASSUME_YES=1 cmd_rollback || { err "Rollback failed - restoring from backup"; ASSUME_YES=1 cmd_restore; }
