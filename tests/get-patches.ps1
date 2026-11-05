@@ -294,6 +294,7 @@ try {
     try { Save-MosPatch -Patch '30966770' -Dest $destNo -Release '12.2.1.4.0' | Out-Null } catch { $threw = $true; $msg = $_.Exception.Message }
     Check $threw "a file with no SHA-256 digest in the record throws (got [$msg])"
     Check ($msg -match 'no SHA-256') "the refusal names the missing digest: [$msg]"
+    Check ($msg -notmatch '-Patch') "the refusal does not advertise -Patch (broken for the record shape it is offered for)"
     Check ($null -eq $script:downloadedUrl) "the unverifiable file is not even downloaded"
     Check (@(Get-ChildItem -LiteralPath $destNo -ErrorAction SilentlyContinue).Count -eq 0) "the unverifiable file is not kept"
 
@@ -574,6 +575,13 @@ finally {
     Check (@($h | Where-Object { $_ -match '/u02/patches/(wls|spb|ohs|db|jdk)/' }).Count -eq 5) "each hint target uses patch_base"
     Check (@($h | Where-Object { $_ -match 'wls-patch.sh run /u02/patches/(wls|spb)' }).Count -eq 2) "the run text on the wls/spb hints uses patch_base"
     Check (@($h | Where-Object { $_ -like '*wl1*' }).Count -eq 5) "every hint names the manifest host"
+
+    # ---- created| freshness: warn when old, silent when absent, fresh or unparseable (Cerebro 22:18:37) ---
+    $now = [datetimeoffset]::Parse('2026-11-05T12:00:00+00:00')
+    Check ((Get-ManifestFreshnessWarning '2026-10-01 09:00 +0000' $now) -match 'days ago') "a 35-day-old manifest warns"
+    Check ((Get-ManifestFreshnessWarning '2026-11-04 09:00 +0000' $now) -eq '') "a 1-day-old manifest is silent"
+    Check ((Get-ManifestFreshnessWarning '' $now) -eq '') "an absent created| is silent"
+    Check ((Get-ManifestFreshnessWarning 'not-a-date' $now) -eq '') "an unparseable created| is silent"
 
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

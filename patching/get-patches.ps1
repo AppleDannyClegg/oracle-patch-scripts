@@ -559,7 +559,7 @@ function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
     # an unverified file is not installed, and the check is on $pick BEFORE $Dest is created or a .part is
     # written: both the reuse and the mismatch checks below are pointless without a digest, and MOS always
     # gives one for a downloadable file - so a missing one is a wrong patch response (or a cut-off body)
-    if (-not $pick.Sha) { throw "patch ${Patch}: no SHA-256 in the MOS record for $($pick.Name) - run again; if it persists, pass -Patch ${Patch}" }
+    if (-not $pick.Sha) { throw "patch ${Patch}: no SHA-256 in the MOS record for $($pick.Name) - run again" }
 
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
     $out = Join-Path $Dest $pick.Name
@@ -741,15 +741,24 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
     $out
 }
 
+# the created| freshness: a manifest older than this may describe a host that has changed. Kept out of Main so
+# it can be tested (Cerebro 22:18:37); returns the warning text, or '' for fresh/absent/unparseable.
+function Get-ManifestFreshnessWarning([string] $Created, [datetimeoffset] $Now) {
+    if (-not $Created) { return '' }
+    $made = $null; try { $made = [datetimeoffset]::Parse($Created, [Globalization.CultureInfo]::InvariantCulture) } catch { return '' }
+    if ($null -eq $made) { return '' }
+    $days = [int]($Now - $made).TotalDays
+    if ($days -gt 14) { return "the manifest was made $days days ago ($Created) - the host may have changed since; re-run patch-manifest.sh if in doubt" }
+    ''
+}
+
 function Main {
     if (-not $Manifest) { throw 'Pass -Manifest <the file patch-manifest.sh wrote on the server>' }
     $m = Read-Manifest $Manifest
     # the manifest carries the server's $PATCH_BASE; PATCH_BASE can be exported with a trailing slash
     $script:ServerBase = if ($m.PatchBase) { $m.PatchBase.TrimEnd('/') } else { '/u01/patches' }
-    if ($m.Created) {
-        $made = $null; try { $made = [datetimeoffset]::Parse($m.Created, [Globalization.CultureInfo]::InvariantCulture) } catch {}
-        if ($made -and ([datetimeoffset]::UtcNow - $made).TotalDays -gt 14) { Write-Warning "the manifest was made $([int]([datetimeoffset]::UtcNow - $made).TotalDays) days ago ($($m.Created)) - the host may have changed since; re-run patch-manifest.sh if in doubt" }
-    }
+    $fw = Get-ManifestFreshnessWarning $m.Created ([datetimeoffset]::UtcNow)
+    if ($fw) { Write-Warning $fw }
     if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
 
     $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
