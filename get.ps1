@@ -4,7 +4,7 @@ get.ps1 - Windows/PowerShell version of get.sh: fetch the Oracle operations scri
 
   irm https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.ps1 | iex
 
-Puts everything in .\oracle-patch-scripts (or the folder given as the first argument).
+Puts everything in .\patches\scripts (PATCH_BASE if set, or the folder given as the first argument).
 Run it again later to pick up the newest version; the previous copy is kept as <folder>.old,
 and your own *.conf files are carried across.
 
@@ -26,7 +26,7 @@ Custom destination (the pipe form cannot take arguments; build a script block in
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string]$Dest = 'oracle-patch-scripts'
+    [string]$Dest = $(if ($env:PATCH_BASE) { Join-Path $env:PATCH_BASE 'scripts' } else { '.\patches\scripts' })
 )
 
 # Everything below runs in a CHILD scope, so the plain 'irm | iex' cannot leak this script's

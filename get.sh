@@ -3,14 +3,15 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
 #
-# Puts everything in ./oracle-patch-scripts (or the folder given as the first argument) and makes
-# every script executable. Keep lib/ at the top of the tree: all scripts except wls-patch, apex-patch, ords-patch and
+# Puts everything in $PATCH_BASE/scripts (default /u01/patches/scripts, or the folder given as the first
+# argument) and makes every script executable. Set PATCH_BASE to move it. Keep lib/ at the top of the tree: all scripts except wls-patch, apex-patch, ords-patch and
 # oracle-diag source ../../lib/oracle-lib.sh from their <type>/<script>/ folder. Run it again later to pick up the newest version; the previous copy is
 # kept as <folder>.old. Your own *.conf files are carried across.
 
 set -euo pipefail
 REPO="AppleDannyClegg/oracle-patch-scripts"
-DEST="${1:-oracle-patch-scripts}"; DEST="${DEST%/}"
+PATCH_BASE="${PATCH_BASE:-/u01/patches}"
+DEST="${1:-$PATCH_BASE/scripts}"; DEST="${DEST%/}"
 
 # GitHub's branch archive (archive/refs/heads/main.tar.gz) is CDN-cached and can serve a copy from before
 # your last push - so a run right after a push gets stale scripts. The per-commit archive is immutable, so

@@ -139,7 +139,7 @@ cmd_latest() {
 
 cmd_download() {
   setup_env; [ -n "$RUN_DIR" ] || init_run_dir download
-  local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "download needs a directory"; shift_args=1
+  local dir="${ARGS[0]:-$PATCH_BASE/db}"; [ -n "$dir" ] || die "download needs a directory"; shift_args=1
   local ids="${ARGS[*]:1}"; [ -z "$ids" ] && ids="${PATCHES//,/ }"; [ -z "$ids" ] && die "no patch ids: run 'latest' first or give them"
   mkdir -p "$dir"; local id todo=""
   for id in $ids; do

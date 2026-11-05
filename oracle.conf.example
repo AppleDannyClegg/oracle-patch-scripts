@@ -22,3 +22,8 @@ OFFLINE=1
 
 # Where run logs go (default ~/<script>/runs)
 #RUN_BASE=/u01/backup/scripts/runs
+
+# One folder for everything downloaded: patch-manifest's manifest, the patch zips (<PATCH_BASE>/<kind> the
+# tools' download commands use) and the get.sh/get.ps1 tools tree (<PATCH_BASE>/scripts). Default /u01/patches
+# on a server. get-patches.ps1 (Windows) defaults to .\patches.
+#PATCH_BASE=/u01/patches
