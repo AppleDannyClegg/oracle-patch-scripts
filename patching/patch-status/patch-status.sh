@@ -90,7 +90,8 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     [ "$lrc" = 0 ] || { local p2="Database home"; [ "$isgrid" = 1 ] && p2="Grid Infrastructure home"
       row "$p2" "$h" "$(lsp_unreadable "$lrc")" "" "" "opatch could not list the inventory - run $h/OPatch/opatch lspatches by hand" reported
       finding WARN patch "$p2 $h: opatch lspatches failed (rc $lrc) - its patch level is unknown, not unpatched"; continue; }
-    local ru ruline; ruline="$(printf '%s\n' "$lsp" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE|Grid Infrastructure Release Update|OCW RELEASE UPDATE|DATABASE BUNDLE PATCH|DATABASE PATCH SET UPDATE' | grep -viE 'OJVM|MONTHLY' | sort -t';' -k2 | tail -1)"
+    # the newest RU is the one with the latest PARSED date, not the alphabetically-last description (PS-2)
+    local ru ruline; ruline="$(printf '%s\n' "$lsp" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE|Grid Infrastructure Release Update|OCW RELEASE UPDATE|DATABASE BUNDLE PATCH|DATABASE PATCH SET UPDATE' | grep -viE 'OJVM|MONTHLY' | while IFS= read -r l; do printf '%s\t%s\n' "$(db_ru_date_from_desc "$l")" "$l"; done | sort -t"$(printf '\t')" -k1,1 | tail -1 | cut -f2-)"
     ru="$(printf '%s' "$ruline" | cut -d';' -f2 | sed 's/^ *//')"; local rudate; rudate="$(db_ru_date_from_desc "$ruline")"
     local mrp; mrp="$(printf '%s\n' "$lsp" | grep -iE 'MONTHLY RECOMMENDED PATCHES|MRP' | tail -1 | cut -d';' -f2)"
     local ojvm ojvmdate; ojvm="$(printf '%s\n' "$lsp" | grep -iE 'OJVM' | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; ojvmdate="$(db_ru_date_from_desc "$ojvm")"
@@ -155,7 +156,8 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     local v; v="$(sql_val "$sid" "(select version_full from v\$instance)" 2>/dev/null)"; [ -z "$v" ] && v="$(sql_val "$sid" "(select version from v\$instance)" 2>/dev/null)"
     [ -n "$v" ] && [ "$DO_REPORT" = 1 ] && kv "$sid version_full" "$v" && kv_end
     # premier-support reminder for old releases
-    case "$v" in 11.*|12.1*|12.2*|18.*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "$sid is release $v - out of Premier Support, no more RUs without Extended/Market-driven support";; esac
+    # an unsupported release must not read CURRENT when the output is discarded (EOL, fail-open-first)
+    case "$v" in 11.*|12.1*|12.2*|18.*) finding CRIT patch "$sid is release $v - out of Premier Support, no more RUs without Extended/Market-driven support";; esac
   done
 }
 mos_latest_db() { # <base version>: newest "Database Release Update <major>" from MOS if --mos, else expected from the CPU calendar
@@ -180,7 +182,7 @@ fmw_homes() {
     local latest=""; if [ "$USE_MOS" = 1 ] && [ -n "${MOS_CURL[*]:-}" ]; then local short="${v%.*}"; case "$v" in 14.1.*) short="${short%.*}";; esac; latest="$(mos_name_search "WLS PATCH SET UPDATE $short" 2>/dev/null | grep -E "WLS PATCH SET UPDATE $short(\.0)?\.[0-9]{6} *$" | awk -F'|' '{match($2,/[0-9]{6}$/); print substr($2,RSTART,6) "|" $2}' | sort -r | head -1 | cut -d'|' -f2)"; fi
     [ -z "$latest" ] && latest="PSU of $LATEST_CPU"
     row "WebLogic $v" "$h" "${psu:-no PSU}" "$(date_from_desc "$psu")" "$latest" "OPatch $(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    case "$v" in 12.1.*|10.3.*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "WebLogic $v in $h is out of Premier Support";; 12.2.1.3*) [ "$DO_REPORT" = 1 ] && finding CRIT patch "WebLogic 12.2.1.3 in $h: no more PSUs (upgrade to 12.2.1.4 / 14.1.x)";; esac
+    case "$v" in 12.1.*|10.3.*) finding CRIT patch "WebLogic $v in $h is out of Premier Support";; 12.2.1.3*) finding CRIT patch "WebLogic 12.2.1.3 in $h: no more PSUs (upgrade to 12.2.1.4 / 14.1.x)";; esac
     local b; while read -r b; do
       [ -z "$b" ] && continue; local d ddate; d="$(printf '%s' "$b" | cut -d';' -f2 | sed 's/^ *//')"; ddate="$(date_from_desc "$d")"
       if [ -n "$ddate" ]; then
@@ -203,7 +205,7 @@ java_row() { # <java_home> <used by>
   [ -z "$d" ] && d="$(sed -n 's/^JAVA_VERSION_DATE="\([^"]*\)".*/\1/p' "$j/release" 2>/dev/null)"
   [ -z "$d" ] && { local bd; bd="$(file_mtime "$j/bin/java" | cut -c1-10)"; d="$bd"; }
   local major; major="$(java_major_of "$j")"; local note="used by $by"
-  case "$major" in 6|7) note="$note; EOL"; [ "$DO_REPORT" = 1 ] && finding CRIT patch "JDK $v ($j) used by $by is end-of-life";; 8) note="$note; JDK 8 - extended support only";; esac
+  case "$major" in 6|7) note="$note; EOL"; finding CRIT patch "JDK $v ($j) used by $by is end-of-life";; 8) note="$note; JDK 8 - extended support only";; esac
   local vendor; vendor="$(sed -n 's/^IMPLEMENTOR="\([^"]*\)".*/\1/p' "$j/release" 2>/dev/null)"
   row "Java $major ($vendor)" "$j" "$v" "$d" "CPU of $LATEST_CPU" "$note"
 }
