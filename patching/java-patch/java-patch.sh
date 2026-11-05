@@ -26,7 +26,9 @@
 #   --java-home DIR    the JDK to replace (default: the one WebLogic/ORDS use, if there is only one)
 #   --java-base DIR    where new JDKs are unpacked (default: the parent of --java-home)
 #   --tar FILE         the JDK tarball (same as giving it as <tar>)        --restart       run RESTART_CMDS after apply
-#   --force            allow a different major (e.g. 8 -> 11) when the product matrix permits it
+#   --force            waive the refusals: a different major (8 -> 11) where the matrix permits it, reinstalling
+#                      the same build, or a preflight that already failed in this run dir. It does NOT waive the
+#                      in-place running-JVM stop (stop them, or --keep-old).
 #   --no-cacerts       do not copy extra CA aliases into the new cacerts
 #   --in-place         put the new JDK at --java-home itself, replacing it (the default when --java-home is a
 #                      real directory, not a symlink): the old directory is moved into the run dir and the new
@@ -225,7 +227,7 @@ cmd_plan() {
   else echo "                 sed $OLD_JH -> $NEW_JH in: $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | tr '\n' ' ')"; fi
   echo "  4. restart     $([ "$DO_RESTART" = 1 ] && echo "${RESTART_CMDS:-ORDS service $(ords_service)}" || { [ "$IN_PLACE" = 1 ] && echo 'not requested (--restart): the path now serves the NEW JDK - restart anything that ran on it' || echo 'not requested (--restart): JVMs keep the old JDK until restarted'; })"
   echo "  5. verify      $NEW_JH/bin/java -version, references, running JVMs' /proc/pid/exe, URLs: ${CHECK_URLS:-${USER_ORDS_URL:-none}}"
-  echo "  rollback       symlink back / files restored from the run dir, restart again"
+  echo "  rollback       $([ "$IN_PLACE" = 1 ] && echo 'the old JDK is renamed back from $OLD_JH.old-<stamp>' || echo 'symlink back / files restored from the run dir'), restart again"
 }
 
 cmd_backup() {
