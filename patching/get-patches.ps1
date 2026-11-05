@@ -14,9 +14,13 @@ What it looks up, for everything in the manifest:
     applied with the spbat.sh inside it (see its readme), not with wls-patch.sh.
   - only when MOS lists no SPB: the WLS PSU and the Coherence cumulative patch one by one
   - FMW Platform Bundle: newest "FMW PLATFORM BUNDLE PATCH <release>.<yymmdd>", where one is installed
-  - OPatch kit 28186730 when OPatch is older than 13.9.4.2.0
+  - OPatch kit 28186730 when OPatch is older than 13.9.4.2.0, or older than the downloaded patches' READMEs ask for
   Database or client home (e.g. a 19c client)
-  - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it
+  - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it when the home's OPatch is
+    older than 12.2.0.1.40 or than the RU's README asks for
+  OPatch: after the downloads, each PSU/SPB/RU README's "OPatch ... or later" is compared with the OPatch the
+  manifest says is installed (the same rule wls-patch.sh and db-patch.sh apply on the server), and the kit is
+  fetched and checked against it here, so a too-old OPatch is not first found on a server with no internet.
   EM agent home
   - reported, not downloaded: agent RUs are applied from the OMS
   JDK
@@ -197,8 +201,9 @@ function Get-CoherenceLevel([string] $Text, [string] $Short) {
 }
 
 # ---- the plan ------------------------------------------------------------------------------------------
-function New-PlanItem([string] $Kind, [string] $What, [string] $Installed, $Row, [string] $Release) {
-    [pscustomobject]@{ Kind = $Kind; What = $What; Installed = $Installed; Patch = $Row.Number; Abstract = $Row.Abstract; Release = $Release }
+# For: the Oracle home the patch is for, so the OPatch minimum in its README can be checked against that home
+function New-PlanItem([string] $Kind, [string] $What, [string] $Installed, $Row, [string] $Release, [string] $For = '') {
+    [pscustomobject]@{ Kind = $Kind; What = $What; Installed = $Installed; Patch = $Row.Number; Abstract = $Row.Abstract; Release = $Release; For = $For }
 }
 
 # newest row whose abstract matches $Pattern; the first capture group is what is compared
@@ -236,7 +241,7 @@ function Get-WlsPlan($Wls) {
         $have = Get-InstalledLevel $Wls $spbPattern
         if (-not $have -or [regex]::Match($spb.Abstract, $spbPattern).Groups[1].Value -gt $have) {
             # its own folder: wls-patch.sh run applies every zip in wls/, and an SPB is applied with spbat.sh
-            New-PlanItem 'spb' "WLS Stack Patch Bundle ($($Wls.Home))" $have $spb $release
+            New-PlanItem 'spb' "WLS Stack Patch Bundle ($($Wls.Home))" $have $spb $release $Wls.Home
         }
     }
 
@@ -247,7 +252,7 @@ function Get-WlsPlan($Wls) {
         $have = Get-InstalledLevel $Wls $psuPattern
         if (-not $newest) { Write-Warning "$($Wls.Home): MOS lists no WLS PSU or Stack Patch Bundle for $short - get the number from Doc 2806740.2 and pass -Patch" }
         elseif (-not $have -or [regex]::Match($newest.Abstract, $psuPattern).Groups[1].Value -gt $have) {
-            New-PlanItem 'wls' "WLS PSU ($($Wls.Home))" $have $newest $release
+            New-PlanItem 'wls' "WLS PSU ($($Wls.Home))" $have $newest $release $Wls.Home
         }
     }
 
@@ -258,7 +263,7 @@ function Get-WlsPlan($Wls) {
         $newest = Select-Newest $rows $bundlePattern
         if (-not $newest) { Write-Warning "$($Wls.Home): FMW Platform Bundle $have is installed but MOS's Recommended list has none - get the number from Doc 2806740.2 and pass -Patch" }
         elseif ([regex]::Match($newest.Abstract, $bundlePattern).Groups[1].Value -gt $have) {
-            New-PlanItem 'wls' "FMW Platform Bundle ($($Wls.Home))" $have $newest $release
+            New-PlanItem 'wls' "FMW Platform Bundle ($($Wls.Home))" $have $newest $release $Wls.Home
         }
     }
 
@@ -274,13 +279,13 @@ function Get-WlsPlan($Wls) {
                 ForEach-Object { Get-CoherenceLevel $_.Description $short } | Sort-Object -Descending)[0]
         if (-not $newest) { Write-Warning "$($Wls.Home): MOS lists no Coherence patch for $short" }
         elseif (-not $have -or (Get-CoherenceLevel $newest.Abstract $short) -gt $have) {
-            New-PlanItem 'wls' "Coherence ($($Wls.Home))" $(if ($have) { "Cumulative Patch $short.$have" } else { '' }) $newest $release
+            New-PlanItem 'wls' "Coherence ($($Wls.Home))" $(if ($have) { "Cumulative Patch $short.$have" } else { '' }) $newest $release $Wls.Home
         }
     }
 
     # OPatch: modern PSUs refuse an OPatch older than 13.9.4.2.0
     if ($Wls.OPatch -and (Get-VersionKey $Wls.OPatch) -lt (Get-VersionKey '13.9.4.2.0')) {
-        New-PlanItem 'wls' "OPatch kit ($($Wls.Home))" $Wls.OPatch ([pscustomobject]@{ Number = $script:OPatchKit; Abstract = 'OPatch 13.9.4.x' }) '13.9.4'
+        New-PlanItem 'wls' "OPatch kit ($($Wls.Home))" $Wls.OPatch ([pscustomobject]@{ Number = $script:OPatchKit; Abstract = 'OPatch 13.9.4.x' }) '13.9.4' $Wls.Home
     }
 }
 
@@ -341,10 +346,10 @@ function Get-DbPlan($Db) {
     if (-not $have -or [regex]::Match($newest.Abstract, $ruPattern).Groups[2].Value -gt $have) {
         $installed = @($Db.Patches | Where-Object { $_.Description -match $ruPattern } | ForEach-Object { $_.Description })[0]
         $release = "$major.0.0.0.0"
-        New-PlanItem 'db' "Database Release Update ($($Db.Home))" $installed $newest $release
+        New-PlanItem 'db' "Database Release Update ($($Db.Home))" $installed $newest $release $Db.Home
         # the newest OPatch too when this one is older than current RUs need (db-patch.sh's 12.2.0.1.40)
         if (-not $Db.OPatch -or (Get-VersionKey $Db.OPatch) -lt (Get-VersionKey '12.2.0.1.40')) {
-            New-PlanItem 'db' "OPatch for $($Db.Home)" $Db.OPatch ([pscustomobject]@{ Number = $script:DbOPatch; Abstract = 'OPatch 12.2.0.1.x (newest)' }) $release
+            New-PlanItem 'db' "OPatch for $($Db.Home)" $Db.OPatch ([pscustomobject]@{ Number = $script:DbOPatch; Abstract = 'OPatch 12.2.0.1.x (newest)' }) $release $Db.Home
         }
     }
 }
@@ -387,7 +392,7 @@ function Get-FmwPlan($Manifest) {
         if (-not $inst -or $new -gt $inst) {
             # kind 'wls', not a new 'fmw': the bundle is applied by wls-patch.sh from the same wls/ folder
             # (Kind only chooses the download subdirectory, and only jdk expands)
-            New-PlanItem 'wls' "$($fw.Family) bundle ($($fw.Home))" $fw.Version $newest $release
+            New-PlanItem 'wls' "$($fw.Family) bundle ($($fw.Home))" $fw.Version $newest $release $fw.Home
         }
     }
 }
@@ -461,6 +466,134 @@ function Expand-JdkTarball([string] $Zip) {
     Remove-Item -LiteralPath $tmp -Recurse -Force
 }
 
+# ---- OPatch: what the downloaded patches need ----------------------------------------------------------
+# The PSU/SPB/RU READMEs name the OPatch they need ("OPatch version 13.9.4.2.20 or later"). wls-patch.sh and
+# db-patch.sh read that on the server, but the server has no internet: a too-old OPatch found there means
+# another download trip. So read it here, right after the download, and fetch the OPatch kit with the patches.
+
+# the text of every README in the zip's top two levels. HTML: a tag inside a number ("12.2.0.1.<i>46</i>") is
+# dropped, any other tag becomes a space, and entities are decoded ("OPatch&#160;utility" reads as words)
+function Get-ZipReadmeText([string] $Zip) {
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $z = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        $text = foreach ($e in $z.Entries) {
+            if ($e.FullName -notmatch '^([^/]+/)?README[^/]*$') { continue }
+            $r = New-Object IO.StreamReader ($e.Open())
+            try { $raw = $r.ReadToEnd() } finally { $r.Dispose() }
+            $raw = $raw -replace '(?<=[\d.])(?:<[^>]*>)+(?=\d)', '' -replace '<[^>]*>', ' '
+            [Net.WebUtility]::HtmlDecode($raw) -replace ' ', ' '
+        }
+        $text -join "`n"
+    } finally { $z.Dispose() }
+}
+
+# the highest OPatch version a README asks for, or $null - the rule wls-patch.sh (patch_min_opatch) and
+# db-patch.sh apply on the server: every version right after the word OPatch, any family, the highest wins.
+# Up to 80 characters may sit between the word and the version, digits too ("OPatch (patch 28186730)
+# 12.2.0.1.40"): a patch number has no dots, so it is never read as the version. In a sentence that names
+# OPatch, a further version counts only when a minimum phrase follows it ("OPatch 13.9.4.2.5 or later, and
+# 13.9.4.2.20 or later for this PSU" needs .20) - so the PSU or RU's own build number is never the minimum.
+function Get-ZipMinOPatch([string] $Zip) {
+    $text = Get-ZipReadmeText $Zip
+    $ver = '\d+(?:\.\d+){3,5}'
+    $found = @([regex]::Matches($text, "(?i)\bOPatch\b[^\n]{0,80}?\b($ver)\b") | ForEach-Object { $_.Groups[1].Value })
+    foreach ($s in ($text -split '(?<=\.)\s+|\n')) {
+        if ($s -notmatch '(?i)\bOPatch\b') { continue }
+        $found += @([regex]::Matches($s, "(?i)\b($ver)\b(?=\s+(?:or\s+later|or\s+higher|or\s+above|or\s+newer|is\s+required|required|minimum))") | ForEach-Object { $_.Groups[1].Value })
+    }
+    $v = $found | Sort-Object { Get-VersionKey $_ } -Descending | Select-Object -First 1
+    if ($v) { $v } else { $null }
+}
+
+# the version an OPatch kit zip installs, measured from the kit itself - never from its README, which names the
+# minimum it needs and so could pass a too-old kit. Version (or $null) and where it came from:
+#   OPatch/version.txt ('OPATCH_VERSION:12.2.0.1.48', the 6880880 kit), else Oracle's file name
+#   (p28186730_1394220_Generic.zip -> 13.9.4.2.20, the 13.9.4 kit, which has no version.txt)
+function Get-ZipOPatchVersion([string] $Zip) {
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $z = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        $e = $z.Entries | Where-Object { $_.FullName -match '(^|/)OPatch/version\.txt$' } | Select-Object -First 1
+        if ($e) {
+            $r = New-Object IO.StreamReader ($e.Open())
+            try { $m = [regex]::Match($r.ReadToEnd(), 'OPATCH_VERSION:\s*([\d.]+)') } finally { $r.Dispose() }
+            if ($m.Success) { return [pscustomobject]@{ Version = $m.Groups[1].Value; From = 'OPatch/version.txt' } }
+        }
+    } finally { $z.Dispose() }
+    $n = [regex]::Match((Split-Path -Leaf $Zip), '^p28186730_1394(\d)(\d+)_')
+    if ($n.Success) { return [pscustomobject]@{ Version = "13.9.4.$($n.Groups[1].Value).$([int]$n.Groups[2].Value)"; From = 'the file name' } }
+    [pscustomobject]@{ Version = $null; From = '' }
+}
+
+# 'ok' / 'low' / 'unknown': is the downloaded kit at least what the patches need. 'unknown' is not ok: the caller
+# counts it as a failure, so a kit whose version cannot be measured is never passed
+function Test-OPatchKit([string] $Min, [string] $Kit) {
+    $v = (Get-ZipOPatchVersion $Kit).Version
+    if (-not $v) { return 'unknown' }
+    if ((Get-VersionKey $v) -ge (Get-VersionKey $Min)) { 'ok' } else { 'low' }
+}
+
+# per home: the highest OPatch its downloaded patches need, against the OPatch the manifest says is installed.
+# $Downloaded: @{ Item = <plan item>; Saved = <zip> }. Returns one row per home that needs a newer (or unknown)
+# OPatch: Home, Min, Installed, From, Item (the kit to download, or $null when one is already downloaded) and
+# KitSaved (that download). A downloaded patch whose README names no OPatch minimum WARNs - never a silent skip.
+function Get-OPatchNeeds($Manifest, $Downloaded) {
+    $kits = @($script:OPatchKit, $script:DbOPatch)
+    $byHome = @{}
+    foreach ($d in $Downloaded) {
+        $it = $d.Item
+        if (-not $it.For -or -not $d.Saved -or $it.Kind -notin @('wls', 'spb', 'db') -or $it.Patch -in $kits) { continue }
+        $wls = $Manifest.Wls | Where-Object { $_.Home -eq $it.For } | Select-Object -First 1
+        $db = $Manifest.Homes | Where-Object { $_.Home -eq $it.For -and $_.Kind -eq 'db' } | Select-Object -First 1
+        if ($wls) { $installed = $wls.OPatch } elseif ($db) { $installed = $db.OPatch } else { continue }
+        $min = Get-ZipMinOPatch $d.Saved
+        if (-not $min) {
+            # the README may be missing, deeper in the zip, or worded in a way this does not read: say so, the server would find out too late
+            Write-Warning "patch $($it.Patch): no OPatch minimum found in its README - check the README by hand for the OPatch it needs ($($it.For) has $(if ($installed) { $installed } else { 'an unknown version' }))"
+            continue
+        }
+        $cur = $byHome[$it.For]
+        if (-not $cur -or (Get-VersionKey $min) -gt (Get-VersionKey $cur.Min)) {
+            $byHome[$it.For] = [pscustomobject]@{ Home = $it.For; Min = $min; Installed = $installed; Wls = [bool]$wls; Release = $it.Release; From = $it.Patch }
+        }
+    }
+    foreach ($n in $byHome.Values) {
+        if ($n.Installed -and (Get-VersionKey $n.Installed) -ge (Get-VersionKey $n.Min)) { continue }
+        $kitNo = if ($n.Wls) { $script:OPatchKit } else { $script:DbOPatch }
+        $have = $Downloaded | Where-Object { $_.Item.Patch -eq $kitNo -and $_.Item.For -eq $n.Home -and $_.Saved } | Select-Object -First 1
+        $item = $null
+        if (-not $have) {
+            $item = if ($n.Wls) { New-PlanItem 'wls' "OPatch kit ($($n.Home))" $n.Installed ([pscustomobject]@{ Number = $kitNo; Abstract = "OPatch $($n.Min) or later (patch $($n.From)'s README)" }) '13.9.4' $n.Home }
+                    else { New-PlanItem 'db' "OPatch for $($n.Home)" $n.Installed ([pscustomobject]@{ Number = $kitNo; Abstract = "OPatch $($n.Min) or later (patch $($n.From)'s README)" }) $n.Release $n.Home }
+        }
+        [pscustomobject]@{ Home = $n.Home; Min = $n.Min; Installed = $n.Installed; From = $n.From; Item = $item; KitSaved = $(if ($have) { $have.Saved } else { $null }) }
+    }
+}
+
+# after the downloads: fetch the OPatch kit for every home whose patches need a newer OPatch than it has, and
+# check each kit against that need. Returns the number of failures: a kit that failed to download, is still too
+# old, or whose version cannot be measured.
+function Invoke-OPatchFollowUp($Manifest, $Downloaded, [string] $Dest) {
+    $failed = 0
+    foreach ($n in @(Get-OPatchNeeds $Manifest $Downloaded)) {
+        Write-Host "OPatch for $($n.Home): $(if ($n.Installed) { $n.Installed } else { 'version unknown' }) installed, patch $($n.From)'s README needs $($n.Min) or later"
+        $kit = $n.KitSaved
+        if ($n.Item) {
+            Write-Host "$($n.Item.What): patch $($n.Item.Patch)"
+            try { $kit = Save-MosPatch -Patch $n.Item.Patch -Dest (Join-Path $Dest $n.Item.Kind) -Release $n.Item.Release }
+            catch { $failed++; Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red; continue }
+        }
+        $kv = Get-ZipOPatchVersion $kit
+        switch (Test-OPatchKit $n.Min $kit) {
+            'ok' { Write-Host "  $(Split-Path -Leaf $kit) is OPatch $($kv.Version) (from $($kv.From)): enough" }
+            'low' { $failed++; Write-Host "  $(Split-Path -Leaf $kit) is OPatch $($kv.Version) (from $($kv.From)), still below $($n.Min) - the patch will not apply with it. Check MOS for a newer OPatch before going to the server." -ForegroundColor Red }
+            default { $failed++; Write-Host "  could not measure the OPatch version of $(Split-Path -Leaf $kit) (no OPatch/version.txt, not Oracle's file name) - check by hand that it is $($n.Min) or later" -ForegroundColor Red }
+        }
+    }
+    $failed
+}
+
 # ---- main ----------------------------------------------------------------------------------------------
 function Read-MosToken([string] $Path) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "No MOS token at $Path. Generate one at https://updates.oracle.com/Orion/GenToken/get_token (60 minutes) and save it there." }
@@ -493,17 +626,20 @@ function Main {
     }
     foreach ($o in ($m.Homes | Where-Object { $_.Kind -eq 'other' })) { Write-Host "Oracle home $($o.Home): not a kind this script knows - check MOS for it by hand." }
     if ($plan | Where-Object { $_.What -like 'WLS Stack Patch Bundle*' }) { Write-Host 'The Stack Patch Bundle is applied with the spbat.sh inside it (see its readme), not with wls-patch.sh.' }
-    if ($PlanOnly) { return }
+    if ($PlanOnly) { Write-Host 'OPatch: the minimum each patch needs is in its README, read after the download - -PlanOnly cannot tell whether a newer OPatch kit will be added.'; return }
 
     $failed = 0
+    $downloaded = @()
     foreach ($p in $plan) {
         Write-Host "$($p.What): patch $($p.Patch)"
         try {
             $saved = Save-MosPatch -Patch $p.Patch -Dest (Join-Path $Dest $p.Kind) -Release $p.Release
+            $downloaded += [pscustomobject]@{ Item = $p; Saved = $saved }
             if ($p.Kind -eq 'jdk') { Expand-JdkTarball $saved }
         }
         catch { $failed++; Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red }
     }
+    $failed += Invoke-OPatchFollowUp $m $downloaded $Dest
 
     Write-Host ''
     Write-Host "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:"

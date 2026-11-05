@@ -304,6 +304,119 @@ try {
     Check (($rFmw.Warnings -join ' ') -notmatch 'WLS STACK PATCH BUNDLE|Coherence Cumulative') "the SPB and Coherence are not warned about again - Get-WlsPlan plans them"
     Check ($nf -contains '39000043') "a five-part MOS abstract ('12.2.1.4.0.yymmdd') is matched (got $($nf -join ','))"
     Check ($nf -contains '39000042') "a versioned family token (JDBC19.30) finds the next release's JDBC19.31 bundle (got $($nf -join ','))"
+
+    # ---- OPatch minimum from the downloaded patches' READMEs ------------------------------------------
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    function New-TestZip([string] $Path, [hashtable] $Entries) {
+        $z = [IO.Compression.ZipFile]::Open($Path, 'Create')
+        try {
+            foreach ($k in $Entries.Keys) {
+                $w = New-Object IO.StreamWriter ($z.CreateEntry($k).Open())
+                try { $w.Write($Entries[$k]) } finally { $w.Dispose() }
+            }
+        } finally { $z.Dispose() }
+        $Path
+    }
+    $zd = Join-Path $tmp 'zips'; New-Item -ItemType Directory -Path $zd | Out-Null
+    $psuZip = New-TestZip (Join-Path $zd 'p39000002_122140_Generic.zip') @{
+        '39000002/README.txt' = "Prerequisites`nYou must have OPatch version 13.9.4.2.5 or later, and for this PSU OPatch 13.9.4.2.20 or higher.`nopatch apply`n" }
+    $ruZip = New-TestZip (Join-Path $zd 'p39600003_190000_Linux-x86-64.zip') @{
+        '39600003/README.html' = '<p>You must use the <b>OPatch</b> utility version <b>12.2.0.1.46</b> or later to apply this patch.</p><p>Database 19.31.0.0.0</p>' }
+    $noReadme = New-TestZip (Join-Path $zd 'p39000003_122140_Generic.zip') @{ '39000003/etc/config/inventory.xml' = '<x/>' }
+    Check ((Get-ZipMinOPatch $psuZip) -eq '13.9.4.2.20') "README.txt: the highest OPatch it names is the minimum, got [$(Get-ZipMinOPatch $psuZip)]"
+    Check ((Get-ZipMinOPatch $ruZip) -eq '12.2.0.1.46') "README.html (tags between the words): 12.2.0.1.46, got [$(Get-ZipMinOPatch $ruZip)]"
+    Check ($null -eq (Get-ZipMinOPatch $noReadme)) "a zip with no README gives no minimum"
+    $wordy = New-TestZip (Join-Path $zd 'p39000044_122140_Generic.zip') @{ '39000044/README.txt' = 'Apply OPatch (patch 28186730) 13.9.4.2.21 or later first.' }
+    Check ((Get-ZipMinOPatch $wordy) -eq '13.9.4.2.21') "a patch number between 'OPatch' and the version still matches (Cerebro 13:48:26), got [$(Get-ZipMinOPatch $wordy)]"
+    $build = New-TestZip (Join-Path $zd 'p39000046_122140_Generic.zip') @{ '39000046/README.txt' = "You need OPatch 13.9.4.2.20 or later. The PSU is 13.9.4.2.260522.`nThis RU moves the home to 19.31.0.0.0 and needs OPatch 12.2.0.1.46 or later to apply 19.31.0.0.0." }
+    Check ((Get-ZipMinOPatch $build) -eq '13.9.4.2.20') "the PSU/RU build number is never the minimum (Ash 13:48:41), got [$(Get-ZipMinOPatch $build)]"
+    $two = New-TestZip (Join-Path $zd 'p39000047_122140_Generic.zip') @{ '39000047/README.txt' = 'OPatch 13.9.4.2.5 or later, and 13.9.4.2.20 or later for this PSU.' }
+    Check ((Get-ZipMinOPatch $two) -eq '13.9.4.2.20') "a second version after one 'OPatch', followed by 'or later', counts (GERTY/Ash), got [$(Get-ZipMinOPatch $two)]"
+    $noPhrase = New-TestZip (Join-Path $zd 'p39000048_122140_Generic.zip') @{ '39000048/README.txt' = 'OPatch 13.9.4.2.5 or later; tested on 13.9.4.2.260522 builds.' }
+    Check ((Get-ZipMinOPatch $noPhrase) -eq '13.9.4.2.5') "a bare version with no minimum phrase after it does not count, got [$(Get-ZipMinOPatch $noPhrase)]"
+    $ent = New-TestZip (Join-Path $zd 'p39600008_190000_Linux-x86-64.zip') @{ '39600008/README.html' = '<p>OPatch&#160;utility 12.2.0.1.40 or later, and 12.2.0.1.46&#160;or&#160;later for this RU.</p>' }
+    Check ((Get-ZipMinOPatch $ent) -eq '12.2.0.1.46') "HTML entities are decoded, so '&#160;or&#160;later' is a minimum phrase (Baymax 13:49:29), got [$(Get-ZipMinOPatch $ent)]"
+    $split = New-TestZip (Join-Path $zd 'p39600009_190000_Linux-x86-64.zip') @{ '39600009/README.html' = '<p>OPatch utility version 12.2.0.1.<i>47</i> or later</p>' }
+    Check ((Get-ZipMinOPatch $split) -eq '12.2.0.1.47') "a tag inside the number is dropped, not spaced (Baymax 13:49:29), got [$(Get-ZipMinOPatch $split)]"
+
+    $kitZip = New-TestZip (Join-Path $zd 'p6880880_190000_Linux-x86-64.zip') @{ 'OPatch/version.txt' = "OPATCH_VERSION:12.2.0.1.48`n" }
+    $kitOld = New-TestZip (Join-Path $zd 'p6880880_old.zip') @{ 'OPatch/version.txt' = "OPATCH_VERSION:12.2.0.1.44`n" }
+    $wlsKit = New-TestZip (Join-Path $zd 'p28186730_1394220_Generic.zip') @{ 'README.txt' = 'This kit needs OPatch 13.9.4.2.30 or later on the home'; 'opatch_generic.jar' = 'x' }
+    $kitNoName = New-TestZip (Join-Path $zd 'opatch-kit.zip') @{ 'README.txt' = 'OPatch 13.9.4.2.30'; 'opatch_generic.jar' = 'x' }
+    Check ((Get-ZipOPatchVersion $kitZip).Version -eq '12.2.0.1.48') "an OPatch kit's version is read from OPatch/version.txt"
+    $wv = Get-ZipOPatchVersion $wlsKit
+    Check ($wv.Version -eq '13.9.4.2.20' -and $wv.From -eq 'the file name') "the 13.9.4 kit: version from Oracle's file name, not from the higher 13.9.4.2.30 its README names (Baymax/Weyland), got [$($wv.Version) $($wv.From)]"
+    Check ($null -eq (Get-ZipOPatchVersion $kitNoName).Version) "a kit with no version.txt and not Oracle's name: no version (its README is not believed)"
+
+    # a WebLogic home on 13.9.4.2.10 (above the old 13.9.4.2.0 floor) whose PSU asks for 13.9.4.2.20; a client on 12.2.0.1.44
+    $opm = Join-Path $tmp 'opatch-readme.txt'
+    @('host|wl-op', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.10|no', 'home|/u01/client19|db|19.27.0.0.0|12.2.0.1.44') | Set-Content -LiteralPath $opm
+    $mo = Read-Manifest $opm
+    $got = @(
+        [pscustomobject]@{ Item = (New-PlanItem 'wls' 'WLS PSU (/u01/fmw)' '' ([pscustomobject]@{ Number = '39000002'; Abstract = 'x' }) '12.2.1.4.0' '/u01/fmw'); Saved = $psuZip },
+        [pscustomobject]@{ Item = (New-PlanItem 'db' 'Database Release Update (/u01/client19)' '' ([pscustomobject]@{ Number = '39600003'; Abstract = 'x' }) '19.0.0.0.0' '/u01/client19'); Saved = $ruZip }
+    )
+    $needs = @(Get-OPatchNeeds $mo $got)
+    $wn = $needs | Where-Object { $_.Home -eq '/u01/fmw' }
+    $dn = $needs | Where-Object { $_.Home -eq '/u01/client19' }
+    Check ($wn -and $wn.Min -eq '13.9.4.2.20' -and $wn.Item.Patch -eq '28186730' -and $wn.Item.Kind -eq 'wls') "OPatch 13.9.4.2.10 < the PSU README's 13.9.4.2.20: the kit 28186730 is added (got $($wn.Min) $($wn.Item.Patch))"
+    Check ($dn -and $dn.Min -eq '12.2.0.1.46' -and $dn.Item.Patch -eq '6880880' -and $dn.Item.Release -eq '19.0.0.0.0') "OPatch 12.2.0.1.44 < the RU README's 12.2.0.1.46: 6880880 for 19.0.0.0.0 is added (got $($dn.Min) $($dn.Item.Patch) $($dn.Item.Release))"
+    Check (@($needs).Count -eq 2) "one OPatch need per home, got $(@($needs).Count)"
+
+    # enough already: nothing added
+    $enough = Join-Path $tmp 'opatch-enough.txt'
+    @('host|wl-op2', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.20|no') | Set-Content -LiteralPath $enough
+    Check (@(Get-OPatchNeeds (Read-Manifest $enough) @($got[0])).Count -eq 0) "OPatch 13.9.4.2.20 meets the README's 13.9.4.2.20: no kit"
+    # unknown installed OPatch: the kit is added (the server would have to guess)
+    $unknown = Join-Path $tmp 'opatch-unknown.txt'
+    @('host|wl-op3', 'wls|/u01/fmw|12.2.1.4.0||no') | Set-Content -LiteralPath $unknown
+    Check (@(Get-OPatchNeeds (Read-Manifest $unknown) @($got[0])).Count -eq 1) "an unreadable installed OPatch with a README minimum: the kit is added"
+    # the kit is already planned for that home (old-floor rule): it is not added twice, but the need is still reported
+    $already = @($got[0]) + @([pscustomobject]@{ Item = (New-PlanItem 'wls' 'OPatch kit (/u01/fmw)' '13.9.4.2.10' ([pscustomobject]@{ Number = '28186730'; Abstract = 'OPatch 13.9.4.x' }) '13.9.4' '/u01/fmw'); Saved = $wlsKit })
+    $na = @(Get-OPatchNeeds $mo $already)
+    Check ($na.Count -eq 1 -and $null -eq $na[0].Item -and $na[0].KitSaved -eq $wlsKit) "a kit already downloaded for the home is reused, not planned again"
+
+    # a README that names no OPatch minimum is not skipped silently (Cerebro 13:48:26: no silent skip)
+    $silent = New-TestZip (Join-Path $zd 'p39000045_122140_Generic.zip') @{ '39000045/README.txt' = 'Apply with the usual tools.' }
+    $sd = @([pscustomobject]@{ Item = (New-PlanItem 'wls' 'WLS PSU (/u01/fmw)' '' ([pscustomobject]@{ Number = '39000045'; Abstract = 'x' }) '12.2.1.4.0' '/u01/fmw'); Saved = $silent })
+    $sw = @(Get-OPatchNeeds $mo $sd 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    Check (($sw -join ' ') -match '39000045.*no OPatch') "a README with no OPatch minimum WARNs by patch number (got [$($sw -join ' | ')])"
+
+    # the plan carries the home each patch is for
+    Check (@($plan | Where-Object { $_.Kind -eq 'spb' })[0].For -eq '/u01/fmw') "plan items carry their home (For)"
+    Check (@($plan | Where-Object { $_.Kind -eq 'db' -and $_.Patch -eq '39600003' })[0].For -eq '/stage/client/app/product/19.0.0.0') "a db RU carries its home"
+
+    # the downloaded kit is checked against the minimum
+    Check ((Test-OPatchKit '12.2.0.1.46' $kitZip) -eq 'ok') "kit 12.2.0.1.48 meets 12.2.0.1.46"
+    Check ((Test-OPatchKit '12.2.0.1.46' $kitOld) -eq 'low') "kit 12.2.0.1.44 is below 12.2.0.1.46: reported, not passed"
+    Check ((Test-OPatchKit '12.2.0.1.46' $noReadme) -eq 'unknown') "a kit whose version cannot be read is 'unknown', not ok"
+
+    # the step after the downloads: the kit is fetched for the home that needs it, and a kit still too old counts as a failure
+    $script:kitFetched = @()
+    $script:kitToServe = @{ '28186730' = $wlsKit; '6880880' = $kitZip }
+    function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) { $script:kitFetched += "$Patch|$Release|$(Split-Path -Leaf $Dest)"; $script:kitToServe[$Patch] }
+    $f1 = Invoke-OPatchFollowUp $mo $got (Join-Path $tmp 'dl') 6>$null
+    Check ($script:kitFetched -contains '28186730|13.9.4|wls' -and $script:kitFetched -contains '6880880|19.0.0.0.0|db') "both kits fetched into their folders (got $($script:kitFetched -join ','))"
+    Check ($f1 -eq 0) "kits 13.9.4.2.22 and 12.2.0.1.48 meet 13.9.4.2.20 and 12.2.0.1.46: no failure (got $f1)"
+    $script:kitFetched = @(); $script:kitToServe['6880880'] = $kitOld
+    $f2 = Invoke-OPatchFollowUp $mo $got (Join-Path $tmp 'dl') 6>$null
+    Check ($f2 -eq 1) "the newest 6880880 is only 12.2.0.1.44, below the RU's 12.2.0.1.46: one failure (got $f2)"
+    $script:kitFetched = @()
+    $f3 = Invoke-OPatchFollowUp (Read-Manifest $enough) @($got[0]) (Join-Path $tmp 'dl') 6>$null
+    Check ($script:kitFetched.Count -eq 0 -and $f3 -eq 0) "OPatch already enough: no kit fetched, no failure"
+    $script:kitToServe['28186730'] = $kitNoName
+    $f4 = Invoke-OPatchFollowUp $mo @($got[0]) (Join-Path $tmp 'dl') 6>$null
+    Check ($f4 -eq 1) "a kit whose version cannot be measured counts as a failure, not a pass (got $f4)"
+
+    # any family, as the server reads it (Roy 13:48:49 / Weyland 13:50:01): a WebLogic home on a 12.2.0.1 OPatch
+    $wls12 = Join-Path $tmp 'opatch-wls12.txt'
+    $r40 = New-TestZip (Join-Path $zd 'p39000049_122140_Generic.zip') @{ '39000049/README.txt' = 'OPatch 12.2.0.1.40 or later' }
+    $g40 = @([pscustomobject]@{ Item = (New-PlanItem 'wls' 'WLS PSU (/u01/fmw)' '' ([pscustomobject]@{ Number = '39000049'; Abstract = 'x' }) '12.2.1.4.0' '/u01/fmw'); Saved = $r40 })
+    @('host|wl-12', 'wls|/u01/fmw|12.2.1.4.0|12.2.0.1.44|no') | Set-Content -LiteralPath $wls12
+    Check (@(Get-OPatchNeeds (Read-Manifest $wls12) $g40).Count -eq 0) "WebLogic home on OPatch 12.2.0.1.44, README asks 12.2.0.1.40: no kit"
+    @('host|wl-12', 'wls|/u01/fmw|12.2.1.4.0|12.2.0.1.30|no') | Set-Content -LiteralPath $wls12
+    $n12 = @(Get-OPatchNeeds (Read-Manifest $wls12) $g40)
+    Check ($n12.Count -eq 1 -and $n12[0].Item.Patch -eq '28186730') "WebLogic home on OPatch 12.2.0.1.30, README asks 12.2.0.1.40: the kit is planned, not skipped (got $($n12.Count))"
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
