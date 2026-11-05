@@ -43,7 +43,8 @@ $wlsRows = '<results>' +
     (Row 39000004 'FMW PLATFORM BUNDLE PATCH 12.2.1.4.260715' '2026-07-15') +
     (Row 39000031 'ADF BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') +
     (Row 39000032 'ADF BUNDLE PATCH 12.2.1.4.250415' '2025-04-15') +
-    (Row 39000033 'OPSS BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') + '</results>'
+    (Row 39000033 'OPSS BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') +
+    (Row 39000041 'FMW Thirdparty Bundle Patch 12.2.1.4.260317' '2026-03-17') + '</results>'
 $spbRows = (Row 39500001 'WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)' '2026-05-22') +
     (Row 39500002 'WLS STACK PATCH BUNDLE 12.2.1.4.261020 (Patch 39500002)' '2026-10-20')
 $dbRows = '<results>' +
@@ -280,7 +281,8 @@ try {
         'patch|/u01/app/fmw/home1|36946553|FMW PLATFORM BUNDLE PATCH 12.2.1.4.240812',
         'fmw|/u01/app/fmw/home1|ADF|12.2.1.4.250415|39000032',
         'fmw|/u01/app/fmw/home1|OPSS|12.2.1.4.261020|39000033',
-        'fmw|/u01/app/fmw/home1|WSM|12.2.1.4.260415|39000099'
+        'fmw|/u01/app/fmw/home1|WSM|12.2.1.4.260415|39000099',
+        'fmw|/u01/app/fmw/home1|FMW THIRDPARTY|12.2.1.4.250228|39000040'
     ) | Set-Content -LiteralPath $fmw
     $rFmw = PlanWithWarnings (Read-Manifest $fmw)
     $nf = @($rFmw.Plan | ForEach-Object { $_.Patch })
@@ -289,6 +291,7 @@ try {
     Check (-not ($nf -contains '39000033')) "OPSS already at the newest bundle: nothing planned"
     Check (@($rFmw.Warnings | Where-Object { $_ -match 'WSM' }).Count -ge 1) "a family MOS has no row for WARNs instead of being silent"
     Check (@($rFmw.Plan | Where-Object { $_.What -like 'ADF bundle (*' }).Count -eq 1) "the ADF row names the family and home"
+    Check ($nf -contains '39000041') "a mixed-case MOS abstract ('FMW Thirdparty Bundle Patch') is planned, not read as current (got $($nf -join ','))"
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

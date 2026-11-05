@@ -322,7 +322,7 @@ function Get-FmwPlan($Manifest) {
         }
         $release = $w.Release
         $short = ($release.Split('.')[0..3]) -join '.'
-        $pat = "^$([regex]::Escape($fw.Family)) BUNDLE PATCH $([regex]::Escape($short))(?:\.0)?\.(\d{6})"
+        $pat = "(?i)^$([regex]::Escape($fw.Family)) BUNDLE PATCH $([regex]::Escape($short))(?:\.0)?\.(\d{6})"
         $wlsRelease = Get-ReleaseId "Oracle WebLogic Server $(Get-FivePart $release)" -Optional
         if (-not $wlsRelease) { Write-Warning "$($fw.Home): MOS has no release 'Oracle WebLogic Server $(Get-FivePart $release)' - skipping the $($fw.Family) bundle"; continue }
         $rows = @(Get-MosPatchRows $script:ProductWls $wlsRelease $script:PlatformGeneric -Recommended)
@@ -333,6 +333,8 @@ function Get-FmwPlan($Manifest) {
         $inst = [regex]::Match($fw.Version, '\d{6}').Value
         $new = [regex]::Match($newest.Abstract, $pat).Groups[1].Value
         if (-not $inst -or $new -gt $inst) {
+            # kind 'wls', not a new 'fmw': the bundle is applied by wls-patch.sh from the same wls/ folder
+            # (Kind only chooses the download subdirectory, and only jdk expands)
             New-PlanItem 'wls' "$($fw.Family) bundle ($($fw.Home))" $fw.Version $newest $release
         }
     }
