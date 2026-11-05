@@ -31,7 +31,7 @@ docker run --rm --entrypoint bash --user 1000 -e HOME=/tmp -v "$REPO":/scripts:r
     export PATH="$d"; echo "hidden PATH -> curl=$(command -v curl || echo none) ps=$(command -v ps || echo none)"
   fi
   cd /scripts || exit 2
-  fail=0
+  fail=0; blind=0
 
   echo "== bash -n on every tracked *.sh"
   n=0
@@ -48,9 +48,12 @@ docker run --rm --entrypoint bash --user 1000 -e HOME=/tmp -v "$REPO":/scripts:r
     line="$(printf "%s\n" "$out" | grep -viE "^$" | tail -1)"
     printf "  %-26s rc=%-3s %s\n" "$g" "$rc" "$line"
     [ "$rc" = 0 ] || fail=1
+    # a sweep that exercised NOTHING is blind, not green: 0 passed with NOT-EXERCISED and rc 0 is what a host
+    # missing the gate tool (perl) looks like, and it must not read as a pass.
+    case "$line" in 0" passed"*) case "$line" in *NOT-EXERCISED*) printf "  BLIND %s exercised nothing - check its tools\n" "$g"; blind=1;; esac;; esac
   done
 
-  exit "$fail"'
+  exit "$([ "$fail" = 0 ] && [ "$blind" = 0 ] && echo 0 || echo 1)"'
 rc=$?
 [ "$rc" = 0 ] && echo "audit-container: OK on $IMAGE" && exit 0
 echo "audit-container: FAILED on $IMAGE (see the lines above)"
