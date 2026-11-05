@@ -50,6 +50,10 @@ bash "$S" rollback --run-dir "$R" --yes >>"$OUT" 2>&1 && ok || bad "a bare 'roll
 # the abandoned new build is parked at <path>.failed-<stamp>; the output must name it
 ls -d "$T"/java.failed-* >/dev/null 2>&1 && ok || bad "rollback did not park the new build at a .failed-<stamp> sibling"
 grep -q 'the new build being rolled back from is at .*\.failed-' "$OUT" && ok || bad "rollback did not name the .failed-<stamp> residue"
+# a dry run installed nothing: verify must not assert, and must not drive a rollback
+bash "$S" run "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --dry-run --yes --java-home "$T/java" --no-cacerts --run-dir "$T/run-dry" >"$T/out-dry.log" 2>&1 && ok || bad "run --dry-run failed: $(tail -3 "$T/out-dry.log")"
+grep -q 'dry-run: would verify' "$T/out-dry.log" && ok || bad "run --dry-run did not say it would verify"
+grep -q 'Verify FAILED' "$T/out-dry.log" && bad "run --dry-run reported Verify FAILED" || ok
 # in place, the reference file is not copied, recorded or restored: it is the human's ask
 [ "$(ref_sha)" = "$REF_BEFORE" ] && ok || bad "in place: the reference file was changed"
 [ -z "$(ls -A "$R/files" 2>/dev/null)" ] && ok || bad "in place: a reference file was backed up into $R/files"

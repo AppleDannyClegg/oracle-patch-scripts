@@ -88,6 +88,30 @@ cacerts_aliases() {
   # a store keytool listed with no trustedCertEntry is readable and empty, not unreadable (grep's 1 is not keytool's)
   printf '%s\n' "$out" | { grep trustedCertEntry || true; } | cut -d, -f1 | sort
 }
+# carry_cacerts <oldjh> <newjh> <oldstore> <newstore> <pwfile>: import the CA aliases the new store lacks.
+# An alias can contain a space ('comodoaaaca [jdk]'), so the list is read a line at a time - a word split
+# exports/imports 'comodoaaaca' and '[jdk]' as two aliases (and '[jdk]' is also a glob). The vendor's own
+# roots ('... [jdk]') are not carried: one the new JDK dropped was dropped on purpose. Status 1 = an import failed.
+carry_cacerts() {
+  local oldjh="$1" newjh="$2" oc="$3" nc="$4" pf="$5"
+  local olda newa extra skip n=0 nf=0 a
+  # both lists must really have been read: a wrong CACERTS_PASSWORD used to give an empty list, "0 CA alias(es)
+  # carried over" and a new JDK without the corporate CAs - loudly refused now
+  olda="$(cacerts_aliases "$oldjh/bin/keytool" "$oc" "$pf")" || { rm -f "$pf"; die "cannot list $oc (CACERTS_PASSWORD?): the CA aliases cannot be carried over - fix the password, or --no-cacerts if the new cacerts is already complete"; }
+  newa="$(cacerts_aliases "$newjh/bin/keytool" "$nc" "$pf")" || { rm -f "$pf"; die "cannot list $nc (CACERTS_PASSWORD?): fix the password, or --no-cacerts"; }
+  extra="$(comm -23 <(printf '%s\n' "$olda") <(printf '%s\n' "$newa") | grep .)"
+  skip="$(printf '%s\n' "$extra" | grep -c ' \[jdk\]$' || true)"
+  extra="$(printf '%s\n' "$extra" | { grep -v ' \[jdk\]$' || true; } | grep . || true)"
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$RUN_DIR/ca_$a.pem" \
+       && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$RUN_DIR/ca_$a.pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then
+      n=$((n+1)); else nf=$((nf+1)); err "cacerts: alias $a NOT carried over (see $LOG_FILE)"; fi
+  done <<<"$extra"
+  [ "$skip" = 0 ] || log "cacerts: $skip vendor alias(es) ('[jdk]') not carried - the new JDK dropped them on purpose"
+  log "cacerts: $n CA alias(es) carried over ($(printf '%s' "$extra" | tr '\n' ' '))"; state_set cacerts_imported "$n"
+  [ "$nf" = 0 ]
+}
 # running_on <jdk real path>: "pid name" of JVMs whose exe lives under it. Status 1 = the process list could not be read (lib
 # ps_pid_args, b728ff6): callers treat that as 'unknown', never as 'no JVM runs on it' - a restart gate that reads nothing to
 # restart, or a verify that says nothing is left on the old JDK, because ps failed, is the false success this guards
@@ -263,18 +287,9 @@ cmd_apply() {
   [ "$DRY_RUN" = 1 ] || log "new JDK: $(jdk_version "$NEW_JH") ($(jdk_vendor "$NEW_JH"))"
   if [ "$NO_CACERTS" = 0 ] && [ "$DRY_RUN" = 0 ]; then
     local oc nc; oc="$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"; nc="$NEW_JH/$([ -f "$NEW_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"
-    local pf olda newa; pf="$(cacerts_pw_file)" || die "cannot create the keytool password file under ${TMPDIR:-/tmp}"
-    # both lists must really have been read: a wrong CACERTS_PASSWORD used to give an empty list, "0 CA alias(es) carried over"
-    # and a new JDK without the corporate CAs - loudly refused now
-    olda="$(cacerts_aliases "$OLD_JH/bin/keytool" "$oc" "$pf")" || { rm -f "$pf"; die "cannot list $oc (CACERTS_PASSWORD?): the CA aliases cannot be carried over - fix the password, or --no-cacerts if the new cacerts is already complete"; }
-    newa="$(cacerts_aliases "$NEW_JH/bin/keytool" "$nc" "$pf")" || { rm -f "$pf"; die "cannot list $nc (CACERTS_PASSWORD?): fix the password, or --no-cacerts"; }
-    local extra; extra="$(comm -23 <(printf '%s\n' "$olda") <(printf '%s\n' "$newa") | grep .)"
-    local n=0 nf=0 a; for a in $extra; do
-      if "$OLD_JH/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$RUN_DIR/ca_$a.pem" && "$NEW_JH/bin/keytool" -importcert -noprompt -alias "$a" -file "$RUN_DIR/ca_$a.pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then n=$((n+1)); else nf=$((nf+1)); err "cacerts: alias $a NOT carried over (see $LOG_FILE)"; fi
-    done
+    local pf; pf="$(cacerts_pw_file)" || die "cannot create the keytool password file under ${TMPDIR:-/tmp}"
+    if ! carry_cacerts "$OLD_JH" "$NEW_JH" "$oc" "$nc" "$pf"; then rm -f "$pf"; die "cacerts: not every CA alias was carried over (see above) - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"; fi
     rm -f "$pf"
-    log "cacerts: $n CA alias(es) carried over ($(printf '%s' "$extra" | tr '\n' ' '))"; state_set cacerts_imported "$n"
-    [ "$nf" = 0 ] || die "cacerts: $nf alias(es) failed to import into $nc - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"
   fi
   if [ "$IN_PLACE" = 1 ]; then
     # preflight's stop is not enough on its own: a separate 'apply --force' skips its verdict, and an apply with
@@ -327,6 +342,9 @@ cmd_restart() {
 
 cmd_verify() {
   discover; reuse_or_init verify; local fail=0
+  # a dry run installed nothing, so asserting on it would always fail - say what would be checked, do not assert,
+  # and do not send 'run --dry-run' on to a rollback with nothing recorded
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK and no JVM is still on it"; return 0; fi
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
   if [ "$IN_PLACE" = 1 ]; then
