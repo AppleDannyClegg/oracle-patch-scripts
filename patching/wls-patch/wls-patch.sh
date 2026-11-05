@@ -657,9 +657,12 @@ cmd_preflight() {
     rc=$?
     printf '%s\n' "$out" >>"$LOG_FILE"
     if [ "$DRY_RUN" = 1 ]; then continue; fi
+    # OPatch prints the header 'Conflicts/Supersets for each patch are:' on a FAILED prereq too, so the word superset
+    # proves nothing: a failed prereq or any 'Conflict with' line is a conflict whatever else the output says (Gort
+    # 17:05, Edi 17:05:46); only a superset with no failure is OPatch's own subset rollback
     if printf '%s' "$out" | grep -q 'Prereq "checkConflictAgainstOHWithDetail" passed'; then
       log "  no conflicts"
-    elif printf '%s' "$out" | grep -qiE 'subset|superset'; then
+    elif ! printf '%s' "$out" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" failed|Conflict with' && printf '%s' "$out" | grep -qiE 'subset|superset'; then
       warn "  $id supersedes / is superseded by an installed patch - OPatch will handle the subset rollback automatically:"
       printf '%s\n' "$out" | grep -iE 'subset|superset|Patch [0-9]+' | head -10 | sed 's/^/    /' >&2
     else
