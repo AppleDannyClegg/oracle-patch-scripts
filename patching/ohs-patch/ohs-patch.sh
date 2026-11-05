@@ -1,21 +1,33 @@
 #!/usr/bin/env bash
-# ohs-patch.sh - check an Oracle HTTP Server home is ready for its bundle patch, and print the exact commands.
-# Read-only: it stops nothing, applies nothing and starts nothing. It may unzip the patch into <patch-dir>/extracted.
+# ohs-patch.sh - check an Oracle HTTP Server home is ready for its bundle patch, apply it, and roll it back.
+# preflight is read-only (it may unzip the patch into <patch-dir>/extracted). run changes the home.
 #
 # Commands
 #   preflight <patch-dir>   home, layout, domains and OHS components, what runs from the home, OPatch and series
 #                           checks, a conflict check, disk for the backup, the node manager credentials; then the
 #                           stop / backup / apply / start / verify / rollback commands for this box
+#   run <patch-dir>         preflight must be READY; then stop the OHS components and node manager, back up the home,
+#                           the domains and the central inventory (tar, verified), opatch apply, check lspatches, start
+#                           node manager and the components and wait for their ports. Any failure after the backup
+#                           restores the home and central inventory from it and starts them again (automatic rollback)
+#   rollback [run-dir]      restore the home and central inventory from a run's backup (default: the latest run)
 #
 # Options
 #   --oracle-home DIR       the OHS (or WebLogic) home; default: $ORACLE_HOME, then the central inventory
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes, for the free-space check (default /u01/backup)
-#   --dry-run               accepted for the gates; preflight changes nothing anyway
-#   --yes                   accepted for the gates; preflight asks nothing
+#   --run-dir DIR           rollback: the run to restore from (default: the latest under $HOME/ohs-patch/runs)
+#   --no-backup             refused: the backup is the README's rollback
+#   --dry-run               run/rollback: say what would be done, change nothing (the zip goes to a scratch dir)
+#   --yes                   run/rollback: do not ask for confirmation (without it a terminal must answer 'yes')
 #
-# Exit: 0 ready (warnings may be printed); 1 a blocking problem was found; 2 the check could not be completed
-# (a read failed - ps, opatch, config.xml), so "ready" cannot be said.
+# Environment: START_TIMEOUT (seconds to wait for node manager, each component and its ports; default 300),
+# POLL (seconds between checks; default 10), RUN_BASE (default $HOME/ohs-patch/runs).
+#
+# Exit (preflight): 0 ready (warnings may be printed); 1 a blocking problem was found; 2 the check could not be
+# completed (a read failed - ps, opatch, config.xml), so "ready" cannot be said.
+# Exit (run): 0 applied and verified, or nothing to do; 1 refused or failed (rolled back if anything had changed);
+# 3 failed AND the automatic rollback failed - the home needs a hand restore from the backup named in the log.
 #
 # Why each check (40005842 README, OHS (Native) DB19C Bundle Patch 12.2.1.4.260910):
 #   - "Stop all processes associated with ORACLE_HOME, including WLS AdminServer, NodeManager, Managed Server
@@ -31,8 +43,12 @@
 
 set -uo pipefail
 
-ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"
+ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""
+DRY_RUN=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""
+START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$HOME/ohs-patch/runs}"
 problems=0; unknowns=0
+# what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
+OH=""; PD=""; PID=""; DOMS=""; INV=""; COMPS=""; PRE_IDS=""
 
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }
 log()  { printf '%s [INFO ] %s\n' "$(ts)" "$*" >&2; }
@@ -105,11 +121,16 @@ instance_ports() {
   cat "$d/httpd.conf" "$d/ssl.conf" 2>/dev/null | sed -n 's/^[[:space:]]*Listen[[:space:]]\{1,\}\([^[:space:]#]*\).*/\1/p' | sed 's/.*://' | sort -un | tr '\n' ' '
 }
 
-# every process whose command line names the home; status 1 = ps could not be read (never 'nothing running')
+# every process with an argument that is the home or a path under it (also after '=' or ':', as in -cp a:b or
+# -Dx=path); a sibling such as <home>2 is not the home. Status 1 = ps could not be read (never 'nothing running').
+# Fail-closed by design: any process holding a path in the home is listed, a 'tail -f' on its log included.
 from_home() {
   local l
   l="$(ps -eo pid,args 2>/dev/null)" && [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] || return 1
-  printf '%s\n' "$l" | grep -F -- "$1/" | grep -v -e 'grep -F' -e 'ohs-patch.sh' || :
+  printf '%s\n' "$l" | awk -v oh="$1" '
+    /ohs-patch\.sh/ {next}
+    { n = split($0, f, /[[:space:]=:]+/)
+      for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next } }'
 }
 
 kind_of_proc() {
@@ -122,14 +143,18 @@ kind_of_proc() {
 }
 
 # the patch: zips unzipped once into <dir>/extracted; the patch dir is the one with etc/config/inventory.xml
+# a dry run unzips into DRY_EXT (a scratch dir, removed on exit), so the patch folder is not touched
 patch_dirs() {
-  local dir="$1" z
+  local dir="$1" z to="$1/extracted"
+  [ "$DRY_RUN" = 1 ] && [ -n "$DRY_EXT" ] && to="$DRY_EXT"
   for z in "$dir"/*.zip; do
     [ -f "$z" ] || continue
-    mkdir -p "$dir/extracted" || return 1
-    unzip -o -q "$z" -d "$dir/extracted" || { err "cannot unzip $z"; return 1; }
+    [ -f "$dir/extracted/.done-$(basename "$z")" ] && continue
+    mkdir -p "$to" || return 1
+    unzip -o -q "$z" -d "$to" || { err "cannot unzip $z"; return 1; }
+    [ "$to" = "$dir/extracted" ] && : >"$to/.done-$(basename "$z")"
   done
-  find "$dir" -path '*/etc/config/inventory.xml' 2>/dev/null | sed 's#/etc/config/inventory.xml$##' | sort -u
+  find "$dir" ${DRY_EXT:+"$DRY_EXT"} -path '*/etc/config/inventory.xml' 2>/dev/null | sed 's#/etc/config/inventory.xml$##' | sort -u
 }
 
 readme_title() { head -5 "$1/README.txt" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]]//g' | grep -m1 -iE 'bundle patch|patch' ; }
@@ -143,7 +168,7 @@ cmd_preflight() {
   [ -n "$pdir" ] || die "preflight needs <patch-dir> (the folder holding the OHS bundle zip)"
   [ -d "$pdir" ] || die "patch dir $pdir does not exist"
 
-  local OH; OH="$(find_home)"
+  OH="$(find_home)"
   [ -n "$OH" ] || die "no Oracle HTTP Server home found (no ohs/ under \$ORACLE_HOME or any inventory home) - pass --oracle-home"
   [ -d "$OH/ohs" ] || block "$OH has no ohs/ directory - it is not an OHS home"
   local layout rel; layout="$(layout_of "$OH")"; rel="$(ohs_release "$OH")"
@@ -154,20 +179,21 @@ cmd_preflight() {
   local opv; opv="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p' | head -1)"
   [ -n "$opv" ] || unknown "could not read the OPatch version ($OH/OPatch/opatch version)"
   local lsp; if ! lsp="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" lspatches 2>/dev/null)"; then unknown "opatch lspatches failed - installed patches unknown"; lsp=""; fi
-  lsp="$(printf '%s\n' "$lsp" | tr -d '\r' | grep -E '^[0-9]+;' || :)"
+  lsp="$(printf '%s\n' "$lsp" | tr -d '\r' | grep -E '^[0-9]+;' || :)"; PRE_IDS="$(printf '%s\n' "$lsp" | cut -d';' -f1 | grep . | sort -u | tr '\n' ' ')"
   log "OPatch   : ${opv:-unknown}; installed OHS bundle: $(printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE)' | cut -d';' -f2 | head -1)"
 
   # the patch
-  local pds pd id title min
+  local pds pd id title min; PD=""; PID=""
   pds="$(patch_dirs "$pdir")" || die "could not unzip the patch in $pdir"
   [ -n "$pds" ] || die "no patch in $pdir (no p*.zip and no unzipped patch with etc/config/inventory.xml)"
   [ "$(printf '%s\n' "$pds" | grep -c .)" = 1 ] || block "more than one patch in $pdir - put only the OHS bundle there: $(printf '%s ' $pds)"
-  pd="$(printf '%s\n' "$pds" | head -1)"; id="$(basename "$pd")"
+  pd="$(printf '%s\n' "$pds" | head -1)"; id="$(basename "$pd")"; PD="$pd"; PID="$id"
   title="$(readme_title "$pd")"; min="$(readme_min_opatch "$pd")"
   log "patch    : $id ${title:+- $title}"
   if printf '%s\n' "$lsp" | grep -q "^$id;"; then warn "$id is already installed in $OH - nothing to apply"; fi
   if [ -z "$min" ]; then warn "no 'OPatch version ... or higher' line in $pd/README.txt - check the README by hand"
-  elif [ -n "$opv" ] && ! version_ge "$opv" "$min"; then block "OPatch $opv is older than the $min $id's README asks for - apply OPatch 28186730 first"
+  elif [ -z "$opv" ]; then :   # unknown OPatch version: already UNKNOWN above, never a pass
+  elif ! version_ge "$opv" "$min"; then block "OPatch $opv is older than the $min $id's README asks for - apply OPatch 28186730 first"
   else log "OPatch   : $opv meets the README minimum $min"; fi
 
   # DB19C series (KB585169)
@@ -192,7 +218,7 @@ cmd_preflight() {
 
   # domains, components, node manager credentials
   local doms d comps c dn bin ports cmds_stop="" cmds_start="" cmds_verify="" nmstart=""
-  doms="$(domains_of "$OH")"
+  doms="$(domains_of "$OH")"; DOMS="$doms"; COMPS=""
   [ -n "$doms" ] || block "no domain found for $OH (domain-registry.xml empty or missing) - pass --domain-home"
   while IFS= read -r d; do
     [ -n "$d" ] || continue
@@ -202,6 +228,7 @@ cmd_preflight() {
     log "domain   : $d ($dn) - OHS components: ${comps:-none}"
     [ -n "$comps" ] || continue
     for c in $comps; do
+      COMPS="$COMPS$d|$c"$'\n'
       ports="$(instance_ports "$d" "$c")"
       cmds_stop="$cmds_stop  $bin/stopComponent.sh $c"$'\n'
       cmds_start="$cmds_start  $bin/startComponent.sh $c"$'\n'
@@ -228,7 +255,7 @@ cmd_preflight() {
 
   # disk for the backup: the home + the domains + the central inventory
   local inv need=0 k free
-  inv="$(sed -n 's/^inventory_loc=//p' "$OH/oraInst.loc" /etc/oraInst.loc 2>/dev/null | head -1)"
+  inv="$(sed -n 's/^inventory_loc=//p' "$OH/oraInst.loc" /etc/oraInst.loc 2>/dev/null | head -1)"; INV="$inv"
   for k in "$OH" $doms ${inv:+"$inv"}; do
     local s; s="$(du -sk "$k" 2>/dev/null | awk '{print $1}')"
     [ -n "$s" ] || { unknown "cannot size $k for the backup"; continue; }
@@ -241,7 +268,7 @@ cmd_preflight() {
 
   # ---- the commands for this box ----------------------------------------------------------------------
   local stamp; stamp="$(date '+%Y%m%d-%H%M')"
-  {
+  [ "$QUIET_CMDS" = 1 ] || {
     echo
     echo "COMMANDS for $OH (as the user that owns it). Run them in order; stop at the first that fails."
     echo "1. stop the OHS components, then the node manager"
@@ -274,8 +301,211 @@ cmd_preflight() {
   echo >&2
   if [ "$unknowns" -gt 0 ]; then err "preflight could not complete: $unknowns check(s) unreadable, $problems blocking - NOT ready"; return 2; fi
   if [ "$problems" -gt 0 ]; then err "$problems blocking problem(s) - NOT ready"; return 1; fi
-  log "READY: nothing blocking. Run the commands above in the window."
+  if [ "$QUIET_CMDS" = 1 ]; then log "READY: nothing blocking."; else log "READY: nothing blocking. Run the commands above in the window."; fi
   return 0
+}
+
+# ---- run ------------------------------------------------------------------------------------------------
+RUN_DIR=""; STATE=""; BK=""
+state() { [ -n "$STATE" ] && printf '%s=%s\n' "$1" "$2" >>"$STATE"; return 0; }
+# a command, logged with its output to the run log; its exit status is returned
+do_cmd() { log "  \$ $*"; "$@" >>"$RUN_DIR/run.log" 2>&1; }
+installed_ids() { # 'id id ...' sorted; status 1 = lspatches could not be read
+  local o; o="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" lspatches 2>/dev/null)" || return 1
+  printf '%s\n' "$o" | tr -d '\r' | grep -E '^[0-9]+;' | cut -d';' -f1 | sort -u | tr '\n' ' '
+}
+confirm() {
+  [ "$ASSUME_YES" = 1 ] || [ "$DRY_RUN" = 1 ] && return 0
+  [ -t 0 ] || { err "$1 - not confirmed (no terminal; pass --yes)"; return 1; }
+  local a; read -r -p "$1 Type yes to go on: " a; [ "$a" = yes ]
+}
+
+stop_all() { # every OHS component, then each domain's node manager; 0 = all stops returned 0
+  local d c rc=0
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue; do_cmd "$d/bin/stopComponent.sh" "$c" || { err "stopComponent.sh $c failed (rc $?)"; rc=1; }; done <<<"$COMPS"
+  while IFS= read -r d; do [ -n "$d" ] || continue; do_cmd "$d/bin/stopNodeManager.sh" || { err "stopNodeManager.sh for $d failed"; rc=1; }; done <<<"$DOMS"
+  return $rc
+}
+
+# node manager, then every component (retried until START_TIMEOUT: startComponent fails until node manager listens),
+# then every Listen port answers HTTP. 0 = all up.
+start_all() {
+  local d c p t code rc=0 havecurl=1
+  # no curl on the host: the ports cannot be checked, so they are not - a missing tool must never roll back a good apply
+  command -v curl >/dev/null || { havecurl=0; warn "curl not available - skipping the port check; startComponent.sh's own status is the only start check"; }
+  while IFS= read -r d; do [ -n "$d" ] || continue
+    log "  \$ nohup $d/bin/startNodeManager.sh &"
+    nohup "$d/bin/startNodeManager.sh" >>"$RUN_DIR/nodemanager-$(basename "$d").out" 2>&1 </dev/null &
+  done <<<"$DOMS"
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue
+    t=0; until do_cmd "$d/bin/startComponent.sh" "$c"; do
+      t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "startComponent.sh $c did not succeed in ${START_TIMEOUT}s"; rc=1; continue 2; }
+      sleep "$POLL"
+    done
+    [ "$havecurl" = 1 ] || continue
+    for p in $(instance_ports "$d" "$c"); do
+      t=0; while :; do
+        code="$(curl -k -s -o /dev/null -m 10 -w '%{http_code}' "https://localhost:$p/" 2>/dev/null)"
+        case "$code" in ''|000) code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://localhost:$p/" 2>/dev/null)";; esac
+        case "$code" in ''|000) ;; *) log "  $c answers on port $p (HTTP $code)"; break;; esac
+        t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "$c does not answer on port $p after ${START_TIMEOUT}s"; rc=1; break; }
+        sleep "$POLL"
+      done
+    done
+  done <<<"$COMPS"
+  return $rc
+}
+
+# 0 = nothing runs from the home; 1 = something does (listed); 2 = ps unreadable
+nothing_running() {
+  local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - cannot prove the home is stopped"; return 2; }
+  [ -z "$procs" ] && return 0
+  while read -r pid args; do [ -n "$pid" ] && err "  still running from $OH: pid $pid  $(kind_of_proc "$args")"; done <<<"$procs"
+  return 1
+}
+
+backup_all() { # into BK; every archive listed back (tar -tzf) and non-empty; all or nothing
+  local d f
+  mkdir -p "$BK" || { err "cannot create $BK"; return 1; }
+  do_cmd tar -C "$(dirname "$OH")" -czf "$BK/home.tgz" "$(basename "$OH")" || { err "home backup failed"; return 1; }
+  while IFS= read -r d; do [ -n "$d" ] || continue
+    do_cmd tar -C "$(dirname "$d")" --exclude='*/logs/*' --exclude='*/tmp/*' -czf "$BK/domain-$(basename "$d").tgz" "$(basename "$d")" || { err "domain backup of $d failed"; return 1; }
+  done <<<"$DOMS"
+  if [ -n "$INV" ]; then do_cmd tar -C "$(dirname "$INV")" -czf "$BK/oraInventory.tgz" "$(basename "$INV")" || { err "central inventory backup failed"; return 1; }
+  else err "no central inventory location (oraInst.loc) - the README's rollback needs it backed up"; return 1; fi
+  for f in "$BK"/*.tgz; do
+    [ -s "$f" ] && tar -tzf "$f" >/dev/null 2>&1 || { err "backup $f does not read back - not a usable rollback"; return 1; }
+  done
+  return 0
+}
+
+# the README's complete rollback: ORACLE_HOME and the central inventory from THIS run's backup ($BK).
+# 0 = restored and lspatches is back at the level recorded before the apply; 1 = not (the home is left stopped)
+restore_all() {
+  local stamp; stamp="$(date '+%Y%m%d-%H%M%S')"
+  [ -s "$BK/home.tgz" ] && [ -s "$BK/oraInventory.tgz" ] || { err "this run's backup is not complete in $BK"; return 1; }
+  stop_all || :
+  nothing_running || { err "the home is not stopped - not restoring under a live process"; return 1; }
+  do_cmd mv "$OH" "$OH.failed-$stamp" || { err "cannot move $OH aside"; return 1; }
+  do_cmd tar -C "$(dirname "$OH")" -xzf "$BK/home.tgz" || { err "restore of $OH from $BK/home.tgz failed (the patched home is at $OH.failed-$stamp)"; return 1; }
+  do_cmd mv "$INV" "$INV.failed-$stamp" || { err "cannot move $INV aside"; return 1; }
+  do_cmd tar -C "$(dirname "$INV")" -xzf "$BK/oraInventory.tgz" || { err "restore of $INV from $BK/oraInventory.tgz failed"; return 1; }
+  local now; now="$(installed_ids)" || { err "lspatches cannot be read on the restored home"; return 1; }
+  [ "$now" = "$PRE_IDS" ] || { err "the restored home's patches [$now] are not the level before the apply [$PRE_IDS]"; return 1; }
+  log "restored $OH and $INV from $BK; patches back at [$now]. The domain archives in $BK were not needed."
+  return 0
+}
+
+manual_restore() {
+  err "MANUAL RESTORE (the servers are DOWN):"
+  err "  mv '$OH' '$OH.bad' && tar -C '$(dirname "$OH")' -xzf '$BK/home.tgz'"
+  err "  mv '$INV' '$INV.bad' && tar -C '$(dirname "$INV")' -xzf '$BK/oraInventory.tgz'"
+  err "  then start node manager and the components (see 'preflight' for the commands)"
+}
+
+# after a change failed: restore, prove the level, start. Never opatch rollback (README). exit 1 or 3.
+recover() {
+  err "$1 - rolling back from $BK"
+  state stage rollback
+  if ! restore_all; then state outcome rollback-failed; err "ROLLBACK FAILED - nothing started"; manual_restore; exit 3; fi
+  if ! start_all; then state outcome restored-not-started; err "restored, but it does not start - servers DOWN, no second rollback"; exit 3; fi
+  state outcome rolled-back
+  err "ROLLED BACK: $OH is back at its level before the apply and running. $PID is NOT applied."
+  exit 1
+}
+
+cmd_run() {
+  local pdir="${1:-}"
+  [ -n "$pdir" ] || die "run needs <patch-dir>"
+  [ "$NO_BACKUP" = 1 ] && { err "--no-backup refused: the README's rollback is the backup of ORACLE_HOME and the central inventory"; exit 1; }
+  [ "$DRY_RUN" = 1 ] && { DRY_EXT="$(mktemp -d)"; trap 'rm -rf "$DRY_EXT"' EXIT; }
+  QUIET_CMDS=1
+  local prc; cmd_preflight "$pdir"; prc=$?
+  [ "$prc" = 0 ] || { err "run refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
+  if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
+  # this script stops only OHS components and node manager: a WebLogic server running from the home is refused
+  local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - refused"; exit 2; }
+  if printf '%s\n' "$procs" | grep -q 'weblogic\.Server'; then
+    err "run refused: WebLogic servers run from $OH - stop them first (wls-patch.sh stop); this script stops only OHS and node manager. Nothing was changed."
+    exit 1
+  fi
+  [ -d "$BACKUP_DIR" ] && [ -w "$BACKUP_DIR" ] || { err "run refused: backup dir $BACKUP_DIR is missing or not writable - nothing was changed"; exit 1; }
+  local stamp; stamp="$(date '+%Y%m%d-%H%M%S')"
+  BK="$BACKUP_DIR/ohs-$PID-$stamp"
+  if [ "$DRY_RUN" = 1 ]; then
+    log "dry-run: would back up $OH, $(printf '%s ' $DOMS)and $INV to $BK (tar, each read back)"
+    while IFS='|' read -r d c; do [ -n "$c" ] && log "dry-run: would run $d/bin/stopComponent.sh $c"; done <<<"$COMPS"
+    while IFS= read -r d; do [ -n "$d" ] && log "dry-run: would run $d/bin/stopNodeManager.sh"; done <<<"$DOMS"
+    log "dry-run: would check nothing runs from $OH, then: cd $PD && opatch apply -silent -oh $OH"
+    log "dry-run: would check lspatches shows $PID, start node manager and $(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ')and wait for their ports"
+    log "dry-run: on any failure, would restore $OH and $INV from $BK"
+    exit 0
+  fi
+  confirm "This stops OHS ($(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ' | sed 's/ $//') and node manager) on this box and applies $PID to $OH." || { err "not confirmed - nothing was changed"; exit 1; }
+
+  RUN_DIR="$RUN_BASE/$stamp-run"; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR"
+  STATE="$RUN_DIR/state"; : >"$STATE"
+  state oracle_home "$OH"; state inventory "$INV"; state patch "$PID"; state backup_dir "$BK"; state pre_patches "$PRE_IDS"
+  log "run dir  : $RUN_DIR"
+
+  # 1 backup (before the outage: a backup failure stops nothing)
+  state stage backup
+  log "1/5 backup to $BK"
+  backup_all || { rm -rf "$BK"; state outcome refused-backup; err "backup failed - nothing was stopped or changed"; exit 1; }
+  state backup ok
+
+  # 2 stop, then prove nothing runs from the home; a failure here changed nothing in the home: start again
+  state stage stop
+  log "2/5 stop OHS components and node manager"
+  local nr=0
+  if ! stop_all; then nr=1
+  else nothing_running; nr=$?; fi
+  if [ "$nr" != 0 ]; then
+    state outcome refused-stop
+    err "the home could not be proved stopped - NOT applying; starting the components again"
+    start_all || err "and they did not all start again - check them by hand"
+    exit "$([ "$nr" = 2 ] && echo 2 || echo 1)"
+  fi
+
+  # 3 apply; from here the home may have changed, so every failure restores from the backup
+  state stage apply
+  log "3/5 opatch apply $PID"
+  ( cd "$PD" && do_cmd env ORACLE_HOME="$OH" "$OH/OPatch/opatch" apply -silent -oh "$OH" ) || recover "opatch apply failed"
+  local now; now="$(installed_ids)" || recover "lspatches cannot be read after the apply"
+  printf ' %s ' "$now" | grep -q " $PID " || recover "opatch apply returned 0 but lspatches does not show $PID"
+
+  # 4 start
+  state stage start
+  log "4/5 start node manager and the components"
+  start_all || recover "the patched home does not start"
+
+  # 5 verify: the level moved and stays moved
+  now="$(installed_ids)" || recover "lspatches cannot be read after the start"
+  printf ' %s ' "$now" | grep -q " $PID " || recover "lspatches does not show $PID after the start"
+  state applied "$PID"; state outcome applied
+  log "5/5 applied and verified: $PID is installed in $OH and every component answers. Backup kept at $BK."
+  log "post-install: check KB187736 for collaborative patches this bundle needs"
+  exit 0
+}
+
+cmd_rollback() {
+  local rd="${RUN_DIR_ARG:-${1:-}}"
+  [ -n "$rd" ] || rd="$(find "$RUN_BASE" -maxdepth 1 -name '*-run' -type d 2>/dev/null | sort | tail -1)"
+  [ -n "$rd" ] && [ -f "$rd/state" ] || die "no run to roll back (pass --run-dir; runs are under $RUN_BASE)"
+  sv() { sed -n "s/^$1=//p" "$rd/state" | tail -1; }
+  OH="$(sv oracle_home)"; INV="$(sv inventory)"; BK="$(sv backup_dir)"; PID="$(sv patch)"; PRE_IDS="$(sv pre_patches)"
+  [ -n "$OH" ] && [ -n "$INV" ] && [ -n "$BK" ] || die "$rd/state does not name the home, inventory and backup"
+  [ "$(sv backup)" = ok ] || die "run $rd never completed its backup - nothing to roll back from"
+  ORACLE_HOME_ARG="$OH"; QUIET_CMDS=1
+  local d c; DOMS="$(domains_of "$OH")"; COMPS=""
+  while IFS= read -r d; do [ -n "$d" ] || continue; for c in $(ohs_components "$d"); do COMPS="$COMPS$d|$c"$'\n'; done; done <<<"$DOMS"
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would stop the components, restore $OH and $INV from $BK, check the patches are [$PRE_IDS], start them"; exit 0; fi
+  confirm "This stops OHS on this box and restores $OH and $INV from $BK." || { err "not confirmed - nothing was changed"; exit 1; }
+  RUN_DIR="$rd"; STATE="$rd/state"
+  restore_all || { state outcome rollback-failed; err "ROLLBACK FAILED - nothing started"; manual_restore; exit 3; }
+  start_all || { state outcome restored-not-started; err "restored, but it does not start - servers DOWN"; exit 3; }
+  state outcome rolled-back; log "rolled back: $OH restored from $BK and running"
+  exit 0
 }
 
 main() {
@@ -285,7 +515,10 @@ main() {
       --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2 ;;
       --domain-home) optchk "$@"; DOMAIN_ARG="$2"; shift 2 ;;
       --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2 ;;
-      --dry-run|--yes) shift ;;
+      --run-dir)     optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
+      --dry-run)   DRY_RUN=1; shift ;;
+      --yes)       ASSUME_YES=1; shift ;;
+      --no-backup) NO_BACKUP=1; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown option $1" ;;
       *) if [ -z "$cmd" ]; then cmd="$1"; else args+=("$1"); fi; shift ;;
@@ -294,7 +527,9 @@ main() {
   case "$cmd" in
     preflight) cmd_preflight "${args[@]+"${args[@]}"}" ;;
     "") usage; exit 2 ;;
-    *) die "unknown command $cmd (only 'preflight' exists yet)" ;;
+    run)       cmd_run "${args[@]+"${args[@]}"}" ;;
+    rollback)  cmd_rollback "${args[@]+"${args[@]}"}" ;;
+    *) die "unknown command $cmd (preflight, run, rollback)" ;;
   esac
 }
 
