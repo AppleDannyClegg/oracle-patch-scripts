@@ -32,6 +32,9 @@ fresh; echo '<distribution status="installed" name="WebLogic Server" version="12
 fresh; echo '<distribution version="12.2.1.4.0" status="installed" name="WebLogic Server"/>' >"$T/h/inventory/registry.xml"; case_ "version before the name" 12.2.1.4.0
 fresh; printf '<registry>\n  <distribution status="installed"\n      name="WebLogic Server"\n      version="14.1.1.0.0">\n  </distribution>\n</registry>\n' >"$T/h/inventory/registry.xml"; case_ "the tag over several lines" 14.1.1.0.0
 fresh; printf '<distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n <feature name="WebLogic Server"/>\n</distribution>\n' >"$T/h/inventory/registry.xml"; case_ "an FMW Infrastructure distribution" 12.2.1.4.0
+# the name tag over two lines, with another product's version on the line where it starts (Cerebro 19:34 P3):
+# only flattening the file reads 12.2.1.4.0; line by line the fallback would take Coherence's 12.2.1.3.0
+fresh; printf '<distribution name="Oracle Coherence" version="12.2.1.3.0"/><distribution status="installed"\n    name="WebLogic Server" version="12.2.1.4.0"/>\n' >"$T/h/inventory/registry.xml"; case_ "the name tag split after another product's version" 12.2.1.4.0
 fresh; echo 'WLS_PRODUCT_VERSION=12.1.3.0.0' >"$T/h/wlserver/.product.properties"; case_ ".product.properties only" 12.1.3.0.0
 fresh; rm -rf "$T/h/inventory"; echo '<component name="WebLogic Server" version="10.3.6.0" InstallDir="/x/wlserver_10.3"/>' >"$T/h/registry.xml"; case_ "the 10.3.6 <home>/registry.xml" 10.3.6.0
 fresh; printf '<distribution name="Oracle Coherence" version="12.2.1.4.0"/>\n' >"$T/h/inventory/registry.xml"; case_ "only a co-installed 12.2.1.4 product" 12.2.1.4.0
