@@ -35,10 +35,12 @@ esac
 exit 0
 EOF
 chmod +x "$T/bin/ps"
+# a ps that cannot run at all: an unreadable process list must stay fail-closed even with --will-stop
+mkdir -p "$T/bin-fail" "$T/emptyproc"; printf '#!/bin/sh\nexit 1\n' >"$T/bin-fail/ps"; chmod +x "$T/bin-fail/ps"
 
 preflight() { # <extra flag...>; prints the output, returns cmd_preflight's status
   # shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
-  ( PATH="$T/bin:$PATH"
+  ( PATH="${PSDIR:-$T/bin}:$PATH"; export PROC_DIR="${PROC_DIR_OVERRIDE:-/proc}"
     . "$T/tree/patching/java-patch/java-patch.sh"
     RUN_DIR="$T/run"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; WILL_STOP=0
     FORCE=0; JSON_OUT=0; VERBOSE=0; IN_PLACE=0; KEEP_OLD=0; OLD_JH="$T/jdk"
@@ -57,6 +59,11 @@ rm -rf "$T/run"; out="$(preflight --will-stop 2>&1)"
 grep -q '\[WARN \] in-place: JVMs run on' "$T/err" && ok || bad "--will-stop did not WARN about the running JVM"
 grep -q 'apply still refuses' "$T/err" && ok || bad "the warn does not say apply still refuses"
 grep -q '^preflight=ok' "$T/run/state" 2>/dev/null && ok || bad "--will-stop did not record preflight=ok"
+
+# an unreadable process list stays a refusal even with --will-stop (GERTY/TARS)
+rm -rf "$T/run"; out="$(PSDIR="$T/bin-fail" PROC_DIR_OVERRIDE="$T/emptyproc" preflight --will-stop 2>&1)"
+[ "${out##*rc=}" != 0 ] && ok || bad "an unreadable process list passed preflight with --will-stop (rc=${out##*rc=})"
+grep -q 'cannot read the process list' "$T/err" && ok || bad "the unreadable process list was not named"
 
 # apply's hard die is untouched: an in-place apply with the JVM still running dies even with --force
 # shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
