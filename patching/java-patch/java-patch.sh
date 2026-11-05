@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # java-patch.sh - move WebLogic, ORDS and friends to a new JDK build: find every JDK on the host and who
-# uses it, check the new tarball against each product's support matrix, unpack it next to the old one,
+# uses it, check the new tarball against each product's support matrix, put the new one where the old one was (or
+# next to it, with --keep-old),
 # carry the customer CA certificates across, switch the references (symlink flip when possible, else the
 # config files), restart what is configured, verify the JVMs really run on the new JDK, roll back if not.
 # Runs as the Oracle software owner. The EM agent and GoldenGate Microservices are reported, not touched.
@@ -203,9 +204,10 @@ cmd_preflight() {
   local f; for f in $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u); do [ -w "$f" ] || { err "$f is not writable (reference must be edited)"; fail=1; }; done
   local run; if ! run="$(running_on "$OLD_REAL")"; then err "$(ps_unreadable_msg) - cannot tell which JVMs run on the old JDK and need a restart after the switch; preflight refuses"; fail=1; run=""; fi
   [ -n "$run" ] && { log "running on the old JDK (restart needed): $(printf '%s\n' "$run" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; [ "$DO_RESTART" = 1 ] && [ -z "$RESTART_CMDS" ] && [ -z "$(ords_service)" ] && warn "--restart but no RESTART_CMDS and no ORDS service: restarts will have to be done by hand"; }
-  # in-place replaces the JDK's files while those JVMs are still running, so stop them first (or --keep-old, which
-  # leaves the old JDK where it is and only re-points the references)
-  [ "$IN_PLACE" = 1 ] && [ -n "$run" ] && { [ "$FORCE" = 1 ] && warn "in-place: $OLD_JH is replaced while JVMs still run on it (--force) - restart them immediately after" || { err "in-place: JVMs run on $OLD_JH and its files are replaced before the restart - stop them first, or --keep-old"; fail=1; }; }
+  # a running JVM keeps java.home = the PATH, so an in-place swap would feed it the new build's lazily-loaded
+  # files (cacerts, native libs, tzdb) while it still runs the old one. NOT waivable with --force - that flag
+  # also covers the same-build reinstall and the major change - so stop the JVMs, or use --keep-old.
+  [ "$IN_PLACE" = 1 ] && [ -n "$run" ] && { err "in-place: JVMs run on $OLD_JH and would be fed the new build's files (cacerts, native libs) while still running the old one - stop them first, or --keep-old (which leaves the old JDK in place and only re-points the references)"; fail=1; }
   [ "$NO_CACERTS" = 0 ] && { local pf; pf="$(cacerts_pw_file)" && { cacerts_aliases "$OLD_JH/bin/keytool" "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" "$pf" >/dev/null 2>&1 || { err "cannot open the old cacerts with CACERTS_PASSWORD: apply will refuse to continue without the CA carry-over (fix the password, or --no-cacerts)"; fail=1; }; rm -f "$pf"; }; }
   [ -f "$OLD_JH/jre/lib/security/local_policy.jar" ] && [ "$NEW_MAJOR" = 8 ] && log "JDK 8: unlimited crypto policy files - JDK 8u161+ has them unlimited by default (crypto.policy=unlimited)"
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"; state_set tarball "$TARBALL"; state_set old_jh "$OLD_JH"; state_set old_real "$OLD_REAL"; state_set new_jh "$NEW_JH"
@@ -216,12 +218,12 @@ cmd_plan() {
   discover; pick_tar
   echo "PLAN: $OLD_JH ($OLD_VER) -> $([ "$IN_PLACE" = 1 ] && echo "$OLD_JH (in place)" || echo "$NEW_JH") ($NEW_VER)"
   echo "  1. preflight   JDK tarball, major $OLD_MAJOR->$NEW_MAJOR, WebLogic/ORDS matrix, disk in $JAVA_BASE, who runs on the old JDK"
-  echo "  2. backup      $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | grep -c .) reference file(s) copied to the run dir$([ "$IN_PLACE" = 1 ] && echo "; the old JDK is moved to ${RUN_DIR:-<run-dir>}/old-jdk" || echo "; the old JDK stays at $OLD_REAL")"
+  echo "  2. backup      $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | grep -c .) reference file(s) copied to the run dir$([ "$IN_PLACE" = 1 ] && echo "; the old JDK is renamed to $OLD_JH.old-<stamp>" || echo "; the old JDK stays at $OLD_REAL")"
   echo "  3. apply       tar -xzf $(basename "$TARBALL") -C $JAVA_BASE ; keytool import of CA aliases present only in the old cacerts$([ "$NO_CACERTS" = 1 ] && echo ' (skipped)')"
-  if [ "$IN_PLACE" = 1 ]; then echo "                 mv $OLD_JH ${RUN_DIR:-<run-dir>}/old-jdk ; mv $NEW_JH $OLD_JH   (the new JDK takes $OLD_JH, no file edits)"
+  if [ "$IN_PLACE" = 1 ]; then echo "                 mv $OLD_JH $OLD_JH.old-<stamp> ; mv $NEW_JH $OLD_JH   (the new JDK takes $OLD_JH, no file edits)"
   elif [ "$LINKED" = 1 ]; then echo "                 ln -sfn $NEW_JH $OLD_JH   (symlink flip, no file edits)"
   else echo "                 sed $OLD_JH -> $NEW_JH in: $(printf '%s\n' "$REFS" | cut -d: -f1 | sort -u | tr '\n' ' ')"; fi
-  echo "  4. restart     $([ "$DO_RESTART" = 1 ] && echo "${RESTART_CMDS:-ORDS service $(ords_service)}" || echo 'not requested (--restart): JVMs keep the old JDK until restarted')"
+  echo "  4. restart     $([ "$DO_RESTART" = 1 ] && echo "${RESTART_CMDS:-ORDS service $(ords_service)}" || { [ "$IN_PLACE" = 1 ] && echo 'not requested (--restart): the path now serves the NEW JDK - restart anything that ran on it' || echo 'not requested (--restart): JVMs keep the old JDK until restarted'; })"
   echo "  5. verify      $NEW_JH/bin/java -version, references, running JVMs' /proc/pid/exe, URLs: ${CHECK_URLS:-${USER_ORDS_URL:-none}}"
   echo "  rollback       symlink back / files restored from the run dir, restart again"
 }
