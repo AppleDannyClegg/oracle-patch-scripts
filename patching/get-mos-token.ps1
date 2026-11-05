@@ -97,10 +97,21 @@ if ($Paste) {
     $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)).Trim()
 } else {
     Write-Host 'waiting for a token on the clipboard... (Ctrl+C to stop)'
+    # a re-run usually happens right after a script said 'expired', so the OLD token may still be on the
+    # clipboard: ignore whatever is there at the start, and ignore a token whose exp has already passed
+    $initial = (Get-Clipboard -Raw -ErrorAction SilentlyContinue)
+    if ($initial) { $initial = $initial.Trim() }
     for ($i = 0; $i -lt 900; $i++) {
         $c = Get-Clipboard -Raw -ErrorAction SilentlyContinue
         if ($c) { $c = $c.Trim() }
-        if ($c -and (Test-TokenShape $c)) { $token = $c; break }
+        if ($c -and $c -ne $initial -and (Test-TokenShape $c)) {
+            $exp = Get-JwtExpiry $c
+            if ($exp -and $exp -le (Get-Date)) {
+                Write-Host 'the token on the clipboard has already expired - copy a fresh one from the page'
+                $initial = $c   # do not warn about the same one again
+                $c = $null
+            } else { $token = $c; break }
+        }
         Start-Sleep -Milliseconds 500
     }
     if (-not $token) { throw 'no token appeared on the clipboard - re-run with -Paste' }
@@ -128,5 +139,8 @@ if ($env:OS -eq 'Windows_NT') {
     $me = "$env:USERDOMAIN\$env:USERNAME"
     icacls "$TokenFile" /inheritance:r /grant:r "${me}:F" > $null 2>&1
     if ($LASTEXITCODE -ne 0) { Write-Warning "could not restrict $TokenFile to $me (icacls rc $LASTEXITCODE) - check its permissions by hand" }
+} else {
+    # pwsh on macOS/Linux: the file lands 644, and the lib hint asks for 600
+    & chmod 600 "$TokenFile" 2>$null
 }
 Write-Host "wrote $TokenFile"
