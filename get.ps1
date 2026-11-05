@@ -103,7 +103,7 @@ try {
         if (Test-Path -LiteralPath "$Dest.old") {
             # never force-delete downloaded patches: get-patches.ps1 defaults its output to .\patches-<host>,
             # inside this tree, so the previous copy can hold multi-GB zips. Keep it aside and say so instead.
-            $keep = @(Get-ChildItem -LiteralPath "$Dest.old" -Force -ErrorAction SilentlyContinue |
+            $keep = @(Get-ChildItem -LiteralPath "$Dest.old" -Recurse -Force -ErrorAction SilentlyContinue |
                       Where-Object { $_.Name -like 'patches-*' -or $_.Name -like '*.zip' -or $_.Name -like '*.tar.gz' -or $_.Name -like '*.tgz' })
             if ($keep.Count) {
                 $aside = "$Dest.old-" + (Get-Date -Format 'yyyyMMddHHmmss')
