@@ -50,6 +50,8 @@ case "$1" in
     echo "38000006;ADF BUNDLE PATCH 12.2.1.4.0.270101"
     echo "38000005;JDBC19.30 BUNDLE PATCH 12.2.1.4.260216"
     echo "38000008;JDBC19.31 BUNDLE PATCH 12.2.1.4.270101"
+    echo "39024181;OSS 19C BUNDLE PATCH 12.2.1.4.260228"
+    echo "39024182;OSS 19D BUNDLE PATCH 12.2.1.4.261101"
     echo "38000002;OPSS BUNDLE PATCH 12.2.1.4.260514"
     echo
     echo "OPatch succeeded." ;;
@@ -132,6 +134,9 @@ if [ -f "$OUT" ]; then
   # a versioned family token is emitted as-is; the consumer normalises it (a850512). Two JDBC versions are one family (P3c)
   has "$OUT" "fmw|$H|JDBC19.31|12.2.1.4.270101|38000008"
   [ "$(grep -c "^fmw|$H|JDBC" "$OUT")" = 1 ] && ok || bad "FMW: two JDBC versions gave more than one fmw| line"
+  # a letter-suffixed version collapses too ('OSS 19C'/'OSS 19D' -> one 'OSS' family, newest) (GERTY P3)
+  [ "$(grep -c "^fmw|$H|OSS" "$OUT")" = 1 ] && ok || bad "FMW: two letter-suffixed OSS versions gave more than one fmw| line"
+  has "$OUT" "fmw|$H|OSS 19D|12.2.1.4.261101|39024182"
   # two patches of the same family: one line, the newest by yymmdd, across 4-part and 5-part shapes (P3b)
   [ "$(grep -c "^fmw|$H|ADF|" "$OUT")" = 1 ] && ok || bad "FMW: two ADF patches gave more than one fmw| line"
   grep -q "^fmw|$H|ADF|12.2.1.4.260514" "$OUT" && bad "FMW: kept the older ADF line instead of the newer 5-part one" || ok

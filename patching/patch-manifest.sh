@@ -239,7 +239,7 @@ EOF
     $1=="OTHER" { print "fmw|" h "|OTHER|" $2 "|" $3; next }
     {
       # dedupe on the version-stripped base, so 'JDBC19.30' and 'JDBC19.31' are one family (P3c)
-      base=$1; sub(/[0-9][0-9.]*$/,"",base); sub(/ +$/,"",base); if (base=="") base=$1
+      base=$1; sub(/[[:space:]]+[0-9][0-9A-Za-z.]*$/,"",base); sub(/[0-9][0-9.]*$/,"",base); sub(/ +$/,"",base); if (base=="") base=$1
       # compare the trailing yymmdd, not the whole string: a 5-part '...0.270101' beats a 4-part
       # '...260514' only by its date, which a text compare gets wrong (P3b)
       vkey=$2; if (match(vkey,/[0-9]{6}$/)) vkey=substr(vkey,RSTART,6)
