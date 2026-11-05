@@ -50,14 +50,14 @@ X
   printf 'Oracle OHS (Native) DB19C Bundle Patch 12.2.1.4.260910 README\n\n ORACLE_HOME must have OPatch version 13.9.4.2.13 or higher. To verify\n' >"$PD/40005842/README.txt"
   echo "OPatch 13.9.4.2.23" >"$T/opv"
   echo "39611663;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260624" >"$T/lsp"
-  echo 'Prereq "checkConflictAgainstOHWithDetail" passed.' >"$T/prereq"
+  echo 'Prereq "checkConflictAgainstOHWithDetail" passed.' >"$T/prereq"; echo 0 >"$T/prereq.rc"
   cat >"$OH/OPatch/opatch" <<O
 #!/bin/sh
 echo "\$*" >>"$T/opatch.log"
 case "\$1" in
   version) echo "OPatch Version: \$(cut -d' ' -f2 "$T/opv")"; echo; echo "OPatch succeeded.";;
   lspatches) [ -e "$T/lsp.fail" ] && exit 1; cat "$T/lsp"; echo; echo "OPatch succeeded.";;
-  prereq) cat "$T/prereq";;
+  prereq) cat "$T/prereq"; exit "\$(cat "$T/prereq.rc" 2>/dev/null || echo 0)";;
   *) echo "UNEXPECTED opatch \$*" >>"$T/changed"; exit 1;;
 esac
 O
@@ -103,6 +103,14 @@ build; printf 'Invoking prereq "checkconflictagainstohwithdetail"\nPrereq "check
 [ "$rc" = 1 ] && grep -q 'BLOCKING: conflict check did not pass' "$T/out" && ok || bad "a conflict not blocking: rc $rc"
 build; sed -i.bak 's#<component-type>OHS</component-type>#<component-type>X</component-type>#' "$DOM/config/config.xml"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: no OHS component' "$T/out" && ok || bad "no OHS component not blocking: rc $rc"
+
+# a non-zero prereq exit with superset-only wording is a conflict (Jocasta P3); a 'Conflict with' under exit 0 too (Cerebro P3)
+build; printf 'Conflicts/Supersets for each patch are:\nPatch : 40005842\n  Bug Superset of 31000001\n' >"$T/prereq"; echo 1 >"$T/prereq.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: conflict check did not pass for 40005842 (rc 1)' "$T/out" && ok || bad "a non-zero prereq exit was not blocking: rc $rc"
+build; printf 'Prereq "checkConflictAgainstOHWithDetail" passed.\nPatch : 40005842\n  Conflict with 31000001\n' >"$T/prereq"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: conflict check did not pass' "$T/out" && ok || bad "a 'Conflict with' under exit 0 was not blocking: rc $rc"
+build; printf 'Patch 40005842 is a superset of the patch(es) [ 39611663 ]\nOPatch succeeded.\n' >"$T/prereq"; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'supersedes an installed patch' "$T/out" && ok || bad "a superset with exit 0 and no failure should warn, not block: rc $rc"
 
 # running from the home: listed, and WebLogic servers named
 build; printf ' 4242 %s/ohs/bin/httpd -d %s/config/fmwconfig/components/OHS/instances/ohs1 -k start\n 4343 /jdk/bin/java -cp %s/oracle_common/x.jar weblogic.NodeManager\n' "$OH" "$DOM" "$OH" >"$T/ps.txt"; rc="$(run)"

@@ -178,16 +178,17 @@ cmd_preflight() {
   fi
 
   # conflicts (read-only OPatch prereq)
-  local pre
-  pre="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckConflictAgainstOHWithDetail -ph . -oh "$OH" 2>&1)"
+  local pre prc
+  pre="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckConflictAgainstOHWithDetail -ph . -oh "$OH" 2>&1)"; prc=$?
   # only the 'passed' line is a pass: OPatch prints the header 'Conflicts/Supersets for each patch are:' for a real
   # conflict too, so a 'superset' word in the output is no proof of anything (a superset of an installed bundle passes)
-  if printf '%s' "$pre" | grep -q 'Prereq "checkConflictAgainstOHWithDetail" passed'; then
+  # the exit status first (Jocasta P3): non-zero is a conflict whatever the wording says
+  if [ "$prc" = 0 ] && printf '%s' "$pre" | grep -q 'Prereq "checkConflictAgainstOHWithDetail" passed' && ! printf '%s' "$pre" | grep -qi 'Conflict with'; then
     log "conflicts: none"
     printf '%s' "$pre" | grep -qiE 'superset|subset' && log "  ($id supersedes an installed patch - OPatch rolls the older one back itself)"
-  elif ! printf '%s' "$pre" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" failed|Conflict with' && printf '%s' "$pre" | grep -qiE 'superset|subset'; then
+  elif [ "$prc" = 0 ] && ! printf '%s' "$pre" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" failed|Conflict with' && printf '%s' "$pre" | grep -qiE 'superset|subset'; then
     warn "$id supersedes an installed patch - OPatch rolls the older one back itself"
-  else block "conflict check did not pass for $id: $(printf '%s\n' "$pre" | grep -iE 'conflict|error|fail' | head -3 | tr '\n' ' ')"; fi
+  else block "conflict check did not pass for $id (rc $prc): $(printf '%s\n' "$pre" | grep -iE 'conflict|error|fail' | head -3 | tr '\n' ' ')"; fi
 
   # domains, components, node manager credentials
   local doms d comps c dn bin ports cmds_stop="" cmds_start="" cmds_verify="" nmstart=""

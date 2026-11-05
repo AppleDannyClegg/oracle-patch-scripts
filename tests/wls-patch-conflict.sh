@@ -33,8 +33,10 @@ esac
 exit 0
 O
 chmod +x "$OH/OPatch/opatch"
+# ps: a readable, empty process table, so the gate does not depend on the host's ps (none in OL8 slim - Cerebro P3)
+mkdir -p "$T/stub"; printf '#!/bin/sh\necho "  PID ARGS"; echo "    1 /sbin/init"\n' >"$T/stub/ps"; chmod +x "$T/stub/ps"
 
-run() { (cd "$T" && HOME="$T" ORACLE_HOME="$OH" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --java-home "$T/jdk" --yes) >"$T/out" 2>&1; echo $?; }
+run() { (cd "$T" && HOME="$T" ORACLE_HOME="$OH" PATH="$T/stub:$PATH" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --java-home "$T/jdk" --yes) >"$T/out" 2>&1; echo $?; }
 
 printf 'Prereq "checkConflictAgainstOHWithDetail" passed.\n\nOPatch succeeded.\n' >"$T/prereq"; echo 0 >"$T/prereq.rc"
 rc="$(run)"; [ "$rc" = 0 ] && grep -q 'no conflicts' "$T/out" && ok || bad "a passed prereq: rc $rc, $(grep -iE 'conflict|problem' "$T/out" | head -3)"
@@ -46,6 +48,14 @@ rc="$(run)"; [ "$rc" != 0 ] && grep -q 'CONFLICT for 39000002' "$T/out" && ok ||
 # a failed prereq with no 'Conflict with' line is still a failure
 printf 'Prereq "checkConflictAgainstOHWithDetail" failed.\nConflicts/Supersets for each patch are:\nPatch : 39000002\n        Bug Superset of 31000001\n' >"$T/prereq"; echo 1 >"$T/prereq.rc"
 rc="$(run)"; [ "$rc" != 0 ] && grep -q 'CONFLICT for 39000002' "$T/out" && ok || bad "a failed prereq that names only a superset was not blocking: rc $rc"
+
+# a non-zero exit is a conflict whatever the wording (Jocasta/Edi P3): no 'failed', no 'Conflict with', only a superset
+printf 'Conflicts/Supersets for each patch are:\nPatch : 39000002\n        Bug Superset of 31000001\n' >"$T/prereq"; echo 1 >"$T/prereq.rc"
+rc="$(run)"; [ "$rc" != 0 ] && grep -q 'CONFLICT for 39000002' "$T/out" && ok || bad "a non-zero prereq exit with superset-only wording was not blocking: rc $rc"
+
+# a 'Conflict with' line alone is a conflict, even with exit 0 and a 'passed' line (Cerebro P3: exercise that arm)
+printf 'Prereq "checkConflictAgainstOHWithDetail" passed.\nPatch : 39000002\n        Conflict with 31000001\n' >"$T/prereq"; echo 0 >"$T/prereq.rc"
+rc="$(run)"; [ "$rc" != 0 ] && grep -q 'CONFLICT for 39000002' "$T/out" && ok || bad "a 'Conflict with' line under exit 0 was not blocking: rc $rc"
 
 # a superset with no failure: a warning, not a problem (a newer PSU over an older one)
 printf 'Patch 39000002 is a superset of the patch(es) [  39372515 ] in the Oracle Home\nOPatch succeeded.\n' >"$T/prereq"; echo 0 >"$T/prereq.rc"
