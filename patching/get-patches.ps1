@@ -747,8 +747,8 @@ function Get-ManifestFreshnessWarning([string] $Created, [datetimeoffset] $Now) 
     if (-not $Created) { return '' }
     $made = $null; try { $made = [datetimeoffset]::Parse($Created, [Globalization.CultureInfo]::InvariantCulture) } catch { return '' }
     if ($null -eq $made) { return '' }
-    $days = [int]($Now - $made).TotalDays
-    if ($days -gt 14) { return "the manifest was made $days days ago ($Created) - the host may have changed since; re-run patch-manifest.sh if in doubt" }
+    $age = ($Now - $made).TotalDays
+    if ($age -gt 14) { return "the manifest was made $([int][math]::Floor($age)) days ago ($Created) - the host may have changed since; re-run patch-manifest.sh if in doubt" }
     ''
 }
 

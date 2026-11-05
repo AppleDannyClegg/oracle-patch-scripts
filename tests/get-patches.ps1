@@ -582,6 +582,9 @@ finally {
     Check ((Get-ManifestFreshnessWarning '2026-11-04 09:00 +0000' $now) -eq '') "a 1-day-old manifest is silent"
     Check ((Get-ManifestFreshnessWarning '' $now) -eq '') "an absent created| is silent"
     Check ((Get-ManifestFreshnessWarning 'not-a-date' $now) -eq '') "an unparseable created| is silent"
+    Check ((Get-ManifestFreshnessWarning '2026-10-22 02:24 +0000' $now) -match 'made 14 days') "14.4 days old warns and prints 14 (floor; the docstring's rule is 'older than 14')"
+    Check ((Get-ManifestFreshnessWarning '2026-10-22 12:00 +0000' $now) -eq '') "exactly 14.0 days old is silent"
+    Check ((Get-ManifestFreshnessWarning '2026-10-21 21:36 +0000' $now) -match 'made 14 days') "14.6 days old warns and prints 14 (floor, not round)"
 
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
