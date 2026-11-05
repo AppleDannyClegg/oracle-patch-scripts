@@ -46,5 +46,10 @@ report="$(ls "$OUT"/*/REPORT.md 2>/dev/null | head -1)"
 grep -q "$UNDATED.*patch level unknown" "$report" && ok || bad "no 'patch level unknown' finding for $UNDATED"
 grep -q "$DATED.*patch level unknown" "$report" && bad "flagged $DATED, whose level carries a date" || ok
 
+# table/cron shape: no --report, the output is discarded and the exit code is the whole interface
+( cd "$T" && HOME="$T" ORACLE_HOME="$DATED" MW_HOME="$UNDATED" bash "$SCRIPT" --no-net --quiet ) >"$T/stdout2" 2>&1
+rc2=$?
+[ "$rc2" = 1 ] && ok || bad "table/cron mode exits $rc2 for an undated level (want 1)"
+
 echo "patch-status unknown-level gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

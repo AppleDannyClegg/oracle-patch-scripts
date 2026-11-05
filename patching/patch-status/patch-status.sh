@@ -40,19 +40,21 @@ parse_args() {
     --report) DO_REPORT=1; shift;; --out) optchk "$@"; PATCH_OUT="$2"; shift 2;; --quiet) QUIET=1; shift;; --no-tar) MAKE_TAR=0; shift;; --verbose) VERBOSE=1; shift;;
     -h|--help) usage; exit 0;; *) die "Unknown option: $1";; esac; done
 }
-# row <product> <home> <installed> <date YYYY-MM-DD|""> <latest> <note> ; status from the date
+# row <product> <home> <installed> <date YYYY-MM-DD|""> <latest> <note> [level|info|reported|named]
+# level = there is a level to read (an undated one WARNs); info = no level exists, never WARN;
+# reported = the caller already raised the finding for this failed read; named = the caller raised a specific one.
 # An EMPTY date is a real 'level unknown' -> '?' + UNKNOWN. An EMPTY latest is 'no comparison was
 # available' (a bundle, a kernel, an agent with no RU), which is not the same thing -> '-', so a row
 # does not read '?' for a value that was never meant to exist (Daniel 14:4x).
 row() {
-  local prod="$1" home="$2" inst="$3" date="$4" latest="$5" note="$6" behind status
+  local prod="$1" home="$2" inst="$3" date="$4" latest="$5" note="$6" kind="${7:-level}" behind status
   if [ -z "$date" ]; then behind="?"; status="UNKNOWN"
   else behind="$(quarters_behind "$date")"; case "$behind" in 0) status="CURRENT";; 1) status="1 behind";; *) status="$behind behind";; esac; fi
   ROWS="${ROWS}$prod|${home}|${inst}|${date:-?}|${latest:--}|$behind|$status|$note"$'\n'
   # A level that could not be dated is 'unknown', not clean. Without --report the findings are the only thing
   # that sets the exit code, so a table/cron run over a stale estate used to exit 0; say it in every mode.
   if [ "$behind" = "?" ]; then
-    [ -n "$home" ] && finding WARN patch "$prod ($home): patch level unknown - $inst${note:+ ($note)}"
+    [ "$kind" = level ] && [ -n "$home" ] && finding WARN patch "$prod ($home): patch level unknown - $inst${note:+ ($note)}"
   elif [ "$DO_REPORT" = 1 ]; then case "$behind" in 0) ;; 1) finding WARN patch "$prod ($home) is one CPU behind: $inst ($date)";; *) finding CRIT patch "$prod ($home) is $behind CPUs behind: $inst ($date)";; esac; fi
   return 0
 }
@@ -86,7 +88,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     local isgrid=0; [ -x "$h/bin/crsctl" ] && isgrid=1
     local lsp lrc=0; lsp="$(lsp_read "$h/OPatch/opatch" 180)" || lrc=$?
     [ "$lrc" = 0 ] || { local p2="Database home"; [ "$isgrid" = 1 ] && p2="Grid Infrastructure home"
-      row "$p2" "$h" "$(lsp_unreadable "$lrc")" "" "" "opatch could not list the inventory - run $h/OPatch/opatch lspatches by hand"
+      row "$p2" "$h" "$(lsp_unreadable "$lrc")" "" "" "opatch could not list the inventory - run $h/OPatch/opatch lspatches by hand" reported
       finding WARN patch "$p2 $h: opatch lspatches failed (rc $lrc) - its patch level is unknown, not unpatched"; continue; }
     local ru ruline; ruline="$(printf '%s\n' "$lsp" | grep -iE 'Database Release Update|DATABASE RELEASE UPDATE|Grid Infrastructure Release Update|OCW RELEASE UPDATE|DATABASE BUNDLE PATCH|DATABASE PATCH SET UPDATE' | grep -viE 'OJVM|MONTHLY' | sort -t';' -k2 | tail -1)"
     ru="$(printf '%s' "$ruline" | cut -d';' -f2 | sed 's/^ *//')"; local rudate; rudate="$(db_ru_date_from_desc "$ruline")"
@@ -97,7 +99,15 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     local base; base="$(ORACLE_HOME="$h" LD_LIBRARY_PATH="$h/lib:${LD_LIBRARY_PATH:-}" "$h/bin/sqlplus" -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$base" ] && base="$(sed -n 's/.*name="Oracle Database[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$h/inventory/registry.xml" 2>/dev/null | head -1)"
     local prod="Database home"; [ "$isgrid" = 1 ] && prod="Grid Infrastructure home"
     local opv; opv="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
-    row "$prod" "$h" "${ru:-no RU found (base $base)}" "$rudate" "$(mos_latest_db "$base")" "OPatch $opv${mrp:+; $mrp}"
+    local latest note kind="level"; latest="$(mos_latest_db "$base")"; note="OPatch $opv${mrp:+; $mrp}"
+    case "$base" in
+      23.*|26.*) [ -n "$ru" ] || {
+        # 23ai/26ai with no RU in lspatches: the release version IS the level, and it carries no yymmdd, so
+        # there is no quarter to score it against - name the case instead of leaving a bare 'unknown'
+        kind="named"; latest="-"; note="$note; release version $base, no RU in lspatches - 23ai/26ai levels carry no yymmdd, so the CPU quarter cannot be derived (not a failed read)"
+        finding WARN patch "$prod $h: no RU in lspatches; the level is the release version $base and 23ai/26ai RUs are not yymmdd-dated - CPU quarter not derivable (not a failed read)"; } ;;
+    esac
+    row "$prod" "$h" "${ru:-no RU found (base $base)}" "$rudate" "$latest" "$note" "$kind"
     [ -n "$ojvm" ] && row "OJVM ($(basename "$h"))" "$h" "$ojvm" "$ojvmdate" "" ""
     printf '%s\n' "$lsp" >"$RAW/lspatches_$(basename "$h").txt" 2>/dev/null
   done
@@ -107,7 +117,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
   else row "Database ?" "" "process list unreadable" "" "" "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked"
     finding CRIT patch "cannot read the process list (ps failed, $PROC_DIR unreadable) - no database was found or checked"; fi
   for sid in $sids; do
-    sql_ok "$sid" || { row "Database $sid" "$(db_home_of "$sid")" "cannot connect" "" "" "sqlplus / as sysdba failed"; finding WARN patch "Database $sid: sqlplus / as sysdba failed - its datapatch level is unknown, not current"; continue; }
+    sql_ok "$sid" || { row "Database $sid" "$(db_home_of "$sid")" "cannot connect" "" "" "sqlplus / as sysdba failed" reported; finding WARN patch "Database $sid: sqlplus / as sysdba failed - its datapatch level is unknown, not current"; continue; }
     # the registry read: cdb_registry_sqlpatch first (a non-CDB has no such view, so that read is allowed to fail), then
     # dba_registry_sqlpatch - and THAT read's status is kept: both used to be '2>/dev/null' with the status dropped, so a database
     # whose registry could not be read (ORA-00942, ORA-01031, SQL_TIMEOUT) had no datapatch row at all - the only report whose job is
@@ -117,7 +127,7 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     if [ -z "$rows" ]; then rows="$(sql_lines "$sid" "select '$sid|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from dba_registry_sqlpatch where action='APPLY' and description not like '%OJVM%';" 2>"$RAW/registry_$sid.err")" || rrc=$?
       rerr="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$RAW/registry_$sid.err" 2>/dev/null | cut -c1-80)"; fi
     local home; home="$(db_home_of "$sid")"
-    [ "$rrc" = 0 ] || { row "Database $sid" "$home" "datapatch level unreadable (rc $rrc)" "" "" "registry_sqlpatch could not be read${rerr:+: $rerr} - run datapatch -prereq / query dba_registry_sqlpatch by hand"
+    [ "$rrc" = 0 ] || { row "Database $sid" "$home" "datapatch level unreadable (rc $rrc)" "" "" "registry_sqlpatch could not be read${rerr:+: $rerr} - run datapatch -prereq / query dba_registry_sqlpatch by hand" reported
       finding WARN patch "Database $sid: dba_registry_sqlpatch could not be read (rc $rrc${rerr:+, $rerr}) - its datapatch level is unknown, not current"; continue; }
     local homeru homelsp hrc=0 hnote=""; homelsp="$(lsp_read "$home/OPatch/opatch" 120)" || hrc=$?
     # a home whose lspatches failed cannot be compared with the registry: the row says so instead of rendering clean with an
@@ -152,7 +162,7 @@ fmw_homes() {
     [ -x "$h/OPatch/opatch" ] || { row "WebLogic (BSU era)" "$h" "$(wls_version "$h")" "" "" "BSU-based home: patching by bsu.sh, out of support"; continue; }
     local v; v="$(wls_version "$h")"
     local lsp lrc=0; lsp="$(lsp_read "$h/OPatch/opatch" 180)" || lrc=$?
-    [ "$lrc" = 0 ] || { row "WebLogic $v" "$h" "$(lsp_unreadable "$lrc")" "" "" "opatch could not list the inventory - run $h/OPatch/opatch lspatches by hand"
+    [ "$lrc" = 0 ] || { row "WebLogic $v" "$h" "$(lsp_unreadable "$lrc")" "" "" "opatch could not list the inventory - run $h/OPatch/opatch lspatches by hand" reported
       finding WARN patch "WebLogic $h: opatch lspatches failed (rc $lrc) - its PSU level is unknown, not unpatched"; continue; }
     printf '%s\n' "$lsp" >"$RAW/lspatches_$(basename "$h").txt" 2>/dev/null
     local psu; psu="$(printf '%s\n' "$lsp" | grep -i 'WLS PATCH SET UPDATE' | sort | tail -1 | cut -d';' -f2 | sed 's/^ *//')"
@@ -191,7 +201,7 @@ other_products() {
     local latest=""; [ "$NO_NET" = 0 ] && latest="$(to 30 curl -sSL -r 0-200000 https://download.oracle.com/otn_software/java/ords/ords-latest.zip -o "$RAW/ords-head.zip" 2>/dev/null && unzip -p "$RAW/ords-head.zip" 'README*' 2>/dev/null | grep -oE 'ORDS [0-9]+\.[0-9]+\.[0-9]+' | head -1 | awk '{print $2}')"
     [ -z "$latest" ] && [ "$NO_NET" = 0 ] && latest="$(to 30 curl -sSI https://download.oracle.com/otn_software/java/ords/ords-latest.zip 2>/dev/null | grep -i 'content-disposition' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
     local d=""; [ -n "$ORDS_VER" ] && d="$(ords_release_date "$ORDS_VER")"
-    row "ORDS" "${ORDS_HOME:-running pid $ORDS_PID}" "${ORDS_VER:-unknown}" "$d" "${latest:-(public site not checked)}" "$([ -n "$latest" ] && [ -n "$ORDS_VER" ] && ! version_ge "$ORDS_VER" "$latest" && echo "newer release available: $latest")"
+    row "ORDS" "${ORDS_HOME:-running pid $ORDS_PID}" "${ORDS_VER:-unknown}" "$d" "${latest:-(public site not checked)}" "$([ -n "$latest" ] && [ -n "$ORDS_VER" ] && ! version_ge "$ORDS_VER" "$latest" && echo "newer release available: $latest")" "$([ -n "$d" ] && echo level || echo info)"
     [ -n "$latest" ] && [ -n "$ORDS_VER" ] && ! version_ge "$ORDS_VER" "$latest" && [ "$DO_REPORT" = 1 ] && finding WARN patch "ORDS $ORDS_VER installed, $latest is the current release (ords-patch.sh)"
     local pids p; pids="$ORDS_PID"; for p in $pids; do local j; j="$(dirname "$(dirname "$(readlink -f "/proc/$p/exe" 2>/dev/null)")")"; [ -x "$j/bin/java" ] && java_row "$j" "ORDS"; done
   fi
@@ -212,7 +222,7 @@ other_products() {
     local gd; gd="$(printf '%s' "$gv" | grep -oE '[0-9]{6}$')"; [ -n "$gd" ] && gd="$(yymmdd_to_date "$gd")"
     local gnote=""
     [ -x "$OGG_HOME/OPatch/opatch" ] && { local gp glsp grc=0; glsp="$(lsp_read "$OGG_HOME/OPatch/opatch" 120)" || grc=$?; if [ "$grc" = 0 ]; then gp="$(printf '%s\n' "$glsp" | tail -1 | cut -d';' -f2 | sed 's/^ *//')"; [ -n "$gp" ] && gd="$(date_from_desc "$gp")"; else gnote="$(lsp_unreadable "$grc")"; gd=""; finding WARN patch "GoldenGate $OGG_HOME: opatch lspatches failed (rc $grc) - its patch level is unknown, not unpatched"; fi; }
-    row "GoldenGate" "$OGG_HOME" "${gv:-unknown}" "$gd" "" "$gnote"
+    row "GoldenGate" "$OGG_HOME" "${gv:-unknown}" "$gd" "" "$gnote" "$([ "$grc" = 0 ] && echo level || echo reported)"
   fi
   # Enterprise Manager (the estate runs OEM 24ai: RU 10 = 24.1.0.10, OMS 39193593 / agent 39193599 in June 2026). The RU level is
   # the EM-OMS / EM-AGENT patch in opatch lspatches of the OMS home and the agent binaries home; emctl getversion needs no login
@@ -232,7 +242,7 @@ other_products() {
       # is no date to compare - render '-/info' rather than '?/UNKNOWN', same as an FMW bundle with no date
       ROWS="${ROWS}EM agent ${ev:-?}|$ah|${ev:-unknown}|-|-|-|info|no RU seen in the agent's lspatches (agent RUs are applied by OMSPatcher, not here) - not CPU-dated"$'\n'
     else
-      row "EM agent ${ev:-?}" "$ah" "${aru:-${ev:-unknown}}" "$(date_from_desc "$aru")" "$([ "$arc" = 0 ] && [ -n "$aru" ] && echo "RU of $LATEST_CPU")" "$(if [ "$arc" != 0 ]; then echo "opatch could not list the inventory - run $abin/OPatch/opatch lspatches by hand"; elif [ -n "$aru" ]; then echo 'RU from opatch lspatches of the agent binaries'; else echo 'no RU seen in lspatches: agent patched with agent RUs, not here'; fi)"
+      row "EM agent ${ev:-?}" "$ah" "${aru:-${ev:-unknown}}" "$(date_from_desc "$aru")" "$([ "$arc" = 0 ] && [ -n "$aru" ] && echo "RU of $LATEST_CPU")" "$(if [ "$arc" != 0 ]; then echo "opatch could not list the inventory - run $abin/OPatch/opatch lspatches by hand"; elif [ -n "$aru" ]; then echo 'RU from opatch lspatches of the agent binaries'; else echo 'no RU seen in lspatches: agent patched with agent RUs, not here'; fi)" "$([ "$arc" = 0 ] && echo level || echo reported)"
     fi
   fi
   local oh; oh="$(for x in "${OMS_HOME:-/nonexistent}" /u01/app/oracle/middleware* /u01/app/oracle/em*/middleware /u01/app/oracle/product/em*/middleware /opt/oracle/middleware*; do [ -x "$x/bin/emctl" ] && [ -x "$x/OPatch/opatch" ] && echo "$x"; done 2>/dev/null | head -1)"
@@ -243,12 +253,12 @@ other_products() {
     else oru="$(lsp_unreadable "$orc")"; finding WARN patch "EM OMS $oh: opatch lspatches failed (rc $orc) - its RU level is unknown, not unpatched"; fi
     # an EM RU name (24.1.0.10) has no parsable date: warn rather than let row() render it UNKNOWN with no finding
     [ "$orc" = 0 ] && [ -n "$oru" ] && [ -z "$(date_from_desc "$oru")" ] && finding WARN patch "EM OMS $oh: RU '$oru' has no parsable date (EM RUs are not yymmdd-versioned) - its CPU count is unknown, not current"
-    row "EM OMS ${ov:-?}" "$oh" "${oru:-no OMS RU in lspatches}" "$(date_from_desc "$oru")" "$([ "$orc" = 0 ] && echo "RU of $LATEST_CPU")" "$([ "$orc" = 0 ] && echo 'EM RUs come about monthly; the OMS RU and the agent RU are applied as a pair (OMSPatcher for the OMS)' || echo "opatch could not list the inventory - run $oh/OPatch/opatch lspatches by hand")"
+    row "EM OMS ${ov:-?}" "$oh" "${oru:-no OMS RU in lspatches}" "$(date_from_desc "$oru")" "$([ "$orc" = 0 ] && echo "RU of $LATEST_CPU")" "$([ "$orc" = 0 ] && echo 'EM RUs come about monthly; the OMS RU and the agent RU are applied as a pair (OMSPatcher for the OMS)' || echo "opatch could not list the inventory - run $oh/OPatch/opatch lspatches by hand")" "$([ "$orc" = 0 ] && echo level || echo reported)"
     case "$ov" in 13.[0-4].*) [ "$DO_REPORT" = 1 ] && finding WARN patch "Enterprise Manager $ov in $oh: 13.4 and older are out of Premier Support (13.5 or 24ai)";; esac
   fi
   local t; t="$(ls /opt/oracle.ahf/bin/tfactl /u01/app/oracle.ahf/bin/tfactl 2>/dev/null | head -1)"
-  [ -n "$t" ] && { local av; av="$(to 60 "$(dirname "$t")/ahfctl" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$av" ] && av="$(to 60 "$t" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; row "AHF" "$(dirname "$(dirname "$t")")" "${av:-unknown}" "" "" "AHF is updated monthly; check MOS 2550798.1"; }
-  local kd; kd="$(uptrack-uname -r 2>/dev/null)"; row "Kernel" "$(uname -r)" "${kd:-$(uname -r)}" "$(rpm -q --qf '%{INSTALLTIME:date}\n' kernel-uek 2>/dev/null | tail -1 | xargs -I{} date -d {} +%Y-%m-%d 2>/dev/null)" "" "$([ -n "$kd" ] && echo 'Ksplice effective kernel' || echo 'no Ksplice')"
+  [ -n "$t" ] && { local av; av="$(to 60 "$(dirname "$t")/ahfctl" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; [ -z "$av" ] && av="$(to 60 "$t" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"; row "AHF" "$(dirname "$(dirname "$t")")" "${av:-unknown}" "" "" "AHF is updated monthly; check MOS 2550798.1" info; }
+  local kd; kd="$(uptrack-uname -r 2>/dev/null)"; row "Kernel" "$(uname -r)" "${kd:-$(uname -r)}" "$(rpm -q --qf '%{INSTALLTIME:date}\n' kernel-uek 2>/dev/null | tail -1 | xargs -I{} date -d {} +%Y-%m-%d 2>/dev/null)" "" "$([ -n "$kd" ] && echo 'Ksplice effective kernel' || echo 'no Ksplice')" info
   local j; for j in $(java_homes); do grep -q "|$j|" <<<"$ROWS" || java_row "$j" "found on host"; done
 }
 ords_release_date() { # ORDS x.y.z -> yy.q: 24.3 = 2024 Q3 release (Jul-Sep); treat as the CPU of that quarter
