@@ -446,8 +446,9 @@ prepare_patch_dir() {
   [ -d "$pdir" ] || die "Patch dir not found: $pdir"
   local ext="$pdir/extracted"
   mkdir -p "$ext"
+  # get-patches files a Stack Patch Bundle zip under <patch-dir>/spb/, so accept zips one level down there
   local z
-  for z in "$pdir"/*.zip; do
+  for z in "$pdir"/*.zip "$pdir"/spb/*.zip; do
     [ -f "$z" ] || continue
     local marker
     marker="$ext/.done-$(basename "$z")"

@@ -83,6 +83,15 @@ rc="$(run "$OH" rollback --yes)"
 grep -q -- 'nrollback' "$T/opatch.log" && ok || bad "rollback did not use the SPB's 'opatch nrollback': [$(cat "$T/opatch.log")]"
 grep -q -- '-idFile .*rollback_patchlist.txt' "$T/opatch.log" && ok || bad "nrollback without the README's -idFile: [$(cat "$T/opatch.log")]"
 
+# ---- get-patches files the SPB zip under <patch-dir>/spb/, which must still be found ------------------
+PD6="$T/patches-sub"; mkdir -p "$PD6/spb" "$T/zipsrc"
+cp -R "$T/patches-new/extracted/WLS_SPB_12.2.1.4.990101" "$T/zipsrc/"
+( cd "$T/zipsrc" && zip -qr "$PD6/spb/p40129641_122140_Generic.zip" WLS_SPB_12.2.1.4.990101 ) || bad "could not build the spb/ zip fixture"
+: >"$T/spbat.log"
+rc="$(run "$OH" preflight "$PD6" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
+grep -q 'Stack Patch Bundle' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "an SPB zip filed under <dir>/spb/ (get-patches' layout) was not found: $(lastlog)"
+grep -qx -- '-phase precheck -oracle_home '"$OH" "$T/spbat.log" && ok || bad "precheck not reached for a spb/-filed zip: [$(cat "$T/spbat.log")]"
+
 # ---- an SPBAT failure stops the apply; nothing is recorded as applied ---------------------------------
 OH3="$T/oh-fail"; mk_home "$OH3" 13.9.4.2.23
 PD4="$T/patches-fail"; mk_spb "$PD4"
