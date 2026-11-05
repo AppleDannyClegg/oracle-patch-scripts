@@ -27,6 +27,12 @@ R="$T/run"; OUT="$T/out.log"
 run() { bash "$S" "$@" --java-home "$T/java" --no-cacerts --run-dir "$R" >>"$OUT" 2>&1; }
 ver() { "$T/java/bin/java" -version 2>&1 | head -1; }
 
+# a reference file that names the target: in place the script must not read, copy or restore it
+REF="$T/ref.env"; printf 'JAVA_HOME=%s/java\n' "$T" >"$REF"
+export EXTRA_REF_FILES="$REF"
+ref_sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$REF" | awk '{print $1}'; else sha256sum "$REF" | awk '{print $1}'; fi; }
+REF_BEFORE="$(ref_sha)"
+
 run preflight "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" && ok || bad "preflight failed: $(tail -2 "$OUT")"
 grep -q '^preflight=ok' "$R/state" 2>/dev/null && ok || bad "preflight verdict not recorded with --run-dir (state: $(cat "$R/state" 2>/dev/null | tr '\n' ' '))"
 
@@ -44,6 +50,10 @@ bash "$S" rollback --run-dir "$R" --yes >>"$OUT" 2>&1 && ok || bad "a bare 'roll
 # the abandoned new build is parked at <path>.failed-<stamp>; the output must name it
 ls -d "$T"/java.failed-* >/dev/null 2>&1 && ok || bad "rollback did not park the new build at a .failed-<stamp> sibling"
 grep -q 'the new build being rolled back from is at .*\.failed-' "$OUT" && ok || bad "rollback did not name the .failed-<stamp> residue"
+# in place, the reference file is not copied, recorded or restored: it is the human's ask
+[ "$(ref_sha)" = "$REF_BEFORE" ] && ok || bad "in place: the reference file was changed"
+[ -z "$(ls -A "$R/files" 2>/dev/null)" ] && ok || bad "in place: a reference file was backed up into $R/files"
+grep -q '^backed_files=' "$R/state" 2>/dev/null && bad "in place: backed_files was recorded" || ok
 
 # cycle isolation: a bare 'preflight' (no --run-dir) must start a FRESH run dir, not reuse the previous
 # cycle's dir through the 'latest' link - a reused 'backup=ok' would skip the next cycle's backup and a
