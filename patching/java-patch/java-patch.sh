@@ -30,6 +30,8 @@
 #                      the same build, or a preflight that already failed in this run dir. It does NOT waive the
 #                      in-place running-JVM stop (stop them, or --keep-old).
 #   --no-cacerts       do not copy extra CA aliases into the new cacerts
+#   --will-stop        the caller stops the JVMs before apply: in-place preflight only WARNs about running JVMs
+#                      (apply still refuses to move under a live one). wls-quarter passes this.
 #   --in-place         put the new JDK at --java-home itself, replacing it (the default when --java-home is a
 #                      real directory, not a symlink): the old directory is moved into the run dir and the new
 #                      JDK takes its path, so nothing has to be edited. --keep-old unpacks a sibling and
@@ -48,7 +50,7 @@ TOOL="java-patch"; VERSION="1.0.0"
 
 OLD_JH="${JAVA_HOME:-}"; JAVA_BASE="${JAVA_BASE:-}"; TARBALL=""; DO_RESTART=0; NO_CACERTS=0; CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"
 RESTART_CMDS="${RESTART_CMDS:-}"; CHECK_URLS="${CHECK_URLS:-}"; EXTRA_REF_FILES="${EXTRA_REF_FILES:-}"
-OLD_REAL=""; OLD_VER=""; OLD_MAJOR=""; NEW_JH=""; NEW_VER=""; NEW_MAJOR=""; REFS=""; LINKED=0; IN_PLACE=0; KEEP_OLD=0
+OLD_REAL=""; OLD_VER=""; OLD_MAJOR=""; NEW_JH=""; NEW_VER=""; NEW_MAJOR=""; REFS=""; LINKED=0; IN_PLACE=0; KEEP_OLD=0; WILL_STOP=0
 USER_ORDS_URL="${ORDS_URL:-}"   # only a URL the operator gave (ords_detect invents a default we must not verify against)
 
 usage() { usage_from_header "$0"; }
@@ -56,7 +58,7 @@ parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
     --java-home) optchk "$@"; OLD_JH="$2"; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$2"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
-    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --will-stop) WILL_STOP=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -237,7 +239,9 @@ cmd_preflight() {
   # a running JVM keeps java.home = the PATH, so an in-place swap would feed it the new build's lazily-loaded
   # files (cacerts, native libs, tzdb) while it still runs the old one. NOT waivable with --force - that flag
   # also covers the same-build reinstall and the major change - so stop the JVMs, or use --keep-old.
-  [ "$IN_PLACE" = 1 ] && [ -n "$run" ] && { err "in-place: JVMs run on $OLD_JH and would be fed the new build's files (cacerts, native libs) while still running the old one - stop them first, or --keep-old (which leaves the old JDK in place and only re-points the references)"; fail=1; }
+  # --will-stop: the caller (wls-quarter) will stop the JVMs before apply, so the in-place running-JVM check is a
+  # WARN here and apply's own hard die stays the gate. Without the flag, preflight still refuses on a live host.
+  [ "$IN_PLACE" = 1 ] && [ -n "$run" ] && { if [ "$WILL_STOP" = 1 ]; then warn "in-place: JVMs run on $OLD_JH - they must be stopped before apply (--will-stop: the caller stops them; apply still refuses to move under a live JVM)"; else err "in-place: JVMs run on $OLD_JH and would be fed the new build's files (cacerts, native libs) while still running the old one - stop them first, or --keep-old (which leaves the old JDK in place and only re-points the references)"; fail=1; fi; }
   [ "$NO_CACERTS" = 0 ] && { local pf; pf="$(cacerts_pw_file)" && { cacerts_aliases "$OLD_JH/bin/keytool" "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" "$pf" >/dev/null 2>&1 || { err "cannot open the old cacerts with CACERTS_PASSWORD: apply will refuse to continue without the CA carry-over (fix the password, or --no-cacerts)"; fail=1; }; rm -f "$pf"; }; }
   [ -f "$OLD_JH/jre/lib/security/local_policy.jar" ] && [ "$NEW_MAJOR" = 8 ] && log "JDK 8: unlimited crypto policy files - JDK 8u161+ has them unlimited by default (crypto.policy=unlimited)"
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"; state_set tarball "$TARBALL"; state_set old_jh "$OLD_JH"; state_set old_real "$OLD_REAL"; state_set new_jh "$NEW_JH"
