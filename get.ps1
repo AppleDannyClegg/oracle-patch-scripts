@@ -103,8 +103,17 @@ try {
         if (Test-Path -LiteralPath "$Dest.old") {
             # never force-delete downloaded patches: get-patches.ps1 defaults its output to .\patches-<host>,
             # inside this tree, so the previous copy can hold multi-GB zips. Keep it aside and say so instead.
+            # Which names count is lib/file-patterns 'staged' in the tree just downloaded - the same file
+            # get.sh and java-patch read.
+            $patternsFile = Join-Path $src.FullName 'lib/file-patterns'
+            if (-not (Test-Path -LiteralPath $patternsFile)) { throw "$patternsFile missing from the download" }
+            $stagedGlobs = @(Get-Content -LiteralPath $patternsFile |
+                             Where-Object { $_ -match '^\s*staged\s*:' } |
+                             ForEach-Object { ($_ -split ':', 2)[1].Trim() -split '\s+' } |
+                             Where-Object { $_ })
+            if (-not $stagedGlobs.Count) { throw "no 'staged:' globs in $patternsFile" }
             $keep = @(Get-ChildItem -LiteralPath "$Dest.old" -Recurse -Force -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Name -like 'patches-*' -or $_.Name -like '*.zip' -or $_.Name -like '*.tar.gz' -or $_.Name -like '*.tgz' })
+                      Where-Object { $n = $_.Name; $hit = $false; foreach ($g in $stagedGlobs) { if ($n -like $g) { $hit = $true; break } }; $hit })
             if ($keep.Count) {
                 $aside = "$Dest.old-" + (Get-Date -Format 'yyyyMMddHHmmss')
                 Move-Item -LiteralPath "$Dest.old" -Destination $aside

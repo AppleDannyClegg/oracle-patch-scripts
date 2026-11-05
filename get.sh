@@ -48,8 +48,23 @@ moved=0
 if [ -d "$DEST" ]; then
   if [ -d "$DEST.old" ]; then
     # never rm a previous copy that holds downloaded patches: get-patches' default output is ./patches-<host>,
-    # inside this tree. Keep it aside and say so instead of deleting multi-GB zips.
-    if [ -n "$(find "$DEST.old" \( -name 'patches-*' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' \) -print -quit 2>/dev/null)" ]; then
+    # inside this tree. Keep it aside and say so instead of deleting multi-GB zips. Which names count is
+    # lib/file-patterns 'staged' in the tree just downloaded - the same file get.ps1 and java-patch read.
+    patterns="$src/lib/file-patterns"
+    [ -f "$patterns" ] || { echo "$patterns missing from the download" >&2; exit 1; }
+    staged_args=(); staged_first=1
+    while IFS= read -r line; do
+      case "$line" in ''|'#'*) continue;; esac
+      case "$line" in
+        staged:*) read -ra globs <<<"${line#*:}"
+                  for g in "${globs[@]}"; do
+                    [ "$staged_first" = 1 ] || staged_args+=( -o )
+                    staged_args+=( -name "$g" ); staged_first=0
+                  done;;
+      esac
+    done <"$patterns"
+    [ "${#staged_args[@]}" -gt 0 ] || { echo "no 'staged:' globs in $patterns" >&2; exit 1; }
+    if [ -n "$(find "$DEST.old" \( "${staged_args[@]}" \) -print -quit 2>/dev/null)" ]; then
       aside="$DEST.old-$(date +%Y%m%d%H%M%S)"
       mv "$DEST.old" "$aside"
       echo "kept the previous copy as $aside (it holds downloaded patches) - delete it when you are done, or keep patch downloads outside this folder"
