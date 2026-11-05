@@ -374,7 +374,7 @@ main() {
   set_window; mkdir -p "$PACK_OUT" || die "cannot create $PACK_OUT"; PACK="$PACK_OUT/${SR}_${HOST}_$(date '+%Y%m%d_%H%M%S')"; RUN_DIR="$PACK"; RUN_BASE="$PACK_OUT"; init_run_dir pack
   touch -t "$(if [ "$GNU_DATE" = 1 ]; then date -d "@$SINCE_EP" '+%Y%m%d%H%M.%S'; else date -r "$SINCE_EP" '+%Y%m%d%H%M.%S'; fi)" "$PACK/.since" 2>/dev/null || touch "$PACK/.since"
   log "incident pack for SR $SR on $HOST, window $SINCE_ISO .. $UNTIL_ISO -> $PACK"
-  fact SR "$SR"; fact HOST "$HOST"; fact FQDN "$(hostname -f 2>/dev/null || hostname)"; fact WINDOW "$SINCE_ISO .. $UNTIL_ISO"; fact GENERATED "$(ts)"
+  fact SR "$SR"; fact HOST "$HOST"; fact FQDN "$(hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n)"; fact WINDOW "$SINCE_ISO .. $UNTIL_ISO"; fact GENERATED "$(ts)"
   [ "$DO_HANG" = 1 ] && [ "$ASSUME_YES" != 1 ] && [ ! -t 0 ] && die "--hang needs --yes when not interactive"
   [ "$DO_HEAP" = 1 ] && [ "$ASSUME_YES" != 1 ] && [ ! -t 0 ] && die "--heap-dump needs --yes when not interactive"
   want db && collect_tfa

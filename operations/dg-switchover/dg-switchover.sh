@@ -229,7 +229,8 @@ cmd_preflight() {
   [ "${derr:-0}" != 0 ] && { warn "$LOCAL_DBUN: $derr Error/Fatal rows in v\$dataguard_status in the last hour:"; sql_lines "$SID" "select to_char(timestamp,'HH24:MI')||' '||substr(message,1,120) from (select * from v\$dataguard_status where severity in ('Error','Fatal') and timestamp>sysdate-1/24 order by timestamp desc) where rownum<=5;" | sed 's/^/    /' >&2; }
   local rb; rb="$(sql_val "$SID" "(select count(*) from v\$rman_backup_job_details where status='RUNNING')")"
   if [ -z "$rb" ]; then err "$LOCAL_DBUN: could not read v\$rman_backup_job_details (query failed)"; fail=1; elif [ "$rb" != 0 ]; then err "$LOCAL_DBUN: an RMAN backup is running"; fail=1; fi
-  pgrep -f 'OPatch/datapatch|datapatc[h]' >/dev/null 2>&1 && { err "datapatch is running on this host"; fail=1; }
+  local dargs; if ! dargs="$(ps_args)"; then err "cannot read the process list (ps failed) - datapatch check NOT done"; fail=1
+  elif printf '%s\n' "$dargs" | grep -qE 'OPatch/datapatch|datapatc[h]'; then err "datapatch is running on this host"; fail=1; fi
   local hb; hb="$(sql_val "$SID" "(select count(*) from v\$backup where status='ACTIVE')")"
   if [ -z "$hb" ]; then err "$LOCAL_DBUN: could not read v\$backup (query failed)"; fail=1; elif [ "$hb" != 0 ]; then err "$LOCAL_DBUN: datafiles in hot backup mode"; fail=1; fi
   if [ "$LOCAL_ROLE" = PRIMARY ]; then
