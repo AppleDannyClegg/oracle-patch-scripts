@@ -490,16 +490,19 @@ function Get-ZipReadmeText([string] $Zip) {
 
 # the highest OPatch version a README asks for, or $null - the rule wls-patch.sh (patch_min_opatch) and
 # db-patch.sh apply on the server: every version right after the word OPatch, any family, the highest wins.
-# Up to 80 characters may sit between the word and the version, digits too ("OPatch (patch 28186730)
-# 12.2.0.1.40"): a patch number has no dots, so it is never read as the version. In a sentence that names
-# OPatch, a further version counts only when a minimum phrase follows it ("OPatch 13.9.4.2.5 or later, and
-# 13.9.4.2.20 or later for this PSU" needs .20) - so the PSU or RU's own build number is never the minimum.
+# 'OPatch' is matched case-sensitively, as the server's grep does, so an '$ opatch apply ...' command line does
+# not count. Only an OPatch-shaped number is a candidate - 12.2.0.1.x (database) or 13.9.x (FMW/WLS): a README
+# also prints the RU or PSU's own number and home paths near the word ("Use OPatch to apply Database Release
+# Update 19.24.0.0.240716", ".../product/19.0.0.0/dbhome_1"), and those are never the OPatch it needs. Up to 80
+# characters may sit between the word and the version, digits too ("OPatch (patch 28186730) 12.2.0.1.40"). In
+# a sentence that names OPatch, a further version counts only when a minimum phrase follows it ("OPatch
+# 13.9.4.2.5 or later, and 13.9.4.2.20 or later for this PSU" needs .20).
 function Get-ZipMinOPatch([string] $Zip) {
     $text = Get-ZipReadmeText $Zip
-    $ver = '\d+(?:\.\d+){3,5}'
-    $found = @([regex]::Matches($text, "(?i)\bOPatch\b[^\n]{0,80}?\b($ver)\b") | ForEach-Object { $_.Groups[1].Value })
+    $ver = '(?:12\.2\.0\.1|13\.9\.\d+)(?:\.\d+)+'
+    $found = @([regex]::Matches($text, "\bOPatch\b[^\n]{0,80}?\b($ver)\b") | ForEach-Object { $_.Groups[1].Value })
     foreach ($s in ($text -split '(?<=\.)\s+|\n')) {
-        if ($s -notmatch '(?i)\bOPatch\b') { continue }
+        if ($s -cnotmatch '\bOPatch\b') { continue }
         $found += @([regex]::Matches($s, "(?i)\b($ver)\b(?=\s+(?:or\s+later|or\s+higher|or\s+above|or\s+newer|is\s+required|required|minimum))") | ForEach-Object { $_.Groups[1].Value })
     }
     $v = $found | Sort-Object { Get-VersionKey $_ } -Descending | Select-Object -First 1

@@ -339,6 +339,16 @@ try {
     $split = New-TestZip (Join-Path $zd 'p39600009_190000_Linux-x86-64.zip') @{ '39600009/README.html' = '<p>OPatch utility version 12.2.0.1.<i>47</i> or later</p>' }
     Check ((Get-ZipMinOPatch $split) -eq '12.2.0.1.47') "a tag inside the number is dropped, not spaced (Baymax 13:49:29), got [$(Get-ZipMinOPatch $split)]"
 
+    # Baymax 13:54:10: a DB RU README prints opatch command lines and the RU's own number near the word OPatch
+    $t1 = New-TestZip (Join-Path $zd 'p39600010_190000_Linux-x86-64.zip') @{ '39600010/README.txt' = "You must use the OPatch utility version 12.2.0.1.42 or later to apply this patch.`n`$ opatch apply -oh /u01/app/oracle/product/19.0.0.0/dbhome_1" }
+    Check ((Get-ZipMinOPatch $t1) -eq '12.2.0.1.42') "an 'opatch apply' line with a 19.0.0.0 path is not the minimum, got [$(Get-ZipMinOPatch $t1)]"
+    $t2 = New-TestZip (Join-Path $zd 'p39600011_190000_Linux-x86-64.zip') @{ '39600011/README.txt' = "You must use the OPatch utility version 12.2.0.1.42 or later to apply this patch.`nUse OPatch to apply Database Release Update 19.24.0.0.240716." }
+    Check ((Get-ZipMinOPatch $t2) -eq '12.2.0.1.42') "'Use OPatch to apply ... 19.24.0.0.240716' is not the minimum, got [$(Get-ZipMinOPatch $t2)]"
+    $t3 = New-TestZip (Join-Path $zd 'p39000050_122140_Generic.zip') @{ '39000050/README.txt' = "OPatch 13.9.4.2.20 or later is required. Use OPatch to apply WLS PATCH SET UPDATE 12.2.1.4.260522 (or later) to 12.2.1.4.0 homes." }
+    Check ((Get-ZipMinOPatch $t3) -eq '13.9.4.2.20') "a WLS PSU number or release after 'Use OPatch' is not the minimum, got [$(Get-ZipMinOPatch $t3)]"
+    $t4 = New-TestZip (Join-Path $zd 'p39600012_190000_Linux-x86-64.zip') @{ '39600012/README.txt' = "You must use the OPatch utility version 12.2.0.1.42 or later to apply this patch.`nThe opatch 12.2.0.1.50 binary is not needed." }
+    Check ((Get-ZipMinOPatch $t4) -eq '12.2.0.1.42') "lower-case 'opatch' does not count, as on the server, got [$(Get-ZipMinOPatch $t4)]"
+
     $kitZip = New-TestZip (Join-Path $zd 'p6880880_190000_Linux-x86-64.zip') @{ 'OPatch/version.txt' = "OPATCH_VERSION:12.2.0.1.48`n" }
     $kitOld = New-TestZip (Join-Path $zd 'p6880880_old.zip') @{ 'OPatch/version.txt' = "OPATCH_VERSION:12.2.0.1.44`n" }
     $wlsKit = New-TestZip (Join-Path $zd 'p28186730_1394220_Generic.zip') @{ 'README.txt' = 'This kit needs OPatch 13.9.4.2.30 or later on the home'; 'opatch_generic.jar' = 'x' }
