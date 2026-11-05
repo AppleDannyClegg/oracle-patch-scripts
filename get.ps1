@@ -73,6 +73,19 @@ try {
     throw "cannot write to $parent"
 }
 
+# Windows: a read-only or hidden file under the tree makes Remove-Item fail, and a file another program
+# holds open cannot be deleted at all - clear the attributes, try Remove-Item, then fall back to cmd's rd
+function Remove-Tree([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { try { $_.Attributes = [IO.FileAttributes]::Normal } catch {} }
+    try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; return } catch {}
+    if ($env:OS -eq 'Windows_NT') { $null = cmd /c "rd /s /q `"$Path`"" 2>&1 }
+    if (Test-Path -LiteralPath $Path) {
+        throw "cannot delete $Path - a file in it is open in another program. Close it (an editor, a shell, a running script) and re-run, or delete $Path by hand."
+    }
+}
+
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('oracle-get-' + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
@@ -87,7 +100,7 @@ try {
 
     $moved = $false
     if (Test-Path -LiteralPath $Dest) {
-        if (Test-Path -LiteralPath "$Dest.old") { Remove-Item -LiteralPath "$Dest.old" -Recurse -Force }
+        if (Test-Path -LiteralPath "$Dest.old") { Remove-Tree "$Dest.old" }
         Move-Item -LiteralPath $Dest -Destination "$Dest.old"
         Write-Host "previous copy moved to $Dest.old"
         $moved = $true
