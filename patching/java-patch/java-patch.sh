@@ -94,7 +94,7 @@ cacerts_aliases() {
 # roots ('... [jdk]') are not carried: one the new JDK dropped was dropped on purpose. Status 1 = an import failed.
 carry_cacerts() {
   local oldjh="$1" newjh="$2" oc="$3" nc="$4" pf="$5"
-  local olda newa extra skip n=0 nf=0 a
+  local olda newa extra skip n=0 nf=0 a pem
   # both lists must really have been read: a wrong CACERTS_PASSWORD used to give an empty list, "0 CA alias(es)
   # carried over" and a new JDK without the corporate CAs - loudly refused now
   olda="$(cacerts_aliases "$oldjh/bin/keytool" "$oc" "$pf")" || { rm -f "$pf"; die "cannot list $oc (CACERTS_PASSWORD?): the CA aliases cannot be carried over - fix the password, or --no-cacerts if the new cacerts is already complete"; }
@@ -104,9 +104,11 @@ carry_cacerts() {
   extra="$(printf '%s\n' "$extra" | { grep -v ' \[jdk\]$' || true; } | grep . || true)"
   while IFS= read -r a; do
     [ -n "$a" ] || continue
-    if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$RUN_DIR/ca_$a.pem" \
-       && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$RUN_DIR/ca_$a.pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then
+    pem="$RUN_DIR/ca_$n.pem"   # by counter: an alias may contain '/' or a path, which a file name must not
+    if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$pem" \
+       && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then
       n=$((n+1)); else nf=$((nf+1)); err "cacerts: alias $a NOT carried over (see $LOG_FILE)"; fi
+    rm -f "$pem"
   done <<<"$extra"
   [ "$skip" = 0 ] || log "cacerts: $skip vendor alias(es) ('[jdk]') not carried - the new JDK dropped them on purpose"
   log "cacerts: $n CA alias(es) carried over ($(printf '%s' "$extra" | tr '\n' ' '))"; state_set cacerts_imported "$n"
@@ -344,7 +346,7 @@ cmd_verify() {
   discover; reuse_or_init verify; local fail=0
   # a dry run installed nothing, so asserting on it would always fail - say what would be checked, do not assert,
   # and do not send 'run --dry-run' on to a rollback with nothing recorded
-  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK and no JVM is still on it"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK, no JVM is still on it, and the WLST homes and URLs answer"; return 0; fi
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
   if [ "$IN_PLACE" = 1 ]; then

@@ -39,6 +39,7 @@ EOF
 OLD="$T/old"; NEW="$T/new"; OLDSTORE="$T/oldstore"; NEWSTORE="$T/newstore"; IMPORTS="$T/imports.log"; LOG="$T/log"
 stub "$OLD" "comodoaaaca [jdk], 2024-01-01, trustedCertEntry,
 site root ca, 2024-01-01, trustedCertEntry,
+weird/ca name, 2024-01-01, trustedCertEntry,
 shared ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 0
 stub "$NEW" "shared ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 0
 : >"$IMPORTS"
@@ -53,7 +54,7 @@ carry() { # <old-dir> <new-dir> <imports-log> ; prints carry_cacerts' rc
 # ---- the space alias is carried whole; the [jdk] vendor root is not carried ---------------------------
 out="$(carry "$OLD" "$NEW" 2>&1)"; rc="${out##*rc=}"
 [ "$rc" = 0 ] && ok || bad "carry_cacerts returned $rc (want 0): $out"
-[ "$(cat "$IMPORTS")" = "site root ca" ] && ok || bad "imports were [$(tr '\n' '|' <"$IMPORTS")], want exactly [site root ca] (a space alias split into two, or the [jdk] root carried)"
+[ "$(sort "$IMPORTS" 2>/dev/null)" = "$(printf 'site root ca\nweird/ca name')" ] && ok || bad "imports were [$(tr '\n' '|' <"$IMPORTS")], want [site root ca, weird/ca name] (a space or '/' alias split/refused, or the [jdk] root carried)"
 grep -q "alias comodoaaaca" "$IMPORTS" && bad "the [jdk] vendor root was carried" || ok
 grep -q '\[jdk\]' "$LOG" && ok || bad "the [jdk] skip is not named in the output"
 
