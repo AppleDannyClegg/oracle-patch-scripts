@@ -130,7 +130,8 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
     if [ -z "$rows" ]; then
       # an empty read is the non-CDB case (no such view) - but only fall back when that is what happened: a CDB
       # whose cdb read failed must say so, not switch to a root-only view and look complete
-      if [ "$crc" = 0 ] || ! db_is_cdb "$sid"; then
+      local cdbv; cdbv="$(sql_val "$sid" "(select cdb from v\$database)" 2>/dev/null)"
+      if [ "$crc" = 0 ] || [ "$cdbv" = NO ]; then
         rows="$(sql_lines "$sid" "select '$sid|'||nvl(max(case when status='SUCCESS' then description end),'none')||'|'||nvl(to_char(max(case when status='SUCCESS' then action_time end),'YYYY-MM-DD'),'-')||'|'||sum(case when status not in ('SUCCESS','IGNORED') then 1 else 0 end) from dba_registry_sqlpatch where action='APPLY' and description not like '%OJVM%';" 2>"$RAW/registry_$sid.err")" || rrc=$?
         rerr="$(grep -m1 -oE '(ORA|SP2)-[0-9]+[^|]*' "$RAW/registry_$sid.err" 2>/dev/null | cut -c1-80)"; rview="dba_registry_sqlpatch"
       else
@@ -139,8 +140,9 @@ db_homes() { # ru/mrp/ojvm per oratab home + datapatch per database
       fi
     fi
     local home; home="$(db_home_of "$sid")"
-    [ "$rrc" = 0 ] || { row "Database $sid" "$home" "datapatch level unreadable (rc $rrc)" "" "" "$rview could not be read${rerr:+: $rerr} - run datapatch -prereq / query dba_registry_sqlpatch by hand" reported
-      finding WARN patch "Database $sid: $rview could not be read (rc $rrc${rerr:+, $rerr}) - its datapatch level is unknown, not current${rview:+ (the root-only dba_ view was NOT substituted)}"; continue; }
+    [ "$rrc" = 0 ] || { local nosub=""; [ "$rview" = cdb_registry_sqlpatch ] && nosub=" (the root-only dba_ view was NOT substituted)"
+      row "Database $sid" "$home" "datapatch level unreadable (rc $rrc)" "" "" "$rview could not be read${rerr:+: $rerr} - run datapatch -prereq / query dba_registry_sqlpatch by hand" reported
+      finding WARN patch "Database $sid: $rview could not be read (rc $rrc${rerr:+, $rerr}) - its datapatch level is unknown, not current$nosub"; continue; }
     local homeru homelsp hrc=0 hnote=""; homelsp="$(lsp_read "$home/OPatch/opatch" 120)" || hrc=$?
     # a home whose lspatches failed cannot be compared with the registry: the row says so instead of rendering clean with an
     # empty note (Colossus 23:33 - warn() goes to the terminal and the log, never to the table or FINDINGS)
@@ -187,7 +189,7 @@ fmw_homes() {
       [ -z "$b" ] && continue; local d ddate; d="$(printf '%s' "$b" | cut -d';' -f2 | sed 's/^ *//')"; ddate="$(date_from_desc "$d")"
       if [ -n "$ddate" ]; then
         # a bundle has no CPU-calendar 'latest' to compare against, so pass '-' (not '' which row() shows as '?')
-        row "FMW bundle ($(basename "$h"))" "$h" "$d" "$ddate" "-" ""
+        row "FMW bundle ($(basename "$h"))" "$h" "$d" "$ddate" "-" "" info
       else
         # a Coherence Cumulative Patch ('Coherence Cumulative Patch 12.2.1.4.30') carries no yymmdd, so it
         # cannot be date-compared - render '-/info' rather than '?', which reads as a failed read.
@@ -207,7 +209,7 @@ java_row() { # <java_home> <used by>
   local major; major="$(java_major_of "$j")"; local note="used by $by"
   case "$major" in 6|7) note="$note; EOL"; finding CRIT patch "JDK $v ($j) used by $by is end-of-life";; 8) note="$note; JDK 8 - extended support only";; esac
   local vendor; vendor="$(sed -n 's/^IMPLEMENTOR="\([^"]*\)".*/\1/p' "$j/release" 2>/dev/null)"
-  row "Java $major ($vendor)" "$j" "$v" "$d" "CPU of $LATEST_CPU" "$note"
+  row "Java $major ($vendor)" "$j" "$v" "$d" "CPU of $LATEST_CPU" "$note" info
 }
 other_products() {
   if ords_detect; then

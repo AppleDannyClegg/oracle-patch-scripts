@@ -29,7 +29,7 @@ mk_home() { # <home> <lspatches line>
 #!/bin/sh
 case "\$1" in
   version) echo "OPatch Version: 13.9.4.2.23" ;;
-  lspatches) echo "$2"; echo; echo "OPatch succeeded." ;;
+  lspatches) echo "$2"; echo "11112;Coherence Cumulative Patch 12.2.1.4.30"; echo "OPatch succeeded." ;;
 esac
 EOF
   chmod +x "$1/OPatch/opatch"
@@ -45,6 +45,8 @@ report="$(ls "$OUT"/*/REPORT.md 2>/dev/null | head -1)"
 # the undated level must be named, with the fact that it is unknown
 grep -q "$UNDATED.*patch level unknown" "$report" && ok || bad "no 'patch level unknown' finding for $UNDATED"
 grep -q "$DATED.*patch level unknown" "$report" && bad "flagged $DATED, whose level carries a date" || ok
+# a dateless FMW bundle is an INFO row: it has no level to date, so it must not WARN
+grep -q "FMW bundle.*patch level unknown" "$report" && bad "flagged an undated FMW bundle, which is an info row" || ok
 
 # table/cron shape: no --report, the output is discarded and the exit code is the whole interface
 ( cd "$T" && HOME="$T" ORACLE_HOME="$DATED" MW_HOME="$UNDATED" bash "$SCRIPT" --no-net --quiet ) >"$T/stdout2" 2>&1
