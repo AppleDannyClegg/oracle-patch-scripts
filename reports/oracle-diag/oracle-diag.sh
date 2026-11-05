@@ -163,7 +163,7 @@ load_config() {
     [ -f "$f" ] || continue
     while IFS='=' read -r k v; do
       case "$k" in ''|\#*) continue;; esac
-      k="$(printf '%s' "$k" | tr -d '[:space:]')"; v="${v%\"}"; v="${v#\"}"
+      k="$(printf '%s' "$k" | tr -d '[:space:]')"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; case $v in \"*\"|\'*\') v=${v:1:${#v}-2};; esac
       # secret-looking keys stay shell variables: exported, they would sit in every child's environment for the whole run
       case "$k" in *PASSWORD*|*PASSWD*|*SECRET*|*_PASS|*_PASS_*|*TOKEN*|*PWD*|*_CONNECT) [ -z "${!k:-}" ] && printf -v "$k" '%s' "$v";; *) [ -z "${!k:-}" ] && export "$k=$v";; esac
     done <"$f"
@@ -1106,9 +1106,9 @@ okv_age_finding() {
 # security-posture.sh use those); this script stays self-contained (see the header), so keep the two in step by hand.
 okv_endpoint_cert() {
   local f="$1" loc host upd d wal age exp
-  loc="$(grep -iE '^SSL_WALLET_LOC=' "$f" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"; host="$(grep -iE '^OKV_HOSTNAME=' "$f" | tail -1 | cut -d= -f2-)"; upd="$(grep -iE '^UPDATE_TIMESTAMP=' "$f" | tail -1 | cut -d= -f2-)"
+  loc="$(grep -iE '^SSL_WALLET_LOC=' "$f" | tail -1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; host="$(grep -iE '^OKV_HOSTNAME=' "$f" | tail -1 | cut -d= -f2-)"; upd="$(grep -iE '^UPDATE_TIMESTAMP=' "$f" | tail -1 | cut -d= -f2-)"
   d="$(dirname "$(dirname "$f")")"; [ -n "$loc" ] || loc="$d/ssl"; wal="$loc/ewallet.p12"
-  kv "endpoint wallet (SSL_WALLET_LOC)" "$loc$(case "$loc" in */ssl|*/ssl/) echo '  (not rotated: still the original ssl/ wallet)';; *) echo '  (rotated: a subfolder of ssl/)';; esac)"
+  kv "endpoint wallet (SSL_WALLET_LOC)" "$loc$(case "$loc" in */ssl|*/ssl/) echo '  (not rotated: still the original ssl/ wallet)';; */ssl/*) echo '  (rotated: a subfolder of ssl/)';; *) echo '  (unrecognised: neither the original ssl/ wallet nor a subfolder - check by hand)';; esac)"
   kv "OKV_HOSTNAME (node last talked to)" "${host:-?}"; kv "UPDATE_TIMESTAMP" "${upd:-?}"
   [ -f "$wal" ] || { finding CRIT okv "SSL_WALLET_LOC in $f points at $loc but $wal does not exist - the endpoint cannot present a certificate to Key Vault"; kv_end; return 0; }
   # the mtime is read on its own: a failed stat inside the arithmetic left age empty, both -ge tests errored false and the
@@ -1159,7 +1159,7 @@ diag_okv() {
   # path as it (Mother 13:53:13), so it also gets </dev/null.
   local f; while IFS= read -r f <&3; do
     h2 "$f"
-    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for s in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' ' | cut -d: -f1); do p=\$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' '\n' | grep \$s | cut -s -d: -f2); p=\${p:-5696}; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
+    section_sh "okv_$(printf '%s' "$f" | md5sum | cut -c1-8)" "grep -vE '^#|^$' '$f' | redact; echo; d=\$(dirname \$(dirname '$f')); echo \"client dir: \$d\"; ls -la \$d/bin \$d/ssl \$d/lib 2>/dev/null | head -30; echo; echo 'servers reachable (TCP 5696):'; for e in \$(grep -E '^SERVER=' '$f' | cut -d= -f2 | tr ',' ' '); do s=\${e%%:*}; p=\${e#*:}; [ \"\$p\" = \"\$e\" ] && p=5696; (timeout 5 bash -c \"</dev/tcp/\$s/\$p\") 2>/dev/null && echo \"  \$s:\$p OK\" || echo \"  \$s:\$p UNREACHABLE\"; done; echo; echo 'okvutil list (autologin):'; timeout 60 \$d/bin/okvutil list </dev/null 2>&1 | head -30; echo; echo 'persistent cache / endpoint config:'; grep -E 'PKCS11|CACHE|EXPIRE|SSL' '$f'"
     local raw; raw="$RAW/okv_$(printf '%s' "$f" | md5sum | cut -c1-8).txt"
     local nok nbad; nok="$(grep -cE '^  [^ ]+:[0-9]+ OK$' "$raw")"; nbad="$(grep -cE '^  [^ ]+:[0-9]+ UNREACHABLE$' "$raw")"   # only the server lines, not okvutil's text
     [ "$nbad" -gt 0 ] && { if [ "$nok" = 0 ]; then finding CRIT okv "No Oracle Key Vault server in $f is reachable on its port - TDE keystore cannot be opened after a restart"; else finding WARN okv "$nbad of $((nok + nbad)) Key Vault servers in $f unreachable (HA degraded)"; fi; }
