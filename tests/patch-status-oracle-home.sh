@@ -60,5 +60,11 @@ rb="$(grep 'WebLogic' "$OUT" | grep -F "$B" | head -1)"
 case "$ra" in *'12.2.1.4.240415'*) ok;; *) bad "home A does not carry its own PSU (12.2.1.4.240415): [$ra]";; esac
 case "$rb" in *'12.2.1.4.250415'*) ok;; *) bad "home B carries the wrong PSU, not its own (12.2.1.4.250415): [$rb]";; esac
 
+# static guard (a lint, not a behavioural test): db_homes' base read cannot be reached from a test on a host
+# without /etc/oratab, so this fails if a home's own sqlplus -V is ever invoked without that home on the
+# command - the SP2-0750/SP2-0667 class fixed in the loader-path commit. It is a source check, not a run.
+unscoped="$(grep -nE '"\$[A-Za-z_][A-Za-z0-9_]*/bin/sqlplus" -V' "$SCRIPT" | grep -v 'ORACLE_HOME=' || true)"
+[ -z "$unscoped" ] && ok || bad "home sqlplus -V invoked without ORACLE_HOME (lint): $unscoped"
+
 echo "patch-status oracle-home gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
