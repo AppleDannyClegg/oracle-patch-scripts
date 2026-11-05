@@ -46,7 +46,17 @@ src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 
 moved=0
 if [ -d "$DEST" ]; then
-  rm -rf "$DEST.old"
+  if [ -d "$DEST.old" ]; then
+    # never rm a previous copy that holds downloaded patches: get-patches' default output is ./patches-<host>,
+    # inside this tree. Keep it aside and say so instead of deleting multi-GB zips.
+    if [ -n "$(find "$DEST.old" \( -name 'patches-*' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' \) -print -quit 2>/dev/null)" ]; then
+      aside="$DEST.old-$(date +%Y%m%d%H%M%S)"
+      mv "$DEST.old" "$aside"
+      echo "kept the previous copy as $aside (it holds downloaded patches) - delete it when you are done, or keep patch downloads outside this folder"
+    else
+      rm -rf "$DEST.old"
+    fi
+  fi
   mv "$DEST" "$DEST.old"
   echo "previous copy moved to $DEST.old"; moved=1
 fi
