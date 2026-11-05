@@ -327,7 +327,9 @@ cmd_apply() {
     [ "$efail" = 0 ] || { state_set apply failed; err "apply: not every file was switched to $NEW_JH (see above); rollback restores the backups"; return 1; }
   fi
   [ -d /usr/java ] && [ -L /usr/java/latest ] && [ "$(readlink -f /usr/java/latest)" = "$OLD_REAL" ] && [ -w /usr/java ] && { log "updating /usr/java/latest"; [ "$DRY_RUN" = 1 ] || ln -sfn "$NEW_JH" /usr/java/latest; }
-  if [ "$DRY_RUN" = 1 ]; then state_set apply dry-run; else state_set apply ok; fi; state_set new_jh "$NEW_JH"; state_set new_ver "$NEW_VER"
+  # a dry run changes nothing, so it must not record a result either: written into a REAL run's dir it would
+  # overwrite apply=ok/new_ver and verify/rollback there would read the dry run's values (Baymax P3)
+  [ "$DRY_RUN" = 1 ] || { state_set apply ok; state_set new_jh "$NEW_JH"; state_set new_ver "$NEW_VER"; }
 }
 
 cmd_restart() {

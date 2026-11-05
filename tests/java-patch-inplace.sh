@@ -15,6 +15,7 @@ T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok() { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
+sha() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'; else sha256sum "$1" | awk '{print $1}'; fi; }
 
 # a fake JDK whose bin/java answers -version, so jdk_version() works
 jdk() { mkdir -p "$1/bin"; printf '#!/bin/sh\necho "openjdk version \\"%s\\" 2024-07-16" >&2\n' "$2" >"$1/bin/java"; chmod +x "$1/bin/java"; }
@@ -22,6 +23,9 @@ jdk "$T/java" 1.8.0_471
 mkdir -p "$T/src/jdk-1.8.0_511"; jdk "$T/src/jdk-1.8.0_511" 1.8.0_511
 printf 'JAVA_VERSION="1.8.0_511"\n' >"$T/src/jdk-1.8.0_511/release"
 tar -czf "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" -C "$T/src" jdk-1.8.0_511
+mkdir -p "$T/src/jdk-1.8.0_521"; jdk "$T/src/jdk-1.8.0_521" 1.8.0_521
+printf 'JAVA_VERSION="1.8.0_521"\n' >"$T/src/jdk-1.8.0_521/release"
+tar -czf "$T/jdk-1.8.0_521_linux-x64_bin.tar.gz" -C "$T/src" jdk-1.8.0_521
 
 R="$T/run"; OUT="$T/out.log"
 run() { bash "$S" "$@" --java-home "$T/java" --no-cacerts --run-dir "$R" >>"$OUT" 2>&1; }
@@ -40,6 +44,12 @@ run apply "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --yes && ok || bad "apply fail
 [ "$(ver)" = 'openjdk version "1.8.0_511" 2024-07-16' ] && ok || bad "the path does not run the new build (got: $(ver))"
 ls -d "$T"/java.old-* >/dev/null 2>&1 && ok || bad "the old JDK was not renamed to a sibling"
 grep -q '^new_ver=1.8.0_511' "$R/state" 2>/dev/null && ok || bad "apply did not record new_ver"
+# a dry-run apply must leave a real run's state BYTE-IDENTICAL (Gort: push blocker). With no --run-dir it reuses
+# 'latest'; point that at this real run and give it a different tarball (1.8.0_521), so a state write is visible.
+H="$T/home"; mkdir -p "$H/java-patch/runs"; ln -sfn "$R" "$H/java-patch/runs/latest"
+before="$(sha "$R/state")"
+HOME="$H" bash "$S" apply "$T/jdk-1.8.0_521_linux-x64_bin.tar.gz" --dry-run --yes --java-home "$T/java" --no-cacerts >>"$OUT" 2>&1
+[ "$(sha "$R/state")" = "$before" ] && ok || bad "a no---run-dir dry-run apply changed a real run's state (apply=$(sed -n 's/^apply=//p' "$R/state" | tail -1), new_ver=$(sed -n 's/^new_ver=//p' "$R/state" | tail -1))"
 
 run verify && ok || bad "a separate 'verify --run-dir' failed: $(tail -3 "$OUT")"
 # after a real apply, 'verify --dry-run' is read-only but must still check for real (Baymax P3)
@@ -65,7 +75,7 @@ grep -q '^backed_files=' "$R/state" 2>/dev/null && bad "in place: backed_files w
 # cycle isolation: a bare 'preflight' (no --run-dir) must start a FRESH run dir, not reuse the previous
 # cycle's dir through the 'latest' link - a reused 'backup=ok' would skip the next cycle's backup and a
 # rollback would restore older files. Seed a previous cycle's dir and point 'latest' at it.
-H="$T/home"; RB="$H/java-patch/runs"; prev="$RB/20260101-000000-run"
+H="$T/home2"; RB="$H/java-patch/runs"; prev="$RB/20260101-000000-run"
 mkdir -p "$prev"; printf 'backup=ok\nbacked_files=/u01/x/setDomainEnv.sh\n' >"$prev/state"
 ln -sfn "$prev" "$RB/latest"
 HOME="$H" bash "$S" preflight "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts >>"$OUT" 2>&1 && ok || bad "no---run-dir preflight failed: $(tail -2 "$OUT")"
