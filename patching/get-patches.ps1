@@ -21,7 +21,10 @@ What it looks up, for everything in the manifest:
   - reported, not downloaded: agent RUs are applied from the OMS
   JDK
   - newest update of each major version in use that has a Linux x86-64 download (one per major)
-Anything else Oracle lists for these homes (e.g. ADF/OPSS/OWSM bundles, MOS Doc 2806740.2): add it with -Patch.
+  FMW product bundles
+  - the newest '<FAMILY> BUNDLE PATCH' for every fmw| line the manifest reports (ADF, OPSS, WSM,
+    SOA, ...), looked up in the same WebLogic release's Recommended list
+Anything else Oracle lists for these homes (MOS Doc 2806740.2): add it with -Patch.
 
 Token: log in to My Oracle Support in a browser, open https://updates.oracle.com/Orion/GenToken/get_token,
 press Generate token (valid 60 minutes) and save it as %USERPROFILE%\.mos-token (or pass -TokenFile).
@@ -86,7 +89,7 @@ function Get-FivePart([string] $Version) {
 
 # ---- manifest ------------------------------------------------------------------------------------------
 function Read-Manifest([string] $Path) {
-    $m = [pscustomobject]@{ Host = ''; Wls = @(); Homes = @(); Jdks = @() }
+    $m = [pscustomobject]@{ Host = ''; Wls = @(); Homes = @(); Jdks = @(); Fmw = @() }
     foreach ($line in (Get-Content -LiteralPath $Path)) {
         if (-not $line.Trim() -or $line.StartsWith('#')) { continue }
         $f = $line.Split('|')
@@ -103,6 +106,7 @@ function Read-Manifest([string] $Path) {
                 if ($w) { $w.Patches += [pscustomobject]@{ Id = $f[2]; Description = (($f[3..($f.Count - 1)]) -join '|').Trim() } }
             }
             'jdk' { $m.Jdks += [pscustomobject]@{ Home = $f[1]; Version = $f[2]; Major = $f[3] } }
+            'fmw' { $m.Fmw += [pscustomobject]@{ Home = $f[1]; Family = $f[2]; Version = $(if ($f.Count -gt 3) { $f[3] } else { '' }); Patch = $(if ($f.Count -gt 4) { $f[4] } else { '' }) } }
         }
     }
     if (-not $m.Wls -and -not $m.Homes -and -not $m.Jdks) { throw "$Path has no wls or jdk lines - is it a patch-manifest.sh file?" }
@@ -307,10 +311,38 @@ function Get-DbPlan($Db) {
     }
 }
 
+# an installed FMW product's bundle: the manifest's fmw| lines name the family and its installed level,
+# the newest matching '<FAMILY> BUNDLE PATCH <release>.<yymmdd>' row is the one to download
+function Get-FmwPlan($Manifest) {
+    foreach ($fw in $Manifest.Fmw) {
+        $w = $Manifest.Wls | Where-Object { $_.Home -eq $fw.Home } | Select-Object -First 1
+        if (-not $w -or -not $w.Release) {
+            Write-Warning "$($fw.Home): $($fw.Family) is in the manifest but the home has no WebLogic release - skipping its bundle"
+            continue
+        }
+        $release = $w.Release
+        $short = ($release.Split('.')[0..3]) -join '.'
+        $pat = "^$([regex]::Escape($fw.Family)) BUNDLE PATCH $([regex]::Escape($short))(?:\.0)?\.(\d{6})"
+        $wlsRelease = Get-ReleaseId "Oracle WebLogic Server $(Get-FivePart $release)" -Optional
+        if (-not $wlsRelease) { Write-Warning "$($fw.Home): MOS has no release 'Oracle WebLogic Server $(Get-FivePart $release)' - skipping the $($fw.Family) bundle"; continue }
+        $rows = @(Get-MosPatchRows $script:ProductWls $wlsRelease $script:PlatformGeneric -Recommended)
+        $newest = Select-Newest $rows $pat
+        if (-not $newest) { Write-Warning "$($fw.Home): MOS lists no $($fw.Family) bundle for $short - check MOS Doc 2806740.2 and pass its number with -Patch"; continue }
+        # the manifest field is whatever the producer read (a version or a date): compare the yymmdd when
+        # there is one, and plan when there is not - an unreadable installed level must not read current
+        $inst = [regex]::Match($fw.Version, '\d{6}').Value
+        $new = [regex]::Match($newest.Abstract, $pat).Groups[1].Value
+        if (-not $inst -or $new -gt $inst) {
+            New-PlanItem 'wls' "$($fw.Family) bundle ($($fw.Home))" $fw.Version $newest $release
+        }
+    }
+}
+
 function Get-PatchPlan($Manifest) {
     foreach ($w in $Manifest.Wls) { Get-WlsPlan $w }
     foreach ($h in ($Manifest.Homes | Where-Object { $_.Kind -eq 'db' })) { Get-DbPlan $h }
     if ($Manifest.Jdks) { Get-JdkPlan $Manifest.Jdks }
+    if ($Manifest.Fmw) { Get-FmwPlan $Manifest }
 }
 
 # ---- download ------------------------------------------------------------------------------------------
@@ -399,7 +431,8 @@ function Main {
     if ($plan.Count -eq 0 -and -not ($m.Homes | Where-Object { $_.Kind -ne 'db' })) { Write-Host 'Nothing to download: MOS has nothing newer than what is installed.'; return }
     Write-Host ''
     $plan | Format-Table @{ n = 'what'; e = { $_.What } }, @{ n = 'installed'; e = { $_.Installed } }, @{ n = 'patch'; e = { $_.Patch } }, @{ n = 'MOS says'; e = { $_.Abstract } } -AutoSize -Wrap | Out-Host
-    Write-Host 'Not looked up here: other FMW bundles (ADF/OPSS/OWSM...) - check MOS Doc 2806740.2 and add them with -Patch.'
+    if (-not $m.Fmw) { Write-Host 'Not looked up here: FMW product bundles (ADF/OPSS/OWSM...) - the manifest has no fmw| lines; check MOS Doc 2806740.2 and add them with -Patch.' }
+    else { Write-Host "FMW bundles looked up from $($m.Fmw.Count) fmw| line(s); a product installed but not yet patched is only seen if patch-manifest.sh reported it." }
     foreach ($a in ($m.Homes | Where-Object { $_.Kind -eq 'agent' })) {
         $ru = @($a.Patches | ForEach-Object { $_.Description } | Where-Object { $_ -match 'AGENT' })[0]
         Write-Host "EM agent $($a.Version) at $($a.Home) (installed: $(if ($ru) { $ru } else { 'no agent RU' })): not downloaded - agent RUs (and the agent's JDK) are applied from the OMS."

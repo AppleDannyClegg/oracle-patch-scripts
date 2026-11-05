@@ -40,7 +40,10 @@ $wlsRows = '<results>' +
     (Row 39000002 'WLS PATCH SET UPDATE 12.2.1.4.261020' '2026-10-20') +
     (Row 39000009 'WLS PATCH SET UPDATE 12.2.1.4.261031 (BLR)' '2026-10-31') +
     (Row 39000003 'FMW PLATFORM BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') +
-    (Row 39000004 'FMW PLATFORM BUNDLE PATCH 12.2.1.4.260715' '2026-07-15') + '</results>'
+    (Row 39000004 'FMW PLATFORM BUNDLE PATCH 12.2.1.4.260715' '2026-07-15') +
+    (Row 39000031 'ADF BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') +
+    (Row 39000032 'ADF BUNDLE PATCH 12.2.1.4.250415' '2025-04-15') +
+    (Row 39000033 'OPSS BUNDLE PATCH 12.2.1.4.261020' '2026-10-20') + '</results>'
 $spbRows = (Row 39500001 'WLS STACK PATCH BUNDLE 12.2.1.4.260522 (Patch 39426129)' '2026-05-22') +
     (Row 39500002 'WLS STACK PATCH BUNDLE 12.2.1.4.261020 (Patch 39500002)' '2026-10-20')
 $dbRows = '<results>' +
@@ -269,6 +272,23 @@ try {
     $r9 = PlanWithWarnings (Read-Manifest $wlsUnknown)
     Check (($r9.Warnings -join ' ') -match 'Oracle WebLogic Server 14.1.2.0.0') "an unknown wls release warns by name"
 
+    # ---- FMW product bundles reported by the manifest ------------------------------------------------
+    $fmw = Join-Path $tmp 'fmw.txt'
+    @(
+        'host|wl-fmw',
+        'wls|/u01/app/fmw/home1|12.2.1.4.0|13.9.4.2.23|yes',
+        'patch|/u01/app/fmw/home1|36946553|FMW PLATFORM BUNDLE PATCH 12.2.1.4.240812',
+        'fmw|/u01/app/fmw/home1|ADF|12.2.1.4.250415|39000032',
+        'fmw|/u01/app/fmw/home1|OPSS|12.2.1.4.261020|39000033',
+        'fmw|/u01/app/fmw/home1|WSM|12.2.1.4.260415|39000099'
+    ) | Set-Content -LiteralPath $fmw
+    $rFmw = PlanWithWarnings (Read-Manifest $fmw)
+    $nf = @($rFmw.Plan | ForEach-Object { $_.Patch })
+    Check ($nf -contains '39000031') "ADF behind: newest ADF BUNDLE PATCH 39000031 planned (got $($nf -join ','))"
+    Check (-not ($nf -contains '39000032')) "the installed ADF level is not planned again"
+    Check (-not ($nf -contains '39000033')) "OPSS already at the newest bundle: nothing planned"
+    Check (@($rFmw.Warnings | Where-Object { $_ -match 'WSM' }).Count -ge 1) "a family MOS has no row for WARNs instead of being silent"
+    Check (@($rFmw.Plan | Where-Object { $_.What -like 'ADF bundle (*' }).Count -eq 1) "the ADF row names the family and home"
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
