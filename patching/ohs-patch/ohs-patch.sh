@@ -67,17 +67,18 @@ usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 # here). HUP is ignored for the rest of the run, so a lost ssh or a closed lid does not stop it between steps and
 # never mid-step; and a run started from an INTERACTIVE shell must be detached first, or it is refused.
 require_detached() {
-  local what="${1:-run}"
+  local what="${1:-run}" tool
+  tool="$(basename "${BASH_SOURCE[0]}" .sh)"
   trap '' HUP
   [ "$DRY_RUN" = 1 ] && return 0
   [ -n "${TMUX:-}" ] && return 0
   [ -n "${STY:-}" ] && return 0
   [ "${PATCH_DETACHED:-}" = 1 ] && return 0
   { [ -t 0 ] || [ "${PATCH_INTERACTIVE:-}" = 1 ]; } || return 0
-  die "ohs-patch $what changes this host, and a dropped session would stop it (a lost ssh, a closed laptop lid).
-  Start it detached and it will run to its next safe point whatever happens to the terminal:
-    tmux new -s ohs-patch        # run the same command inside, then Ctrl-b d to detach
-    nohup $0 $what ... >/tmp/ohs-patch.out 2>&1 &    # then: tail -f /tmp/ohs-patch.out
+  die "$tool $what changes this host, and a dropped session would stop it (a lost
+  ssh, a closed laptop lid). Start it detached and it will run to its next safe point whatever happens:
+    tmux new -s $tool        # run the same command inside, then Ctrl-b d to detach
+    nohup $0 $what ... >/tmp/$tool.out 2>&1 &    # then: tail -f /tmp/$tool.out
   Refusing rather than risking a stop mid-step. PATCH_DETACHED=1 overrides if you know the session survives."
 }
 
