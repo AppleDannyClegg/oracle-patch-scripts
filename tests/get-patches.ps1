@@ -679,7 +679,19 @@ finally {
 
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
-    foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }
+    foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') {
+        New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null
+        # a hint describes what is in the folder: give every kind a file it would actually copy
+        $f = if ($k -eq 'jdk') { 'jdk-8u511-linux-x64.tar.gz' } else { 'p1_122140_Generic.zip' }
+        Set-Content -LiteralPath (Join-Path (Join-Path $hintDest $k) $f) -Value 'x'
+    }
+    # an empty folder, and a folder holding only the WRONG kind of file, produce no hint: a run whose JDK
+    # download was refused must not tell the operator to scp jdk/*.tar.gz (Gen 6 Nov 2026)
+    $emptyDest = Join-Path $tmp 'emptyhints'
+    foreach ($k in 'wls', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $emptyDest $k) | Out-Null }
+    Set-Content -LiteralPath (Join-Path (Join-Path $emptyDest 'jdk') 'p40255927_180_511_Linux-x86-64.zip') -Value 'x'
+    $nothing = @(Get-UploadHints 'wl1' $emptyDest '/u02/patches/')
+    Check ($nothing.Count -eq 0) "no hint for an empty folder or one holding only the wrong kind of file (got $($nothing.Count))"
     $h = @(Get-UploadHints 'wl1' $hintDest '/u02/patches/')
     $sep = [IO.Path]::DirectorySeparatorChar
     Check (@($h | Where-Object { $_ -match [regex]::Escape("$hintDest$sep") }).Count -eq $h.Count) "every hint uses this machine's separator ($sep) for the local path"
