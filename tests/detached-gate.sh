@@ -29,10 +29,34 @@ printf '%s' "$msg" | grep -q 'tmux' && ok || bad "the refusal names tmux"
 printf '%s' "$msg" | grep -q 'nohup' && ok || bad "the refusal names nohup"
 printf '%s' "$msg" | grep -q 'mid-step' && ok || bad "the refusal says what the risk is"
 
-# ---- every patch command that changes a host asks first ----
+# ---- every patch command that changes a host asks first, AND defines the guard it calls ----
+# A call with no definition is `command not found`: set -u does not stop it, no -e means the 127 is swallowed,
+# and the run goes ahead unrefused. Found on ohs-patch (Gort, 6 Nov) after the call was added without the copy.
+libdef=$(grep -c '^require_detached()' lib/oracle-lib.sh)
+[ "$libdef" = 1 ] && ok || bad "lib/oracle-lib.sh does not define require_detached"
 for f in patching/*/*.sh; do
     grep -q '^cmd_run() {' "$f" || continue
+    name=$(basename "$f" .sh)
     grep -q 'require_detached run' "$f" && ok || bad "$f: cmd_run does not call require_detached"
+    if grep -q 'oracle-lib.sh' "$f"; then
+        ok   # sources lib: it gets the definition from there
+    else
+        # self-contained: it must carry its own copy, or the call is a no-op
+        grep -q '^require_detached()' "$f" && ok || bad "$f: calls require_detached but defines nothing and sources no lib - the call is a no-op"
+    fi
+
+    # THE HINT MUST PRINT A COMMAND THAT RUNS. The refusal suggests `nohup <script> <action> ...`; three copies
+    # printed `nohup $what ...`, i.e. 'nohup run', which loses the script name and cannot be run at all. Assert
+    # the property (the command names the script), not the text of the line.
+    msg="$(PATCH_INTERACTIVE=1 bash "$f" run /nonexistent-dir 2>&1)"
+    hinted="$(printf '%s\n' "$msg" | sed -n 's/^ *nohup \([^ ]*\).*/\1/p' | head -1)"
+    if [ -z "$hinted" ]; then
+        ok   # no hint printed: the guard did not fire for this script, which the earlier assertions cover
+    elif { case "$hinted" in */*) [ -x "$hinted" ] ;; *) command -v "$hinted" >/dev/null 2>&1 ;; esac; }; then
+        ok   # the suggested command RESOLVES, which is the property - a basename that is not on PATH is not runnable
+    else
+        bad "$f: the detachment hint suggests 'nohup $hinted ...' - that does not resolve to a runnable command"
+    fi
 done
 
 # ---- HUP is ignored for the rest of the run, even when it goes ahead ----
