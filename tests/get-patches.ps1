@@ -689,6 +689,15 @@ finally {
     Expand-JdkTarball $prodZip
     Check ([bool](Get-ChildItem -LiteralPath $jdkDir -Filter 'jdk-8u511-linux-x64.tar.gz')) "a production tarball is still unpacked"
 
+    # ---- the closing block leads with what is missing (Gen, 6 Nov 2026: a failed run still said "Copy to the server")
+    $good = Get-DownloadSummary 3 @() '/d'
+    Check $good.Ready "a clean run is ready to copy"
+    Check ($good.Lines[0] -like 'Saved under /d*') "a clean run says where the files are: $($good.Lines[0])"
+    $badS = Get-DownloadSummary 3 @('JDK 8') '/d'
+    Check (-not $badS.Ready) "a failed run is NOT ready to copy"
+    Check ($badS.Lines[0] -like 'NOT READY TO COPY: 1 of 3*JDK 8*') "the first line names the failures: $($badS.Lines[0])"
+    Check (-not ($badS.Lines -match 'Copy to the server')) "a failed run does not tell the operator to copy anything"
+
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
     foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') {

@@ -388,7 +388,7 @@ function Get-WlsPlan($Wls) {
     $have = Get-InstalledLevel $Wls $bundlePattern
     if ($have) {
         $newest = Select-Newest $rows $bundlePattern
-        if (-not $newest) { Write-Warning "$($Wls.Home): FMW Platform Bundle $have is installed but MOS's Recommended list has none - get the number from Doc 2806740.2 and pass -Patch" }
+        if (-not $newest) { Write-Host "  $($Wls.Home): FMW Platform Bundle $have is installed; MOS's Recommended list has nothing newer, so nothing to download. For the newest, get the number from Doc 2806740.2 and pass -Patch." }
         elseif ([regex]::Match($newest.Abstract, $bundlePattern).Groups[1].Value -gt $have) {
             New-PlanItem 'wls' "FMW Platform Bundle ($($Wls.Home))" $have $newest $release $Wls.Home
         }
@@ -865,6 +865,18 @@ function Get-ManifestFreshnessWarning([string] $Created, [datetimeoffset] $Now) 
     ''
 }
 
+# the closing block of a run: what is missing comes FIRST, because "Copy to the server" over an incomplete set
+# is how an operator patches a host with half of what it needs and finds out on the server
+function Get-DownloadSummary([int] $Total, [string[]] $Failed, [string] $Dest) {
+    $lines = @()
+    if ($Failed.Count -gt 0) {
+        $lines += "NOT READY TO COPY: $($Failed.Count) of $Total downloads failed - $($Failed -join ', ')."
+        $lines += "Fix the failure(s) above and run again. What did download is under ${Dest}:"
+    }
+    else { $lines += "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:" }
+    [pscustomobject]@{ Ready = ($Failed.Count -eq 0); Lines = $lines }
+}
+
 function Main {
     if (-not $Manifest) { throw 'Pass -Manifest <the file patch-manifest.sh wrote on the server>' }
     $m = Read-Manifest $Manifest
@@ -907,7 +919,7 @@ function Main {
     if ($plan | Where-Object { $_.What -like 'WLS Stack Patch Bundle*' }) { Write-Host 'The Stack Patch Bundle goes in its own folder: wls-patch.sh run applies it with the SPBAT inside it. Do not put single patches (wls/) in the same folder.' }
     if ($PlanOnly) { Write-Host 'OPatch: the minimum each patch needs is in its README, read after the download - -PlanOnly cannot tell whether a newer OPatch kit will be added.'; return }
 
-    $failed = 0
+    $failed = @()
     $downloaded = @()
     foreach ($p in $plan) {
         Write-Host "$($p.What): patch $($p.Patch)"
@@ -916,14 +928,18 @@ function Main {
             $downloaded += [pscustomobject]@{ Item = $p; Saved = $saved }
             if ($p.Kind -eq 'jdk') { Expand-JdkTarball $saved }
         }
-        catch { $failed++; Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red }
+        catch { $failed += $p.What; Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red }
     }
-    $failed += Invoke-OPatchFollowUp $m $downloaded $Dest
+    $followUp = Invoke-OPatchFollowUp $m $downloaded $Dest
 
+    # say what is missing FIRST: "Copy to the server" over an incomplete set is how an operator ends up patching
+    # a host with half of what it needs and finding out on the server
     Write-Host ''
-    Write-Host "Saved under $Dest. Copy to the server (as oracle), then run the patch scripts there:"
+    $closing = Get-DownloadSummary $plan.Count $failed $Dest
+    $i = 0
+    foreach ($l in $closing.Lines) { $i++; if ($i -eq 1 -and -not $closing.Ready) { Write-Host $l -ForegroundColor Red } else { Write-Host $l } }
     Get-UploadHints $m.Host $Dest $script:ServerBase | ForEach-Object { Write-Host $_ }
-    if ($failed -gt 0) { Write-Host "$failed download(s) failed - see above." -ForegroundColor Red; exit 1 }
+    if ($failed.Count -gt 0 -or $followUp -gt 0) { exit 1 }
 }
 
 if ($MyInvocation.InvocationName -ne '.') { Main }
