@@ -65,9 +65,14 @@ problems=0; unknowns=0
 OH=""; PD=""; PID=""; DOMS=""; INV=""; COMPS=""; PRE_IDS=""
 
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }
-log()  { printf '%s [INFO ] %s\n' "$(ts)" "$*" >&2; }
-warn() { printf '%s [WARN ] %s\n' "$(ts)" "$*" >&2; }
-err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" >&2; }
+# the narration also goes to <run dir>/ohs-patch.log once a run dir exists; the lines before it (preflight) are
+# held in NARR and written there when the run dir is opened, so the file is the whole story beside run.log
+NARR=""
+say()  { local l; l="$(printf '%s [%s] %s' "$(ts)" "$1" "$2")"; printf '%s\n' "$l" >&2
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then printf '%s\n' "$l" >>"$RUN_DIR/ohs-patch.log"; else NARR="$NARR$l"$'\n'; fi; }
+log()  { say 'INFO ' "$*"; }
+warn() { say 'WARN ' "$*"; }
+err()  { say 'ERROR' "$*"; }
 die()  { err "$*"; exit 2; }
 block()   { err "BLOCKING: $*"; problems=$((problems + 1)); }
 unknown() { err "UNKNOWN: $*"; unknowns=$((unknowns + 1)); }
@@ -423,15 +428,29 @@ confirm() {
   local a; read -r -p "$1 Type yes to go on: " a; [ "$a" = yes ]
 }
 
-stop_all() { # every OHS component, then each domain's node manager; 0 = all stops returned 0
-  local d c rc=0
+# every OHS component, then each domain's node manager, each tried whatever the one before returned; 0 = all
+# returned 0. A non-zero stop is evidence, not the verdict: the callers judge on nothing_running, once, after this
+# (a node manager that was already down returns non-zero with nothing to stop). STOP_FAILED names each one.
+STOP_FAILED=""
+stop_all() {
+  local d c r rc=0; STOP_FAILED=""
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
-    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"; else err "stopComponent.sh $c failed (rc $?) - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; fi
+    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"
+    else r=$?; err "stopComponent.sh $c failed (rc $r) - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; STOP_FAILED="${STOP_FAILED}stopComponent.sh $c returned $r; "; fi
   done <<<"$COMPS"
   while IFS= read -r d; do [ -n "$d" ] || continue
-    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"; else err "stopNodeManager.sh for $d failed - see $RUN_DIR/run.log"; why_failed "$d" ""; rc=1; fi
+    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"
+    else r=$?; err "stopNodeManager.sh for $d failed (rc $r) - see $RUN_DIR/run.log"; why_failed "$d" ""; rc=1; STOP_FAILED="${STOP_FAILED}stopNodeManager.sh for $(domain_name "$d") returned $r; "; fi
   done <<<"$DOMS"
   return $rc
+}
+
+# after stop_all: the proof decides. 0 = nothing runs from the home (a non-zero stop is then a warning naming it);
+# 1 = something still runs; 2 = ps unreadable (fail closed)
+stopped_proved() {
+  local nr; nothing_running; nr=$?
+  [ "$nr" = 0 ] && [ -n "$STOP_FAILED" ] && warn "${STOP_FAILED}but nothing runs from $OH, so the home is clear - carrying on (a stop with nothing to stop, e.g. node manager already down)"
+  return "$nr"
 }
 
 # node manager, then every component (retried until START_TIMEOUT: startComponent fails until node manager listens),
@@ -504,6 +523,7 @@ restore_all() {
   stop_all || :
   nothing_running || { err "the home is not stopped - not restoring under a live process"; return 1; }
   do_cmd mv "$OH" "$OH.failed-$stamp" || { err "cannot move $OH aside"; return 1; }
+  FAILED_HOME="$OH.failed-$stamp"
   do_cmd tar -C "$(dirname "$OH")" -xzf "$BK/home.tgz" || { err "restore of $OH from $BK/home.tgz failed (the patched home is at $OH.failed-$stamp)"; return 1; }
   do_cmd mv "$INV" "$INV.failed-$stamp" || { err "cannot move $INV aside"; return 1; }
   do_cmd tar -C "$(dirname "$INV")" -xzf "$BK/oraInventory.tgz" || { err "restore of $INV from $BK/oraInventory.tgz failed"; return 1; }
@@ -511,6 +531,15 @@ restore_all() {
   [ "$now" = "$PRE_IDS" ] || { err "the restored home's patches [$now] are not the level before the apply [$PRE_IDS]"; return 1; }
   log "restored $OH and $INV from $BK; patches back at [$now]. The domain archives in $BK were not needed."
   return 0
+}
+
+# every log a failed run leaves, by the path it has NOW: after a restore the patched home (and opatch's own log
+# in it) is the .failed-* copy, not the home the operator knows
+FAILED_HOME=""
+where_logs() {
+  err "LOGS: this script's narration $RUN_DIR/ohs-patch.log; the commands' own output $RUN_DIR/run.log (and nodemanager-*.out beside it)"
+  if [ -n "$FAILED_HOME" ]; then err "      opatch's own log of the failed apply: $FAILED_HOME/cfgtoollogs/opatch/ (the home was renamed by the rollback)"
+  else err "      opatch's own log: $OH/cfgtoollogs/opatch/"; fi
 }
 
 manual_restore() {
@@ -524,10 +553,11 @@ manual_restore() {
 recover() {
   err "$1 - rolling back from $BK"
   state stage rollback
-  if ! restore_all; then state outcome rollback-failed; err "ROLLBACK FAILED - nothing started"; manual_restore; exit 3; fi
-  if ! start_all; then state outcome restored-not-started; err "restored, but it does not start - servers DOWN, no second rollback"; exit 3; fi
+  if ! restore_all; then state outcome rollback-failed; err "ROLLBACK FAILED - nothing started"; manual_restore; where_logs; exit 3; fi
+  if ! start_all; then state outcome restored-not-started; err "restored, but it does not start - servers DOWN, no second rollback"; where_logs; exit 3; fi
   state outcome rolled-back
   err "ROLLED BACK: $OH is back at its level before the apply and running. $PID is NOT applied."
+  where_logs
   exit 1
 }
 
@@ -570,7 +600,7 @@ plan_steps() {
 # a new run dir and its state: what rollback reads
 open_run() {
   RUN_DIR="$RUN_BASE/$STAMP-run"; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR"
-  STATE="$RUN_DIR/state"; : >"$STATE"
+  STATE="$RUN_DIR/state"; : >"$STATE"; printf '%s' "$NARR" >"$RUN_DIR/ohs-patch.log"; NARR=""
   state oracle_home "$OH"; state inventory "$INV"; state patch "$PID"; state backup_dir "$BK"; state pre_patches "$PRE_IDS"
   log "run dir  : $RUN_DIR"
 }
@@ -587,13 +617,13 @@ step_backup() {
 step_stop() {
   state stage stop
   log "2/5 stop OHS components and node manager"
-  local nr=0
-  if ! stop_all; then nr=1
-  else nothing_running; nr=$?; fi
+  local nr
+  stop_all; stopped_proved; nr=$?
   if [ "$nr" != 0 ]; then
     state outcome refused-stop
     err "the home could not be proved stopped - NOT applying; starting the components again"
     start_all || err "and they did not all start again - check them by hand"
+    where_logs
     exit "$([ "$nr" = 2 ] && echo 2 || echo 1)"
   fi
 }
@@ -676,10 +706,9 @@ cmd_stop() {
   discover; no_weblogic stop
   confirm "This stops OHS ($(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ' | sed 's/ $//') and node manager) on this box." || { err "not confirmed - nothing was changed"; exit 1; }
   open_log stop
-  local rc=0; stop_all || rc=1
+  stop_all
   [ "$DRY_RUN" = 1 ] && exit 0
-  nothing_running || { local n=$?; err "the home could not be proved stopped"; exit "$([ "$n" = 2 ] && echo 2 || echo 1)"; }
-  [ "$rc" = 0 ] || { err "a stop command failed, although nothing runs from $OH now"; exit 1; }
+  stopped_proved || { local n=$?; err "the home could not be proved stopped"; exit "$([ "$n" = 2 ] && echo 2 || echo 1)"; }
   log "stopped: nothing runs from $OH"
   exit 0
 }
