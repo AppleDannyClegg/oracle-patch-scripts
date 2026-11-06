@@ -51,6 +51,7 @@ X
   echo "OPatch 13.9.4.2.23" >"$T/opv"
   echo "39611663;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260624" >"$LSP"
   echo 'Prereq "checkConflictAgainstOHWithDetail" passed.' >"$T/prereq"; echo 0 >"$T/prereq.rc"
+  printf 'Invoking prereq "checkapplicable"\n\nPrereq "checkApplicable" passed.\n\nOPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"
   cat >"$OH/OPatch/opatch" <<O
 #!/bin/sh
 echo "\$*" >>"$T/opatch.log"
@@ -64,7 +65,10 @@ case "\$1" in
     : >"$OH/ohs/PATCHED"
     [ -e "$T/apply.noop" ] || echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"
     echo "OPatch succeeded.";;
-  prereq) cat "$T/prereq"; exit "\$(cat "$T/prereq.rc" 2>/dev/null || echo 0)";;
+  prereq) case "\$2" in
+      CheckApplicable) cat "$T/applicable"; exit "\$(cat "$T/applicable.rc" 2>/dev/null || echo 0)";;
+      *) cat "$T/prereq"; exit "\$(cat "$T/prereq.rc" 2>/dev/null || echo 0)";;
+    esac;;
   *) echo "UNEXPECTED opatch \$*" >>"$T/changed"; exit 1;;
 esac
 O
@@ -153,6 +157,24 @@ build; printf 'Invoking prereq "checkconflictagainstohwithdetail"\nPrereq "check
 build; sed -i.bak 's#<component-type>OHS</component-type>#<component-type>X</component-type>#' "$DOM/config/config.xml"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: no OHS component' "$T/out" && ok || bad "no OHS component not blocking: rc $rc"
 
+# the home lacks a component the patch needs (Gen's host: a DB19C bundle on a home whose Database Client is still
+# 12c, opatch apply failed with OUI-67073 after the stop and backup): OPatch's CheckApplicable says so, read-only
+miss='Invoking prereq "checkapplicable"
+Prereq "checkApplicable" failed.
+OUI-67073:UtilSession failed: Patch 40005842 requires component(s) that are not installed in OracleHome.  Or don'"'"'t have required patch level. These not-installed components are oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)
+OPatch failed with error code 73'
+build; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842 needs .*oracle.rdbms.rsf:19.0.0.0.0.*KB585169' "$T/out" && ! grep -q READY "$T/out" && ok || bad "a home missing a required component was not blocking: rc $rc, $(grep -E 'BLOCK|applicable|WARN' "$T/out" | head -3)"
+# CheckApplicable failing for another reason blocks with its own words; one that cannot run is UNKNOWN, never READY
+build; printf 'Prereq "checkApplicable" failed.\nPatch 40005842: Platform 46 is not supported\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*not applicable.*Platform 46' "$T/out" && ok || bad "a failed CheckApplicable was not blocking: rc $rc: $(grep BLOCK "$T/out")"
+build; printf 'Exception in thread main\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 2 ] && ! grep -q READY "$T/out" && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "an unreadable CheckApplicable was not UNKNOWN: rc $rc"
+build; printf 'OPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 2 ] && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "rc 0 without the 'passed' line was taken as a pass: rc $rc"
+build; rc="$(run)"
+grep -q 'components: every component 40005842 needs is in' "$T/out" && ok || bad "a passing CheckApplicable is not reported"
+
 # a non-zero prereq exit with superset-only wording is a conflict (Jocasta P3); a 'Conflict with' under exit 0 too (Cerebro P3)
 build; printf 'Conflicts/Supersets for each patch are:\nPatch : 40005842\n  Bug Superset of 31000001\n' >"$T/prereq"; echo 1 >"$T/prereq.rc"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: conflict check did not pass for 40005842 (rc 1)' "$T/out" && ok || bad "a non-zero prereq exit was not blocking: rc $rc"
@@ -220,6 +242,8 @@ build; running; rm -rf "$T/backup"; rc="$(runr --yes)"
 [ "$rc" != 0 ] && [ -z "$(acts)" ] && ok || bad "missing backup dir: rc $rc, actions [$(acts)]"
 build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; rc="$(runr --yes)"
 [ "$rc" = 0 ] && [ -z "$(acts)" ] && grep -q 'already installed' "$T/out" && ok || bad "already installed: rc $rc, actions [$(acts)]"
+build; running; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runr --yes)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && nobackup && ok || bad "run on a home missing a required component stopped or backed up: rc $rc, actions [$(acts)]"
 
 # a backup that fails (tar cannot write it): refused, nothing stopped, the partial backup removed (Cerebro P3)
 build; running; RT="$(command -v tar)"; printf '#!/bin/sh\ncase "$*" in *-czf*) [ -e "%s/tar.fail" ] && exit 2;; esac\nexec "%s" "$@"\n' "$T" "$RT" >"$T/stub/tar"; chmod +x "$T/stub/tar"; touch "$T/tar.fail"
