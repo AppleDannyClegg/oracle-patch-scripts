@@ -6,6 +6,7 @@ Oracle Support, ready to copy to the server. Runs in the PowerShell that ships w
   .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt             # plan + download into .\patches\wl1
   .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt -PlanOnly   # only say what it would download
   .\get-patches.ps1 -Manifest ... -Patch 38123456                    # also download these numbers
+  .\get-patches.ps1 -Manifest ... -Patch 40199083 -PatchKind jdk      # ...into jdk/, if the kind cannot be read
 
 What it looks up, for everything in the manifest:
   WebLogic home
@@ -32,7 +33,9 @@ What it looks up, for everything in the manifest:
   FMW product bundles
   - the newest '<FAMILY> BUNDLE PATCH' for every fmw| line the manifest reports (ADF, OPSS, WSM,
     SOA, ...), looked up in the same WebLogic release's Recommended list
-Anything else Oracle lists for these homes (MOS Doc 2806740.2): add it with -Patch.
+Anything else Oracle lists for these homes (MOS Doc 2806740.2): add it with -Patch. Its folder and its apply
+step come from -PatchKind (wls|spb|db|jdk|ohs); a JDK record is recognised on its own, anything else is assumed
+WebLogic and says so, because the file names alone cannot tell a database Release Update from a WebLogic PSU.
 
 Token: log in to My Oracle Support in a browser, open https://updates.oracle.com/Orion/GenToken/get_token,
 press Generate token (valid 60 minutes) and save it as %USERPROFILE%\.mos-token (or pass -TokenFile).
