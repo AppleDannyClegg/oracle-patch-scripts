@@ -655,10 +655,24 @@ function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
 # a JDK patch zip holds the .tar.gz java-patch.sh wants: unpack it next to the zip
 function Expand-JdkTarball([string] $Zip) {
     if (-not $Zip.EndsWith('.zip')) { return }
+    # MOS names the JDK patch file innocuously (p40255927_180_511_Linux-x86-64.zip); whether it is a production or
+    # an internal/debug build is only visible INSIDE it, so a name filter upstream cannot catch it. Measured
+    # 6 Nov 2026: that zip holds exactly one tarball, jdk-8u511-internal-bin-b00-linux-x64-debug-05_nov_2026.tar.gz
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $z = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try { $inner = @($z.Entries | Where-Object { $_.FullName -match '(?i)\.tar\.gz$' } | ForEach-Object { $_.FullName }) }
+    finally { $z.Dispose() }
+    if (-not $inner) { return }
+    $production = @($inner | Where-Object { (Split-Path -Leaf $_) -notmatch $script:DevBuild })
+    if (-not $production) {
+        throw "$(Split-Path -Leaf $Zip) holds only an internal/debug JDK ($((@($inner | ForEach-Object { Split-Path -Leaf $_ })) -join ', ')) - java-patch refuses those; get the production build from MOS Doc 1439822.2 and pass its number with -Patch"
+    }
     $dir = Split-Path -Parent $Zip
     $tmp = Join-Path $dir ('unzip-' + [guid]::NewGuid())
     Expand-Archive -LiteralPath $Zip -DestinationPath $tmp
-    Get-ChildItem -LiteralPath $tmp -Recurse -Filter '*.tar.gz' | ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $dir -Force; Write-Host "  unpacked $($_.Name)" }
+    Get-ChildItem -LiteralPath $tmp -Recurse -Filter '*.tar.gz' |
+        Where-Object { $_.Name -notmatch $script:DevBuild } |
+        ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $dir -Force; Write-Host "  unpacked $($_.Name)" }
     Remove-Item -LiteralPath $tmp -Recurse -Force
 }
 

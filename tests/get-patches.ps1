@@ -655,6 +655,28 @@ finally {
         Check ($abs2 -eq (Join-Path $tmp 'already\absolute.zip')) "an absolute path is returned unchanged: $abs2"
     } finally { Pop-Location }
 
+    # ---- a JDK zip whose ONLY tarball is an internal/debug build must not be unpacked (Gen, 6 Nov 2026:
+    # MOS lists p40255927_180_511_Linux-x86-64.zip, which holds jdk-8u511-internal-bin-b00-linux-x64-debug) ----
+    $jdkDir = Join-Path $tmp 'jdkzip'
+    New-Item -ItemType Directory -Force -Path $jdkDir | Out-Null
+    $src = Join-Path $jdkDir 'payload'
+    New-Item -ItemType Directory -Force -Path $src | Out-Null
+    Set-Content -LiteralPath (Join-Path $src 'jdk-8u511-internal-bin-b00-linux-x64-debug-05_nov_2026.tar.gz') -Value 'x'
+    $dbgZip = Join-Path $jdkDir 'p40255927_180_511_Linux-x86-64.zip'
+    Compress-Archive -Path (Join-Path $src '*') -DestinationPath $dbgZip
+    $threw = $false
+    try { Expand-JdkTarball $dbgZip } catch { $threw = $true; $why = $_.Exception.Message }
+    Check $threw "a JDK zip holding only an internal/debug build is refused, not unpacked"
+    Check ($why -match 'debug' -and $why -match 'internal') "the refusal names the build it found: $why"
+    Check (-not (Get-ChildItem -LiteralPath $jdkDir -Filter '*.tar.gz')) "nothing was unpacked next to the zip"
+    $prodSrc = Join-Path $jdkDir 'prod'
+    New-Item -ItemType Directory -Force -Path $prodSrc | Out-Null
+    Set-Content -LiteralPath (Join-Path $prodSrc 'jdk-8u511-linux-x64.tar.gz') -Value 'x'
+    $prodZip = Join-Path $jdkDir 'p40255999_180_511_Linux-x86-64.zip'
+    Compress-Archive -Path (Join-Path $prodSrc '*') -DestinationPath $prodZip
+    Expand-JdkTarball $prodZip
+    Check ([bool](Get-ChildItem -LiteralPath $jdkDir -Filter 'jdk-8u511-linux-x64.tar.gz')) "a production tarball is still unpacked"
+
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
     foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }
