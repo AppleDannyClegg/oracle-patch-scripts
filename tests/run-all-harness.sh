@@ -10,6 +10,9 @@
 #
 # Run it with BOTH shells: /bin/bash is 3.2 on macOS and `bash` on PATH is 5.x. Everything here has to work on
 # 3.2 (no `wait -n`, no associative arrays), so `bash tests/run-all-harness.sh` alone is only half the check.
+#
+# The harness's own temp dir cannot be isolated with TMPDIR: bash's mktemp on macOS ignores it (BSD mktemp uses
+# confstr), so "logs kept: /var/folders/..." is where it always lands. To count temp dirs, shim mktemp on PATH.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
@@ -127,11 +130,14 @@ exec sleep 600
 EOF
 done
 rm -f "$tmp/queued.pids"
-( bash "$tmp/tests/run-all.sh" -j 1 --timeout 600 gate-queue gate-queue2 gate-queue3 >/dev/null 2>&1 ) &
+( bash "$tmp/tests/run-all.sh" -j 1 --timeout 600 gate-queue gate-queue2 gate-queue3 >"$tmp/queued.out" 2>&1 ) &
 harness=$!
 sleep 2
 kill -TERM "$harness" 2>/dev/null
 sleep 3
+out=$(cat "$tmp/queued.out" 2>/dev/null)
+check "$(printf '%s\n' "$out" | grep -qE '^INT +gate-queue ' && echo 1)" "a stopped gate is marked INT, not FAIL: $(printf '%s' "$out" | grep -E '^(INT|FAIL)' | head -1)"
+check "$(printf '%s\n' "$out" | grep -q 'not started (stopped before launching)' && echo 1)" "the tally names the gates that never launched"
 still=$(ps -p "$harness" >/dev/null 2>&1 && echo yes || echo no)
 started=$([ -f "$tmp/queued.pids" ] && wc -l <"$tmp/queued.pids" | tr -d ' ' || echo 0)
 alive=0

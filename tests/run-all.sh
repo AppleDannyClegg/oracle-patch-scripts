@@ -82,6 +82,8 @@ report() {
         if [ "$rc" != 0 ] || [ -f "$out/$key.timedout" ] ||
             { [ -f "$out/$key.log" ] && grep -q '^FAIL' "$out/$key.log"; } ||
             printf '%s' "$last" | grep -qE '[1-9][0-9]* failed'; then mark=FAIL; bad=1; fi
+        # the mark says who stopped it, the rc says how: a gate the operator stopped did not fail
+        [ "$rc" = interrupted ] && { mark=INT; bad=1; }
         if [ "$secs" = - ]; then
             printf '%-4s %-26s %6s rc=%s  %s\n' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)"
         else
