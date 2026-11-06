@@ -59,6 +59,15 @@ for f in patching/*/*.sh; do
     fi
 done
 
+# ---- a command runner must not inherit a terminal it will not read from ----
+# A runner that hands its child the terminal blocks forever on a prompt when the run is unattended (tmux, nohup,
+# a cron job) and, in ohs-patch's case, sends the prompt to a log nobody is reading. lib's own run_sh already
+# redirects stdin; these four did not. Found by property (Edi), not by name - the grep for 'do_cmd' found one.
+while IFS= read -r hit; do
+    f="${hit%%:*}"; line="${hit#*:}"
+    case "$line" in *'</dev/null'*) ok ;; *) bad "$f: a command runner inherits stdin - an unattended run blocks on a prompt: $line" ;; esac
+done < <(grep -rnE '"\$@" 2>&1 \| tee -a|"\$@" >>' --include='*.sh' patching reports lib | grep -v 'tests/')
+
 # ---- HUP is ignored for the rest of the run, even when it goes ahead ----
 hup_ignored=$(bash -c '. ./lib/oracle-lib.sh >/dev/null 2>&1; export PATCH_DETACHED=1; require_detached run; trap -p HUP' 2>/dev/null | grep -c "HUP")
 [ "$hup_ignored" -ge 1 ] && ok || bad "require_detached leaves SIGHUP ignored"
