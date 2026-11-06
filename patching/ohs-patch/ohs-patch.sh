@@ -415,6 +415,7 @@ recover() {
 }
 
 cmd_run() {
+  require_detached run
   local pdir="${1:-}"
   [ -n "$pdir" ] || die "run needs <patch-dir>"
   [ "$NO_BACKUP" = 1 ] && { err "--no-backup refused: the README's rollback is the backup of ORACLE_HOME and the central inventory"; exit 1; }

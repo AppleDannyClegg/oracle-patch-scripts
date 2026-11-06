@@ -163,6 +163,24 @@ state_append() { # list values separated by space
   state_set "$1" "${cur:+$cur }$2"
 }
 
+# A run outlives the terminal it was started from (the same rule as lib/oracle-lib.sh; this script stays
+# self-contained). HUP is ignored for the rest of the run, so a lost ssh or a closed lid does not stop it between
+# steps and never mid-step; and a run started from an INTERACTIVE shell must be detached first, or it is refused.
+require_detached() {
+  local what="${1:-run}"
+  trap '' HUP
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -n "${TMUX:-}" ] && return 0
+  [ -n "${STY:-}" ] && return 0
+  [ "${PATCH_DETACHED:-}" = 1 ] && return 0
+  { [ -t 0 ] || [ "${PATCH_INTERACTIVE:-}" = 1 ]; } || return 0
+  die "$(basename "${BASH_SOURCE[0]}" .sh) $what changes this host, and a dropped session would stop it (a lost
+  ssh, a closed laptop lid). Start it detached and it will run to its next safe point whatever happens:
+    tmux new -s patch        # run the same command inside, then Ctrl-b d to detach
+    nohup $what ... >/tmp/patch.out 2>&1 &    # then: tail -f /tmp/patch.out
+  Refusing rather than risking a stop mid-step. PATCH_DETACHED=1 overrides if you know the session survives."
+}
+
 init_run_dir() {
   local name="${1:-run}"
   if [ -z "$RUN_DIR" ]; then
@@ -1583,6 +1601,7 @@ recover_failed_change() { # after a failed apply, or a failed start/verify of a 
 # run : the orchestrated flow with automatic rollback
 # ---------------------------------------------------------------------------
 cmd_run() {
+  require_detached run
   local pdir="$1"
   [ -n "$pdir" ] || die "run needs <patch-dir>"
   init_run_dir run

@@ -455,6 +455,7 @@ cmd_rollback() {
 }
 
 cmd_run() {
+  require_detached run
   discover; init_run_dir run; pick_tar
   cmd_inspect; echo
   cmd_preflight || die "preflight failed - nothing changed"

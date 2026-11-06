@@ -781,6 +781,7 @@ print 'CERT_RENEW_OK'";; esac && log "WebLogic $T_SERVER: previous keystore sett
 }
 
 cmd_run() {
+  require_detached run
   local t="${ARGS[0]:-}"; [ -n "$t" ] || die "run <target> --cert --key [--chain]"; init_run_dir run; find_tools
   ARGS=("$t"); cmd_inspect >/dev/null 2>&1 || true; print_rows "$t"; echo
   cmd_plan; cmd_preflight || die "preflight failed - nothing changed"
