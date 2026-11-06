@@ -157,6 +157,22 @@ build; printf 'Invoking prereq "checkconflictagainstohwithdetail"\nPrereq "check
 build; sed -i.bak 's#<component-type>OHS</component-type>#<component-type>X</component-type>#' "$DOM/config/config.xml"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: no OHS component' "$T/out" && ok || bad "no OHS component not blocking: rc $rc"
 
+# the Database Client level in the home, from its inventory (KB585169's own check: oracle.rdbms.rsf in comps.xml)
+comps() { mkdir -p "$OH/inventory/ContentsXML"; printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="%s" BUILD_NUMBER="0" REP_VER="0.0.0.0.0"/>\n</PRD_LIST>\n' "$1" >"$OH/inventory/ContentsXML/comps.xml"; }
+build; comps 12.1.0.2.0; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*Database Client.*oracle.rdbms.rsf is 12.1.0.2.0.*34761383.*KB585169' "$T/out" && ok || bad "a 12c client home given a DB19C bundle was not blocking on the client level: rc $rc, $(grep -E 'BLOCK|WARN.*KB585169|client' "$T/out" | head -3)"
+build; comps 19.0.0.0.0; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'DB client : oracle.rdbms.rsf 19.0.0.0.0' "$T/out" && ! grep -q 'WARN .*confirm .*KB585169' "$T/out" && ok || bad "a 19c client home with no bundle: rc $rc (want 0, the client level printed, no 'confirm' warning)"
+build; echo "34567890;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115" >"$LSP"; comps 12.1.0.2.0; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "plain-line home with a 12c client: rc $rc"
+build; comps 12.1.0.2.0; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" RUN_BASE="$T/runs" bash "$SCRIPT" inspect --oracle-home "$OH" >"$T/out" 2>&1; echo $?)"
+grep -q 'DB client : oracle.rdbms.rsf 12.1.0.2.0' "$T/out" && ok || bad "inspect does not print the Database Client level: $(grep -i client "$T/out")"
+# REP_VER before VER is not read as the version (patch-manifest's comp_version gotcha, Edi 22:04:46)
+build; mkdir -p "$OH/inventory/ContentsXML"; printf '<COMP NAME="oracle.rdbms.rsf" REP_VER="19.0.0.0.0" VER="12.1.0.2.0"/>\n' >"$OH/inventory/ContentsXML/comps.xml"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "REP_VER was read as the client version: rc $rc, $(grep 'DB client' "$T/out")"
+build; rc="$(run)"
+grep -q 'DB client : unknown' "$T/out" && ok || bad "no comps.xml: the client level is not reported as unknown"
+
 # the home lacks a component the patch needs (Gen's host: a DB19C bundle on a home whose Database Client is still
 # 12c, opatch apply failed with OUI-67073 after the stop and backup): OPatch's CheckApplicable says so, read-only
 miss='Invoking prereq "checkapplicable"
