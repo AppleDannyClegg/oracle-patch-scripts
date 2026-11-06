@@ -63,7 +63,7 @@ for spec in "server-jre-8u511-linux-x64.tar.gz|jdk1.8.0_511|1.8.0_511" \
 done
 
 # ---- the JDK root is found from bin/java, not the first listing entry ---------------------------------
-# OBDX a-dev-host, 5 Nov 2026: jdk-8u511-internal-bin-b00-...-debug.tar.gz died 'has no
+# A production host, 5 Nov 2026: jdk-8u511-internal-bin-b00-...-debug.tar.gz died 'has no
 # jdk1.8.0_511/bin/java' because the JDK is nested (jdk1.8.0_511/jdk1.8.0_511/bin/java), so the first
 # entry's root is jdk1.8.0_511 but bin/java is a level below it.
 mk_java_tar "$T/nested" 'jdk-8u511-internal-nested.tar.gz' 'jdk1.8.0_511/jdk1.8.0_511' '1.8.0_511'

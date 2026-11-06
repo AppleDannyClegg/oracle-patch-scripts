@@ -181,7 +181,7 @@ pick_tar() {
   # (lib/oracle-lib.sh) the pipeline returns 141 - a real JDK then died as 'not a JDK tarball'
   listing="$(tar -tzf "$TARBALL" 2>/dev/null)"; [ -n "$listing" ] || die "$TARBALL is not a readable tar.gz"
   # bin/java locates the JDK root, and it is NOT the first listing entry in every tarball: a repacked JDK
-  # nests it (jdk1.8.0_511/jdk1.8.0_511/bin/java, OBDX a-dev-host 5 Nov 2026) and 'tar -C .'
+  # nests it (jdk1.8.0_511/jdk1.8.0_511/bin/java, seen on a production WebLogic host, Nov 2026) and 'tar -C .'
   # prefixes every name with './'. Take the shallowest <dir>/bin/java, so bin/ wins over jre/bin/.
   top="$(printf '%s\n' "$listing" | sed -n 's#^\./##; s#/bin/java$##p' | awk -F/ '{print NF-1"\t"$0}' | sort -n -k1,1 | head -1 | cut -f2-)"
   [ -n "$top" ] || die "$TARBALL has no bin/java - not a JDK tarball"
