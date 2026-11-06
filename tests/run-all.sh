@@ -8,6 +8,8 @@
 #   --timeout N  kill a gate that runs longer than N seconds (default $GATE_TIMEOUT, else 300), so a gate
 #                that hangs reports instead of holding the harness open with nothing printed. It is sent TERM
 #                at N seconds and KILL 5s later, so the wall limit on an unkillable gate is N+5.
+#   --log PATH   also write the transcript (header, every gate as it finishes, the summary) to PATH. Without it
+#                the transcript lives in the run's temp dir: kept when the run fails, deleted when it passes.
 #
 # No gates named = every gate below. The docker gates (oracle-free-container, okv-diag) are not here: run those alone.
 # Every gate here works in its own mktemp dir, so they can run side by side. Exit 1 if any gate printed FAIL,
@@ -16,6 +18,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 JOBS="${JOBS:-4}"
 GATE_TIMEOUT="${GATE_TIMEOUT:-300}"
+LOG="${LOG:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -j | --timeout)
@@ -24,6 +27,8 @@ while [ $# -gt 0 ]; do
             shift 2 ;;
         -j*)         JOBS="${1#-j}"; shift ;;
         --timeout=*) GATE_TIMEOUT="${1#--timeout=}"; shift ;;
+        --log | -l)  [ -n "${2:-}" ] || { echo "run-all.sh: $1 needs a path" >&2; exit 2; }; LOG="$2"; shift 2 ;;
+        --log=*)     LOG="${1#--log=}"; shift ;;
         --)          shift; break ;;
         -*)          echo "run-all.sh: unknown option '$1'" >&2; exit 2 ;;
         *)           break ;;
@@ -35,7 +40,7 @@ case "$GATE_TIMEOUT" in '' | *[!0-9]* | 0) echo "run-all.sh: --timeout needs a p
 GATES=(wls-quarter java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
     secret-argv-gate java-patch-cacerts java-patch-inplace java-patch db-patch-opatch-min db-patch-ru-title
     get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
-    patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness)
+    patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate)
 # add_gate skips a gate that is already in the list. Every entry goes through it - the typed list as well as the
 # two auto-appends - because two entries for one name run it twice over the same log and rc file, and a passing
 # copy then overwrites a failing copy's tally. One name, one launch, one file.
@@ -49,6 +54,8 @@ if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-patches.ps1 ]; then add_gat
 if command -v shellcheck >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then add_gate shellcheck; fi
 
 out="$(mktemp -d)"
+transcript="$out/run-all.log"
+say() { printf '%s\n' "$*"; printf '%s\n' "$*" >>"$transcript"; }
 # a failing run keeps its per-gate logs: the summary shows one line per gate, and a red you cannot re-read is
 # half a red. A clean run deletes them as before
 # stop_all: the gate the harness can see in `running` is the launch subshell, not the gate itself - the gate
@@ -71,7 +78,9 @@ stop_all() {
 # gates that never launched. Called from the normal path and from the stop handler, so an aborted run still says
 # what it got through.
 report() {
-    local key g rc secs last mark started names
+    local key g rc secs last mark started names line
+    say ''
+    say '=== summary ==='
     for key in "${order[@]}"; do
         g="${key#*.}"
         rc=interrupted; secs=-
@@ -85,11 +94,14 @@ report() {
         # the mark says who stopped it, the rc says how: a gate the operator stopped did not fail
         [ "$rc" = interrupted ] && { mark=INT; bad=1; }
         if [ "$secs" = - ]; then
-            printf '%-4s %-26s %6s rc=%s  %s\n' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)"
+            line="$(printf '%-4s %-26s %6s rc=%s  %s' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)")"
         else
-            printf '%-4s %-26s %4ss rc=%s  %s\n' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)"
+            line="$(printf '%-4s %-26s %4ss rc=%s  %s' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)")"
         fi
-        [ "$mark" = FAIL ] && [ -f "$out/$key.log" ] && grep -E '^FAIL' "$out/$key.log" | head -5 | sed 's/^/       /'
+        say "$line"
+        if [ "$mark" = FAIL ] && [ -f "$out/$key.log" ]; then
+            grep -E '^FAIL' "$out/$key.log" | head -5 | sed 's/^/       /' | while IFS= read -r l; do say "$l"; done
+        fi
     done
     started=''
     for key in "${order[@]}"; do started="$started ${key#*.}"; done
@@ -97,8 +109,12 @@ report() {
     for g in "${GATES[@]}"; do
         case " $started " in *" $g "*) ;; *) names="$names $g" ;; esac
     done
-    [ -n "$names" ] && echo "not started (stopped before launching):$names"
-    echo "all gates: $((SECONDS - start))s wall"
+    [ -n "$names" ] && say "not started (stopped before launching):$names"
+    say "all gates: $((SECONDS - start))s wall"
+    say "finished $(date '+%Y-%m-%d %H:%M:%S')"
+    # --log keeps a copy wherever the caller asked; without it the transcript lives in the temp dir, which the
+    # EXIT trap keeps on failure and deletes on success
+    if [ -n "$LOG" ]; then cp "$transcript" "$LOG" 2>/dev/null && say "transcript: $LOG"; fi
 }
 
 # TERM/INT must END the run, not just kill what is already running: stopping the live gates and then falling
@@ -108,7 +124,9 @@ on_stop() { stop_all; bad=1; report; exit 1; }
 trap 'on_stop' TERM INT
 trap 'stop_all; if [ "${bad:-0}" = 1 ]; then echo "logs kept: $out"; else rm -rf "$out"; fi' EXIT
 start=$SECONDS
-echo "run-all: ${#GATES[@]} gates, at most $JOBS at a time, ${GATE_TIMEOUT}s limit each (TERM, then KILL 5s later)"
+say "run-all: ${#GATES[@]} gates, at most $JOBS at a time, ${GATE_TIMEOUT}s limit each (TERM, then KILL 5s later)"
+say "started $(date '+%Y-%m-%d %H:%M:%S')  host $(uname -n)  head $(git rev-parse --short HEAD 2>/dev/null || echo '-')  dir $PWD"
+say "gates: ${GATES[*]}"
 
 # one gate, killed if it outlives $GATE_TIMEOUT. Killed means: marked, reported, and counted as a failure -
 # a gate that prints nothing for that long is hung, or starved by more work than the box can carry
@@ -166,7 +184,10 @@ launch() {                          # launch <name> <command...>
     launched=$((launched + 1))
     local key="$launched.$name"
     order+=("$key")
-    ( s=$SECONDS; run_limited "$key" "$name" "$@"; echo "$? $((SECONDS - s))" >"$out/$key.rc" ) &
+    ( s=$SECONDS; run_limited "$key" "$name" "$@"; rc=$?
+      echo "$rc $((SECONDS - s))" >"$out/$key.rc"
+      line="  .. $(printf '%-26s' "$name") $((SECONDS - s))s rc=$rc"
+      printf '%s\n' "$line"; printf '%s\n' "$line" >>"$transcript" ) &
     running+=($!)
     while [ "${#running[@]}" -ge "$JOBS" ]; do
         wait "${running[0]}" 2>/dev/null
