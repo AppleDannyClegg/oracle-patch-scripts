@@ -199,6 +199,12 @@ patch_dirs() {
   find "$dir" ${DRY_EXT:+"$DRY_EXT"} -path '*/etc/config/inventory.xml' 2>/dev/null | sed 's#/etc/config/inventory.xml$##' | sort -u
 }
 
+# the Database Client level in the home: oracle.rdbms.rsf's VER in the home's inventory (the check KB585169 gives);
+# empty when it cannot be read. A DB19C bundle needs 19.x - the upgrade is patch 34761383, an installer, not opatch
+rsf_version() {
+  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | head -1 | sed -n 's/.* VER="\([^"]*\)".*/\1/p'
+}
+
 readme_title() { head -5 "$1/README.txt" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]]//g' | grep -m1 -iE 'bundle patch|patch' ; }
 readme_min_opatch() {
   LC_ALL=C grep -aoE 'OPatch version 13\.9(\.[0-9]+)+ or (higher|later)' "$1/README.txt" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
@@ -227,7 +233,9 @@ cmd_inspect() {
     log "patches  : ${n:-0} installed"
     local b; b="$(printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE)' | cut -d';' -f2 | head -1)"
     log "  OHS bundle: ${b:-none}"
-    if printf '%s\n' "$lsp" | grep -qiE 'OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE'; then log "  series    : DB19C line"
+    local rv; rv="$(rsf_version "$OH")"
+    log "  DB client : ${rv:+oracle.rdbms.rsf $rv}${rv:-unknown (no oracle.rdbms.rsf in $OH/inventory/ContentsXML/comps.xml)}"
+    if printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "  series    : DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then log "  series    : plain OHS bundle line"
     else log "  series    : no OHS bundle installed yet"; fi
   else
@@ -297,8 +305,16 @@ cmd_preflight() {
   else log "OPatch   : $opv meets the README minimum $min"; fi
 
   # DB19C series (KB585169)
+  local rsf; rsf="$(rsf_version "$OH")"
+  log "DB client : ${rsf:+oracle.rdbms.rsf $rsf}${rsf:-unknown (no oracle.rdbms.rsf in $OH/inventory/ContentsXML/comps.xml)}"
   if printf '%s' "$title" | grep -qi 'DB19C'; then
-    if printf '%s\n' "$lsp" | grep -qiE 'OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE'; then log "series   : home is on the DB19C line"
+    # the client level, when the inventory shows it, decides; the bundle titles are only the fallback
+    if [ -n "$rsf" ]; then
+      case "$rsf" in
+        19.*) log "series   : the home has the Database Client 19c (oracle.rdbms.rsf $rsf) - a DB19C bundle fits" ;;
+        *) block "$id is a DB19C bundle and needs the Database Client 19c in $OH, but oracle.rdbms.rsf is $rsf - install the DB Client 19c Upgrade (patch 34761383, an FMW installer with no rollback but the backup; KB585169) first" ;;
+      esac
+    elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "series   : home is on the DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then block "$id is a DB19C bundle but $OH is on the plain OHS bundle line - the Database Client 19c upgrade (KB585169) comes first"
     else warn "no OHS bundle installed yet: confirm $OH had the Database Client 19c upgrade (KB585169) before applying the DB19C bundle $id"; fi
   fi
