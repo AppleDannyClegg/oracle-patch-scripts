@@ -597,7 +597,8 @@ finally {
     $okData = $false; try { $null = Read-Manifest $bad; $okData = $true } catch {}
     Check $okData "an fmw| line with no version/patch still reads (data fields)"
 
-    # ---- a MOS gateway error must not be reported as a token error (Daniel, bad gateway, 6 Nov) ----
+    # ---- a failing MOS call says which of the causes it was (Daniel, bad gateway, 6 Nov; measured: an expired
+    # token came back as HTTP 502 and a fresh one worked, so 5xx must not claim the token is fine) ----
     function Fake-Error($status) {
         if ($null -eq $status) { return [pscustomobject]@{ Exception = [System.Exception]::new('The operation has timed out') } }
         [pscustomobject]@{ Exception = [pscustomobject]@{ Response = [pscustomobject]@{ StatusCode = $status } } }
@@ -614,7 +615,7 @@ finally {
     Check (-not (Test-MosRetryable 401)) "a refused token is NOT retried - 15s cannot fix it"
     Check (-not (Test-MosRetryable 403)) "a forbidden token is NOT retried"
     $m502 = Get-MosFailure '/x' (Fake-Error 502)
-    Check ($m502 -match 'gateway' -and $m502 -match 'not your token') "HTTP 502 blames the gateway, and says explicitly it is not the token: $m502"
+    Check ($m502 -match 'renew the token' -and $m502 -match 'fresh token') "HTTP 502 says to renew the token first, and what it means if that does not help: $m502"
     $m401 = Get-MosFailure '/x' (Fake-Error 401)
     Check ($m401 -match 'token' -and $m401 -match '60 minutes') "HTTP 401 is the token, and says how long it lasts: $m401"
     $m429 = Get-MosFailure '/x' (Fake-Error 429)

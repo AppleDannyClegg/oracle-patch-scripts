@@ -97,7 +97,9 @@ function Get-MosFailure([string] $Path, $ErrorRecord) {
     if ($status -eq 401) { return "MOS refused the token (HTTP 401) - it expires after 60 minutes; get a new one and run again: $Path" }
     if ($status -eq 403) { return "MOS refused the request (HTTP 403) - the token has expired, or it is not entitled to this patch/product: $Path" }
     if ($status -eq 429) { return "MOS is throttling this client (HTTP 429) - wait a few minutes and run again: $Path" }
-    if ($status -ge 500 -and $status -le 599) { return "MOS's gateway returned HTTP $status - that is Oracle's end or a proxy in between, not your token; wait a few minutes and run again: $Path" }
+    # measured 6 Nov 2026: an expired token came back as HTTP 502 through this call, and a fresh one worked
+    # immediately, so do not offer 5xx as proof the token is fine - check the token's age first
+    if ($status -ge 500 -and $status -le 599) { return "MOS's edge returned HTTP $status. First renew the token - an expired one (over 60 minutes old) looks like this from here. If a fresh token still gets $status, it is Oracle's end or a proxy in between: $Path" }
     if ($status -eq 0) { return "MOS could not be reached (no HTTP answer - network, proxy or DNS): $Path - $($ErrorRecord.Exception.Message)" }
     "MOS returned HTTP ${status}: $Path"
 }
