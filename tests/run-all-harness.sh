@@ -7,6 +7,9 @@
 #   --timeout N a gate that outlives N seconds is killed and reported, not left holding the harness
 # This gate copies run-all.sh into a temp tree with its own fake gates (run-all resolves tests/<gate>.sh
 # relative to its own location, so the copy runs the fakes), and asserts both limits and the exit code.
+#
+# Run it with BOTH shells: /bin/bash is 3.2 on macOS and `bash` on PATH is 5.x. Everything here has to work on
+# 3.2 (no `wait -n`, no associative arrays), so `bash tests/run-all-harness.sh` alone is only half the check.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
