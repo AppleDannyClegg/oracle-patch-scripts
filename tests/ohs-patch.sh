@@ -346,6 +346,15 @@ build; running; rc="$(runc verify "$PD")"
 build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; touch "$T/curl.fail"; rc="$(runc verify "$PD")"
 [ "$rc" = 1 ] && grep -q 'does not answer on port 7777' "$T/out" && ok || bad "verify with a port down: rc $rc (want 1)"
 
+# every step that changes whether a server runs says so in the positive when it succeeds (Daniel, 21:01)
+build; running; rc="$(runr --yes)"
+grep -q 'stopped ohs1' "$T/out" && grep -q 'stopped ohs2' "$T/out" && grep -q 'stopped node manager for ohs_domain' "$T/out" && ok || bad "run does not confirm each stop: $(grep -i stopped "$T/out" | tr '\n' '|')"
+grep -q "confirmed: nothing runs from $OH" "$T/out" && ok || bad "run does not confirm the home is clear"
+grep -q 'started ohs1' "$T/out" && grep -q 'started ohs2' "$T/out" && ok || bad "run does not confirm each start"
+[ "$(grep -n 'confirmed: nothing runs' "$T/out" | cut -d: -f1)" -lt "$(grep -n '3/5 opatch apply' "$T/out" | cut -d: -f1)" ] && ok || bad "the home-clear confirmation is not before the apply"
+build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
+! grep -q 'confirmed: nothing runs' "$T/out" && ok || bad "a stuck stop still printed 'confirmed: nothing runs'"
+
 # the unknown-command message names every command the dispatcher has
 build; rc="$(runc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
