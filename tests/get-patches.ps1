@@ -641,6 +641,20 @@ finally {
     Check ($age -ge 169 -and $age -le 171) "the token age is read from the file's mtime (got $age)"
     Remove-Item -LiteralPath $tok -Force
 
+    # ---- a relative destination must become an absolute path: [IO.File] uses the PROCESS working directory,
+    # which on Windows is not PowerShell's location, and the download died with "Could not find a part of the
+    # path 'U:\patches\...'" (Gen, Windows, 6 Nov 2026) ----
+    $rel = Join-Path $tmp 'rel'
+    New-Item -ItemType Directory -Force -Path $rel | Out-Null
+    Push-Location $rel
+    try {
+        $abs = Get-AbsolutePath '.\patches\host\spb\p1.zip.part'
+        Check ([IO.Path]::IsPathRooted($abs)) "a relative output path becomes absolute: $abs"
+        Check ($abs -like (Join-Path (Get-Location).Path '*')) "it resolves against the PowerShell location, not the process cwd: $abs"
+        $abs2 = Get-AbsolutePath (Join-Path $tmp 'already\absolute.zip')
+        Check ($abs2 -eq (Join-Path $tmp 'already\absolute.zip')) "an absolute path is returned unchanged: $abs2"
+    } finally { Pop-Location }
+
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
     foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }

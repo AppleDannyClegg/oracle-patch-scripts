@@ -146,6 +146,14 @@ function Invoke-MosGet([string] $Path) {
     throw "$(Get-MosFailure $Path $last) (tried 3 times)"
 }
 
+# [IO.File] resolves a relative path against the PROCESS working directory, and on Windows that is not always
+# PowerShell's location (a PSDrive, or a Set-Location to another drive, leaves it behind). A download into
+# ".\patches\<host>\spb" therefore died with "Could not find a part of the path 'U:\patches\...'" on Windows
+# while working on macOS. Resolve through the provider, and create the folder before writing to it.
+function Get-AbsolutePath([string] $Path) {
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
     # the URL redirects to Oracle's CDN; the Authorization header is dropped on that hop, which the CDN expects.
     # Stream it ourselves (not Invoke-WebRequest -OutFile, which with $ProgressPreference='SilentlyContinue' goes
@@ -154,11 +162,15 @@ function Invoke-MosDownload([string] $Url, [string] $OutFile) {
     $req.AllowAutoRedirect = $true
     $req.UserAgent = 'get-patches.ps1'
     if ($script:MosHeaders -and $script:MosHeaders['Authorization']) { $req.Headers.Add('Authorization', $script:MosHeaders['Authorization']) }
+    $OutFile = Get-AbsolutePath $OutFile
+    $OutDir = Split-Path -Parent $OutFile
+    if ($OutDir -and -not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
     $resp = $req.GetResponse()
     try {
         $total = $resp.ContentLength
         $in = $resp.GetResponseStream()
-        $out = [IO.File]::Create($OutFile)
+        try { $out = [IO.File]::Create($OutFile) }
+        catch { throw "cannot write $OutFile - $($_.Exception.Message)" }
         try {
             $buf = New-Object byte[] 1048576
             [long] $done = 0
@@ -825,6 +837,9 @@ function Main {
     $fw = Get-ManifestFreshnessWarning $m.Created ([datetimeoffset]::UtcNow)
     if ($fw) { Write-Warning $fw }
     if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
+    # absolute from here on: the operator sees where the files go, and nothing downstream depends on the
+    # process working directory (see Get-AbsolutePath)
+    $Dest = Get-AbsolutePath $Dest
 
     $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
     # a MOS token lasts 60 minutes and an expired one fails as HTTP 502 or 401 halfway through a run - say the
