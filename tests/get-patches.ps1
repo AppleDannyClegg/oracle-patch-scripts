@@ -129,6 +129,8 @@ $ohsRows = '<results>' +
     (Row 38832126 'TRACKING BUG FOR BUG 38727102 FOR DEBUGGING' '2026-01-09') + '</results>'
 function Invoke-MosGet([string] $Path) {
     $script:asked += $Path
+    # the archive-pick section serves its own records per test, and can change them between two reads
+    if ($script:mosOverride) { $r = & $script:mosOverride $Path; if ($null -ne $r) { return $r } }
     if ($Path -like '*metadata?table=aru_releases*') { return $releaseXml }
     if ($Path -like '*product=15991&release=600&platform=2000*') {
         if ($script:withSpb) { return $wlsRows.Replace('</results>', $spbRows + '</results>') } else { return $wlsRows }
@@ -148,7 +150,8 @@ function Invoke-MosGet([string] $Path) {
 }
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
     $script:downloadedUrl = $Url
-    [IO.File]::WriteAllText($OutFile, $fakeZip)
+    $body = if ($script:downloadBody) { $script:downloadBody } else { $fakeZip }
+    [IO.File]::WriteAllText($OutFile, $body)
 }
 
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("gp-test-" + [guid]::NewGuid())
@@ -298,6 +301,39 @@ try {
     Check $threw "SHA-256 mismatch throws"
     Check (@(Get-ChildItem -LiteralPath $dest2 -ErrorAction SilentlyContinue).Count -eq 0) "SHA-256 mismatch leaves no file"
 
+    # ---- a -Patch item knows its Kind and does not borrow the WebLogic release (Cerebro, 6 Nov) ----------------
+    # Today every -Patch item is Kind 'wls' with Release taken from the WebLogic home, so a JDK or a DB patch
+    # asked for by number lands in wls/ with a wls-patch.sh instruction, and a JDK record is filtered against a
+    # WebLogic release that no file carries. The item is built by Get-PatchItem, which infers 'jdk' only where
+    # the record is unambiguous and otherwise keeps 'wls' and says so.
+    $item = Get-PatchItem -Patch '39000002' 3>&1
+    $itemWarnings = @($item | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $item = @($item | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($item.Kind -eq 'wls') "-Patch with no kind and a .zip record keeps Kind wls, got [$($item.Kind)]"
+    Check ($item.Release -eq '') "-Patch item carries no release, so selection is the record's, got [$($item.Release)]"
+    Check (@($itemWarnings | Where-Object { $_ -match 'Kind' -or $_ -match 'kind' }).Count -eq 1) "a -Patch item with no kind says so once (got: $($itemWarnings -join ' / '))"
+
+    $jdkItem = @(Get-PatchItem -Patch '39555001' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($jdkItem.Kind -eq 'jdk') "a JDK record is inferred as Kind jdk from its own record, got [$($jdkItem.Kind)]"
+
+    # the record that motivated the ticket: a JDK 8 bug record whose release name is '1.8.0_481' and whose only
+    # file is p40255927_180_511_Linux-x86-64.zip - neither 'Oracle JDK ...' nor a jdk-* name, so the inference
+    # has to read the release shape or -Patch on this very number still lands in wls/
+    $oneOffItem = @(Get-PatchItem -Patch '40255927' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($oneOffItem.Kind -eq 'jdk') "a JDK record whose release name is 1.8.0_481 is inferred as jdk, got [$($oneOffItem.Kind)]"
+
+    $dbItem = @(Get-PatchItem -Patch '39000002' -Kind 'db' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($dbItem.Kind -eq 'db') "-Patch -Kind db is honoured, got [$($dbItem.Kind)]"
+
+    $threwKind = $false; $kindMsg = ''
+    try { Get-PatchItem -Patch '39000002' -Kind 'nonsense' | Out-Null } catch { $threwKind = $true; $kindMsg = $_.Exception.Message }
+    Check $threwKind "an unknown -Kind is refused rather than used as a folder name"
+    Check ($kindMsg -match 'wls' -and $kindMsg -match 'jdk') "the refusal lists the kinds it accepts: [$kindMsg]"
+
+    # the patch folder comes from Kind, so a jdk item and a db item cannot land in wls/ with a wls-patch.sh hint
+    Check ((Get-PatchFolder -Item $jdkItem) -eq 'jdk') "a jdk -Patch item downloads into jdk/, got [$(Get-PatchFolder -Item $jdkItem)]"
+    Check ((Get-PatchFolder -Item $dbItem) -eq 'db') "a db -Patch item downloads into db/, got [$(Get-PatchFolder -Item $dbItem)]"
+
     # ---- a file with no SHA-256 in the record is refused, not downloaded or kept (Weyland [P1]) ---------------
     # NB: this must run BEFORE the OPatch section defines a mock Save-MosPatch (~:490), which shadows the real one
     $destNo = Join-Path $tmp 'nosha'
@@ -315,6 +351,151 @@ try {
     $saved3 = ''
     try { $saved3 = Save-MosPatch -Patch '39555001' -Dest $dest3 -Release '1.8.0_511' } catch { Check $false "the JDK download threw: $($_.Exception.Message)" }
     Check ((Split-Path -Leaf $saved3) -eq 'jdk-8u511-linux-x64.tar.gz') "a JDK patch with a production and a debug artifact picks the production one, got [$saved3]"
+    # ---- archive pick: one helper decides the file at plan time and at download time ----------------
+    # (board 5-6 Nov: Weyland, Cerebro, Edi, Jocasta). JDK only: a .tar.gz before a .zip before XML order, never a
+    # non-archive, never an internal/debug build, and the plan's choice is pinned on the item and re-checked when the
+    # record is read again for the download. Every other kind picks exactly as before.
+    function ApFile([string] $Name, [string] $Digest, [string] $Platform = 'Linux x86-64') {
+        [pscustomobject]@{ Name = $Name; Sha = $Digest; Platform = $Platform }
+    }
+    function ApBody([string] $Num, [string] $Rel, [object[]] $Files) {
+        $blocks = foreach ($p in ($Files | Group-Object Platform)) {
+            $fx = ($p.Group | ForEach-Object { "<file><name>$($_.Name)</name><size>17</size><download_url host=`"https://updates.oracle.com`"><![CDATA[/Orion/Download/process_form/$($_.Name)?aru=1]]></download_url><digest type=`"SHA-256`">$($_.Sha)</digest></file>" }) -join ''
+            "<patch has_prereqs=`"n`"><name>$Num</name><release id=`"9`" name=`"$Rel`"/><platform id=`"226`"><![CDATA[$($p.Name)]]></platform><files>$fx</files></patch>"
+        }
+        '<results>' + ($blocks -join '') + '</results>'
+    }
+    # serve $Bodies[0] on the first read of the patch, $Bodies[1] on every later one (the plan read, then the download)
+    function ApServe([string] $Num, [string[]] $Bodies) {
+        $script:apReads = 0
+        $script:apNum = $Num
+        $script:apBodies = $Bodies
+        $script:mosOverride = {
+            param($Path)
+            if ($Path -like "*search?bug=$($script:apNum)") {
+                $i = [Math]::Min($script:apReads, $script:apBodies.Count - 1); $script:apReads++
+                return $script:apBodies[$i]
+            }
+            if ($Path -like '*product=12443&release=950&*') {
+                return '<results>' + (Row $script:apNum 'Oracle JDK 8 Update 491 for Linux x86-64' '2026-10-20') + '</results>'
+            }
+        }
+    }
+    # Save-MosPatch with its warnings captured off stream 3 (a -WarningVariable capture has missed them before)
+    function ApSave([string] $Num, [string] $Release, [string] $Kind = '', $Pin = $null, [string] $Dir = 'ap') {
+        $d = Join-Path $tmp $Dir
+        $r = [pscustomobject]@{ Saved = ''; Leaf = ''; Error = ''; Warnings = @() }
+        try {
+            $raw = @(Save-MosPatch -Patch $Num -Dest $d -Release $Release -Kind $Kind -Pin $Pin 3>&1)
+            $r.Warnings = @($raw | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+            $r.Saved = @($raw | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[-1]
+            $r.Leaf = Split-Path -Leaf $r.Saved
+        } catch { $r.Error = $_.Exception.Message }
+        $r
+    }
+    # a JDK 8 host on 1.8.0_400, and a release table holding only 1.8.0_491 (id 950)
+    function ApPlan {
+        $keep = $script:Releases
+        $script:Releases = @([pscustomobject]@{ Id = '950'; Name = '1.8.0_491'; Label = 'Oracle JDK 1.8.0_491' })
+        try {
+            $raw = @(Get-JdkPlan @([pscustomobject]@{ Home = '/u01/jdk'; Version = '1.8.0_400'; Major = '8' }) 3>&1)
+            [pscustomobject]@{
+                Plan     = @($raw | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
+                Warnings = @($raw | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+            }
+        } finally { $script:Releases = $keep }
+    }
+    $tgz = 'jdk-8u491-linux-x64.tar.gz'; $zip = 'p30966801_180_491_Linux-x86-64.zip'; $rpm = 'jdk-8u491-linux-x64.rpm'
+    $dbg = 'jdk-8u491-internal-bin-b00-linux-x64-debug.tar.gz'
+    $oldBytes = 'OLD-BUILD'
+    $oldSha = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::ASCII.GetBytes($oldBytes))).Replace('-', '').ToLower()
+    try {
+        # ORDER, download side: both production archives of one release, in either order MOS lists them
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $zip $sha), (ApFile $tgz $sha))))
+        $r = ApSave 30966801 '1.8.0_491' 'jdk' $null 'ap-o1'
+        Check ($r.Leaf -eq $tgz) "jdk: .zip listed first, the .tar.gz is taken [$($r.Leaf)$($r.Error)]"
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha), (ApFile $zip $sha))))
+        $r = ApSave 30966801 '1.8.0_491' 'jdk' $null 'ap-o2'
+        Check ($r.Leaf -eq $tgz) "jdk: .tar.gz listed first, the .tar.gz is taken [$($r.Leaf)$($r.Error)]"
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $zip $sha))))
+        $r = ApSave 30966801 '1.8.0_491' 'jdk' $null 'ap-o3'
+        Check ($r.Leaf -eq $zip) "jdk: a .zip alone is taken [$($r.Leaf)$($r.Error)]"
+        # any other kind keeps XML order: the preference is the JDK path's, not every product's
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $zip $sha), (ApFile $tgz $sha))))
+        $r = ApSave 30966801 '1.8.0_491' '' $null 'ap-o4'
+        Check ($r.Leaf -eq $zip) "no kind: XML order is unchanged, the first archive is taken [$($r.Leaf)$($r.Error)]"
+
+        # F (a bounds case - no such MOS record has been seen): the release's only production Linux file is an .rpm
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $rpm $sha))))
+        $p = ApPlan
+        Check ($p.Plan.Count -eq 0) "F: a JDK release whose only file is an .rpm is not planned (got $($p.Plan.Count))"
+        Check ((@($p.Warnings) -join ' ') -match 'Doc 1439822\.2') "F: the skip says where to get the JDK instead [$(@($p.Warnings) -join ' | ')]"
+        $r = ApSave 30966801 '1.8.0_491' 'jdk' $null 'ap-f'
+        Check ($r.Error -match [regex]::Escape($rpm) -and $r.Error -match 'no archive') "F: the jdk download refuses the .rpm and names it [$($r.Leaf)$($r.Error)]"
+        $r = ApSave 30966801 '1.8.0_491' '' $null 'ap-f2'
+        Check ($r.Leaf -eq $rpm) "F: no kind: the non-archive fallback is unchanged [$($r.Leaf)$($r.Error)]"
+        # G: one file and a Release that does not match it - the single-file rescue must not take a non-archive for a JDK
+        $r = ApSave 30966801 '12.2.1.4.0' 'jdk' $null 'ap-g'
+        Check ($r.Error -match [regex]::Escape($rpm)) "G: the single-file rescue refuses a JDK .rpm on a Release mismatch [$($r.Leaf)$($r.Error)]"
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_498' @((ApFile $tgz $sha))))
+        $r = ApSave 30966801 '12.2.1.4.0' 'jdk' $null 'ap-g2'
+        Check ($r.Leaf -eq $tgz) "G control: a single archive is still rescued on a Release mismatch [$($r.Leaf)$($r.Error)]"
+
+        # PIN: the plan names the file, and the download takes that file
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $zip $sha), (ApFile $tgz $sha))))
+        $p = ApPlan
+        Check ($p.Plan.Count -eq 1 -and $p.Plan[0].File.Name -eq $tgz) "the JDK plan item carries the chosen file [$($p.Plan[0].File.Name)]"
+        $r = ApSave 30966801 $p.Plan[0].Release 'jdk' $p.Plan[0].File 'ap-pin'
+        Check ($r.Leaf -eq $p.Plan[0].File.Name -and $r.Warnings.Count -eq 0) "1: same record twice: the download takes the planned file, silently [$($r.Leaf)$($r.Error) | $($r.Warnings -join ' | ')]"
+
+        # 2a: same name, MOS re-cut the bytes between the plan and the download: take the fresh sha, and say so
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $oldSha))), (ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))))
+        $p = ApPlan
+        $r = ApSave 30966801 $p.Plan[0].Release 'jdk' $p.Plan[0].File 'ap-2a'
+        Check ($r.Leaf -eq $tgz) "2a: a same-name re-cut is still taken [$($r.Leaf)$($r.Error)]"
+        Check ((Get-Content -LiteralPath $r.Saved -Raw) -eq $fakeZip) "2a: the kept bytes are the ones the fresh SHA-256 vouches for"
+        $w = $r.Warnings -join ' '
+        Check ($w -match [regex]::Escape($tgz) -and $w -match $oldSha.Substring(0, 8) -and $w -match $sha.Substring(0, 8)) "2a: the SHA-256 change is reported with both values [$w]"
+        # 2b: a copy from an earlier run with the OLD bytes is not reused
+        $d2b = Join-Path $tmp 'ap-2b'
+        New-Item -ItemType Directory -Force -Path $d2b | Out-Null
+        [IO.File]::WriteAllText((Join-Path $d2b $tgz), $oldBytes)
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $oldSha))), (ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))))
+        $p = ApPlan
+        $script:downloadedUrl = $null
+        $r = ApSave 30966801 $p.Plan[0].Release 'jdk' $p.Plan[0].File 'ap-2b'
+        Check ($null -ne $script:downloadedUrl -and (Get-Content -LiteralPath (Join-Path $d2b $tgz) -Raw) -eq $fakeZip) "2b: a copy on disk with the old SHA-256 is downloaded again, not reused [$($r.Error)]"
+
+        # 3: the planned file is still in the record but now filtered out (moved off Linux): refuse, never re-pick
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))), (ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha 'Microsoft Windows x64 (64-bit)'), (ApFile 'jdk-8u491-linux-x64-b2.tar.gz' $sha))))
+        $p = ApPlan
+        $r = ApSave 30966801 $p.Plan[0].Release 'jdk' $p.Plan[0].File 'ap-3'
+        Check ($r.Error -match [regex]::Escape($tgz) -and -not $r.Leaf) "3: a planned file the record now filters out is refused, not swapped for another [$($r.Leaf)$($r.Error)]"
+
+        # 4: the planned file is gone (re-published under a new name): re-pick through the same rule and say so...
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))), (ApBody 30966801 '1.8.0_491' @((ApFile 'jdk-8u491-linux-x64-b2.tar.gz' $sha))))
+        $p = ApPlan
+        $r = ApSave 30966801 $p.Plan[0].Release 'jdk' $p.Plan[0].File 'ap-4'
+        $w = $r.Warnings -join ' '
+        Check ($r.Leaf -eq 'jdk-8u491-linux-x64-b2.tar.gz' -and $w -match [regex]::Escape($tgz) -and $w -match 'b2\.tar\.gz') "4: a renamed file is taken with a warning naming both [$($r.Leaf)$($r.Error) | $w]"
+        # ...and when the re-published record has only an internal/debug build, refuse (Cerebro/Edi republish fixture)
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))), (ApBody 30966801 '1.8.0_491' @((ApFile $dbg $sha))))
+        $p = ApPlan
+        $r = ApSave 30966801 $p.Plan[0].Release 'jdk' $p.Plan[0].File 'ap-4n'
+        Check ($r.Error -match 'internal' -and -not $r.Leaf) "4: a record re-published as internal/debug only is refused, not downloaded [$($r.Leaf)$($r.Error)]"
+
+        # no release given (a -Patch item): every release counts, and several are named when the pick is among them
+        ApServe 30966801 @((ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))))
+        $r = ApSave 30966801 '' '' $null 'ap-nr'
+        Check ($r.Leaf -eq $tgz -and $r.Warnings.Count -eq 0) "no release given, one file: taken, silently [$($r.Leaf)$($r.Error) | $($r.Warnings -join ' | ')]"
+        $two = (ApBody 30966801 '1.8.0_491' @((ApFile $tgz $sha))).Replace('</results>', '') +
+            (ApBody 30966801 '1.8.0_481' @((ApFile 'jdk-8u481-linux-x64.tar.gz' $sha))).Replace('<results>', '')
+        ApServe 30966801 @($two)
+        $r = ApSave 30966801 '' '' $null 'ap-nr2'
+        $w = $r.Warnings -join ' '
+        Check ($r.Leaf -eq $tgz -and $w -match '1\.8\.0_481' -and $w -match '1\.8\.0_491') "no release given, two releases listed: the first is taken and both are named [$($r.Leaf)$($r.Error) | $w]"
+    } finally { $script:mosOverride = $null; $script:downloadBody = $null }
+
     # ---- a db home with no version in the manifest: warn and skip, do not abort the whole run ---------
     # Get-PatchPlan is a simple function (no CmdletBinding), so capture warnings off stream 3, not -WarningVariable
     function PlanWithWarnings($Manifest) {
