@@ -48,7 +48,7 @@ before=$SECONDS
 out=$(run --timeout 1 gate-hang 2>&1); rc=$?
 took=$((SECONDS - before))
 check "$([ "$rc" != 0 ] && echo 1)" "--timeout 1 with a hung gate exits non-zero (rc=$rc)"
-check "$(printf '%s\n' "$out" | grep -q 'timed out after 1s' && echo 1)" "--timeout 1 says the gate timed out"
+check "$(printf '%s\n' "$out" | grep -q 'timed out: no output for 1s' && echo 1)" "--timeout 1 says the gate timed out, and how it was killed"
 check "$(printf '%s\n' "$out" | grep -qE '^FAIL .*gate-hang' && echo 1)" "--timeout 1 marks the gate FAIL in the summary"
 check "$([ "$took" -lt 30 ] && echo 1)" "--timeout 1 did not wait for the 60s gate (took ${took}s)"
 
@@ -71,6 +71,85 @@ check "$(kill -0 "$child" 2>/dev/null || echo 1)" "--timeout killed the gate's c
 survivors=$(pgrep -f "$tmp/tests/child-marker.sh" | wc -l | tr -d ' ')
 check "$([ "$survivors" = 0 ] && echo 1)" "--timeout left no process of the gate's (survivors: $survivors)"
 rm -f "$tmp/child.pid"
+
+# ---- --timeout when the gate ignores TERM: the kill must not depend on the gate cooperating ----
+cat >"$tmp/tests/child-stubborn.sh" <<EOF
+#!/bin/bash
+trap '' TERM
+echo \$\$ >"$tmp/stubborn.pid"
+sleep 600
+EOF
+cat >"$tmp/tests/gate-stubborn.sh" <<EOF
+#!/bin/bash
+trap '' TERM
+bash "$tmp/tests/child-stubborn.sh" &
+exec sleep 600
+EOF
+out=$(run --timeout 1 gate-stubborn 2>&1); rc=$?
+hard=$(cat "$tmp/stubborn.pid" 2>/dev/null)
+check "$([ "$rc" != 0 ] && echo 1)" "a gate that ignores TERM still fails the run (rc=$rc)"
+check "$(printf '%s\n' "$out" | grep -q 'KILLed' && echo 1)" "the timeout message says it was KILLed, so rc=137 explains itself"
+check "$(kill -0 "$hard" 2>/dev/null || echo 1)" "the TERM-ignoring child was KILLed too (pid $hard)"
+rm -f "$tmp/stubborn.pid"
+
+# ---- TERM to the harness stops its gates, not just the harness: otherwise a Ctrl-C leaves every gate ----
+# ---- loading the box until its own deadline fires (up to --timeout + 5s each)                        ----
+cat >"$tmp/tests/child-slow.sh" <<EOF
+#!/bin/bash
+echo \$\$ >"$tmp/slow.pid"
+sleep 600
+EOF
+cat >"$tmp/tests/gate-slow.sh" <<EOF
+#!/bin/bash
+bash "$tmp/tests/child-slow.sh" &
+wait
+EOF
+rm -f "$tmp/slow.pid"
+( bash "$tmp/tests/run-all.sh" --timeout 600 gate-slow >/dev/null 2>&1 ) &
+harness=$!
+sleep 2
+kill -TERM "$harness" 2>/dev/null
+sleep 2
+slow=$(cat "$tmp/slow.pid" 2>/dev/null)
+check "$([ -n "$slow" ] && echo 1)" "the slow fixture started a child (pid '$slow')"
+check "$(kill -0 "$slow" 2>/dev/null || echo 1)" "TERM to the harness killed the gate's child (pid $slow)"
+kill -KILL "$slow" 2>/dev/null
+
+# ---- TERM with gates still QUEUED: it must stop the run, not just the gate that is running ----
+for q in gate-queue gate-queue2 gate-queue3; do
+    cat >"$tmp/tests/$q.sh" <<EOF
+#!/bin/bash
+echo \$\$ >>"$tmp/queued.pids"
+exec sleep 600
+EOF
+done
+rm -f "$tmp/queued.pids"
+( bash "$tmp/tests/run-all.sh" -j 1 --timeout 600 gate-queue gate-queue2 gate-queue3 >/dev/null 2>&1 ) &
+harness=$!
+sleep 2
+kill -TERM "$harness" 2>/dev/null
+sleep 3
+still=$(ps -p "$harness" >/dev/null 2>&1 && echo yes || echo no)
+started=$([ -f "$tmp/queued.pids" ] && wc -l <"$tmp/queued.pids" | tr -d ' ' || echo 0)
+alive=0
+for p in $(cat "$tmp/queued.pids" 2>/dev/null); do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done
+check "$([ "$still" = no ] && echo 1)" "TERM ends the harness (still running: $still)"
+check "$([ "$started" = 1 ] && echo 1)" "TERM did not launch the queued gates (started: $started)"
+check "$([ "$alive" = 0 ] && echo 1)" "no gate process survives TERM (alive: $alive)"
+for p in $(cat "$tmp/queued.pids" 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done
+
+# ---- a gate typed twice on the command line runs once, not twice over the same log ----
+: >"$tmp/invocations.txt"
+cat >"$tmp/tests/gate-count.sh" <<EOF
+#!/bin/bash
+echo run >>"$tmp/invocations.txt"
+EOF
+out=$(run -j 1 gate-count gate-count 2>&1); rc=$?
+rows=$(printf '%s\n' "$out" | grep -c '^ok\|^FAIL')
+ran=$(wc -l <"$tmp/invocations.txt" | tr -d ' ')
+check "$([ "$rc" = 0 ] && echo 1)" "a repeated gate exits 0 (rc=$rc)"
+check "$([ "$rows" = 1 ] && echo 1)" "a gate typed twice gives one row (rows: $rows)"
+check "$([ "$ran" = 1 ] && echo 1)" "a gate typed twice is launched once (invocations: $ran)"
 
 # ---- a gate named on the command line is not also run by the auto-append ----
 git -C "$tmp" init -q                        # the auto-added gate only exists inside a git tree
