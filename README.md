@@ -3,7 +3,7 @@
 Stand-alone bash scripts for running and patching an Oracle estate (WebLogic, APEX, ORDS, Database,
 Data Guard, RMAN, GoldenGate) without being an expert in each product. Twenty scripts in three
 folders, `patching/`, `operations/` and `reports/`, one sub-folder per script with its
-`*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch` and
+`*.conf.example` and its own README. Everything except `wls-patch`, `apex-patch`, `ords-patch`, `ohs-patch` and
 `oracle-diag` sources `lib/oracle-lib.sh` from the top of the tree (two levels up), so copy the whole
 tree (`get.sh`, or `get.ps1` on Windows, does it) or a script folder together with `lib/`, never a single file.
 `get.sh` lays the tree down in `$PATCH_BASE/scripts` (default `/u01/patches/scripts`; `get.ps1` uses `%USERPROFILE%\patches\scripts`).
