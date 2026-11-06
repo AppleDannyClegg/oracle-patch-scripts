@@ -316,6 +316,12 @@ try {
     $jdkItem = @(Get-PatchItem -Patch '39555001' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
     Check ($jdkItem.Kind -eq 'jdk') "a JDK record is inferred as Kind jdk from its own record, got [$($jdkItem.Kind)]"
 
+    # the record that motivated the ticket: a JDK 8 bug record whose release name is '1.8.0_481' and whose only
+    # file is p40255927_180_511_Linux-x86-64.zip - neither 'Oracle JDK ...' nor a jdk-* name, so the inference
+    # has to read the release shape or -Patch on this very number still lands in wls/
+    $oneOffItem = @(Get-PatchItem -Patch '40255927' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($oneOffItem.Kind -eq 'jdk') "a JDK record whose release name is 1.8.0_481 is inferred as jdk, got [$($oneOffItem.Kind)]"
+
     $dbItem = @(Get-PatchItem -Patch '39000002' -Kind 'db' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
     Check ($dbItem.Kind -eq 'db') "-Patch -Kind db is honoured, got [$($dbItem.Kind)]"
 
