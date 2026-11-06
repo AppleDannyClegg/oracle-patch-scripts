@@ -80,6 +80,8 @@ P
   cat >"$DOM/bin/stopComponent.sh" <<S
 #!/bin/sh
 echo "stop \$1" >>"$T/actions"
+# a node manager whose credentials are not stored asks for its password on stdin
+[ -e "$T/stop.prompt" ] && { printf 'Enter Node Manager password: '; read -r pw || exit 1; echo "password read" >>"$T/actions"; }
 [ -e "$T/stop.fail" ] && exit 1
 [ -e "$T/stop.stuck" ] || { grep -v "instances/\$1 " "$T/ps.txt" >"$T/ps.new"; mv "$T/ps.new" "$T/ps.txt"; }
 [ -e "$T/ps.fail.after-stop" ] && touch "$T/ps.fail"
@@ -354,6 +356,15 @@ grep -q 'started ohs1' "$T/out" && grep -q 'started ohs2' "$T/out" && ok || bad 
 [ "$(grep -n 'confirmed: nothing runs' "$T/out" | cut -d: -f1)" -lt "$(grep -n '3/5 opatch apply' "$T/out" | cut -d: -f1)" ] && ok || bad "the home-clear confirmation is not before the apply"
 build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
 ! grep -q 'confirmed: nothing runs' "$T/out" && ok || bad "a stuck stop still printed 'confirmed: nothing runs'"
+
+# a stop that prompts for a password must fail at once, not wait on (or read) the operator's terminal: its output goes
+# to run.log, so in tmux the prompt would be invisible and the run would hang mid-outage
+build; running; touch "$T/stop.prompt"
+rc="$(printf 'yes\nyes\n' | HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1; echo $?)"
+[ "$rc" = 1 ] && ! acts | grep -q 'password read' && ! acts | grep -q apply && grep -q 'stopComponent.sh ohs1 failed' "$T/out" && ok || bad "a stop that prompts read stdin or went on: rc $rc, actions [$(acts)]"
+grep -q 'Enter Node Manager password' "$T/out" && grep -q 'startComponent.sh ohs1 storeUserConfig' "$T/out" && ok || bad "a prompting stop does not show the prompt and the storeUserConfig remedy: $(grep -A3 'ohs1 failed' "$T/out")"
+build; running; touch "$T/stop.fail"; rc="$(runr --yes)"
+grep -q 'stopComponent.sh ohs1 failed' "$T/out" && ! grep -q 'asked for the node manager credentials' "$T/out" && ok || bad "a stop that fails for another reason blamed the credentials"
 
 # the unknown-command message names every command the dispatcher has
 build; rc="$(runc frobnicate)"

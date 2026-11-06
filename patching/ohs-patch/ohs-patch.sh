@@ -328,7 +328,7 @@ cmd_preflight() {
       [ -n "$ports" ] || warn "$c: no Listen port read from its httpd.conf/ssl.conf - check it answers by hand after the start"
     done
     nmstart="$nmstart  nohup $bin/startNodeManager.sh > $d/nodemanager.out 2>&1 &"$'\n'
-    if [ -f "$HOME/.wlst/nm-cfg-$dn.props" ] && [ -f "$HOME/.wlst/nm-key-$dn.props" ]; then log "NM creds : stored for $dn"
+    if [ -f "$HOME/.wlst/nm-cfg-$dn.props" ] && [ -f "$HOME/.wlst/nm-key-$dn.props" ]; then log "NM creds : stored for $dn ($HOME/.wlst/nm-cfg-$dn.props, as $(id -un 2>/dev/null)) - run as this user, or startComponent.sh asks for the password"
     else block "no stored node manager credentials for $dn (~/.wlst/nm-cfg-$dn.props): startComponent.sh would prompt mid-outage. Before the window run once, with the node manager up: $bin/startComponent.sh $(printf '%s' "$comps" | head -1) storeUserConfig"; fi
   done <<<"$doms"
   [ -n "$cmds_stop" ] || [ -z "$doms" ] || block "no OHS component (<system-component> with component-type OHS) in any domain of $OH"
@@ -402,7 +402,17 @@ RUN_DIR=""; STATE=""; BK=""
 state() { [ -n "$STATE" ] && printf '%s=%s\n' "$1" "$2" >>"$STATE"; return 0; }
 # a command, logged with its output to the run log; its exit status is returned
 # under --dry-run it only says so: no caller has to remember to return before it
-do_cmd() { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $*"; return 0; fi; log "  \$ $*"; "$@" >>"$RUN_DIR/run.log" 2>&1; }
+# stdin is /dev/null: the output goes to run.log, so a child that prompts (a node manager password) would wait on a
+# question nobody can see; with no stdin it fails at once and takes the caller's failure path
+do_cmd() { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $*"; return 0; fi; log "  \$ $*"; "$@" >>"$RUN_DIR/run.log" 2>&1 </dev/null; }
+# after a failed stop/start: the child's last lines from run.log, and the remedy when they read like a credentials prompt
+why_failed() {
+  local d="$1" c="$2" tailtxt; tailtxt="$(tail -3 "$RUN_DIR/run.log" 2>/dev/null)"
+  [ -n "$tailtxt" ] && printf '%s\n' "$tailtxt" | sed 's/^/    /' >&2
+  if printf '%s' "$tailtxt" | grep -qiE 'password|user ?name|credential'; then
+    err "  it asked for the node manager credentials: none are stored for this user ($(id -un 2>/dev/null), HOME $HOME), or they are stale. With the node manager up, as this user, run once: $d/bin/startComponent.sh ${c:-<component>} storeUserConfig"
+  fi
+}
 installed_ids() { # 'id id ...' sorted; status 1 = lspatches could not be read
   local o; o="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" lspatches 2>/dev/null)" || return 1
   printf '%s\n' "$o" | tr -d '\r' | grep -E '^[0-9]+;' | cut -d';' -f1 | sort -u | tr '\n' ' '
@@ -416,10 +426,10 @@ confirm() {
 stop_all() { # every OHS component, then each domain's node manager; 0 = all stops returned 0
   local d c rc=0
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
-    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"; else err "stopComponent.sh $c failed (rc $?)"; rc=1; fi
+    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"; else err "stopComponent.sh $c failed (rc $?) - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; fi
   done <<<"$COMPS"
   while IFS= read -r d; do [ -n "$d" ] || continue
-    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"; else err "stopNodeManager.sh for $d failed"; rc=1; fi
+    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"; else err "stopNodeManager.sh for $d failed - see $RUN_DIR/run.log"; why_failed "$d" ""; rc=1; fi
   done <<<"$DOMS"
   return $rc
 }
@@ -437,7 +447,7 @@ start_all() {
   done <<<"$DOMS"
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
     t=0; until do_cmd "$d/bin/startComponent.sh" "$c"; do
-      t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "startComponent.sh $c did not succeed in ${START_TIMEOUT}s"; rc=1; continue 2; }
+      t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "startComponent.sh $c did not succeed in ${START_TIMEOUT}s - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; continue 2; }
       sleep "$POLL"
     done
     [ "$DRY_RUN" = 1 ] || log "  started $c"
