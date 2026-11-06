@@ -65,9 +65,14 @@ problems=0; unknowns=0
 OH=""; PD=""; PID=""; DOMS=""; INV=""; COMPS=""; PRE_IDS=""
 
 ts()   { date '+%Y-%m-%d %H:%M:%S'; }
-log()  { printf '%s [INFO ] %s\n' "$(ts)" "$*" >&2; }
-warn() { printf '%s [WARN ] %s\n' "$(ts)" "$*" >&2; }
-err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" >&2; }
+# the narration also goes to <run dir>/ohs-patch.log once a run dir exists; the lines before it (preflight) are
+# held in NARR and written there when the run dir is opened, so the file is the whole story beside run.log
+NARR=""
+say()  { local l; l="$(printf '%s [%s] %s' "$(ts)" "$1" "$2")"; printf '%s\n' "$l" >&2
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then printf '%s\n' "$l" >>"$RUN_DIR/ohs-patch.log"; else NARR="$NARR$l"$'\n'; fi; }
+log()  { say 'INFO ' "$*"; }
+warn() { say 'WARN ' "$*"; }
+err()  { say 'ERROR' "$*"; }
 die()  { err "$*"; exit 2; }
 block()   { err "BLOCKING: $*"; problems=$((problems + 1)); }
 unknown() { err "UNKNOWN: $*"; unknowns=$((unknowns + 1)); }
@@ -518,6 +523,7 @@ restore_all() {
   stop_all || :
   nothing_running || { err "the home is not stopped - not restoring under a live process"; return 1; }
   do_cmd mv "$OH" "$OH.failed-$stamp" || { err "cannot move $OH aside"; return 1; }
+  FAILED_HOME="$OH.failed-$stamp"
   do_cmd tar -C "$(dirname "$OH")" -xzf "$BK/home.tgz" || { err "restore of $OH from $BK/home.tgz failed (the patched home is at $OH.failed-$stamp)"; return 1; }
   do_cmd mv "$INV" "$INV.failed-$stamp" || { err "cannot move $INV aside"; return 1; }
   do_cmd tar -C "$(dirname "$INV")" -xzf "$BK/oraInventory.tgz" || { err "restore of $INV from $BK/oraInventory.tgz failed"; return 1; }
@@ -525,6 +531,15 @@ restore_all() {
   [ "$now" = "$PRE_IDS" ] || { err "the restored home's patches [$now] are not the level before the apply [$PRE_IDS]"; return 1; }
   log "restored $OH and $INV from $BK; patches back at [$now]. The domain archives in $BK were not needed."
   return 0
+}
+
+# every log a failed run leaves, by the path it has NOW: after a restore the patched home (and opatch's own log
+# in it) is the .failed-* copy, not the home the operator knows
+FAILED_HOME=""
+where_logs() {
+  err "LOGS: this script's narration $RUN_DIR/ohs-patch.log; the commands' own output $RUN_DIR/run.log (and nodemanager-*.out beside it)"
+  if [ -n "$FAILED_HOME" ]; then err "      opatch's own log of the failed apply: $FAILED_HOME/cfgtoollogs/opatch/ (the home was renamed by the rollback)"
+  else err "      opatch's own log: $OH/cfgtoollogs/opatch/"; fi
 }
 
 manual_restore() {
@@ -538,10 +553,11 @@ manual_restore() {
 recover() {
   err "$1 - rolling back from $BK"
   state stage rollback
-  if ! restore_all; then state outcome rollback-failed; err "ROLLBACK FAILED - nothing started"; manual_restore; exit 3; fi
-  if ! start_all; then state outcome restored-not-started; err "restored, but it does not start - servers DOWN, no second rollback"; exit 3; fi
+  if ! restore_all; then state outcome rollback-failed; err "ROLLBACK FAILED - nothing started"; manual_restore; where_logs; exit 3; fi
+  if ! start_all; then state outcome restored-not-started; err "restored, but it does not start - servers DOWN, no second rollback"; where_logs; exit 3; fi
   state outcome rolled-back
   err "ROLLED BACK: $OH is back at its level before the apply and running. $PID is NOT applied."
+  where_logs
   exit 1
 }
 
@@ -584,7 +600,7 @@ plan_steps() {
 # a new run dir and its state: what rollback reads
 open_run() {
   RUN_DIR="$RUN_BASE/$STAMP-run"; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR"
-  STATE="$RUN_DIR/state"; : >"$STATE"
+  STATE="$RUN_DIR/state"; : >"$STATE"; printf '%s' "$NARR" >"$RUN_DIR/ohs-patch.log"; NARR=""
   state oracle_home "$OH"; state inventory "$INV"; state patch "$PID"; state backup_dir "$BK"; state pre_patches "$PRE_IDS"
   log "run dir  : $RUN_DIR"
 }
@@ -607,6 +623,7 @@ step_stop() {
     state outcome refused-stop
     err "the home could not be proved stopped - NOT applying; starting the components again"
     start_all || err "and they did not all start again - check them by hand"
+    where_logs
     exit "$([ "$nr" = 2 ] && echo 2 || echo 1)"
   fi
 }
