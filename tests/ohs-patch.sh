@@ -170,6 +170,8 @@ build; printf 'Prereq "checkApplicable" failed.\nPatch 40005842: Platform 46 is 
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*not applicable.*Platform 46' "$T/out" && ok || bad "a failed CheckApplicable was not blocking: rc $rc: $(grep BLOCK "$T/out")"
 build; printf 'Exception in thread main\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 2 ] && ! grep -q READY "$T/out" && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "an unreadable CheckApplicable was not UNKNOWN: rc $rc"
+build; printf 'Invoking prereq "checkapplicable"\nline two\nline three\nPrereq "checkApplicable" is OK.\nOPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
+grep 'UNKNOWN: .*CheckApplicable' "$T/out" | grep -q 'Prereq "checkApplicable" is OK. OPatch succeeded.' && ok || bad "an UNKNOWN CheckApplicable does not quote OPatch's last lines: $(grep 'UNKNOWN' "$T/out")"
 build; printf 'OPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "rc 0 without the 'passed' line was taken as a pass: rc $rc"
 build; rc="$(run)"
