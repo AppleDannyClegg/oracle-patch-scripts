@@ -150,10 +150,12 @@ require_detached() {
   [ -n "${STY:-}" ] && return 0
   [ "${PATCH_DETACHED:-}" = 1 ] && return 0
   { [ -t 0 ] || [ "${PATCH_INTERACTIVE:-}" = 1 ]; } || return 0
+  # $0, not $TOOL, in the suggested command: the tool is not on PATH on a server, so a bare name would be a
+  # command the operator cannot run. Same defect the three sibling copies had (found by tests/detached-gate.sh).
   die "$TOOL $what changes this host, and a dropped session would stop it (a lost ssh, a closed laptop lid).
   Start it detached and it will run to its next safe point whatever happens to the terminal:
     tmux new -s $TOOL        # run the same command inside, then Ctrl-b d to detach
-    nohup $TOOL $what ... >/tmp/$TOOL.out 2>&1 &    # then: tail -f /tmp/$TOOL.out
+    nohup $0 $what ... >/tmp/$TOOL.out 2>&1 &    # then: tail -f /tmp/$TOOL.out
   Refusing rather than risking a stop mid-step. PATCH_DETACHED=1 overrides if you know the session survives."
 }
 
