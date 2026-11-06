@@ -597,6 +597,31 @@ finally {
     $okData = $false; try { $null = Read-Manifest $bad; $okData = $true } catch {}
     Check $okData "an fmw| line with no version/patch still reads (data fields)"
 
+    # ---- a MOS gateway error must not be reported as a token error (Daniel, bad gateway, 6 Nov) ----
+    function Fake-Error($status) {
+        if ($null -eq $status) { return [pscustomobject]@{ Exception = [System.Exception]::new('The operation has timed out') } }
+        [pscustomobject]@{ Exception = [pscustomobject]@{ Response = [pscustomobject]@{ StatusCode = $status } } }
+    }
+    Check ((Get-MosStatus (Fake-Error 502)) -eq 502) "Get-MosStatus reads a status off the error record"
+    $inner = [System.Exception]::new('inner')
+    $inner | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = 401 })
+    $nested = [pscustomobject]@{ Exception = [System.Exception]::new('outer', $inner) }
+    Check ((Get-MosStatus $nested) -eq 401) "Get-MosStatus walks InnerException to find the status"
+    Check ((Get-MosStatus (Fake-Error $null)) -eq 0) "a timeout (no HTTP answer) is status 0"
+    Check (Test-MosRetryable 502) "a gateway error is retried"
+    Check (Test-MosRetryable 429) "a throttle is retried"
+    Check (Test-MosRetryable 0) "a timeout is retried"
+    Check (-not (Test-MosRetryable 401)) "a refused token is NOT retried - 15s cannot fix it"
+    Check (-not (Test-MosRetryable 403)) "a forbidden token is NOT retried"
+    $m502 = Get-MosFailure '/x' (Fake-Error 502)
+    Check ($m502 -match 'gateway' -and $m502 -match 'not your token') "HTTP 502 blames the gateway, and says explicitly it is not the token: $m502"
+    $m401 = Get-MosFailure '/x' (Fake-Error 401)
+    Check ($m401 -match 'token' -and $m401 -match '60 minutes') "HTTP 401 is the token, and says how long it lasts: $m401"
+    $m429 = Get-MosFailure '/x' (Fake-Error 429)
+    Check ($m429 -match 'throttl') "HTTP 429 is a throttle, not a token or a gateway: $m429"
+    $m0 = Get-MosFailure '/x' (Fake-Error $null)
+    Check ($m0 -match 'could not be reached') "no HTTP answer reads as unreachable: $m0"
+
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
     foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }
