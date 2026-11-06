@@ -147,6 +147,24 @@ check "$([ "$started" = 1 ] && echo 1)" "TERM did not launch the queued gates (s
 check "$([ "$alive" = 0 ] && echo 1)" "no gate process survives TERM (alive: $alive)"
 for p in $(cat "$tmp/queued.pids" 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done
 
+# ---- --log: the transcript says what ran, when, and where ----
+rm -f "$tmp/trail.log"
+out=$(run -j 2 --log "$tmp/trail.log" gate-a gate-b 2>&1); rc=$?
+check "$([ "$rc" = 0 ] && echo 1)" "--log exits 0 when the gates pass (rc=$rc)"
+check "$([ -f "$tmp/trail.log" ] && echo 1)" "--log writes the file it was given"
+check "$(grep -qE '^run-all: [0-9]+ gates, at most 2 at a time' "$tmp/trail.log" && echo 1)" "the transcript opens with the header"
+check "$(grep -q 'started .* head ' "$tmp/trail.log" && echo 1)" "the transcript records the start time, host and git head"
+check "$(grep -q '=== summary ===' "$tmp/trail.log" && echo 1)" "the transcript carries the summary"
+check "$(grep -q '^ok   gate-a' "$tmp/trail.log" && echo 1)" "the transcript carries a row per gate"
+check "$(grep -q '  \.\. gate-a ' "$tmp/trail.log" && echo 1)" "the transcript carries the live completion lines"
+
+# ---- without --log the transcript is kept only when the run failed ----
+printf '#!/bin/bash\necho "FAIL deliberate"; exit 1\n' >"$tmp/tests/gate-zzfail.sh"
+out=$(run gate-zzfail 2>&1); rc=$?
+kept=$(printf '%s\n' "$out" | sed -n 's/^logs kept: //p' | head -1)
+check "$([ "$rc" != 0 ] && echo 1)" "a failing run exits non-zero (rc=$rc)"
+check "$([ -n "$kept" ] && [ -f "$kept/run-all.log" ] && echo 1)" "a failing run keeps its transcript in $kept"
+
 # ---- a gate typed twice on the command line runs once, not twice over the same log ----
 : >"$tmp/invocations.txt"
 cat >"$tmp/tests/gate-count.sh" <<EOF
