@@ -52,6 +52,32 @@ check "$(printf '%s\n' "$out" | grep -q 'timed out after 1s' && echo 1)" "--time
 check "$(printf '%s\n' "$out" | grep -qE '^FAIL .*gate-hang' && echo 1)" "--timeout 1 marks the gate FAIL in the summary"
 check "$([ "$took" -lt 30 ] && echo 1)" "--timeout 1 did not wait for the 60s gate (took ${took}s)"
 
+# ---- --timeout kills the gate's CHILDREN too: one gate shell killed is how last night left 34 orphans ----
+cat >"$tmp/tests/child-marker.sh" <<EOF
+#!/bin/bash
+echo \$\$ >"$tmp/child.pid"
+sleep 600
+EOF
+cat >"$tmp/tests/gate-hang-children.sh" <<EOF
+#!/bin/bash
+bash "$tmp/tests/child-marker.sh" &
+exec sleep 600
+EOF
+run --timeout 1 gate-hang-children >/dev/null 2>&1
+sleep 2
+child=$(cat "$tmp/child.pid" 2>/dev/null)
+check "$([ -n "$child" ] && echo 1)" "the hang fixture started a child (pid '$child')"
+check "$(kill -0 "$child" 2>/dev/null || echo 1)" "--timeout killed the gate's child (pid $child)"
+survivors=$(pgrep -f "$tmp/tests/child-marker.sh" | wc -l | tr -d ' ')
+check "$([ "$survivors" = 0 ] && echo 1)" "--timeout left no process of the gate's (survivors: $survivors)"
+rm -f "$tmp/child.pid"
+
+# ---- a gate named on the command line is not also run by the auto-append ----
+git -C "$tmp" init -q                        # the auto-added gate only exists inside a git tree
+out=$(run shellcheck 2>&1)
+rows=$(printf '%s\n' "$out" | grep -c '^ok\|^FAIL')
+check "$([ "$rows" = 1 ] && echo 1)" "naming an auto-added gate runs it once (rows: $rows): $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+
 # ---- bad options are refused, not silently defaulted ----
 run -j 0 gate-a >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "-j 0 is refused with exit 2"
 run --timeout nope gate-a >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "--timeout nope is refused with exit 2"
