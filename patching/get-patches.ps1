@@ -74,6 +74,34 @@ $script:DbOPatch = '6880880'
 $script:DevBuild = '(?i)internal|debug|fastdebug|early[_ ]access'
 
 # ---- network: the only two functions that talk to MOS --------------------------------------------------
+# the HTTP status behind a failed MOS call, or 0 when there was no HTTP answer at all (timeout, DNS, a proxy
+# that refused, TLS). PowerShell 5.1 and 7 wrap that in different exception types, so walk the chain.
+function Get-MosStatus($ErrorRecord) {
+    $e = $ErrorRecord.Exception
+    while ($e) {
+        $r = $e.PSObject.Properties['Response']
+        if ($r -and $r.Value -and $r.Value.PSObject.Properties['StatusCode']) { return [int] $r.Value.StatusCode }
+        $e = $e.InnerException
+    }
+    0
+}
+
+# a gateway error or a throttle is worth another try in a few seconds; a refused token is not - it cannot fix
+# itself while we wait, and retrying it just delays the message the operator needs
+function Test-MosRetryable([int] $Status) { $Status -eq 0 -or $Status -eq 429 -or ($Status -ge 500 -and $Status -le 599) }
+
+# what went wrong, said in terms of who can fix it. A 502/503/504 is Oracle's edge or a proxy in between, NOT the
+# token: reporting it as "did not accept the token" sent an operator to re-paste a token that was fine
+function Get-MosFailure([string] $Path, $ErrorRecord) {
+    $status = Get-MosStatus $ErrorRecord
+    if ($status -eq 401) { return "MOS refused the token (HTTP 401) - it expires after 60 minutes; get a new one and run again: $Path" }
+    if ($status -eq 403) { return "MOS refused the request (HTTP 403) - the token has expired, or it is not entitled to this patch/product: $Path" }
+    if ($status -eq 429) { return "MOS is throttling this client (HTTP 429) - wait a few minutes and run again: $Path" }
+    if ($status -ge 500 -and $status -le 599) { return "MOS's gateway returned HTTP $status - that is Oracle's end or a proxy in between, not your token; wait a few minutes and run again: $Path" }
+    if ($status -eq 0) { return "MOS could not be reached (no HTTP answer - network, proxy or DNS): $Path - $($ErrorRecord.Exception.Message)" }
+    "MOS returned HTTP ${status}: $Path"
+}
+
 function Invoke-MosGet([string] $Path) {
     # a single 500 or a stalled connection aborted the whole plan mid-run; bound each call and retry
     $last = $null
@@ -83,10 +111,11 @@ function Invoke-MosGet([string] $Path) {
             return [string] $r.Content
         } catch {
             $last = $_
-            if ($i -lt 3) { Start-Sleep -Seconds 5 }
+            if (-not (Test-MosRetryable (Get-MosStatus $last))) { throw (Get-MosFailure $Path $last) }
+            if ($i -lt 3) { Start-Sleep -Seconds (5 * $i) }
         }
     }
-    throw "MOS call failed after 3 tries: $Path - $($last.Exception.Message)"
+    throw "$(Get-MosFailure $Path $last) (tried 3 times)"
 }
 
 function Invoke-MosDownload([string] $Url, [string] $OutFile) {
@@ -770,8 +799,9 @@ function Main {
     if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
 
     $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
+    # Invoke-MosGet already says which of the three it was (token, gateway, unreachable), so do not re-guess here
     try { Invoke-MosGet '/Orion/Services/search?bug=6880880' | Out-Null }
-    catch { throw "MOS did not accept the token (expired after 60 minutes, or mis-pasted?), or cannot be reached: $($_.Exception.Message)" }
+    catch { throw "the MOS check failed: $($_.Exception.Message)" }
 
     Write-Host "Host $($m.Host): looking up the newest patches on My Oracle Support"
     $plan = @(Get-PatchPlan $m)
