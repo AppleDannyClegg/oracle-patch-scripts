@@ -70,7 +70,7 @@ err()  { printf '%s [ERROR] %s\n' "$(ts)" "$*" | tee -a "${LOG_FILE:-/dev/null}"
 dbg()  { [ "$VERBOSE" = 1 ] && printf '%s [DEBUG] %s\n' "$(ts)" "$*" >&2; return 0; }
 die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
-run_cmd() { log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0; "$@" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"; return "${PIPESTATUS[0]}"; }
+run_cmd() { log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0; "$@" </dev/null 2>&1 | tee -a "${LOG_FILE:-/dev/null}"; return "${PIPESTATUS[0]}"; }
 run_sh()  { log "CMD: $*"; [ "$DRY_RUN" = 1 ] && return 0; bash -c "$*" </dev/null >>"${LOG_FILE:-/dev/null}" 2>&1; }
 confirm() {
   [ "$ASSUME_YES" = 1 ] || [ "$DRY_RUN" = 1 ] && return 0

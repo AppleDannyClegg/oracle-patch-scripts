@@ -68,7 +68,7 @@ to() {
 # run_cmd: execute (or print under --dry-run), tee output to the log, return its exit code
 run_cmd() {
   log "CMD: $(printf '%s' "$*" | redact)"; [ "$DRY_RUN" = 1 ] && return 0
-  "$@" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"; return "${PIPESTATUS[0]}"
+  "$@" </dev/null 2>&1 | tee -a "${LOG_FILE:-/dev/null}"; return "${PIPESTATUS[0]}"
 }
 # run_sh: a shell snippet detached from our stdin/stdout (start/stop scripts that background things)
 run_sh() { log "CMD: $(printf '%s' "$*" | redact)"; [ "$DRY_RUN" = 1 ] && return 0; bash -c "$*" </dev/null >>"${LOG_FILE:-/dev/null}" 2>&1; }

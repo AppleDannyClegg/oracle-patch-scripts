@@ -101,7 +101,7 @@ run_cmd() {
   if [ "$DRY_RUN" = 1 ]; then
     return 0
   fi
-  "$@" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+  "$@" </dev/null 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
   return "${PIPESTATUS[0]}"
 }
 
