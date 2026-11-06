@@ -62,6 +62,25 @@ unknown() { err "UNKNOWN: $*"; unknowns=$((unknowns + 1)); }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
+# A run outlives the terminal it was started from (the same rule as lib/oracle-lib.sh; this script sources no lib,
+# so it carries its own copy - tests/self-contained-gate.sh fails if a lib-only function is called and not defined
+# here). HUP is ignored for the rest of the run, so a lost ssh or a closed lid does not stop it between steps and
+# never mid-step; and a run started from an INTERACTIVE shell must be detached first, or it is refused.
+require_detached() {
+  local what="${1:-run}"
+  trap '' HUP
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -n "${TMUX:-}" ] && return 0
+  [ -n "${STY:-}" ] && return 0
+  [ "${PATCH_DETACHED:-}" = 1 ] && return 0
+  { [ -t 0 ] || [ "${PATCH_INTERACTIVE:-}" = 1 ]; } || return 0
+  die "ohs-patch $what changes this host, and a dropped session would stop it (a lost ssh, a closed laptop lid).
+  Start it detached and it will run to its next safe point whatever happens to the terminal:
+    tmux new -s ohs-patch        # run the same command inside, then Ctrl-b d to detach
+    nohup $0 $what ... >/tmp/ohs-patch.out 2>&1 &    # then: tail -f /tmp/ohs-patch.out
+  Refusing rather than risking a stop mid-step. PATCH_DETACHED=1 overrides if you know the session survives."
+}
+
 # 1.2.3 >= 1.2 ; numeric, dot by dot
 version_ge() {
   local IFS=. i a b

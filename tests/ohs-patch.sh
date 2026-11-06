@@ -267,5 +267,12 @@ build; running; touch "$T/apply.fail" "$T/apply.corrupt"; rc="$(runr --yes)"
 [ "$rc" = 3 ] && grep -q 'ROLLBACK FAILED' "$T/out" && grep -q 'MANUAL RESTORE' "$T/out" && ok || bad "restore failed: rc $rc (want 3): $(grep ERROR "$T/out" | head -3)"
 case "$(acts)" in *apply*start*) bad "started after a failed restore: [$(acts)]";; *) ok;; esac
 
+# an interactive run that is not detached is refused before anything changes (ohs-patch sources no lib, so it must
+# define require_detached itself - a call to an undefined one printed 'command not found' and the run went on)
+build; running; rc="$(PATCH_INTERACTIVE=1 runr --yes)"
+[ "$rc" != 0 ] && [ -z "$(acts)" ] && nobackup && grep -q 'Start it detached' "$T/out" && ! grep -q 'command not found' "$T/out" && ok || bad "an interactive run was not refused: rc $rc, actions [$(acts)]: $(grep -E 'ERROR|not found' "$T/out" | head -2)"
+build; running; rc="$(PATCH_INTERACTIVE=1 PATCH_DETACHED=1 runr --yes)"
+[ "$rc" = 0 ] && ok || bad "PATCH_DETACHED=1 does not override the refusal: rc $rc"
+
 echo "ohs-patch gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
