@@ -440,18 +440,19 @@ function Get-JdkPlan($Jdks) {
             if (-not $releaseRows) { $releaseRows = $rows }
             # the newest release can list only an internal/debug artifact: skip it and take the newest release
             # with a production file, or the host is patched to a build java-patch will refuse (OBDX 5 Nov 2026)
+            # the same rule as the download (Select-MosFile), so "worth planning" means "has a file we would take"
+            # and the item carries that file: Save-MosPatch re-checks it against the record it reads then
             foreach ($row in ($releaseRows | Sort-Object Date -Descending)) {
-                $files = @(Get-MosFiles $row.Number)
-                if (@($files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' -and $_.Name -notmatch $script:DevBuild }).Count -gt 0) {
-                    $found = [pscustomobject]@{ Release = $r; Row = $row }; break
-                }
+                $sel = Select-MosFile @(Get-MosFiles $row.Number) $r.Label.Substring('Oracle JDK '.Length) 'jdk'
+                if ($sel.File) { $found = [pscustomobject]@{ Release = $r; Row = $row; File = $sel.File }; break }
             }
             if ($found) { break }
         }
         if (-not $found) { Write-Warning "JDK ${major}: no release with a production (non-internal/debug) Linux x86-64 file - get it from MOS Doc 1439822.2 and pass -Patch"; continue }
         $newVersion = $found.Release.Label.Substring('Oracle JDK '.Length)
         if ((Get-VersionKey $newVersion) -gt (Get-VersionKey $oldest.Version)) {
-            New-PlanItem 'jdk' "JDK $major (oldest here: $($oldest.Home))" $oldest.Version $found.Row $newVersion
+            New-PlanItem 'jdk' "JDK $major (oldest here: $($oldest.Home))" $oldest.Version $found.Row $newVersion |
+                Add-Member -NotePropertyName File -NotePropertyValue $found.File -PassThru
         }
     }
 }
@@ -615,32 +616,88 @@ function Get-MosFiles([string] $Patch) {
     $files
 }
 
-# fetch one patch's file for Linux (or Generic), preferring $Release; returns the saved path
-function Save-MosPatch([string] $Patch, [string] $Dest, [string] $Release) {
-    $files = @(Get-MosFiles $Patch)
-    $forUs = @($files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' })
-    if ($forUs.Count -eq 0) { $forUs = $files }
-    $pick = $null
+# which of a patch's files to take: the ONE rule both the JDK plan and the download use, so the file the plan
+# decided was worth planning is the file that is downloaded. In order, none skippable: platform, release ('' = any),
+# production (not internal/debug), archive, then for a JDK .tar.gz before .zip before MOS's order.
+# Returns File (or $null), Candidates (every file that passed, best first), Reason (why File is $null) and Warning
+# (a note for the caller to print). It never throws or prints: the plan skips on $null, the download refuses.
+# Only Kind 'jdk' is strict. java-patch.sh takes only a production .tar.gz (or the zip holding one), and the JDK is
+# the one product that lists internal builds, .rpm packages and both archive kinds; every other kind keeps the
+# courtesy fallbacks it always had, because nobody has shown a record where they pick wrongly.
+function Select-MosFile($Files, [string] $Release, [string] $Kind) {
+    $jdk = $Kind -eq 'jdk'
+    $r = [pscustomobject]@{ File = $null; Candidates = @(); Reason = ''; Warning = '' }
+    $names = { param($set) (@($set | ForEach-Object { $_.Name }) -join ', ') }
+    $forUs = @($Files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' })
+    if ($forUs.Count -eq 0) {
+        if ($jdk) { $r.Reason = "no Linux x86-64 or Generic file (listed: $(& $names $Files))"; return $r }
+        $forUs = @($Files)
+    }
+    $matching = $forUs
     if ($Release) {
         $tag = '_' + $Release.Replace('.', '')
         $matching = @($forUs | Where-Object { $_.Release.StartsWith($Release) -or $_.Name.Contains($tag) })
-        if ($matching.Count -gt 0) {
-            # Oracle lists a production artifact and sometimes an internal/debug one for the same release. A
-            # fastdebug/'internal-bin' tarball is not what a patch tool installs (java-patch refuses it), so
-            # prefer the production file; if only a debug one exists, say so rather than quietly take it.
-            $dev = $script:DevBuild
-            $production = @($matching | Where-Object { $_.Name -notmatch $dev })
-            $pool = if ($production.Count) { $production } else { Write-Warning "patch ${Patch}: only an internal/debug artifact is listed for release '$Release' - it is not a production JDK: $($matching[0].Name)"; $matching }
-            # the patch tools take an archive (.zip, .tar.gz); an .rpm/.exe/.deb is for a package manager
-            $archives = @($pool | Where-Object { $_.Name -match '(?i)\.(zip|t(ar\.)?gz)$' })
-            $pick = if ($archives.Count) { $archives | Select-Object -First 1 } else { $pool | Select-Object -First 1 }
+        # one file under another release label is still the patch's file (a -Patch number, a re-labelled record)
+        if ($matching.Count -eq 0 -and $forUs.Count -eq 1) { $matching = $forUs }
+        if ($matching.Count -eq 0) {
+            $r.Reason = "several files and none is for release '$Release':`n" + (($forUs | ForEach-Object { "    $($_.Name)  release $($_.Release)  ($($_.Platform))" }) -join "`n")
+            return $r
+        }
+    } else {
+        $rels = @($forUs | ForEach-Object { $_.Release } | Where-Object { $_ } | Sort-Object -Unique)
+        if ($rels.Count -gt 1) { $r.Warning = "no release given and the record lists several ($($rels -join ', '))" }
+    }
+    # Oracle lists a production artifact and sometimes an internal/debug one for the same release. A
+    # fastdebug/'internal-bin' tarball is not what a patch tool installs (java-patch refuses it)
+    $production = @($matching | Where-Object { $_.Name -notmatch $script:DevBuild })
+    if ($production.Count -eq 0) {
+        if ($jdk) { $r.Reason = "only an internal/debug build is listed ($(& $names $matching)) - not a production JDK"; return $r }
+        $r.Warning = "only an internal/debug artifact is listed for release '$Release': $($matching[0].Name)"
+        $production = $matching
+    }
+    # the patch tools take an archive (.zip, .tar.gz); an .rpm/.exe/.deb is for a package manager
+    $archives = @($production | Where-Object { $_.Name -match '(?i)\.(zip|t(ar\.)?gz)$' })
+    if ($archives.Count -eq 0) {
+        if ($jdk) { $r.Reason = "no archive for java-patch.sh, only $(& $names $production)"; return $r }
+        $archives = $production
+    }
+    if ($jdk) {
+        $archives = @(@($archives | Where-Object { $_.Name -match '(?i)\.t(ar\.)?gz$' }) + @($archives | Where-Object { $_.Name -notmatch '(?i)\.t(ar\.)?gz$' }))
+    }
+    $r.Candidates = $archives
+    $r.File = $archives[0]
+    $r
+}
+
+# fetch one patch's file for Linux (or Generic), preferring $Release; returns the saved path.
+# -Pin is the file the plan chose (JDK only today): the record is read again here and can have changed since
+# (Cerebro, Edi, Jocasta 5 Nov), so the pinned NAME is looked up in the fresh record and its fresh SHA-256 used
+function Save-MosPatch {
+    [CmdletBinding()]
+    param([string] $Patch, [string] $Dest, [string] $Release, [string] $Kind = '', $Pin = $null)
+    $files = @(Get-MosFiles $Patch)
+    $sel = Select-MosFile $files $Release $Kind
+    if ($sel.Warning) { Write-Warning "patch ${Patch}: $($sel.Warning)" }
+    $how = if ($Kind -eq 'jdk') { 'get the JDK from MOS Doc 1439822.2 and pass its number with -Patch' } else { 'check the patch number' }
+    $pick = $sel.File
+    if ($Pin) {
+        $now = @($sel.Candidates | Where-Object { $_.Name -eq $Pin.Name }) | Select-Object -First 1
+        if ($now) {
+            # same name, same version in Oracle's naming: take it, but a moved digest means MOS re-cut the bytes
+            if ($Pin.Sha -and $now.Sha -ne $Pin.Sha) {
+                Write-Warning "patch ${Patch}: the SHA-256 for $($Pin.Name) changed since the plan ($($Pin.Sha.Substring(0, [Math]::Min(8, $Pin.Sha.Length))) -> $($now.Sha.Substring(0, [Math]::Min(8, $now.Sha.Length)))) - taking the file MOS lists now"
+            }
+            $pick = $now
+        } elseif (@($files | Where-Object { $_.Name -eq $Pin.Name }).Count) {
+            # still listed but no longer passes the rule the plan used: the record contradicts the plan - never re-pick
+            throw "patch ${Patch}: $($Pin.Name) was planned but the record no longer offers it as a production archive for release '$Release' - run again"
+        } elseif ($pick) {
+            Write-Warning "patch ${Patch}: $($Pin.Name) was planned but is gone from the record - taking $($pick.Name) instead"
+        } else {
+            throw "patch ${Patch}: $($Pin.Name) was planned but is gone from the record, and nothing else qualifies: $($sel.Reason) - run again"
         }
     }
-    if (-not $pick -and $forUs.Count -eq 1) { $pick = $forUs[0] }
-    if (-not $pick) {
-        $list = ($forUs | ForEach-Object { "    $($_.Name)  release $($_.Release)  ($($_.Platform))" }) -join "`n"
-        throw "patch $Patch has several files and none is for release '$Release':`n$list"
-    }
+    if (-not $pick) { throw "patch ${Patch}: $($sel.Reason) - $how" }
     # an unverified file is not installed, and the check is on $pick BEFORE $Dest is created or a .part is
     # written: both the reuse and the mismatch checks below are pointless without a digest, and MOS always
     # gives one for a downloadable file - so a missing one is a wrong patch response (or a cut-off body)
@@ -808,7 +865,7 @@ function Invoke-OPatchFollowUp($Manifest, $Downloaded, [string] $Dest) {
         $kit = $n.KitSaved
         if ($n.Item) {
             Write-Host "$($n.Item.What): patch $($n.Item.Patch)"
-            try { $kit = Save-MosPatch -Patch $n.Item.Patch -Dest (Join-Path $Dest $n.Item.Kind) -Release $n.Item.Release }
+            try { $kit = Save-MosPatch -Patch $n.Item.Patch -Dest (Join-Path $Dest $n.Item.Kind) -Release $n.Item.Release -Kind $n.Item.Kind }
             catch { $failed++; Write-Host "  FAILED: $($_.Exception.Message)" -ForegroundColor Red; continue }
         }
         $kv = Get-ZipOPatchVersion $kit
@@ -924,7 +981,7 @@ function Main {
     foreach ($p in $plan) {
         Write-Host "$($p.What): patch $($p.Patch)"
         try {
-            $saved = Save-MosPatch -Patch $p.Patch -Dest (Join-Path $Dest $p.Kind) -Release $p.Release
+            $saved = Save-MosPatch -Patch $p.Patch -Dest (Join-Path $Dest $p.Kind) -Release $p.Release -Kind $p.Kind -Pin $p.File
             $downloaded += [pscustomobject]@{ Item = $p; Saved = $saved }
             if ($p.Kind -eq 'jdk') { Expand-JdkTarball $saved }
         }
