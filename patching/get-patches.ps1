@@ -428,9 +428,18 @@ function Get-JdkPlan($Jdks) {
         $found = $null
         foreach ($r in $candidates) {
             $rows = @(Get-MosPatchRows $script:ProductJdk $r.Id $script:PlatformLinux)
+            # the release's own update is the row titled 'Oracle JDK <n> Update <u>'. MOS also lists one-offs and
+            # JRE rows under the same release, and the newest one is often a bug-titled patch whose only artifact
+            # is an internal/debug build (40255927 / 8u511, measured 6 Nov 2026) - so rank by the release update's
+            # own title, and fall back to any row only when the release carries none
+            # NOT $jdkRows: PowerShell looks a variable up the call stack, and Invoke-MosGet (called from
+            # Get-MosPatchRows below) reads its OWN $jdkRows - a local with that name here shadows the caller's
+            # fixture and the next release's rows come back empty
+            $releaseRows = @($rows | Where-Object { $_.Abstract -match '(?i)^Oracle JDK\b' })
+            if (-not $releaseRows) { $releaseRows = $rows }
             # the newest release can list only an internal/debug artifact: skip it and take the newest release
             # with a production file, or the host is patched to a build java-patch will refuse (OBDX 5 Nov 2026)
-            foreach ($row in ($rows | Sort-Object Date -Descending)) {
+            foreach ($row in ($releaseRows | Sort-Object Date -Descending)) {
                 $files = @(Get-MosFiles $row.Number)
                 if (@($files | Where-Object { $_.Platform -match 'Generic|Linux x86-64' -and $_.Name -notmatch $script:DevBuild }).Count -gt 0) {
                     $found = [pscustomobject]@{ Release = $r; Row = $row }; break

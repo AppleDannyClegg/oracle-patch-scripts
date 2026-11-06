@@ -61,7 +61,17 @@ $script:withSpb = $true
 $cohRows = '<results>' +
     (Row 39000011 'Coherence 12.2.1.4 Cumulative Patch 32 (12.2.1.4.32)' '2026-07-15') +
     (Row 39000010 'Coherence 12.2.1.4 Cumulative Patch 33 (12.2.1.4.33)' '2026-10-20') + '</results>'
-$jdkRows = '<results>' + (Row 39000020 'Oracle JDK 8 Update 481 for Linux x86-64' '2026-10-20') + '</results>'
+# a newer one-off in the same release: MOS lists it under the JDK release but its abstract is a bug title, and the
+# only artifact inside is an internal/debug build (measured 6 Nov 2026 on 40255927 / 8u511)
+$jdkRows = '<results>' + (Row 39000020 'Oracle JDK 8 Update 481 for Linux x86-64' '2026-10-20') +
+    (Row 40255927 'crash at IdealLoopTree::check_safepts' '2026-11-05') + '</results>'
+$jdkBugOneOff = @'
+<results><patch has_prereqs="n"><name>40255927</name><release id="701" name="1.8.0_481"/>
+<platform id="226"><![CDATA[Linux x86-64]]></platform>
+<files><file><name>p40255927_180_511_Linux-x86-64.zip</name><size>17</size>
+<download_url host="https://updates.oracle.com"><![CDATA[/Orion/Download/process_form/p40255927_180_511_Linux-x86-64.zip?aru=1]]></download_url>
+<digest type="SHA-256">SHA_HERE</digest></file></files></patch></results>
+'@
 # the 8u481 patch's files: Get-JdkPlan now fetches them to require a production (non-internal/debug) artifact
 $jdkBug481 = @'
 <results><patch has_prereqs="n"><name>39000020</name><release id="701" name="1.8.0_481"/>
@@ -131,6 +141,7 @@ function Invoke-MosGet([string] $Path) {
     if ($Path -like '*product=12443&*') { return '<results></results>' }
     if ($Path -like '*search?bug=39000002*') { return $script:bugXml }
     if ($Path -like '*search?bug=39000020*') { return $script:bugXmlJdk481 }
+    if ($Path -like '*search?bug=40255927*') { return $jdkBugOneOff }
     if ($Path -like '*search?bug=39555001*') { return $script:bugXmlJdk }
     if ($Path -like '*search?bug=30966770*') { return $bugNoSha }
     throw "unexpected MOS call $Path"
@@ -181,6 +192,7 @@ try {
     Check (-not ($nums -contains '39000010')) "Coherence is not fetched separately when the SPB carries it"
     Check ($nums -contains '39000003') "newest FMW Platform Bundle 39000003 planned"
     Check ($nums -contains '39000020') "JDK 8u481 (39000020) planned: 491 has no patch yet, the Performance build is skipped"
+    Check (-not ($nums -contains '40255927')) "a newer one-off whose abstract is a bug title is not taken as the JDK update (40255927)"
     Check (@($plan | Where-Object { $_.Kind -eq 'jdk' }).Count -eq 1) "one JDK download per major version"
     Check (-not ($nums -contains '28186730')) "no OPatch kit for OPatch 13.9.4.2.23"
     Check ($nums -contains '39600003') "19c client: newest Database Release Update 19.31 (39600003), not OJVM or a Revision"
