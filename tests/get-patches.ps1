@@ -623,6 +623,24 @@ finally {
     $m0 = Get-MosFailure '/x' (Fake-Error $null)
     Check ($m0 -match 'could not be reached') "no HTTP answer reads as unreachable: $m0"
 
+    # ---- debugging: a failed call says WHAT came back, and a stale token is called out by age ----
+    $errWithBody = [pscustomobject]@{
+        Exception = [pscustomobject]@{ Response = [pscustomobject]@{ StatusCode = 502 } }
+        ErrorDetails = [pscustomobject]@{ Message = "<html>`r`n  <TITLE>Access`nDenied</TITLE>`r`n</html>" + ('x' * 400) }
+    }
+    $head = Get-MosBodyHead $errWithBody
+    Check ($head -match 'Access Denied') "the body head is whitespace-collapsed, so HTML reads as one line: $($head.Substring(0, [Math]::Min(60, $head.Length)))"
+    Check ($head.Length -le 204) "the body head is truncated (length $($head.Length))"
+    Check ((Get-MosBodyHead (Fake-Error 502)) -eq '') "no body means no body line, not 'null'"
+    $mBody = Get-MosFailure '/x' $errWithBody
+    Check ($mBody -match 'body starts') "the failure message carries the body head: $mBody"
+    $tok = Join-Path ([IO.Path]::GetTempPath()) ("tok-" + [guid]::NewGuid() + ".txt")
+    Set-Content -LiteralPath $tok -Value 'not-a-real-token'
+    (Get-Item -LiteralPath $tok).LastWriteTime = (Get-Date).AddMinutes(-170)
+    $age = Get-TokenAgeMinutes $tok
+    Check ($age -ge 169 -and $age -le 171) "the token age is read from the file's mtime (got $age)"
+    Remove-Item -LiteralPath $tok -Force
+
     # ---- patch_base| drives the upload hints, and the hints carry no /u01/patches (Cerebro seam suite) ---
     $hintDest = Join-Path $tmp 'hint'
     foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }

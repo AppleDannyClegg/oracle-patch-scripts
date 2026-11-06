@@ -90,30 +90,54 @@ function Get-MosStatus($ErrorRecord) {
 # itself while we wait, and retrying it just delays the message the operator needs
 function Test-MosRetryable([int] $Status) { $Status -eq 0 -or $Status -eq 429 -or ($Status -ge 500 -and $Status -le 599) }
 
+# a short, safe excerpt of what a failed call returned. A 502 body is the fastest way to see WHY (an "Access
+# Denied" page is an expired token; a proxy page names the proxy), and it costs nothing when there is no body
+function Get-MosBodyHead($ErrorRecord) {
+    $m = $ErrorRecord.ErrorDetails.Message
+    if (-not $m) { return '' }
+    $t = ($m -replace '\s+', ' ').Trim()
+    if ($t.Length -gt 200) { $t = $t.Substring(0, 200) + '...' }
+    $t
+}
+
+# how old the token file is, in minutes - a MOS token lasts 60, and an expired one looks like a gateway error
+function Get-TokenAgeMinutes([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    [int] ((Get-Date) - (Get-Item -LiteralPath $Path).LastWriteTime).TotalMinutes
+}
+
 # what went wrong, said in terms of who can fix it. A 502/503/504 is Oracle's edge or a proxy in between, NOT the
 # token: reporting it as "did not accept the token" sent an operator to re-paste a token that was fine
 function Get-MosFailure([string] $Path, $ErrorRecord) {
     $status = Get-MosStatus $ErrorRecord
-    if ($status -eq 401) { return "MOS refused the token (HTTP 401) - it expires after 60 minutes; get a new one and run again: $Path" }
-    if ($status -eq 403) { return "MOS refused the request (HTTP 403) - the token has expired, or it is not entitled to this patch/product: $Path" }
-    if ($status -eq 429) { return "MOS is throttling this client (HTTP 429) - wait a few minutes and run again: $Path" }
+    $head = Get-MosBodyHead $ErrorRecord
+    $tail = if ($head) { " - body starts: $head" } else { '' }
+    if ($status -eq 401) { return "MOS refused the token (HTTP 401) - it expires after 60 minutes; get a new one and run again: $Path$tail" }
+    if ($status -eq 403) { return "MOS refused the request (HTTP 403) - the token has expired, or it is not entitled to this patch/product: $Path$tail" }
+    if ($status -eq 429) { return "MOS is throttling this client (HTTP 429) - wait a few minutes and run again: $Path$tail" }
     # measured 6 Nov 2026: an expired token came back as HTTP 502 through this call, and a fresh one worked
     # immediately, so do not offer 5xx as proof the token is fine - check the token's age first
-    if ($status -ge 500 -and $status -le 599) { return "MOS's edge returned HTTP $status. First renew the token - an expired one (over 60 minutes old) looks like this from here. If a fresh token still gets $status, it is Oracle's end or a proxy in between: $Path" }
+    if ($status -ge 500 -and $status -le 599) { return "MOS's edge returned HTTP $status. First renew the token - an expired one (over 60 minutes old) looks like this from here. If a fresh token still gets $status, it is Oracle's end or a proxy in between: $Path$tail" }
     if ($status -eq 0) { return "MOS could not be reached (no HTTP answer - network, proxy or DNS): $Path - $($ErrorRecord.Exception.Message)" }
-    "MOS returned HTTP ${status}: $Path"
+    "MOS returned HTTP ${status}: $Path$tail"
 }
 
 function Invoke-MosGet([string] $Path) {
     # a single 500 or a stalled connection aborted the whole plan mid-run; bound each call and retry
     $last = $null
     for ($i = 1; $i -le 3; $i++) {
+        $sw = [Diagnostics.Stopwatch]::StartNew()
         try {
             $r = Invoke-WebRequest -Uri ($script:MosBase + $Path) -Headers $script:MosHeaders -UseBasicParsing -TimeoutSec 60
+            $sw.Stop()
+            Write-Verbose ("MOS GET {0} -> {1} {2} bytes in {3} ms" -f $Path, $r.StatusCode, ([string] $r.Content).Length, $sw.ElapsedMilliseconds)
             return [string] $r.Content
         } catch {
+            $sw.Stop()
             $last = $_
-            if (-not (Test-MosRetryable (Get-MosStatus $last))) { throw (Get-MosFailure $Path $last) }
+            $status = Get-MosStatus $last
+            Write-Verbose ("MOS GET {0} -> {1} after {2} ms (try {3} of 3)" -f $Path, $(if ($status) { "HTTP $status" } else { $last.Exception.Message }), $sw.ElapsedMilliseconds, $i)
+            if (-not (Test-MosRetryable $status)) { throw (Get-MosFailure $Path $last) }
             if ($i -lt 3) { Start-Sleep -Seconds (5 * $i) }
         }
     }
@@ -801,6 +825,13 @@ function Main {
     if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
 
     $script:MosHeaders = @{ Authorization = "Bearer $(Read-MosToken $TokenFile)" }
+    # a MOS token lasts 60 minutes and an expired one fails as HTTP 502 or 401 halfway through a run - say the
+    # age up front, so the operator renews it before a long download rather than after
+    $tokenAge = Get-TokenAgeMinutes $TokenFile
+    Write-Verbose "token: $TokenFile ($(if ($null -ne $tokenAge) { "$tokenAge minutes old" } else { 'age unknown' }))"
+    if ($null -ne $tokenAge -and $tokenAge -ge 55) {
+        Write-Warning "the MOS token in $TokenFile is $tokenAge minutes old and these expire at 60 - generate a new one at https://updates.oracle.com/Orion/GenToken/get_token if this run is longer than a few minutes"
+    }
     # Invoke-MosGet already says which of the three it was (token, gateway, unreachable), so do not re-guess here
     try { Invoke-MosGet '/Orion/Services/search?bug=6880880' | Out-Null }
     catch { throw "the MOS check failed: $($_.Exception.Message)" }
