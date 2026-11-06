@@ -373,6 +373,15 @@ grep -q 'Enter Node Manager password' "$T/out" && grep -q 'startComponent.sh ohs
 build; running; touch "$T/stop.fail"; rc="$(runr --yes)"
 grep -q 'stopComponent.sh ohs1 failed' "$T/out" && ! grep -q 'asked for the node manager credentials' "$T/out" && ok || bad "a stop that fails for another reason blamed the credentials"
 
+# the narration is on disk with the children's output, and a failure names every log the operator needs (Weyland 21:23:50)
+build; running; rc="$(runr --yes)"; rd="$(find "$T/runs" -maxdepth 1 -name '*-run' -type d | head -1)"
+[ -f "$rd/ohs-patch.log" ] && grep -q 'READY: nothing blocking' "$rd/ohs-patch.log" && grep -q '2/5 stop' "$rd/ohs-patch.log" && grep -q '5/5 applied and verified' "$rd/ohs-patch.log" && ok || bad "the run's narration is not in $rd/ohs-patch.log: $(ls "$rd" 2>/dev/null | tr '\n' ' ')"
+build; running; touch "$T/apply.fail"; rc="$(runr --yes)"; rd="$(find "$T/runs" -maxdepth 1 -name '*-run' -type d | head -1)"
+grep -q "$rd/ohs-patch.log" "$T/out" && grep -q "$rd/run.log" "$T/out" && ok || bad "a failed run does not name its run dir logs: $(grep -i 'logs' "$T/out" | head -2)"
+grep -qE "$OH\.failed-[0-9-]+/cfgtoollogs/opatch" "$T/out" && ok || bad "after the rollback renamed the home, opatch's log is not named under the .failed-* copy: $(grep cfgtoollogs "$T/out" | head -2)"
+build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
+grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! grep -q 'failed-.*cfgtoollogs' "$T/out" && ok || bad "a refused stop does not name the logs, or names a .failed-* home that was never made"
+
 # the unknown-command message names every command the dispatcher has
 build; rc="$(runc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
