@@ -826,9 +826,13 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
     # the LOCAL half of the hint is this machine's path, so it uses this machine's separator - a Windows-style
     # hint printed on macOS gives scp a path that cannot exist (seen 6 Nov 2026). The remote half is Linux: '/'
     $sep = [IO.Path]::DirectorySeparatorChar
+    # a hint describes what is IN the folder, not that the folder exists: a run whose JDK download was refused
+    # still told the operator to scp jdk/*.tar.gz, a line that cannot be run (6 Nov 2026)
     $line = {
         param([string] $Kind, [string] $Filter, [string] $Trailer)
-        if (-not (Test-Path -LiteralPath (Join-Path $Dest $Kind))) { return }
+        $dir = Join-Path $Dest $Kind
+        if (-not (Test-Path -LiteralPath $dir)) { return }
+        if (-not (Get-ChildItem -LiteralPath $dir -Filter $Filter -File -ErrorAction SilentlyContinue)) { return }
         "  scp `"$Dest$sep$Kind$sep$Filter`" oracle@${HostName}:$b/$Kind/$Trailer"
     }
     $out = @()
