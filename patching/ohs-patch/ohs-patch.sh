@@ -48,6 +48,9 @@
 #     instances, and OHS server instances" -> every process whose command line names the home is listed
 #   - "must be applied only to an Oracle Fusion Middleware home where the Oracle Database Client 12c has been
 #     upgraded to 19c" (KB585169) -> a DB19C bundle on a home still on the plain bundle line is refused
+#   - opatch apply refuses a patch whose required components are not in the home (OUI-67073, e.g. a DB19C bundle
+#     needing oracle.rdbms.rsf 19c on a home whose Database Client is 12c) - but only after the stop and backup ->
+#     'opatch prereq CheckApplicable' asks the same question read-only; a missing component is blocking
 #   - "ORACLE_HOME must have OPatch version 13.9.4.2.13 or higher" -> the README's minimum against opatch version
 #   - "For a complete rollback, restore ORACLE_HOME and CENTRAL INVENTORY from the backups" -> the backup is the
 #     rollback, so there must be room for it
@@ -298,6 +301,22 @@ cmd_preflight() {
     if printf '%s\n' "$lsp" | grep -qiE 'OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE'; then log "series   : home is on the DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then block "$id is a DB19C bundle but $OH is on the plain OHS bundle line - the Database Client 19c upgrade (KB585169) comes first"
     else warn "no OHS bundle installed yet: confirm $OH had the Database Client 19c upgrade (KB585169) before applying the DB19C bundle $id"; fi
+  fi
+
+  # required components (read-only OPatch prereq): opatch apply checks that the home has every component the patch
+  # needs (CheckMissingComps) only AFTER the stop and the backup. A DB19C bundle on a home whose Database Client is
+  # still 12c fails there with OUI-67073 naming oracle.rdbms.rsf:19.0.0.0.0 (Gen's host, 6 Nov) - ask now instead
+  local app arc miss
+  app="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckApplicable -ph . -oh "$OH" 2>&1)"; arc=$?
+  if [ "$arc" = 0 ] && printf '%s' "$app" | grep -qi 'Prereq "checkApplicable" passed'; then
+    log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
+  elif printf '%s' "$app" | grep -qi 'requires component(s) that are not installed'; then
+    miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
+    block "$id needs ${miss:-a component} that is not installed in $OH (OUI-67073) - opatch apply would refuse after the stop. For a DB19C bundle that is the Database Client 19c upgrade (KB585169), which comes first"
+  elif printf '%s' "$app" | grep -qi 'Prereq "checkApplicable" failed'; then
+    block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
+  else
+    unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: $(printf '%s\n' "$app" | head -2 | tr '\n' ' ')"
   fi
 
   # conflicts (read-only OPatch prereq)
