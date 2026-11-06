@@ -423,15 +423,29 @@ confirm() {
   local a; read -r -p "$1 Type yes to go on: " a; [ "$a" = yes ]
 }
 
-stop_all() { # every OHS component, then each domain's node manager; 0 = all stops returned 0
-  local d c rc=0
+# every OHS component, then each domain's node manager, each tried whatever the one before returned; 0 = all
+# returned 0. A non-zero stop is evidence, not the verdict: the callers judge on nothing_running, once, after this
+# (a node manager that was already down returns non-zero with nothing to stop). STOP_FAILED names each one.
+STOP_FAILED=""
+stop_all() {
+  local d c r rc=0; STOP_FAILED=""
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
-    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"; else err "stopComponent.sh $c failed (rc $?) - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; fi
+    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"
+    else r=$?; err "stopComponent.sh $c failed (rc $r) - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; STOP_FAILED="${STOP_FAILED}stopComponent.sh $c returned $r; "; fi
   done <<<"$COMPS"
   while IFS= read -r d; do [ -n "$d" ] || continue
-    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"; else err "stopNodeManager.sh for $d failed - see $RUN_DIR/run.log"; why_failed "$d" ""; rc=1; fi
+    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"
+    else r=$?; err "stopNodeManager.sh for $d failed (rc $r) - see $RUN_DIR/run.log"; why_failed "$d" ""; rc=1; STOP_FAILED="${STOP_FAILED}stopNodeManager.sh for $(domain_name "$d") returned $r; "; fi
   done <<<"$DOMS"
   return $rc
+}
+
+# after stop_all: the proof decides. 0 = nothing runs from the home (a non-zero stop is then a warning naming it);
+# 1 = something still runs; 2 = ps unreadable (fail closed)
+stopped_proved() {
+  local nr; nothing_running; nr=$?
+  [ "$nr" = 0 ] && [ -n "$STOP_FAILED" ] && warn "${STOP_FAILED}but nothing runs from $OH, so the home is clear - carrying on (a stop with nothing to stop, e.g. node manager already down)"
+  return "$nr"
 }
 
 # node manager, then every component (retried until START_TIMEOUT: startComponent fails until node manager listens),
@@ -587,9 +601,8 @@ step_backup() {
 step_stop() {
   state stage stop
   log "2/5 stop OHS components and node manager"
-  local nr=0
-  if ! stop_all; then nr=1
-  else nothing_running; nr=$?; fi
+  local nr
+  stop_all; stopped_proved; nr=$?
   if [ "$nr" != 0 ]; then
     state outcome refused-stop
     err "the home could not be proved stopped - NOT applying; starting the components again"
@@ -676,10 +689,9 @@ cmd_stop() {
   discover; no_weblogic stop
   confirm "This stops OHS ($(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ' | sed 's/ $//') and node manager) on this box." || { err "not confirmed - nothing was changed"; exit 1; }
   open_log stop
-  local rc=0; stop_all || rc=1
+  stop_all
   [ "$DRY_RUN" = 1 ] && exit 0
-  nothing_running || { local n=$?; err "the home could not be proved stopped"; exit "$([ "$n" = 2 ] && echo 2 || echo 1)"; }
-  [ "$rc" = 0 ] || { err "a stop command failed, although nothing runs from $OH now"; exit 1; }
+  stopped_proved || { local n=$?; err "the home could not be proved stopped"; exit "$([ "$n" = 2 ] && echo 2 || echo 1)"; }
   log "stopped: nothing runs from $OH"
   exit 0
 }

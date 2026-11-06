@@ -89,7 +89,7 @@ exit 0
 S
   cat >"$DOM/bin/stopNodeManager.sh" <<S
 #!/bin/sh
-echo "stopNM" >>"$T/actions"; grep -v "weblogic.NodeManager" "$T/ps.txt" >"$T/ps.new"; mv "$T/ps.new" "$T/ps.txt"; exit 0
+echo "stopNM" >>"$T/actions"; [ -e "$T/nm.down" ] && { echo "Node Manager is not running" >&2; exit 3; }; grep -v "weblogic.NodeManager" "$T/ps.txt" >"$T/ps.new"; mv "$T/ps.new" "$T/ps.txt"; exit 0
 S
   cat >"$DOM/bin/startNodeManager.sh" <<S
 #!/bin/sh
@@ -105,7 +105,7 @@ echo " 6\$\$ $OH/ohs/bin/httpd -d $DOM/config/fmwconfig/components/OHS/instances
 S
   printf '#!/bin/sh\n[ -e "%s/curl.fail" ] && { printf 000; exit 7; }\nprintf 200\n' "$T" >"$T/stub/curl"
   chmod +x "$DOM/bin/"*.sh "$T/stub/curl"
-  : >"$T/ps.txt"; rm -f "$T"/*.fail "$T"/*.fail-patched "$T"/apply.* "$T"/stop.* "$T/ps.fail.after-stop" "$T/changed" "$T/opatch.log" "$T/actions"
+  : >"$T/ps.txt"; rm -f "$T/nm.down" "$T"/*.fail "$T"/*.fail-patched "$T"/apply.* "$T"/stop.* "$T/ps.fail.after-stop" "$T/nm.down" "$T/changed" "$T/opatch.log" "$T/actions"
 }
 run() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1; echo $?; }
 
@@ -239,6 +239,11 @@ build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
 [ "$rc" = 1 ] && ! acts | grep -q apply && acts | grep -q 'start ohs1' && grep -q 'still running from' "$T/out" && ok || bad "a process left after stop: rc $rc, actions [$(acts)]"
 build; running; touch "$T/stop.fail"; rc="$(runr --yes)"
 [ "$rc" = 1 ] && ! acts | grep -q apply && ok || bad "stopComponent failed: rc $rc, actions [$(acts)]"
+# a stop that had nothing to stop (node manager already down) is not a reason to abandon the window: the proof is
+# "nothing runs from the home", judged once after every stop has been tried (Gen's host, Weyland 21:14:11)
+build; running; grep -v weblogic.NodeManager "$T/ps.txt" >"$T/ps.new"; mv "$T/ps.new" "$T/ps.txt"; touch "$T/nm.down"; rc="$(runr --yes)"
+[ "$rc" = 0 ] && acts | grep -q apply && st | grep -q '^outcome=applied$' && ok || bad "node manager already down refused the run: rc $rc, actions [$(acts)]: $(grep -E 'ERROR' "$T/out" | head -3)"
+grep -q 'WARN .*stopNodeManager.sh .* returned 3.*nothing runs from' "$T/out" && ok || bad "a non-zero stop on a quiet home is not named in a warning: $(grep -iE 'warn|stopNodeManager' "$T/out" | head -3)"
 build; running; touch "$T/ps.fail.after-stop"; rc="$(runr --yes)"
 [ "$rc" = 2 ] && ! acts | grep -q apply && ok || bad "ps unreadable after stop: rc $rc (want 2), actions [$(acts)]"
 
@@ -310,6 +315,8 @@ build; running; rc="$(runc stop)"
 [ "$rc" = 1 ] && [ -z "$(acts)" ] && ok || bad "stop with no --yes and no terminal: rc $rc, actions [$(acts)]"
 build; running; rc="$(runc stop --yes)"
 [ "$rc" = 0 ] && [ "$(acts)" = "stop ohs1 stop ohs2 stopNM " ] && [ -z "$(fromhome)" ] && ok || bad "stop: rc $rc, actions [$(acts)], still running [$(fromhome)]"
+build; running; grep -v weblogic.NodeManager "$T/ps.txt" >"$T/ps.new"; mv "$T/ps.new" "$T/ps.txt"; touch "$T/nm.down"; rc="$(runc stop --yes)"
+[ "$rc" = 0 ] && [ -z "$(fromhome)" ] && ok || bad "stop with node manager already down: rc $rc (want 0, the home is clear)"
 build; running; touch "$T/stop.stuck"; rc="$(runc stop --yes)"
 [ "$rc" = 1 ] && grep -q 'still running from' "$T/out" && ok || bad "stop that leaves a process: rc $rc (want 1)"
 
