@@ -17,7 +17,8 @@ What it looks up, for everything in the manifest:
   - OPatch kit 28186730 when OPatch is older than 13.9.4.2.0, or older than the downloaded patches' READMEs ask for
   Oracle HTTP Server home (standalone, or collocated in a WebLogic home)
   - newest "OHS (NATIVE) [DB19C] BUNDLE PATCH <release>.<yymmdd>" for Linux x86-64, into ohs/ (not the Apache
-    plug-in bundle). No script applies it yet: stop the OHS instances, opatch apply, start them
+    plug-in bundle). 'ohs-patch.sh run <dir>' applies it: preflight, stop, backup, opatch apply, start, verify,
+    with an automatic rollback if anything after the backup fails
   Database or client home (e.g. a 19c client)
   - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it when the home's OPatch is
     older than 12.2.0.1.40 or than the RU's README asks for
@@ -277,7 +278,7 @@ function Get-OhsNotes($Manifest) {
         @($Manifest.Ohs | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Release; How = 'collocated in the WebLogic home' } }))
     foreach ($o in $all) {
         $rel = $(if ($o.Release) { $o.Release } else { 'release unknown' })
-        "Oracle HTTP Server $rel at $($o.Home) ($($o.How)): its OHS bundle goes in ohs/. No script here applies it yet - stop the OHS instances, opatch apply, start them (see the bundle README)."
+        "Oracle HTTP Server $rel at $($o.Home) ($($o.How)): its OHS bundle goes in ohs/ - apply it with 'ohs-patch.sh run ohs' on the host (stop, backup, opatch apply, start, verify, rollback on failure)."
     }
 }
 
@@ -847,7 +848,7 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
     $out = @()
     $l = & $line 'wls' '*.zip' "   then: wls-patch.sh run $b/wls"; if ($l) { $out += $l }
     $l = & $line 'spb' '*.zip' "   then: wls-patch.sh run $b/spb"; if ($l) { $out += $l }
-    $l = & $line 'ohs' '*.zip' '   (apply by hand for now - see the OHS line above)'; if ($l) { $out += $l }
+    $l = & $line 'ohs' '*.zip' "   then: ohs-patch.sh run $b/ohs"; if ($l) { $out += $l }
     $l = & $line 'db' '*.zip' ''; if ($l) { $out += $l }
     $l = & $line 'jdk' '*.tar.gz' ''; if ($l) { $out += $l }
     $out
