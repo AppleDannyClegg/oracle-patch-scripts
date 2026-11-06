@@ -681,6 +681,9 @@ finally {
     $hintDest = Join-Path $tmp 'hint'
     foreach ($k in 'wls', 'spb', 'ohs', 'db', 'jdk') { New-Item -ItemType Directory -Force -Path (Join-Path $hintDest $k) | Out-Null }
     $h = @(Get-UploadHints 'wl1' $hintDest '/u02/patches/')
+    $sep = [IO.Path]::DirectorySeparatorChar
+    Check (@($h | Where-Object { $_ -match [regex]::Escape("$hintDest$sep") }).Count -eq $h.Count) "every hint uses this machine's separator ($sep) for the local path"
+    if ($sep -ne '\') { Check (-not ($h -match '\\')) "no Windows separators in the hints on this machine" }
     Check ($h.Count -eq 5) "five upload hints for five kinds, got $($h.Count)"
     Check (@($h | Where-Object { $_ -match '/u01/patches' }).Count -eq 0) "the hint block names no /u01/patches when patch_base is /u02/patches"
     Check (@($h | Where-Object { $_ -match '//' }).Count -eq 0) "a trailing slash in patch_base|/Base does not make '//' (Edi 22:21:56)"
