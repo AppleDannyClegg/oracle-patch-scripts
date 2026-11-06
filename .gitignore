@@ -6,3 +6,8 @@ apex-patch.conf
 ords-patch.conf
 *.conf
 tests/out/
+# a manifest is written by patch-manifest.sh on a host and names that host: never commit one
+manifest-*.txt
+.DS_Store
+# patches downloaded by get-patches: gigabytes of Oracle zips, not ours to publish
+patches/
