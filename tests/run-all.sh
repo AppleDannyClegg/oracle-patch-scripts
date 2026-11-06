@@ -66,10 +66,43 @@ stop_all() {
     done
     for pid in "${running[@]:-}"; do [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null; done
 }
+# report: one row per gate that was launched (a real rc, or "interrupted" when stop_all killed it before its
+# .rc was written - never the previous row's rc, which is what `read` leaves behind on a missing file), then the
+# gates that never launched. Called from the normal path and from the stop handler, so an aborted run still says
+# what it got through.
+report() {
+    local key g rc secs last mark started names
+    for key in "${order[@]}"; do
+        g="${key#*.}"
+        rc=interrupted; secs=-
+        read -r rc secs 2>/dev/null <"$out/$key.rc"
+        last=''
+        [ -f "$out/$key.log" ] && last="$(tail -1 "$out/$key.log" 2>/dev/null)"
+        mark=ok
+        if [ "$rc" != 0 ] || [ -f "$out/$key.timedout" ] ||
+            { [ -f "$out/$key.log" ] && grep -q '^FAIL' "$out/$key.log"; } ||
+            printf '%s' "$last" | grep -qE '[1-9][0-9]* failed'; then mark=FAIL; bad=1; fi
+        if [ "$secs" = - ]; then
+            printf '%-4s %-26s %6s rc=%s  %s\n' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)"
+        else
+            printf '%-4s %-26s %4ss rc=%s  %s\n' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)"
+        fi
+        [ "$mark" = FAIL ] && [ -f "$out/$key.log" ] && grep -E '^FAIL' "$out/$key.log" | head -5 | sed 's/^/       /'
+    done
+    started=''
+    for key in "${order[@]}"; do started="$started ${key#*.}"; done
+    names=''
+    for g in "${GATES[@]}"; do
+        case " $started " in *" $g "*) ;; *) names="$names $g" ;; esac
+    done
+    [ -n "$names" ] && echo "not started (stopped before launching):$names"
+    echo "all gates: $((SECONDS - start))s wall"
+}
+
 # TERM/INT must END the run, not just kill what is already running: stopping the live gates and then falling
 # back into the launch loop starts the remaining ones, which is the same "I stopped it and it kept working"
 # symptom one layer up. Exit from the handler, and keep the logs since the run did not finish.
-on_stop() { stop_all; bad=1; exit 1; }
+on_stop() { stop_all; bad=1; report; exit 1; }
 trap 'on_stop' TERM INT
 trap 'stop_all; if [ "${bad:-0}" = 1 ]; then echo "logs kept: $out"; else rm -rf "$out"; fi' EXIT
 start=$SECONDS
@@ -150,14 +183,5 @@ done
 wait
 
 bad=0
-for key in "${order[@]}"; do
-    g="${key#*.}"
-    read -r rc secs <"$out/$key.rc"
-    last="$(tail -1 "$out/$key.log")"
-    mark=ok
-    if [ "$rc" != 0 ] || [ -f "$out/$key.timedout" ] || grep -q '^FAIL' "$out/$key.log" || printf '%s' "$last" | grep -qE '[1-9][0-9]* failed'; then mark=FAIL; bad=1; fi
-    printf '%-4s %-26s %4ss rc=%s  %s\n' "$mark" "$g" "$secs" "$rc" "$(printf '%s' "$last" | cut -c1-110)"
-    [ "$mark" = FAIL ] && grep -E '^FAIL' "$out/$key.log" | head -5 | sed 's/^/       /'
-done
-echo "all gates: $((SECONDS - start))s wall"
+report
 exit $bad
