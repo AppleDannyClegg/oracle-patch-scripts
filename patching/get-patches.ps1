@@ -103,7 +103,9 @@ function Get-MosBodyHead($ErrorRecord) {
 # how old the token file is, in minutes - a MOS token lasts 60, and an expired one looks like a gateway error
 function Get-TokenAgeMinutes([string] $Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    [int] ((Get-Date) - (Get-Item -LiteralPath $Path).LastWriteTime).TotalMinutes
+    # [IO.File], not Get-Item -LiteralPath: on macOS that fails for a dotfile in the home directory
+    # ("Could not find item /Users/x/.mos-token") although Test-Path finds it - measured 6 Nov 2026
+    [int] ((Get-Date) - [IO.File]::GetLastWriteTime($Path)).TotalMinutes
 }
 
 # what went wrong, said in terms of who can fix it. A 502/503/504 is Oracle's edge or a proxy in between, NOT the

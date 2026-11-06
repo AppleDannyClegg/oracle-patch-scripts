@@ -634,9 +634,9 @@ finally {
     Check ((Get-MosBodyHead (Fake-Error 502)) -eq '') "no body means no body line, not 'null'"
     $mBody = Get-MosFailure '/x' $errWithBody
     Check ($mBody -match 'body starts') "the failure message carries the body head: $mBody"
-    $tok = Join-Path ([IO.Path]::GetTempPath()) ("tok-" + [guid]::NewGuid() + ".txt")
+    $tok = Join-Path ([IO.Path]::GetTempPath()) (".tok-" + [guid]::NewGuid() + ".txt")   # a dotfile, as ~/.mos-token is
     Set-Content -LiteralPath $tok -Value 'not-a-real-token'
-    (Get-Item -LiteralPath $tok).LastWriteTime = (Get-Date).AddMinutes(-170)
+    [IO.File]::SetLastWriteTime($tok, (Get-Date).AddMinutes(-170))
     $age = Get-TokenAgeMinutes $tok
     Check ($age -ge 169 -and $age -le 171) "the token age is read from the file's mtime (got $age)"
     Remove-Item -LiteralPath $tok -Force
