@@ -415,8 +415,12 @@ confirm() {
 
 stop_all() { # every OHS component, then each domain's node manager; 0 = all stops returned 0
   local d c rc=0
-  while IFS='|' read -r d c; do [ -n "$c" ] || continue; do_cmd "$d/bin/stopComponent.sh" "$c" || { err "stopComponent.sh $c failed (rc $?)"; rc=1; }; done <<<"$COMPS"
-  while IFS= read -r d; do [ -n "$d" ] || continue; do_cmd "$d/bin/stopNodeManager.sh" || { err "stopNodeManager.sh for $d failed"; rc=1; }; done <<<"$DOMS"
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue
+    if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"; else err "stopComponent.sh $c failed (rc $?)"; rc=1; fi
+  done <<<"$COMPS"
+  while IFS= read -r d; do [ -n "$d" ] || continue
+    if do_cmd "$d/bin/stopNodeManager.sh"; then [ "$DRY_RUN" = 1 ] || log "  stopped node manager for $(domain_name "$d")"; else err "stopNodeManager.sh for $d failed"; rc=1; fi
+  done <<<"$DOMS"
   return $rc
 }
 
@@ -436,6 +440,7 @@ start_all() {
       t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "startComponent.sh $c did not succeed in ${START_TIMEOUT}s"; rc=1; continue 2; }
       sleep "$POLL"
     done
+    [ "$DRY_RUN" = 1 ] || log "  started $c"
     [ "$havecurl" = 1 ] || continue
     [ "$DRY_RUN" = 1 ] && continue
     ports_answer "$d" "$c" "$START_TIMEOUT" || rc=1
@@ -461,7 +466,7 @@ ports_answer() {
 # 0 = nothing runs from the home; 1 = something does (listed); 2 = ps unreadable
 nothing_running() {
   local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - cannot prove the home is stopped"; return 2; }
-  [ -z "$procs" ] && return 0
+  [ -z "$procs" ] && { log "  confirmed: nothing runs from $OH (0 processes name the home)"; return 0; }
   while read -r pid args; do [ -n "$pid" ] && err "  still running from $OH: pid $pid  $(kind_of_proc "$args")"; done <<<"$procs"
   return 1
 }
