@@ -274,5 +274,81 @@ build; running; rc="$(PATCH_INTERACTIVE=1 runr --yes)"
 build; running; rc="$(PATCH_INTERACTIVE=1 PATCH_DETACHED=1 runr --yes)"
 [ "$rc" = 0 ] && ok || bad "PATCH_DETACHED=1 does not override the refusal: rc $rc"
 
+# ---- the steps as commands: plan, backup, stop, apply, start, verify (run is these, in this order) ---------------
+runc() { local c="$1"; shift; HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" \
+  bash "$SCRIPT" "$c" "$@" --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1 </dev/null; echo $?; }
+fromhome() { grep -F "$OH/" "$T/ps.txt"; }
+
+# plan: read-only, twice, from a patch dir holding only the zip - no run dir, no backup, no 'extracted' folder
+build; running; ZD="$T/patches/zipped"; mkdir -p "$ZD"; (cd "$PD" && zip -qr "$ZD/p40005842_122140_Linux-x86-64.zip" 40005842)
+before="$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)"
+rc="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"; rc2="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"
+[ "$rc" = 0 ] && [ "$rc2" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "plan is not read-only: rc $rc/$rc2, actions [$(acts)], runs $([ -d "$T/runs" ] && echo made): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
+[ "$before" = "$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)" ] && ok || bad "plan changed the patch folder: $(cd "$ZD" && find . | sort | tr '\n' ' ')"
+grep -q "would run $DOM/bin/stopComponent.sh ohs1" "$T/out" && grep -q 'would back up' "$T/out" && grep -q 'opatch apply -silent' "$T/out" && ok || bad "plan does not list the steps: $(grep -c dry-run "$T/out") dry-run lines"
+grep -q 'run does all of this' "$T/out" && ok || bad "plan does not say run does these steps for you"
+
+# backup: a run dir and the three archives, nothing stopped; refused undetached
+build; running; rc="$(PATCH_INTERACTIVE=1 runc backup "$PD" --yes)"
+[ "$rc" != 0 ] && nobackup && [ ! -d "$T/runs" ] && grep -q 'ohs-patch backup changes this host' "$T/out" && ok || bad "an interactive backup was not refused: rc $rc"
+build; running; rc="$(runc backup "$PD" --dry-run --yes)"
+[ "$rc" = 0 ] && nobackup && [ ! -d "$T/runs" ] && [ -z "$(acts)" ] && ok || bad "backup --dry-run changed something: rc $rc, actions [$(acts)]"
+build; running; rc="$(runc backup "$PD" --yes)"
+[ "$rc" = 0 ] && [ -z "$(acts)" ] && [ "$(find "$T"/backup/ohs-40005842-* -name '*.tgz' | wc -l | tr -d ' ')" = 3 ] && ok || bad "backup: rc $rc, actions [$(acts)], $(find "$T/backup" -name '*.tgz' | wc -l) archives: $(grep ERROR "$T/out" | head -2)"
+st | grep -q '^backup=ok$' && st | grep -q '^outcome=backed-up$' && ok || bad "backup state: $(st | tr '\n' ' ')"
+
+# stop: components then node manager, proved stopped; refused undetached, for a WebLogic server, and under --dry-run inert
+build; running; rc="$(PATCH_INTERACTIVE=1 runc stop --yes)"
+[ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch stop changes this host' "$T/out" && ok || bad "an interactive stop was not refused: rc $rc, actions [$(acts)]"
+build; running; rc="$(runc stop --dry-run --yes)"
+[ "$rc" = 0 ] && [ -z "$(acts)" ] && [ -n "$(fromhome)" ] && ok || bad "stop --dry-run stopped something: rc $rc, actions [$(acts)]"
+build; running; printf ' 4444 /jdk/bin/java -Dweblogic.Name=AdminServer -cp %s/wlserver/x.jar weblogic.Server\n' "$OH" >>"$T/ps.txt"; rc="$(runc stop --yes)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'WebLogic servers run from' "$T/out" && ok || bad "stop with a WebLogic server: rc $rc, actions [$(acts)]"
+build; running; rc="$(runc stop)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && ok || bad "stop with no --yes and no terminal: rc $rc, actions [$(acts)]"
+build; running; rc="$(runc stop --yes)"
+[ "$rc" = 0 ] && [ "$(acts)" = "stop ohs1 stop ohs2 stopNM " ] && [ -z "$(fromhome)" ] && ok || bad "stop: rc $rc, actions [$(acts)], still running [$(fromhome)]"
+build; running; touch "$T/stop.stuck"; rc="$(runc stop --yes)"
+[ "$rc" = 1 ] && grep -q 'still running from' "$T/out" && ok || bad "stop that leaves a process: rc $rc (want 1)"
+
+# apply: needs a completed backup of this home for this patch, and nothing running from the home
+build; rc="$(runc apply "$PD" --yes)"
+[ "$rc" = 1 ] && ! acts | grep -q apply && grep -q 'no completed backup' "$T/out" && ok || bad "apply without a backup: rc $rc, actions [$(acts)]"
+build; running; runc backup "$PD" --yes >/dev/null; rc="$(runc apply "$PD" --yes)"
+[ "$rc" = 1 ] && ! acts | grep -q apply && grep -q 'still running from' "$T/out" && ok || bad "apply with OHS running: rc $rc, actions [$(acts)]"
+build; running; runc backup "$PD" --yes >/dev/null; runc stop --yes >/dev/null; : >"$T/actions"; rc="$(PATCH_INTERACTIVE=1 runc apply "$PD" --yes)"
+[ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch apply changes this host' "$T/out" && ok || bad "an interactive apply was not refused: rc $rc, actions [$(acts)]"
+rc="$(runc apply "$PD" --dry-run --yes)"
+[ "$rc" = 0 ] && [ -z "$(acts)" ] && ! grep -q 40005842 "$LSP" && ok || bad "apply --dry-run applied: rc $rc, actions [$(acts)]"
+rc="$(runc apply "$PD" --yes)"
+[ "$rc" = 0 ] && [ "$(acts)" = "apply " ] && grep -q '^40005842;' "$LSP" && ok || bad "apply after backup + stop: rc $rc, actions [$(acts)]: $(grep ERROR "$T/out" | head -2)"
+st | grep -q '^stage=apply$' && ok || bad "apply did not record its stage in the backup's run: $(st | tr '\n' ' ')"
+
+# start: node manager and the components, ports answered; then verify is read-only and says applied
+: >"$T/actions"; rc="$(PATCH_INTERACTIVE=1 runc start --yes)"
+[ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch start changes this host' "$T/out" && ok || bad "an interactive start was not refused: rc $rc, actions [$(acts)]"
+rc="$(runc start --dry-run --yes)"
+[ "$rc" = 0 ] && [ -z "$(acts)" ] && ok || bad "start --dry-run started something: rc $rc, actions [$(acts)]"
+rc="$(runc start --yes)"
+case "$rc|$(acts)" in "0|"*"start ohs1"*"start ohs2"*) ok;; *) bad "start: rc $rc, actions [$(acts)]";; esac
+case "$(acts)" in *startNM*) ok;; *) bad "start did not start node manager: [$(acts)]";; esac
+: >"$T/actions"; rc="$(runc verify "$PD")"
+[ "$rc" = 0 ] && [ -z "$(acts)" ] && grep -q '40005842 is installed' "$T/out" && grep -q 'ohs1 answers on port 7777' "$T/out" && ok || bad "verify after the steps: rc $rc, actions [$(acts)]: $(grep -E 'ERROR|INFO' "$T/out" | tail -3)"
+# rollback finds the run the backup command opened
+: >"$T/actions"; rc="$(PATCH_INTERACTIVE=1 runc rollback --yes)"
+[ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch rollback changes this host' "$T/out" && grep -q '^40005842;' "$LSP" && ok || bad "an interactive rollback was not refused: rc $rc, actions [$(acts)]"
+: >"$T/actions"; rc="$(runc rollback --yes)"
+[ "$rc" = 0 ] && ! grep -q 40005842 "$LSP" && ok || bad "rollback after the stepwise apply: rc $rc: $(grep ERROR "$T/out" | head -2)"
+
+# verify: read-only, and not ready says so
+build; running; rc="$(runc verify "$PD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q '40005842 is NOT installed' "$T/out" && ok || bad "verify before the apply: rc $rc (want 1)"
+build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; touch "$T/curl.fail"; rc="$(runc verify "$PD")"
+[ "$rc" = 1 ] && grep -q 'does not answer on port 7777' "$T/out" && ok || bad "verify with a port down: rc $rc (want 1)"
+
+# the unknown-command message names every command the dispatcher has
+build; rc="$(runc frobnicate)"
+grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
+
 echo "ohs-patch gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
