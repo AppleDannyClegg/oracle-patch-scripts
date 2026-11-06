@@ -347,9 +347,12 @@ $script:PatchKinds = @('wls', 'spb', 'db', 'jdk', 'ohs')
 function Get-PatchKindFromFiles($Files) {
     $files = @($Files)
     if ($files.Count -eq 0) { return '' }
-    # a JDK record's release label is 'Oracle JDK 1.8.0_511' and its files are jdk-8u511-...
+    # What a bug record actually carries, from this repo's own fixtures: a JDK 8 record is release
+    # name '1.8.0_481' (NOT 'Oracle JDK ...' - that is the ARU release-table label), a JDK 11/17 file is
+    # jdk-11.0.x_linux-x64_bin.tar.gz, and a WebLogic or database release is five-part (12.2.1.4.0,
+    # 19.27.0.0.0). So: three numeric parts with an optional _build, or files named jdk-*.
     $releases = @($files | ForEach-Object { $_.Release } | Where-Object { $_ } | Sort-Object -Unique)
-    if ($releases.Count -eq 1 -and $releases[0] -like 'Oracle JDK*') { return 'jdk' }
+    if ($releases.Count -eq 1 -and $releases[0] -match '^\d+\.\d+\.\d+(_\d+)?$') { return 'jdk' }
     if (@($files | Where-Object { $_.Name -notmatch '^jdk-' }).Count -eq 0) { return 'jdk' }
     ''
 }
