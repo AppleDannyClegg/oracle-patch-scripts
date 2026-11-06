@@ -48,6 +48,10 @@ param(
     [string] $Dest,
     [string] $TokenFile = (Join-Path $HOME '.mos-token'),
     [string[]] $Patch = @(),
+    # where a -Patch number's file goes and which apply step it belongs to: wls|spb|db|jdk|ohs. Inferred for a
+    # JDK record (the only unambiguous case), otherwise 'wls' with a warning - a DB RU and a WLS PSU are both
+    # p<number>_<release>_Linux-x86-64.zip, so guessing between them would be a string match dressed as a rule
+    [string] $PatchKind = '',
     [switch] $PlanOnly
 )
 
@@ -332,6 +336,39 @@ function Get-CoherenceLevel([string] $Text, [string] $Short) {
 function New-PlanItem([string] $Kind, [string] $What, [string] $Installed, $Row, [string] $Release, [string] $For = '') {
     [pscustomobject]@{ Kind = $Kind; What = $What; Installed = $Installed; Patch = $Row.Number; Abstract = $Row.Abstract; Release = $Release; For = $For }
 }
+
+# The kinds a -Patch item can be put in, and the folder each one downloads into.
+$script:PatchKinds = @('wls', 'spb', 'db', 'jdk', 'ohs')
+
+# 'jdk' when the record says so plainly, otherwise '' - see the -PatchKind comment in param().
+function Get-PatchKindFromFiles($Files) {
+    $files = @($Files)
+    if ($files.Count -eq 0) { return '' }
+    # a JDK record's release label is 'Oracle JDK 1.8.0_511' and its files are jdk-8u511-...
+    $releases = @($files | ForEach-Object { $_.Release } | Where-Object { $_ } | Sort-Object -Unique)
+    if ($releases.Count -eq 1 -and $releases[0] -like 'Oracle JDK*') { return 'jdk' }
+    if (@($files | Where-Object { $_.Name -notmatch '^jdk-' }).Count -eq 0) { return 'jdk' }
+    ''
+}
+
+# One plan item for a patch number the operator asked for with -Patch. No release: the record carries its own,
+# and stamping the WebLogic release on a JDK or DB patch is what sent those files to wls/ (Cerebro, 6 Nov).
+function Get-PatchItem([string] $Patch, [string] $Kind = '') {
+    if ($Kind -and $Kind -notin $script:PatchKinds) {
+        throw "-PatchKind '$Kind' is not one of $($script:PatchKinds -join '|') - it decides the folder the file goes in and which patch script applies it"
+    }
+    if (-not $Kind) {
+        $Kind = Get-PatchKindFromFiles (Get-MosFiles $Patch)
+        if (-not $Kind) {
+            $Kind = 'wls'
+            Write-Warning "patch ${Patch}: kind not given and the record does not say - using wls. Pass -PatchKind $($script:PatchKinds -join '|') if it is not a WebLogic patch."
+        }
+    }
+    [pscustomobject]@{ Kind = $Kind; What = 'asked for with -Patch'; Installed = ''; Patch = $Patch; Abstract = ''; Release = '' }
+}
+
+# which folder a plan item's file goes in - the item's Kind, in one place so -Patch and the planners agree
+function Get-PatchFolder($Item) { $Item.Kind }
 
 # newest row whose abstract matches $Pattern; the first capture group is what is compared
 function Select-Newest($Rows, [string] $Pattern) {
@@ -960,7 +997,7 @@ function Main {
 
     Write-Host "Host $($m.Host): looking up the newest patches on My Oracle Support"
     $plan = @(Get-PatchPlan $m)
-    foreach ($p in $Patch) { $plan += [pscustomobject]@{ Kind = 'wls'; What = 'asked for with -Patch'; Installed = ''; Patch = $p; Abstract = ''; Release = $(if ($m.Wls) { $m.Wls[0].Release } else { '' }) } }
+    foreach ($p in $Patch) { $plan += Get-PatchItem -Patch $p -Kind $PatchKind }
 
     if ($plan.Count -eq 0 -and -not ($m.Homes | Where-Object { $_.Kind -ne 'db' }) -and -not $m.Ohs) { Write-Host 'Nothing to download: MOS has nothing newer than what is installed.'; return }
     Write-Host ''
@@ -981,7 +1018,7 @@ function Main {
     foreach ($p in $plan) {
         Write-Host "$($p.What): patch $($p.Patch)"
         try {
-            $saved = Save-MosPatch -Patch $p.Patch -Dest (Join-Path $Dest $p.Kind) -Release $p.Release -Kind $p.Kind -Pin $p.File
+            $saved = Save-MosPatch -Patch $p.Patch -Dest (Join-Path $Dest (Get-PatchFolder -Item $p)) -Release $p.Release -Kind $p.Kind -Pin $p.File
             $downloaded += [pscustomobject]@{ Item = $p; Saved = $saved }
             if ($p.Kind -eq 'jdk') { Expand-JdkTarball $saved }
         }

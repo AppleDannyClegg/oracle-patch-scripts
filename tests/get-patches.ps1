@@ -301,6 +301,33 @@ try {
     Check $threw "SHA-256 mismatch throws"
     Check (@(Get-ChildItem -LiteralPath $dest2 -ErrorAction SilentlyContinue).Count -eq 0) "SHA-256 mismatch leaves no file"
 
+    # ---- a -Patch item knows its Kind and does not borrow the WebLogic release (Cerebro, 6 Nov) ----------------
+    # Today every -Patch item is Kind 'wls' with Release taken from the WebLogic home, so a JDK or a DB patch
+    # asked for by number lands in wls/ with a wls-patch.sh instruction, and a JDK record is filtered against a
+    # WebLogic release that no file carries. The item is built by Get-PatchItem, which infers 'jdk' only where
+    # the record is unambiguous and otherwise keeps 'wls' and says so.
+    $item = Get-PatchItem -Patch '39000002' 3>&1
+    $itemWarnings = @($item | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $item = @($item | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($item.Kind -eq 'wls') "-Patch with no kind and a .zip record keeps Kind wls, got [$($item.Kind)]"
+    Check ($item.Release -eq '') "-Patch item carries no release, so selection is the record's, got [$($item.Release)]"
+    Check (@($itemWarnings | Where-Object { $_ -match 'Kind' -or $_ -match 'kind' }).Count -eq 1) "a -Patch item with no kind says so once (got: $($itemWarnings -join ' / '))"
+
+    $jdkItem = @(Get-PatchItem -Patch '39555001' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($jdkItem.Kind -eq 'jdk') "a JDK record is inferred as Kind jdk from its own record, got [$($jdkItem.Kind)]"
+
+    $dbItem = @(Get-PatchItem -Patch '39000002' -Kind 'db' 3>&1 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })[0]
+    Check ($dbItem.Kind -eq 'db') "-Patch -Kind db is honoured, got [$($dbItem.Kind)]"
+
+    $threwKind = $false; $kindMsg = ''
+    try { Get-PatchItem -Patch '39000002' -Kind 'nonsense' | Out-Null } catch { $threwKind = $true; $kindMsg = $_.Exception.Message }
+    Check $threwKind "an unknown -Kind is refused rather than used as a folder name"
+    Check ($kindMsg -match 'wls' -and $kindMsg -match 'jdk') "the refusal lists the kinds it accepts: [$kindMsg]"
+
+    # the patch folder comes from Kind, so a jdk item and a db item cannot land in wls/ with a wls-patch.sh hint
+    Check ((Get-PatchFolder -Item $jdkItem) -eq 'jdk') "a jdk -Patch item downloads into jdk/, got [$(Get-PatchFolder -Item $jdkItem)]"
+    Check ((Get-PatchFolder -Item $dbItem) -eq 'db') "a db -Patch item downloads into db/, got [$(Get-PatchFolder -Item $dbItem)]"
+
     # ---- a file with no SHA-256 in the record is refused, not downloaded or kept (Weyland [P1]) ---------------
     # NB: this must run BEFORE the OPatch section defines a mock Save-MosPatch (~:490), which shadows the real one
     $destNo = Join-Path $tmp 'nosha'
