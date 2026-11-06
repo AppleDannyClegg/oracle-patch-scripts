@@ -36,9 +36,15 @@ GATES=(wls-quarter java-patch-will-stop wls-patch-spb dry-run-gate false-success
     get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
     patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness)
 [ $# -gt 0 ] && GATES=("$@")
-# the two extra jobs are only added where they can run: a copy of this tree (tests/run-all-harness.sh) has neither
-if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-patches.ps1 ]; then GATES+=(get-patches); fi
-if command -v shellcheck >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then GATES+=(shellcheck); fi
+# the two extra jobs are only added where they can run: a copy of this tree (tests/run-all-harness.sh) has neither.
+# add_gate skips a gate that is already in the list: naming one of them must not run it twice, or the two copies
+# write the same log and rc file and a passing copy can overwrite a failing one's tally
+add_gate() {
+    case " ${GATES[*]} " in *" $1 "*) return ;; esac
+    GATES+=("$1")
+}
+if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-patches.ps1 ]; then add_gate get-patches; fi
+if command -v shellcheck >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then add_gate shellcheck; fi
 
 out="$(mktemp -d)"; trap 'rm -rf "$out"' EXIT
 start=$SECONDS
@@ -48,8 +54,13 @@ echo "run-all: ${#GATES[@]} gates, at most $JOBS at a time, ${GATE_TIMEOUT}s lim
 # a gate that prints nothing for that long is hung, or starved by more work than the box can carry
 run_limited() {                     # run_limited <name> <command...>
     local name="$1"; shift
+    # own process group for this gate (bash 3.2 job control; there is no setsid on macOS), so the timeout can
+    # kill the GROUP: killing the gate's shell alone leaves whatever the gate started running, which is how
+    # last night ended with 34 orphaned gates holding a 10-core box at load 40+ after every harness was dead
+    set -m
     "$@" </dev/null >"$out/$name.log" 2>&1 &
     local pid=$! wd rc i=0
+    set +m
     # the watchdog polls rather than sleeping the full limit, so it exits within a second of the gate ending
     # instead of lingering; its output goes to /dev/null so it cannot hold the caller's pipe open
     ( while [ "$i" -lt "$GATE_TIMEOUT" ]; do
@@ -57,9 +68,9 @@ run_limited() {                     # run_limited <name> <command...>
           sleep 1; i=$((i + 1))
       done
       : >"$out/$name.timedout"
-      kill -TERM "$pid" 2>/dev/null
+      kill -TERM -"$pid" 2>/dev/null
       sleep 5
-      kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+      kill -KILL -"$pid" 2>/dev/null ) >/dev/null 2>&1 &
     wd=$!
     wait "$pid" 2>/dev/null
     rc=$?
