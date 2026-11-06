@@ -823,12 +823,20 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
     # the whole hint block, so patch_base| can be asserted on it (Cerebro seam suite): one string per kind.
     # $Base (patch_base|, or the /u01/patches fallback) is normalised HERE, so a trailing slash cannot make '//'
     $b = if ($Base) { $Base.TrimEnd('/') } else { '/u01/patches' }
+    # the LOCAL half of the hint is this machine's path, so it uses this machine's separator - a Windows-style
+    # hint printed on macOS gives scp a path that cannot exist (seen 6 Nov 2026). The remote half is Linux: '/'
+    $sep = [IO.Path]::DirectorySeparatorChar
+    $line = {
+        param([string] $Kind, [string] $Filter, [string] $Trailer)
+        if (-not (Test-Path -LiteralPath (Join-Path $Dest $Kind))) { return }
+        "  scp `"$Dest$sep$Kind$sep$Filter`" oracle@${HostName}:$b/$Kind/$Trailer"
+    }
     $out = @()
-    if (Test-Path -LiteralPath (Join-Path $Dest 'wls')) { $out += "  scp `"$Dest\wls\*.zip`" oracle@${HostName}:$b/wls/   then: wls-patch.sh run $b/wls" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'spb')) { $out += "  scp `"$Dest\spb\*.zip`" oracle@${HostName}:$b/spb/   then: wls-patch.sh run $b/spb" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'ohs')) { $out += "  scp `"$Dest\ohs\*.zip`" oracle@${HostName}:$b/ohs/   (apply by hand for now - see the OHS line above)" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'db')) { $out += "  scp `"$Dest\db\*.zip`" oracle@${HostName}:$b/db/" }
-    if (Test-Path -LiteralPath (Join-Path $Dest 'jdk')) { $out += "  scp `"$Dest\jdk\*.tar.gz`" oracle@${HostName}:$b/jdk/" }
+    $l = & $line 'wls' '*.zip' "   then: wls-patch.sh run $b/wls"; if ($l) { $out += $l }
+    $l = & $line 'spb' '*.zip' "   then: wls-patch.sh run $b/spb"; if ($l) { $out += $l }
+    $l = & $line 'ohs' '*.zip' '   (apply by hand for now - see the OHS line above)'; if ($l) { $out += $l }
+    $l = & $line 'db' '*.zip' ''; if ($l) { $out += $l }
+    $l = & $line 'jdk' '*.tar.gz' ''; if ($l) { $out += $l }
     $out
 }
 
