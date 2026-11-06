@@ -3,6 +3,8 @@
 # preflight is read-only (it may unzip the patch into <patch-dir>/extracted). run changes the home.
 #
 # Commands
+#   inspect                 read-only: home, release, OPatch, the bundle and series installed, the domains and their
+#                           OHS components and ports, and what runs from the home. No patch dir, no run dir, no change
 #   preflight <patch-dir>   home, layout, domains and OHS components, what runs from the home, OPatch and series
 #                           checks, a conflict check, disk for the backup, the node manager credentials; then the
 #                           stop / backup / apply / start / verify / rollback commands for this box
@@ -163,6 +165,64 @@ readme_min_opatch() {
 }
 
 # ---- preflight ------------------------------------------------------------------------------------------
+# ---- inspect: what is here, without changing anything ------------------------------------------------
+# The read-only first look the other patch scripts have (wls-patch inspect, db-patch inspect): home, release,
+# OPatch, the bundle already installed, the domains and their components and ports, and what runs from the home.
+# No patch dir, no run dir, no opatch apply - safe on a production host at any time.
+cmd_inspect() {
+  OH="$(find_home)"
+  [ -n "$OH" ] || die "no Oracle HTTP Server home found (no ohs/ under \$ORACLE_HOME or any inventory home) - pass --oracle-home"
+  local layout rel
+  layout="$(layout_of "$OH")"; rel="$(ohs_release "$OH")"
+  log "home     : $OH (OHS ${rel:-release unknown}, $layout)"
+  [ -d "$OH/ohs" ] || warn "$OH has no ohs/ directory - it may not be an OHS home"
+
+  local opv; opv="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p' | head -1)"
+  log "OPatch   : ${opv:-unknown}"
+
+  local lsp
+  if lsp="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" lspatches 2>/dev/null)"; then
+    lsp="$(printf '%s\n' "$lsp" | tr -d '\r' | grep -E '^[0-9]+;' || :)"
+    local n; n="$(printf '%s\n' "$lsp" | grep -c . || true)"
+    log "patches  : ${n:-0} installed"
+    local b; b="$(printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE)' | cut -d';' -f2 | head -1)"
+    log "  OHS bundle: ${b:-none}"
+    if printf '%s\n' "$lsp" | grep -qiE 'OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE'; then log "  series    : DB19C line"
+    elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then log "  series    : plain OHS bundle line"
+    else log "  series    : no OHS bundle installed yet"; fi
+  else
+    unknown "opatch lspatches failed - installed patches unknown"
+  fi
+
+  local doms d comps c ports
+  doms="$(domains_of "$OH")"
+  if [ -z "$doms" ]; then warn "no domain found for $OH (domain-registry.xml empty or missing) - pass --domain-home"; fi
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    log "domain   : $d ($(domain_name "$d")${comps:+})"
+    comps="$(ohs_components "$d" | tr '\n' ' ' | sed 's/ *$//')"
+    [ -n "$comps" ] || { log "  components: none"; continue; }
+    for c in $comps; do
+      ports="$(instance_ports "$d" "$c")"
+      log "  component: $c${ports:+  ports $ports}"
+    done
+  done <<<"$doms"
+
+  local procs
+  if procs="$(from_home "$OH")"; then
+    if [ -n "$procs" ]; then
+      log "running  : processes holding a path in the home"
+      printf '%s\n' "$procs" | while IFS= read -r l; do log "  $(kind_of_proc "$l"): $l"; done
+    else
+      log "running  : nothing runs from this home"
+    fi
+  else
+    unknown "ps could not be read - cannot tell what runs from the home"
+  fi
+  [ "$unknowns" -gt 0 ] && { err "inspect could not complete: $unknowns check(s) unreadable"; return 2; }
+  return 0
+}
+
 cmd_preflight() {
   local pdir="${1:-}"
   [ -n "$pdir" ] || die "preflight needs <patch-dir> (the folder holding the OHS bundle zip)"
@@ -526,11 +586,12 @@ main() {
     esac
   done
   case "$cmd" in
+    inspect)   cmd_inspect ;;
     preflight) cmd_preflight "${args[@]+"${args[@]}"}" ;;
     "") usage; exit 2 ;;
     run)       cmd_run "${args[@]+"${args[@]}"}" ;;
     rollback)  cmd_rollback "${args[@]+"${args[@]}"}" ;;
-    *) die "unknown command $cmd (preflight, run, rollback)" ;;
+    *) die "unknown command $cmd (inspect, preflight, run, rollback)" ;;
   esac
 }
 

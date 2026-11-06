@@ -107,6 +107,19 @@ S
 }
 run() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1; echo $?; }
 
+# inspect: read-only, no patch dir needed, and it must not create a run dir or a backup
+build
+mkdir -p "$T/runs"
+rc="$(HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" RUN_BASE="$T/runs" bash "$SCRIPT" inspect --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1; echo $?)"
+[ "$rc" = 0 ] && ok || bad "inspect on a real-shaped home: exit $rc (want 0): $(tail -3 "$T/out")"
+grep -q "home     : $OH (OHS 12.2.1.4.0, standalone)" "$T/out" && ok || bad "inspect does not print the home, release and layout: $(grep 'home ' "$T/out")"
+grep -q 'OPatch   : 13.9.4.2.23' "$T/out" && ok || bad "inspect does not print the OPatch version: $(grep OPatch "$T/out")"
+grep -q 'component: ohs1' "$T/out" && grep -q 'component: ohs2' "$T/out" && ok || bad "inspect does not list the OHS components"
+grep -q 'series    : plain OHS bundle line\|series    : DB19C line\|series    : no OHS bundle installed yet' "$T/out" && ok || bad "inspect does not say which bundle series the home is on"
+grep -q 'running  :' "$T/out" && ok || bad "inspect does not report what runs from the home"
+[ -z "$(find "$T/runs" -mindepth 1 2>/dev/null)" ] && ok || bad "inspect created a run dir - it must change nothing"
+ls "$T/backup"/*.tgz >/dev/null 2>&1 && bad "inspect wrote a backup" || ok
+
 # ready
 build
 rc="$(run)"
