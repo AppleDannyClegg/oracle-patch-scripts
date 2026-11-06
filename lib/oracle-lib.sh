@@ -134,6 +134,29 @@ state_set() {
 }
 state_get() { [ -f "$STATE_FILE" ] || return 1; sed -n "s/^$1=//p" "$STATE_FILE" | tail -1 | grep .; }
 state_append() { local cur; cur="$(state_get "$1" || true)"; state_set "$1" "${cur:+$cur }$2"; }
+# A patch run outlives the terminal it was started from. Measured 6 Nov 2026: a run was stopped when the
+# operator left the machine - lucky it was between steps. Two halves:
+#   - HUP is ignored for the rest of the run, so an accidental terminal close (or a closed laptop lid) does not
+#     kill it between steps, and never mid-step. The run dir and log file are the record while it is unattended.
+#   - a run started from an INTERACTIVE shell must be detached first (tmux/screen/nohup), and is refused
+#     otherwise, so the risk is met on purpose rather than by accident. A non-interactive caller - a gate, a
+#     cron job, an existing nohup wrapper - is left alone, and DRY_RUN changes nothing so it is always allowed.
+# PATCH_INTERACTIVE=1 forces the interactive decision (the gate uses it to test the refusal on a pipe).
+require_detached() {
+  local what="${1:-run}"
+  trap '' HUP
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -n "${TMUX:-}" ] && return 0
+  [ -n "${STY:-}" ] && return 0
+  [ "${PATCH_DETACHED:-}" = 1 ] && return 0
+  { [ -t 0 ] || [ "${PATCH_INTERACTIVE:-}" = 1 ]; } || return 0
+  die "$TOOL $what changes this host, and a dropped session would stop it (a lost ssh, a closed laptop lid).
+  Start it detached and it will run to its next safe point whatever happens to the terminal:
+    tmux new -s $TOOL        # run the same command inside, then Ctrl-b d to detach
+    nohup $TOOL $what ... >/tmp/$TOOL.out 2>&1 &    # then: tail -f /tmp/$TOOL.out
+  Refusing rather than risking a stop mid-step. PATCH_DETACHED=1 overrides if you know the session survives."
+}
+
 init_run_dir() {
   local name="${1:-run}"
   [ -z "$RUN_DIR" ] && RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"

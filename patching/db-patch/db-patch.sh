@@ -554,6 +554,7 @@ cmd_heal() {
 }
 
 cmd_run() {
+  require_detached run
   setup_env; init_run_dir run
   local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "run needs <patch-dir>"
   [ "$USE_LATEST" = 1 ] && { cmd_latest || die "latest failed"; }
