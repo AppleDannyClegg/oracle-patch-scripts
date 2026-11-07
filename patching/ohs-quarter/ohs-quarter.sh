@@ -254,6 +254,9 @@ log "=== 5/7 start (once - the only restart)"
 orun start || fail_after "the patched home does not start"
 
 # ---- 6. verify -------------------------------------------------------------------------------------------
+# The health check is ohs-patch verify (every component's ports answer). wls-patch verify is NOT it: on an OHS
+# home it only proves the patch ids are in the inventory and checks no port (Cerebro 23:03:28 item 3). wls-patch's
+# PSU level is also always empty on a home whose lspatches returns bare ids (item 2), so never read it here.
 log "=== 6/7 verify"
 for entry in "${APPLY[@]}"; do
   owner="${entry%%|*}"; arg="${entry#*|}"
