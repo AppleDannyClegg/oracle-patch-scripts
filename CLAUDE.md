@@ -63,7 +63,7 @@ so he can fix it.
   security-posture, okv-diag, obic-diag.
 - `lib/oracle-lib.sh`: shared library. Most scripts source it from two levels up, so always copy
   the whole tree (`get.sh`, or `get.ps1` on Windows), never a single script. `wls-patch`,
-  `apex-patch`, `ords-patch`, `ohs-patch` and `oracle-diag` are self-contained.
+  `apex-patch`, `ords-patch`, `ohs-patch`, `dbclient-upgrade` and `oracle-diag` are self-contained.
 - `tests/`: gates that run on any machine with bash and no database (see `tests/README.md`).
 
 Every script that changes something has the same commands: `inspect` → `plan` → `preflight` →

@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.sh | bash
 #
 # Puts everything in $PATCH_BASE/scripts (default /u01/patches/scripts, or the folder given as the first
-# argument) and makes every script executable. Set PATCH_BASE to move it. Keep lib/ at the top of the tree: all scripts except wls-patch, apex-patch, ords-patch, ohs-patch and
+# argument) and makes every script executable. Set PATCH_BASE to move it. Keep lib/ at the top of the tree: all scripts except wls-patch, apex-patch, ords-patch, ohs-patch, dbclient-upgrade and
 # oracle-diag source ../../lib/oracle-lib.sh from their <type>/<script>/ folder. Run it again later to pick up the newest version; the previous copy is
 # kept as <folder>.old. Your own *.conf files are carried across.
 

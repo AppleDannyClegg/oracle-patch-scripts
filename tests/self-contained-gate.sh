@@ -20,6 +20,7 @@ SCRIPTS=(
   reports/oracle-diag/oracle-diag.sh
   patching/patch-manifest.sh
   patching/ohs-patch/ohs-patch.sh
+  patching/dbclient-upgrade/dbclient-upgrade.sh
 )
 
 defs()  { grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$1" 2>/dev/null | tr -d '()' | sort -u; }
