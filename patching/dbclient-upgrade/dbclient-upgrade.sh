@@ -31,6 +31,8 @@
 #   --backup-run DIR        apply: restore from this run's backup (a composer's one backup) instead of the latest
 #   --keep-patches ID,ID    patches you have checked are NOT 12c Database Client patches; every other installed
 #                           patch must be rolled back first (README). The script cannot check this for you
+#   --remove-patches ID,ID  opt in: run rolls these back itself, after the backup and the stop and before the
+#                           installer (the README's 12c client patches). Only the ids named; a failure restores
 #   --dry-run  --yes
 #
 # Environment: START_TIMEOUT, POLL, RUN_BASE (default $HOME/dbclient-upgrade/runs), OS_RELEASE (default
@@ -54,7 +56,7 @@
 
 set -uo pipefail
 
-ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""
+ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""
 DRY_RUN=0; ASSUME_YES=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$HOME/dbclient-upgrade/runs}"
 OS_RELEASE="${OS_RELEASE:-}"
@@ -359,6 +361,7 @@ sqlplus_version() {
 find_zip() { local z; for z in "$1"/p34761383_*.zip; do [ -f "$z" ] && { printf '%s' "$z"; return; }; done; }
 
 in_keep() { case ",$KEEP_PATCHES," in *",$1,"*) return 0;; esac; return 1; }
+in_remove() { case ",$REMOVE_PATCHES," in *",$1,"*) return 0;; esac; return 1; }
 
 # the home, its domains, the OHS components and the central inventory
 discover() {
@@ -422,7 +425,16 @@ cmd_preflight() {
   # a home, so the script cannot tell which are client patches: each must be rolled back or kept by the operator
   local id left=""
   if PRE_IDS="$(installed_ids)"; then
-    for id in $PRE_IDS; do in_keep "$id" && log "patch     : $id kept (--keep-patches: you checked it is not a 12c Database Client patch)" || left="$left $id"; done
+    REMOVE_IDS=""
+    for id in $PRE_IDS; do
+      if in_keep "$id" && in_remove "$id"; then block "patch $id is named in both --keep-patches and --remove-patches"
+      elif in_keep "$id"; then log "patch     : $id kept (--keep-patches: you checked it is not a 12c Database Client patch)"
+      elif in_remove "$id"; then log "patch     : $id to be rolled back (--remove-patches), after the backup and the stop, before the installer"; REMOVE_IDS="$REMOVE_IDS $id"
+      else left="$left $id"; fi
+    done
+    for id in $(printf '%s' "$REMOVE_PATCHES" | tr ',' ' '); do
+      case " $PRE_IDS " in *" $id "*) ;; *) log "patch     : $id (--remove-patches) is not installed - nothing to roll back" ;; esac
+    done
     if [ -n "$left" ]; then
       block "patches installed in $OH that are neither rolled back nor kept:$left. The README: 'Rollback or remove any 12c DB client related patches before proceeding'. This script cannot tell which are client patches (lspatches gives no descriptions); for each, either roll it back:"
       for id in $left; do err "    cd /tmp && ORACLE_HOME='$OH' '$OH/OPatch/opatch' rollback -id $id -silent -oh '$OH'"; done
@@ -521,6 +533,15 @@ step_install() {
   state stage install
   local pt="$RUN_DIR/patch_top" bin
   log "3/5 install the Database Client 19c into $OH (34761383)"
+  local id now
+  for id in $REMOVE_IDS; do
+    log "  rolling back $id first (--remove-patches)"
+    ( cd /tmp && do_cmd env ORACLE_HOME="$OH" "$OH/OPatch/opatch" rollback -id "$id" -silent -oh "$OH" ) || recover "opatch rollback -id $id failed - the installer was not run"
+    [ "$DRY_RUN" = 1 ] && continue
+    now="$(installed_ids)" || recover "lspatches cannot be read after rolling back $id"
+    case " $now " in *" $id "*) recover "$id is still installed after its rollback - the installer was not run" ;; esac
+    log "  $id rolled back"
+  done
   do_cmd unzip -o -q -d "$pt" "$ZIP" || recover "cannot unzip $ZIP"
   bin="$(find "$pt" -name fmw_12.2.1.19.0_dbclient_linux64.bin -type f 2>/dev/null | head -1)"
   [ -n "$bin" ] || recover "the installer is not in $pt after the unzip"
@@ -564,6 +585,7 @@ recover() {
 plan_steps() {
   log "dry-run: would back up $OH, $(printf '%s ' $DOMS)and $INV to $BK (tar, each read back)"
   log "dry-run: would stop $(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ')and node manager, and prove nothing runs from $OH"
+  [ -n "$REMOVE_IDS" ] && log "dry-run: would roll back${REMOVE_IDS} (--remove-patches) and prove each gone, before the installer"
   log "dry-run: would unzip $ZIP into <run dir>/patch_top, run ./changePerm.sh $OH and ./fmw_12.2.1.19.0_dbclient_linux64.bin -invPtrLoc $OH/oraInst.loc -silent ORACLE_HOME=$OH"
   log "dry-run: would check sqlplus -V >= $MIN_SQLPLUS and oracle.rdbms.rsf 19.x, then start node manager and the components"
   log "dry-run: on any failure after the backup, would restore $OH and $INV from $BK"
@@ -674,6 +696,7 @@ main() {
       --run-dir)      optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
       --backup-run)   optchk "$@"; BACKUP_RUN="$2"; shift 2 ;;
       --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2 ;;
+      --remove-patches) optchk "$@"; REMOVE_PATCHES="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       -h|--help) usage; exit 0 ;;

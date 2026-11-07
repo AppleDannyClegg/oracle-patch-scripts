@@ -21,7 +21,7 @@ OH="$T/ohs"; DOM="$T/domains/ohs_domain"; PD="$T/patches/dbclient"; LSP="$OH/inv
 comps() { mkdir -p "$OH/inventory/ContentsXML"; printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="%s" BUILD_NUMBER="0"/>\n</PRD_LIST>\n' "$1" >"$OH/inventory/ContentsXML/comps.xml"; }
 build() {
   rm -rf "${T:?}/ohs" "${T:?}"/ohs.failed-* "${T:?}/domains" "${T:?}/patches" "${T:?}/home" "${T:?}/stub" "${T:?}/backup" "${T:?}/inv" "${T:?}/runs" "${T:?}"/inv.failed-* "${T:?}/zipsrc"
-  rm -f "${T:?}"/*.fail "${T:?}"/inst.* "${T:?}"/perm.* "${T:?}"/stop.* "${T:?}"/start.* "${T:?}/changed" "${T:?}/actions" "${T:?}/rollbacks"
+  rm -f "${T:?}"/*.fail "${T:?}"/inst.* "${T:?}"/perm.* "${T:?}"/stop.* "${T:?}"/start.* "${T:?}/changed" "${T:?}/actions" "${T:?}/rollbacks" "${T:?}"/rb.*
   mkdir -p "$OH/ohs/bin" "$OH/OPatch" "$OH/bin" "$OH/inventory" "$DOM/config/fmwconfig/components/OHS/instances/ohs1" "$DOM/bin" \
     "$PD" "$T/home/.wlst" "$T/stub" "$T/backup" "$T/inv/ContentsXML" "$T/zipsrc"
   echo '<registry><distribution status="installed" name="Oracle HTTP Server (Standalone)" version="12.2.1.4.0"/></registry>' >"$OH/inventory/registry.xml"
@@ -42,8 +42,8 @@ S
 case "\$1" in
   lspatches) [ -e "$T/lsp.fail" ] && exit 1; cat "$LSP"; echo; echo "OPatch succeeded.";;
   rollback) id=""; while [ \$# -gt 0 ]; do [ "\$1" = -id ] && id="\$2"; shift; done
-    echo "rollback \$id" >>"$T/actions"; [ -e "$T/rb.fail" ] && exit 1
-    grep -v "^\$id;" "$LSP" >"$LSP.new"; mv "$LSP.new" "$LSP"; echo "OPatch succeeded.";;
+    echo "rollback \$id" >>"$T/actions"; [ -e "$T/rb.fail" ] && exit 1; [ -e "$T/rb.lie" ] && exit 0
+    grep -v "^\$id;" "$LSP" >"$LSP.new"; mv "$LSP.new" "$LSP"; [ -e "$T/rb.fail-after" ] && exit 1; echo "OPatch succeeded.";;
   *) echo "UNEXPECTED opatch \$*" >>"$T/changed"; exit 1;;
 esac
 O
@@ -191,6 +191,31 @@ done
 build; touch "$T/inst.fail" "$T/inst.corrupt"; rc="$(dbc run "$PD" --yes)"
 [ "$rc" = 3 ] && grep -q 'RESTORE FAILED' "$T/out" && grep -q 'MANUAL RESTORE' "$T/out" && ok || bad "restore failed: rc $rc (want 3)"
 case "$(acts)" in *install*start*) bad "started after a failed restore: [$(acts)]";; *) ok;; esac
+
+# ---- case C: --remove-patches rolls back the named 12c patches itself, after the backup and stop ----------
+three() { printf '27516009;\n27293599;\n25549931;\n' >"$LSP"; }
+build; three; rc="$(pre --remove-patches 27516009,27293599,25549931)"
+[ "$rc" = 0 ] && [ "$(grep -c 'to be rolled back (--remove-patches)' "$T/out")" = 3 ] && [ -z "$(acts)" ] && ok || bad "preflight with --remove-patches: rc $rc, actions [$(acts)]"
+build; three; rc="$(dbc run "$PD" --yes --remove-patches 27516009,27293599,25549931)"
+[ "$rc" = 0 ] && [ "$(rsf)" = 19.0.0.0.0 ] && [ ! -s "$LSP" ] && ok || bad "run with --remove-patches: rc $rc, lsp [$(tr '\n' ' ' <"$LSP")]: $(grep ERROR "$T/out" | head -2)"
+case "$(acts)" in "stop ohs1 stop ohs2 stopNM rollback 25549931 rollback 27293599 rollback 27516009 changePerm "*) ok;; *) bad "removal is not after the stop and before the installer: [$(acts)]";; esac
+[ "$(grep -c 'rolled back$' "$T/out")" = 3 ] && ok || bad "the removal is not visible in the run log"
+build; three; printf '11111111;\n' >>"$LSP"; rc="$(pre --remove-patches 27516009,27293599,25549931)"
+[ "$rc" = 1 ] && grep -q 'neither rolled back nor kept: 11111111\.' "$T/out" && ok || bad "a fourth, unnamed patch did not still block: rc $rc"
+build; three; printf '11111111;\n' >>"$LSP"; rc="$(dbc run "$PD" --yes --remove-patches 27516009,27293599,25549931 --keep-patches 11111111)"
+[ "$rc" = 0 ] && [ "$(tr -d '\n' <"$LSP")" = '11111111;' ] && ok || bad "a kept fourth patch was touched: rc $rc, lsp [$(tr '\n' ' ' <"$LSP")]"
+build; three; touch "$T/rb.fail"; rc="$(dbc run "$PD" --yes --remove-patches 27516009,27293599,25549931)"
+[ "$rc" = 1 ] && ! acts | grep -q install && [ "$(tr '\n' ' ' <"$LSP")" = '27516009; 27293599; 25549931; ' ] && acts | grep -q 'start ohs1' && grep -q 'RESTORED' "$T/out" && ok || bad "a failed rollback: rc $rc (want 1, no installer, restored), actions [$(acts)]"
+for mode in rb.lie rb.fail-after; do   # each caught by one check alone: rc 0 with the patch still there; rc 1 with it gone
+  build; three; touch "$T/$mode"; rc="$(dbc run "$PD" --yes --remove-patches 27516009,27293599,25549931)"
+  [ "$rc" = 1 ] && ! acts | grep -q install && [ "$(tr '\n' ' ' <"$LSP")" = '27516009; 27293599; 25549931; ' ] && ok || bad "$mode: rc $rc (want 1, no installer, restored), actions [$(acts)]"
+done
+build; rc="$(dbc run "$PD" --yes --remove-patches 27516009,27293599,25549931)"
+[ "$rc" = 0 ] && ! acts | grep -q rollback && [ "$(grep -c 'is not installed - nothing to roll back' "$T/out")" = 3 ] && ok || bad "a home with none of the three: rc $rc, actions [$(acts)]"
+build; three; rc="$(pre --remove-patches 27516009 --keep-patches 27516009,27293599,25549931)"
+[ "$rc" = 1 ] && grep -q 'named in both' "$T/out" && ok || bad "an id both kept and removed: rc $rc"
+build; three; rc="$(dbc run "$PD" --yes --dry-run --remove-patches 27516009,27293599,25549931)"
+[ "$rc" = 0 ] && [ -z "$(acts)" ] && grep -q 'would roll back 25549931 27293599 27516009' "$T/out" && ok || bad "dry-run with --remove-patches: rc $rc, actions [$(acts)]"
 
 # ---- the steps as commands, for a composer: backup, apply --backup-run, verify ---------------------------
 build; rc="$(dbc backup "$PD" --yes)"; rd="$(dirname "$(find "$T/runs" -name state | head -1)")"
