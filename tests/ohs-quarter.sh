@@ -51,8 +51,8 @@ case "$1" in
       */oss) [ -n "${FAIL_OSS:-}" ] && exit 1;;
       */ohs) [ -n "${FAIL_OHS_APPLY:-}" ] && exit 1;;
     esac ;;
-  start) [ -n "${FAIL_START:-}" ] && exit 1 ;;
-  verify) [ -n "${FAIL_VERIFY:-}" ] && exit 1 ;;
+  start) if [ -n "${FAIL_START:-}" ] && [ ! -e "__T__/start.failed" ]; then : >"__T__/start.failed"; exit 1; fi; : >"__T__/start.ok" ;;
+  verify) [ -n "${FAIL_VERIFY:-}" ] && exit 1; [ "$who" = ohs ] && [ -n "${FAIL_OHS_VERIFY:-}" ] && exit 1 ;;
   rollback) [ -n "${FAIL_ROLLBACK:-}" ] && exit 1 ;;
   restore) [ -n "${FAIL_WLS_RESTORE:-}" ] && exit 1 ;;
 esac
@@ -73,7 +73,7 @@ mkroot() { # <dir> [jdk] [wlspsu] [dbclient] [dbclientru] [webgate] [oss] [ohs] 
 }
 runq() { # <root> [env assignments...]
   local root="$1"; shift
-  : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok"
+  : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
   env "$@" bash "$SCRIPT" --patch-root "$root" --run-dir "$T/run" --yes >"$T/out" 2>&1
 }
 line() { grep -n "$1" "$T/calls.log" | head -1 | cut -d: -f1; }
@@ -153,14 +153,56 @@ runq "$T/root" FAIL_OHS_APPLY=1 FAIL_STOP=1; rc=$?
 grep -q '^dbclient rollback' "$T/calls.log" && bad "a restore ran although the recovery stop failed" || ok
 grep -q '^ohs start' "$T/calls.log" && bad "components were started although the recovery stop failed" || ok
 
-# ---- not a single folder present: refuse, no run dir, no ffild call -------------------------------------------
+# ---- the promises the header makes, each tested (Cerebro 23:05:15: a hook defined but never set is a
+#      test that does not run) -----------------------------------------------------------------------------------
+# a preflight failure refuses BEFORE any change
+runq "$T/root" FAIL_JAVA_PREFLIGHT=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "a JDK preflight failure exited 0"
+grep -qE '^(java|wls|dbclient|ohs) (backup|stop|apply|start)' "$T/calls.log" && bad "a changing call ran after a JDK preflight failure" || ok
+grep -q 'nothing changed' "$T/out" && ok || bad "a JDK preflight failure did not say nothing changed"
+runq "$T/root" FAIL_OHS_PREFLIGHT=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "an ohs preflight failure exited 0"
+grep -qE '^(java|wls|dbclient|ohs) (backup|stop|apply|start)' "$T/calls.log" && bad "a changing call ran after an ohs preflight failure" || ok
+runq "$T/root" FAIL_DB_PREFLIGHT=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "a dbclient preflight failure exited 0"
+runq "$T/root" FAIL_WLS_PREFLIGHT=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "a wls preflight failure exited 0"
+
+# a backup failure is all-or-nothing: nothing is stopped or applied
+runq "$T/root" FAIL_BACKUP=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "a backup failure exited 0"
+grep -qE '^(java|wls|dbclient|ohs) (stop|apply|start)' "$T/calls.log" && bad "a changing call ran after a backup failure" || ok
+grep -q 'nothing changed' "$T/out" && ok || bad "a backup failure did not say nothing changed"
+
+# the health check: if ohs-patch verify fails, the outage fails (a dead component must not pass)
+runq "$T/root" FAIL_OHS_VERIFY=1; rc=$?
+[ "$rc" != 0 ] && ok || bad "an ohs-patch verify failure exited 0 (a dead component would pass the outage)"
+[ -n "$(line 'ohs start')" ] && ok || bad "the components were not started before their verify"
+# a start failure recovers (java rollback)
+runq "$T/root" FAIL_START=1; rc=$?
+[ "$rc" = 1 ] && ok || bad "a start failure exited $rc (want 1)"
+[ -n "$(line '^java rollback')" ] && ok || bad "a start failure did not recover"
+
+# every opatch bundle that fails restores from the shared backup, not just webgate
+for hook in FAIL_DBCLIENTRU FAIL_OSS; do
+  runq "$T/root" "$hook=1"; rc=$?
+  [ "$rc" = 1 ] && ok || bad "a $hook apply failure exited $rc (want 1)"
+  grep -q "^dbclient rollback .*--run-dir $T/run/backup" "$T/calls.log" && ok || bad "a $hook failure did not restore from the shared backup"
+done
+
+# a recovery that cannot restore exits 3 and does not start
+runq "$T/root" FAIL_DB_APPLY=1 FAIL_WLS_RESTORE=1; rc=$?
+[ "$rc" = 3 ] && ok || bad "a failed wls restore exited $rc (want 3)"
+grep -q '^ohs start' "$T/calls.log" && bad "components were started although a recovery step failed" || ok
+
+# ---- not a single folder present: refuse, no run dir, no child call -------------------------------------------
 mkdir -p "$T/empty"
 : >"$T/calls.log"
 bash "$SCRIPT" --patch-root "$T/empty" --run-dir "$T/run-empty" --yes >"$T/out" 2>&1 && bad "an empty patch root exited 0" || ok
 grep -q 'nothing to apply' "$T/out" && ok || bad "an empty patch root was not refused with 'nothing to apply'"
 
 # ---- one confirmation: without --yes and no tty, refuse before any change --------------------------------------
-: >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok"
+: >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok"
 bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" </dev/null >"$T/out" 2>&1 && bad "outage without --yes on a non-tty exited 0" || ok
 grep -q 'Non-interactive and --yes not given' "$T/out" && ok || bad "the no---yes refusal was not named"
 grep -qE '^(java|wls|dbclient|ohs) (stop|apply|start|backup)' "$T/calls.log" && bad "a changing call ran although it refused without --yes" || ok
