@@ -31,6 +31,8 @@
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes, for the free-space check (default /u01/backup)
 #   --run-dir DIR           rollback: the run to restore from (default: the latest under $HOME/ohs-patch/runs)
+#   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
+#                           its first patch) instead of the latest one taken for this patch; the home must match
 #   --no-backup             refused: the backup is the README's rollback
 #   --dry-run               the changing commands: say what would be done, change nothing (the zip goes to a scratch dir)
 #   --yes                   the changing commands: do not ask for confirmation (without it a terminal must answer 'yes')
@@ -60,7 +62,7 @@
 
 set -uo pipefail
 
-ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""
+ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
 DRY_RUN=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$HOME/ohs-patch/runs}"
 problems=0; unknowns=0
@@ -199,6 +201,12 @@ patch_dirs() {
   find "$dir" ${DRY_EXT:+"$DRY_EXT"} -path '*/etc/config/inventory.xml' 2>/dev/null | sed 's#/etc/config/inventory.xml$##' | sort -u
 }
 
+# the Database Client level in the home: oracle.rdbms.rsf's VER in the home's inventory (the check KB585169 gives);
+# empty when it cannot be read. A DB19C bundle needs 19.x - the upgrade is patch 34761383, an installer, not opatch
+rsf_version() {
+  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | head -1 | sed -n 's/.* VER="\([^"]*\)".*/\1/p'
+}
+
 readme_title() { head -5 "$1/README.txt" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]]//g' | grep -m1 -iE 'bundle patch|patch' ; }
 readme_min_opatch() {
   LC_ALL=C grep -aoE 'OPatch version 13\.9(\.[0-9]+)+ or (higher|later)' "$1/README.txt" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
@@ -227,7 +235,9 @@ cmd_inspect() {
     log "patches  : ${n:-0} installed"
     local b; b="$(printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE)' | cut -d';' -f2 | head -1)"
     log "  OHS bundle: ${b:-none}"
-    if printf '%s\n' "$lsp" | grep -qiE 'OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE'; then log "  series    : DB19C line"
+    local rv; rv="$(rsf_version "$OH")"
+    log "  DB client : ${rv:+oracle.rdbms.rsf $rv}${rv:-unknown (no oracle.rdbms.rsf in $OH/inventory/ContentsXML/comps.xml)}"
+    if printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "  series    : DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then log "  series    : plain OHS bundle line"
     else log "  series    : no OHS bundle installed yet"; fi
   else
@@ -297,8 +307,16 @@ cmd_preflight() {
   else log "OPatch   : $opv meets the README minimum $min"; fi
 
   # DB19C series (KB585169)
+  local rsf; rsf="$(rsf_version "$OH")"
+  log "DB client : ${rsf:+oracle.rdbms.rsf $rsf}${rsf:-unknown (no oracle.rdbms.rsf in $OH/inventory/ContentsXML/comps.xml)}"
   if printf '%s' "$title" | grep -qi 'DB19C'; then
-    if printf '%s\n' "$lsp" | grep -qiE 'OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE'; then log "series   : home is on the DB19C line"
+    # the client level, when the inventory shows it, decides; the bundle titles are only the fallback
+    if [ -n "$rsf" ]; then
+      case "$rsf" in
+        19.*) log "series   : the home has the Database Client 19c (oracle.rdbms.rsf $rsf) - a DB19C bundle fits" ;;
+        *) block "$id is a DB19C bundle and needs the Database Client 19c in $OH, but oracle.rdbms.rsf is $rsf - install the DB Client 19c Upgrade (patch 34761383, an FMW installer with no rollback but the backup; KB585169) first" ;;
+      esac
+    elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "series   : home is on the DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then block "$id is a DB19C bundle but $OH is on the plain OHS bundle line - the Database Client 19c upgrade (KB585169) comes first"
     else warn "no OHS bundle installed yet: confirm $OH had the Database Client 19c upgrade (KB585169) before applying the DB19C bundle $id"; fi
   fi
@@ -439,7 +457,7 @@ why_failed() {
 }
 installed_ids() { # 'id id ...' sorted; status 1 = lspatches could not be read
   local o; o="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" lspatches 2>/dev/null)" || return 1
-  printf '%s\n' "$o" | tr -d '\r' | grep -E '^[0-9]+;' | cut -d';' -f1 | sort -u | tr '\n' ' '
+  printf '%s\n' "$o" | tr -d '\r' | { grep -E '^[0-9]+;' || true; } | cut -d';' -f1 | sort -u | tr '\n' ' '
 }
 confirm() {
   [ "$ASSUME_YES" = 1 ] || [ "$DRY_RUN" = 1 ] && return 0
@@ -763,8 +781,16 @@ cmd_apply() {
   local prc; cmd_preflight "$pdir"; prc=$?
   [ "$prc" = 0 ] || { err "apply refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
   if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
-  local rd; rd="$(latest_backup_run)"
-  [ -n "$rd" ] || { err "apply refused: no completed backup of $OH for $PID under $RUN_BASE - run '$0 backup $pdir' first. Nothing was changed."; exit 1; }
+  local rd
+  if [ -n "$BACKUP_RUN_ARG" ]; then
+    rd="$BACKUP_RUN_ARG"
+    [ -f "$rd/state" ] || { err "apply refused: --backup-run $rd has no state - nothing was changed"; exit 1; }
+    [ "$(sed -n 's/^oracle_home=//p' "$rd/state" | tail -1)" = "$OH" ] || { err "apply refused: --backup-run $rd is a backup of $(sed -n 's/^oracle_home=//p' "$rd/state" | tail -1), not $OH - nothing was changed"; exit 1; }
+    [ "$(sed -n 's/^backup=//p' "$rd/state" | tail -1)" = ok ] || { err "apply refused: --backup-run $rd did not complete its backup - nothing was changed"; exit 1; }
+  else
+    rd="$(latest_backup_run)"
+    [ -n "$rd" ] || { err "apply refused: no completed backup of $OH for $PID under $RUN_BASE - run '$0 backup $pdir' first. Nothing was changed."; exit 1; }
+  fi
   BK="$(sed -n 's/^backup_dir=//p' "$rd/state" | tail -1)"
   [ -s "$BK/home.tgz" ] && [ -s "$BK/oraInventory.tgz" ] || { err "apply refused: the backup in $BK is not complete - nothing was changed"; exit 1; }
   # the backup's own record of the level before, so a recover proves the home is back where the backup was taken
@@ -824,6 +850,7 @@ main() {
       --domain-home) optchk "$@"; DOMAIN_ARG="$2"; shift 2 ;;
       --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2 ;;
       --run-dir)     optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
+      --backup-run)  optchk "$@"; BACKUP_RUN_ARG="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --no-backup) NO_BACKUP=1; shift ;;
