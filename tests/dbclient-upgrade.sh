@@ -239,6 +239,8 @@ build; rc="$(dbc verify)"
 [ "$rc" = 1 ] && grep -q 'NOT 19c' "$T/out" && ok || bad "verify on a 12c home: rc $rc"
 build; comps 19.0.0.0.0; rc="$(dbc verify)"
 [ "$rc" = 1 ] && ok || bad "verify with rsf 19 but sqlplus 12.1 (one source only): rc $rc (want 1)"
+build; echo 19.14.0.0.0 >"$OH/.sqlv"; rc="$(dbc verify)"
+[ "$rc" = 1 ] && grep -q 'NOT 19c' "$T/out" && ok || bad "verify with sqlplus 19.14 but rsf 12.1 (the other source only): rc $rc (want 1)"
 
 build; rc="$(dbc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, preflight, backup, apply, verify, run, rollback)' "$T/out" && ok || bad "unknown command message: $(head -2 "$T/out")"
