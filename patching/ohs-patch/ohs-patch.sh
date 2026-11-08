@@ -31,6 +31,8 @@
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes, for the free-space check (default /u01/backup)
 #   --run-dir DIR           rollback: the run to restore from (default: the latest under $HOME/ohs-patch/runs)
+#   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
+#                           its first patch) instead of the latest one taken for this patch; the home must match
 #   --no-backup             refused: the backup is the README's rollback
 #   --dry-run               the changing commands: say what would be done, change nothing (the zip goes to a scratch dir)
 #   --yes                   the changing commands: do not ask for confirmation (without it a terminal must answer 'yes')
@@ -60,7 +62,7 @@
 
 set -uo pipefail
 
-ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""
+ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
 DRY_RUN=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$HOME/ohs-patch/runs}"
 problems=0; unknowns=0
@@ -455,7 +457,7 @@ why_failed() {
 }
 installed_ids() { # 'id id ...' sorted; status 1 = lspatches could not be read
   local o; o="$(ORACLE_HOME="$OH" "$OH/OPatch/opatch" lspatches 2>/dev/null)" || return 1
-  printf '%s\n' "$o" | tr -d '\r' | grep -E '^[0-9]+;' | cut -d';' -f1 | sort -u | tr '\n' ' '
+  printf '%s\n' "$o" | tr -d '\r' | { grep -E '^[0-9]+;' || true; } | cut -d';' -f1 | sort -u | tr '\n' ' '
 }
 confirm() {
   [ "$ASSUME_YES" = 1 ] || [ "$DRY_RUN" = 1 ] && return 0
@@ -779,8 +781,16 @@ cmd_apply() {
   local prc; cmd_preflight "$pdir"; prc=$?
   [ "$prc" = 0 ] || { err "apply refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
   if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
-  local rd; rd="$(latest_backup_run)"
-  [ -n "$rd" ] || { err "apply refused: no completed backup of $OH for $PID under $RUN_BASE - run '$0 backup $pdir' first. Nothing was changed."; exit 1; }
+  local rd
+  if [ -n "$BACKUP_RUN_ARG" ]; then
+    rd="$BACKUP_RUN_ARG"
+    [ -f "$rd/state" ] || { err "apply refused: --backup-run $rd has no state - nothing was changed"; exit 1; }
+    [ "$(sed -n 's/^oracle_home=//p' "$rd/state" | tail -1)" = "$OH" ] || { err "apply refused: --backup-run $rd is a backup of $(sed -n 's/^oracle_home=//p' "$rd/state" | tail -1), not $OH - nothing was changed"; exit 1; }
+    [ "$(sed -n 's/^backup=//p' "$rd/state" | tail -1)" = ok ] || { err "apply refused: --backup-run $rd did not complete its backup - nothing was changed"; exit 1; }
+  else
+    rd="$(latest_backup_run)"
+    [ -n "$rd" ] || { err "apply refused: no completed backup of $OH for $PID under $RUN_BASE - run '$0 backup $pdir' first. Nothing was changed."; exit 1; }
+  fi
   BK="$(sed -n 's/^backup_dir=//p' "$rd/state" | tail -1)"
   [ -s "$BK/home.tgz" ] && [ -s "$BK/oraInventory.tgz" ] || { err "apply refused: the backup in $BK is not complete - nothing was changed"; exit 1; }
   # the backup's own record of the level before, so a recover proves the home is back where the backup was taken
@@ -840,6 +850,7 @@ main() {
       --domain-home) optchk "$@"; DOMAIN_ARG="$2"; shift 2 ;;
       --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2 ;;
       --run-dir)     optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
+      --backup-run)  optchk "$@"; BACKUP_RUN_ARG="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --no-backup) NO_BACKUP=1; shift ;;
