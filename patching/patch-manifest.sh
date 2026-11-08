@@ -22,8 +22,11 @@
 #                                          machine's own PATCH_BASE, which get-patches.ps1 reads separately)
 #   created|<YYYY-MM-DD HH:MM +zzzz>   (date '+%Y-%m-%d %H:%M %z'; field 2 is one string)
 #   wls|<home>|<release>|<OPatch version>|<coherence installed: yes/no>
-#   home|<home>|<kind: db (database or client) / agent (EM agent) / ohs (standalone Oracle HTTP Server) / other>|<version, may be empty>|<OPatch version>
-#   ohs|<WebLogic home>|<OHS release>   (OHS installed collocated in that WebLogic home)
+#   home|<home>|<kind: db (database or client) / agent (EM agent) / ohs (standalone Oracle HTTP Server) / other>|<version, may be empty>|<OPatch version>[|<DB client level>]
+#   ohs|<WebLogic home>|<OHS release>|<DB client level>   (OHS installed collocated in that WebLogic home)
+#      <DB client level> (kind ohs and ohs| only) = the home's oracle.rdbms.rsf VER from comps.xml, raw and may be
+#      empty: KB585169's DB19C bundles need 19.x, a 12.x home needs the 34761383 installer first. It is a trailing
+#      field so an older get-patches.ps1, which checks only a minimum field count, still reads the line.
 #   patch|<home>|<patch number>|<description from opatch lspatches>   (for every home above)
 #   fmw|<WebLogic home>|<family, or OTHER for a bundle-shaped line that fits no family>|<version or description>|<patch number>
 #   jdk|<java home>|<version>|<major>
@@ -162,6 +165,16 @@ home_kind() {
 ohs_version() {
   sed -n 's/.*name="Oracle HTTP Server[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null | head -1
 }
+# the home's Database Client level: oracle.rdbms.rsf VER in its comps.xml (KB585169 / Doc 2921245.1); empty if absent
+rsf_version() {
+  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | head -1 | sed -n 's/.* VER="\([^"]*\)".*/\1/p'
+}
+# say when an OHS home's client level cannot be read: get-patches.ps1 then cannot tell whether 34761383 is needed
+rsf_or_warn() {
+  local v; v="$(rsf_version "$1")"
+  [ -n "$v" ] || echo "patch-manifest: warning: could not read the Database Client level (oracle.rdbms.rsf) of $1 - get-patches.ps1 cannot tell whether the 34761383 installer is needed" >&2
+  printf '%s' "$v"
+}
 # version of an installed component from a home's own inventory; the last resort when nothing else reads it
 comp_version() {
   local h="$1" name
@@ -242,7 +255,7 @@ wls_lines() {
     if [ -d "$h/ohs" ]; then
       ohs="$(ohs_version "$h")"
       [ -n "$ohs" ] || echo "patch-manifest: warning: $h has OHS installed but its release could not be read" >&2
-      printf 'ohs|%s|%s\n' "$h" "$ohs"
+      printf 'ohs|%s|%s|%s\n' "$h" "$ohs" "$(rsf_or_warn "$h")"
     fi
   done
 }
@@ -313,7 +326,8 @@ other_lines() {
     # get-patches.ps1 needs the version to pick the right Release Update: say so here, do not leave it silent
     [ -n "$version" ] || [ "$kind" != db ] || echo "patch-manifest: warning: could not read the version of $h - get-patches.ps1 will skip its Release Update" >&2
     [ -n "$version" ] || [ "$kind" != ohs ] || echo "patch-manifest: warning: could not read the OHS release of $h" >&2
-    printf 'home|%s|%s|%s|%s\n' "$h" "$kind" "$version" "$opatch"
+    if [ "$kind" = ohs ]; then printf 'home|%s|%s|%s|%s|%s\n' "$h" "$kind" "$version" "$opatch" "$(rsf_or_warn "$h")"
+    else printf 'home|%s|%s|%s|%s\n' "$h" "$kind" "$version" "$opatch"; fi
     patch_lines "$h" "$lsp"
   done
 }
