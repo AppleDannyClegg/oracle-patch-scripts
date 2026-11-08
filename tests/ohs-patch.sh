@@ -157,6 +157,22 @@ build; printf 'Invoking prereq "checkconflictagainstohwithdetail"\nPrereq "check
 build; sed -i.bak 's#<component-type>OHS</component-type>#<component-type>X</component-type>#' "$DOM/config/config.xml"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: no OHS component' "$T/out" && ok || bad "no OHS component not blocking: rc $rc"
 
+# the Database Client level in the home, from its inventory (KB585169's own check: oracle.rdbms.rsf in comps.xml)
+comps() { mkdir -p "$OH/inventory/ContentsXML"; printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="%s" BUILD_NUMBER="0" REP_VER="0.0.0.0.0"/>\n</PRD_LIST>\n' "$1" >"$OH/inventory/ContentsXML/comps.xml"; }
+build; comps 12.1.0.2.0; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*Database Client.*oracle.rdbms.rsf is 12.1.0.2.0.*34761383.*KB585169' "$T/out" && ok || bad "a 12c client home given a DB19C bundle was not blocking on the client level: rc $rc, $(grep -E 'BLOCK|WARN.*KB585169|client' "$T/out" | head -3)"
+build; comps 19.0.0.0.0; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'DB client : oracle.rdbms.rsf 19.0.0.0.0' "$T/out" && ! grep -q 'WARN .*confirm .*KB585169' "$T/out" && ok || bad "a 19c client home with no bundle: rc $rc (want 0, the client level printed, no 'confirm' warning)"
+build; echo "34567890;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115" >"$LSP"; comps 12.1.0.2.0; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "plain-line home with a 12c client: rc $rc"
+build; comps 12.1.0.2.0; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" RUN_BASE="$T/runs" bash "$SCRIPT" inspect --oracle-home "$OH" >"$T/out" 2>&1; echo $?)"
+grep -q 'DB client : oracle.rdbms.rsf 12.1.0.2.0' "$T/out" && ok || bad "inspect does not print the Database Client level: $(grep -i client "$T/out")"
+# REP_VER before VER is not read as the version (patch-manifest's comp_version gotcha, Edi 22:04:46)
+build; mkdir -p "$OH/inventory/ContentsXML"; printf '<COMP NAME="oracle.rdbms.rsf" REP_VER="19.0.0.0.0" VER="12.1.0.2.0"/>\n' >"$OH/inventory/ContentsXML/comps.xml"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "REP_VER was read as the client version: rc $rc, $(grep 'DB client' "$T/out")"
+build; rc="$(run)"
+grep -q 'DB client : unknown' "$T/out" && ok || bad "no comps.xml: the client level is not reported as unknown"
+
 # the home lacks a component the patch needs (Gen's host: a DB19C bundle on a home whose Database Client is still
 # 12c, opatch apply failed with OUI-67073 after the stop and backup): OPatch's CheckApplicable says so, read-only
 miss='Invoking prereq "checkapplicable"
@@ -359,6 +375,7 @@ rc="$(runc apply "$PD" --yes)"
 [ "$rc" = 0 ] && [ "$(acts)" = "apply " ] && grep -q '^40005842;' "$LSP" && ok || bad "apply after backup + stop: rc $rc, actions [$(acts)]: $(grep ERROR "$T/out" | head -2)"
 st | grep -q '^stage=apply$' && ok || bad "apply did not record its stage in the backup's run: $(st | tr '\n' ' ')"
 
+
 # start: node manager and the components, ports answered; then verify is read-only and says applied
 : >"$T/actions"; rc="$(PATCH_INTERACTIVE=1 runc start --yes)"
 [ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch start changes this host' "$T/out" && ok || bad "an interactive start was not refused: rc $rc, actions [$(acts)]"
@@ -374,6 +391,29 @@ case "$(acts)" in *startNM*) ok;; *) bad "start did not start node manager: [$(a
 [ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch rollback changes this host' "$T/out" && grep -q '^40005842;' "$LSP" && ok || bad "an interactive rollback was not refused: rc $rc, actions [$(acts)]"
 : >"$T/actions"; rc="$(runc rollback --yes)"
 [ "$rc" = 0 ] && ! grep -q 40005842 "$LSP" && ok || bad "rollback after the stepwise apply: rc $rc: $(grep ERROR "$T/out" | head -2)"
+
+# apply --backup-run: a composer's ONE backup, taken before its first patch (state patch= another id), is the restore point
+shared() { build; running; runc backup "$PD" --yes >/dev/null; runc stop --yes >/dev/null; : >"$T/actions"
+  SRD="$(dirname "$(find "$T/runs" -name state | head -1)")"; sed 's/^patch=.*/patch=39425385/' "$SRD/state" >"$SRD/s.new"; mv "$SRD/s.new" "$SRD/state"; }
+shared; rc="$(runc apply "$PD" --yes)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'no completed backup' "$T/out" && ok || bad "without --backup-run another patch's run was used: rc $rc, actions [$(acts)]"
+rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 0 ] && [ "$(acts)" = "apply " ] && grep -q '^40005842;' "$LSP" && ok || bad "apply --backup-run a shared run: rc $rc, actions [$(acts)]: $(grep ERROR "$T/out" | head -2)"
+# a failure restores to the SHARED run's level: an earlier child's patch (applied after the backup) is undone, and
+# the restore is judged against that run's pre_patches, not the level just before this apply (that would be exit 3)
+shared; echo "39425385;DB CLIENT 19.31 BUNDLE" >>"$LSP"; touch "$T/apply.fail"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && ! grep -q '^39425385;' "$LSP" && grep -q 'ROLLED BACK' "$T/out" && ok || bad "a failed apply --backup-run did not restore to the shared level: rc $rc (want 1), lsp [$(tr '\n' ' ' <"$LSP")]: $(grep ERROR "$T/out" | head -2)"
+shared; sed 's#^oracle_home=.*#oracle_home=/elsewhere#' "$SRD/state" >"$SRD/s.new"; mv "$SRD/s.new" "$SRD/state"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'is a backup of /elsewhere' "$T/out" && ok || bad "--backup-run of another home: rc $rc, actions [$(acts)]"
+shared; sed '/^backup=/d' "$SRD/state" >"$SRD/s.new"; mv "$SRD/s.new" "$SRD/state"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'did not complete its backup' "$T/out" && ok || bad "--backup-run with no completed backup: rc $rc, actions [$(acts)]"
+shared; rc="$(runc apply "$PD" --yes --backup-run "$T/nowhere")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'has no state' "$T/out" && ok || bad "--backup-run with no state: rc $rc, actions [$(acts)]"
+shared; rm -f "$(sed -n 's/^backup_dir=//p' "$SRD/state" | tail -1)/home.tgz"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'is not complete' "$T/out" && ok || bad "--backup-run with home.tgz missing: rc $rc, actions [$(acts)]"
+# a home with NO patches: a failed apply restores it and that is a restore, not RESTORE FAILED (pipefail + empty grep)
+build; running; : >"$LSP"; touch "$T/apply.fail"; rc="$(runr --yes)"
+[ "$rc" = 1 ] && grep -q 'ROLLED BACK' "$T/out" && ok || bad "a failed apply on a home with no patches: rc $rc (want 1, not 3): $(grep ERROR "$T/out" | head -2)"
 
 # verify: read-only, and not ready says so
 build; running; rc="$(runc verify "$PD")"
