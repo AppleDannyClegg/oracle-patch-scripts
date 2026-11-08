@@ -375,6 +375,7 @@ rc="$(runc apply "$PD" --yes)"
 [ "$rc" = 0 ] && [ "$(acts)" = "apply " ] && grep -q '^40005842;' "$LSP" && ok || bad "apply after backup + stop: rc $rc, actions [$(acts)]: $(grep ERROR "$T/out" | head -2)"
 st | grep -q '^stage=apply$' && ok || bad "apply did not record its stage in the backup's run: $(st | tr '\n' ' ')"
 
+
 # start: node manager and the components, ports answered; then verify is read-only and says applied
 : >"$T/actions"; rc="$(PATCH_INTERACTIVE=1 runc start --yes)"
 [ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch start changes this host' "$T/out" && ok || bad "an interactive start was not refused: rc $rc, actions [$(acts)]"
@@ -390,6 +391,29 @@ case "$(acts)" in *startNM*) ok;; *) bad "start did not start node manager: [$(a
 [ "$rc" != 0 ] && [ -z "$(acts)" ] && grep -q 'ohs-patch rollback changes this host' "$T/out" && grep -q '^40005842;' "$LSP" && ok || bad "an interactive rollback was not refused: rc $rc, actions [$(acts)]"
 : >"$T/actions"; rc="$(runc rollback --yes)"
 [ "$rc" = 0 ] && ! grep -q 40005842 "$LSP" && ok || bad "rollback after the stepwise apply: rc $rc: $(grep ERROR "$T/out" | head -2)"
+
+# apply --backup-run: a composer's ONE backup, taken before its first patch (state patch= another id), is the restore point
+shared() { build; running; runc backup "$PD" --yes >/dev/null; runc stop --yes >/dev/null; : >"$T/actions"
+  SRD="$(dirname "$(find "$T/runs" -name state | head -1)")"; sed 's/^patch=.*/patch=39425385/' "$SRD/state" >"$SRD/s.new"; mv "$SRD/s.new" "$SRD/state"; }
+shared; rc="$(runc apply "$PD" --yes)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'no completed backup' "$T/out" && ok || bad "without --backup-run another patch's run was used: rc $rc, actions [$(acts)]"
+rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 0 ] && [ "$(acts)" = "apply " ] && grep -q '^40005842;' "$LSP" && ok || bad "apply --backup-run a shared run: rc $rc, actions [$(acts)]: $(grep ERROR "$T/out" | head -2)"
+# a failure restores to the SHARED run's level: an earlier child's patch (applied after the backup) is undone, and
+# the restore is judged against that run's pre_patches, not the level just before this apply (that would be exit 3)
+shared; echo "39425385;DB CLIENT 19.31 BUNDLE" >>"$LSP"; touch "$T/apply.fail"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && ! grep -q '^39425385;' "$LSP" && grep -q 'ROLLED BACK' "$T/out" && ok || bad "a failed apply --backup-run did not restore to the shared level: rc $rc (want 1), lsp [$(tr '\n' ' ' <"$LSP")]: $(grep ERROR "$T/out" | head -2)"
+shared; sed 's#^oracle_home=.*#oracle_home=/elsewhere#' "$SRD/state" >"$SRD/s.new"; mv "$SRD/s.new" "$SRD/state"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'is a backup of /elsewhere' "$T/out" && ok || bad "--backup-run of another home: rc $rc, actions [$(acts)]"
+shared; sed '/^backup=/d' "$SRD/state" >"$SRD/s.new"; mv "$SRD/s.new" "$SRD/state"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'did not complete its backup' "$T/out" && ok || bad "--backup-run with no completed backup: rc $rc, actions [$(acts)]"
+shared; rc="$(runc apply "$PD" --yes --backup-run "$T/nowhere")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'has no state' "$T/out" && ok || bad "--backup-run with no state: rc $rc, actions [$(acts)]"
+shared; rm -f "$(sed -n 's/^backup_dir=//p' "$SRD/state" | tail -1)/home.tgz"; rc="$(runc apply "$PD" --yes --backup-run "$SRD")"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q 'is not complete' "$T/out" && ok || bad "--backup-run with home.tgz missing: rc $rc, actions [$(acts)]"
+# a home with NO patches: a failed apply restores it and that is a restore, not RESTORE FAILED (pipefail + empty grep)
+build; running; : >"$LSP"; touch "$T/apply.fail"; rc="$(runr --yes)"
+[ "$rc" = 1 ] && grep -q 'ROLLED BACK' "$T/out" && ok || bad "a failed apply on a home with no patches: rc $rc (want 1, not 3): $(grep ERROR "$T/out" | head -2)"
 
 # verify: read-only, and not ready says so
 build; running; rc="$(runc verify "$PD")"
