@@ -21,7 +21,7 @@ TOOL="okv-diag"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-OKV_OUT="${OKV_OUT:-$HOME/okv-diag}"; ONLY_SID=""; OKV_HOME_OPT=""; MAKE_TAR=1
+OKV_OUT="${OKV_OUT:-$(output_path okv-diag)}"; ONLY_SID=""; OKV_HOME_OPT=""; MAKE_TAR=1
 # the 600-mode endpoint-wallet password file; removed on exit AND on a signal, so a kill during openssl does
 # not leave it behind (Cortex 3 Nov, the /tmp leak class)
 SECRET_FILE=""

@@ -83,7 +83,7 @@ asks before rolling back.
 `--no-backup`, `--patches ID,ID`, `--release X`, `--latest`, `--dry-run`, `--yes`, `--force`,
 `--json`, `--verbose`, `--run-dir DIR`. Config in `db-patch.conf` (see the example) or the shared
 `oracle.conf`; MOS access is a bearer token in `~/.mos-token` (see `oracle.conf.example`). Needs `lib/oracle-lib.sh` one folder up. Logs and
-state under `~/db-patch/runs/<ts>/`, `runs/latest` points at the last one.
+state under `<output dir>/db-patch/runs/<ts>/`, `runs/latest` points at the last one.
 
 Tested against a mock home (fake `opatch`, `sqlplus`); not yet on a real database. Do `inspect`,
 `plan`, `preflight` on a test box first and read the log.

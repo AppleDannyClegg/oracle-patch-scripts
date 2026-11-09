@@ -85,8 +85,8 @@ accepted when RMAN itself said `no obsolete backups found`.
 `--dry-run`, `--yes`, `--verbose`. Config in `rman-ops.conf` (see the example) or the shared
 `oracle.conf`: `RMAN_CATALOG_CONNECT` is added as `connect catalog` on RMAN's stdin, never on a
 command line; `RA_CATALOG_CONNECT` is the VPC user for the `ra_*` views. Needs `lib/oracle-lib.sh`
-one folder up. Reports under `~/rman-ops/<host>_<command>_<ts>/`, change-making runs under
-`~/rman-ops/runs/`.
+one folder up. Reports under `<output dir>/rman-ops/<host>_<command>_<ts>/`, change-making runs under
+`<output dir>/rman-ops/runs/`.
 
 Tested against a fake `rman`/`sqlplus`/`dbv` (evidence report, failing preview, restore-test,
 crosscheck, delete-obsolete, dry-run); not yet on a real database. Run `inspect` and

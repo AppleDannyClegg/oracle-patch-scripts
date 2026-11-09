@@ -13,7 +13,7 @@ cd reports/okv-diag
 # prints the findings and writes REPORT.md
 ```
 
-Output under `~/okv-diag/<host>_<ts>/`: `REPORT.md` (FINDINGS first) + `raw/` + a `.tar.gz`.
+Output under `<output dir>/okv-diag/<host>_<ts>/`: `REPORT.md` (FINDINGS first) + `raw/` + a `.tar.gz`.
 Hand `REPORT.md` to Claude with *"this is an okv-diag report; tell me which endpoints are at risk
 of losing Key Vault access and the exact rotation steps, in order"*.
 

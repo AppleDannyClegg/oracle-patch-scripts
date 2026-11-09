@@ -38,7 +38,7 @@ TOOL="incident-pack"; VERSION="1.0.0"
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
 SR=""; SINCE=""; UNTIL=""; HOURS="${PACK_HOURS:-24}"; ONLY_SID=""; COMPONENTS=""; DO_AWR=0; DO_THREADS=0; DO_HEAP=0; DO_HANG=0; NO_DIAG=0; NO_TFA=0; DO_SPLIT=0
-PACK_OUT="${PACK_OUT:-$HOME/incident-pack}"; CAP_MB="${PACK_CAP_MB:-100}"; OSW_ARCHIVE="${OSW_ARCHIVE:-}"; EXTRA_FILES="${EXTRA_FILES:-}"; EXTRA_LOGS="${EXTRA_LOGS:-}"; TFA_TIMEOUT="${TFA_TIMEOUT:-1800}"
+PACK_OUT="${PACK_OUT:-$(output_path incident-pack)}"; CAP_MB="${PACK_CAP_MB:-100}"; OSW_ARCHIVE="${OSW_ARCHIVE:-}"; EXTRA_FILES="${EXTRA_FILES:-}"; EXTRA_LOGS="${EXTRA_LOGS:-}"; TFA_TIMEOUT="${TFA_TIMEOUT:-1800}"
 PACK=""; SINCE_EP=""; UNTIL_EP=""; SINCE_ISO=""; UNTIL_ISO=""; TFA_DONE=0; FACTS=""; NFILES=0; NFAIL=0; FAILED=""
 
 usage() { usage_from_header "$0"; }
@@ -371,7 +371,7 @@ main() {
   load_config; refuse_root; parse_opts "$@"
   [ -n "$SR" ] || { usage; exit 1; }
   printf '%s' "$SR" | grep -qE '^[A-Za-z0-9._-]+$' || die "SR label must be letters, digits, . _ - (e.g. 3-12345678901 or ORA600-20261031)"
-  set_window; mkdir -p "$PACK_OUT" || die "cannot create $PACK_OUT"; PACK="$PACK_OUT/${SR}_${HOST}_$(date '+%Y%m%d_%H%M%S')"; RUN_DIR="$PACK"; RUN_BASE="$PACK_OUT"; init_run_dir pack
+  set_window; mkdir -p "$PACK_OUT" || die "cannot create $PACK_OUT: $OUTPUT_HINT"; PACK="$PACK_OUT/${SR}_${HOST}_$(date '+%Y%m%d_%H%M%S')"; RUN_DIR="$PACK"; RUN_BASE="$PACK_OUT"; init_run_dir pack
   touch -t "$(if [ "$GNU_DATE" = 1 ]; then date -d "@$SINCE_EP" '+%Y%m%d%H%M.%S'; else date -r "$SINCE_EP" '+%Y%m%d%H%M.%S'; fi)" "$PACK/.since" 2>/dev/null || touch "$PACK/.since"
   log "incident pack for SR $SR on $HOST, window $SINCE_ISO .. $UNTIL_ISO -> $PACK"
   fact SR "$SR"; fact HOST "$HOST"; fact FQDN "$(hostname -f 2>/dev/null || hostname 2>/dev/null || uname -n)"; fact WINDOW "$SINCE_ISO .. $UNTIL_ISO"; fact GENERATED "$(ts)"

@@ -340,7 +340,7 @@ cmd_run() { cmd_check || true; cmd_wait || return $?; cmd_verify; }
 
 cmd_check() {
   local node="${OKV_NODE:-$(hostname -s 2>/dev/null || uname -n)}" od
-  od="${CERT_OUT:-$HOME/okv-rotate}/$(date '+%Y%m%d-%H%M%S')-${node}"
+  od="${CERT_OUT:-$(output_path okv-rotate)}/$(date '+%Y%m%d-%H%M%S')-${node}"
   report_init "$od"
   [ "$DO_REPORT" = 1 ] && { h1 "OKV endpoint certificate rotation - $node"; para "Read-only. Console rotation is step 2 of the runbook and is not done here."; }
   say "OKV endpoint state on $node"

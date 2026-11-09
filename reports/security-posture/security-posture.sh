@@ -23,7 +23,7 @@ TOOL="security-posture"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-SEC_OUT="${SEC_OUT:-$HOME/security-posture}"; SEC_APP_SCHEMAS="${SEC_APP_SCHEMAS:-}"; SEC_ALLOWED_DBA="${SEC_ALLOWED_DBA:-SYS,SYSTEM}"
+SEC_OUT="${SEC_OUT:-$(output_path security-posture)}"; SEC_APP_SCHEMAS="${SEC_APP_SCHEMAS:-}"; SEC_ALLOWED_DBA="${SEC_ALLOWED_DBA:-SYS,SYSTEM}"
 ONLY_SID=""; CIS=0; MAKE_TAR=1; SCORE=""; NPASS=0; NFAIL=0
 
 usage() { usage_from_header "$0"; }

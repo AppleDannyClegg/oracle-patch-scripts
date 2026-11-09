@@ -40,7 +40,7 @@
 # Usage: ohs-quarter.sh [<patch-root>] [options]
 #
 # Options
-#   --patch-root DIR   the staging root (default /u01/patches, or the positional argument)
+#   --patch-root DIR   the staging root (default OUTPUT_DIR if set, else /u01/patches; or the positional argument)
 #   --oracle-home DIR  the OHS home (passed to every child)
 #   --java-home DIR    the JDK to replace (passed to java-patch and wls-patch)
 #   --run-dir DIR      this outage's run dir (default: $RUN_BASE/<stamp>-ohs-quarter)
@@ -55,6 +55,39 @@
 #      child script paths (used by the gate). RUN_BASE overrides the parent of the default run dir.
 
 set -uo pipefail
+# >>> output-location (the same block in lib/oracle-lib.sh and every script that does not source it; tests/output-dir.sh compares them)
+# Where a script puts what it creates. ORACLE_OUTPUT_DIR in the environment wins, then OUTPUT_DIR from oracle.conf or ~/.oracle.conf.
+# With neither set, a host that already has $HOME/<tool> keeps it, so an upgrade strands no run state, backup or history; a fresh
+# host uses /u01/oracle-patch-scripts (macOS: $HOME/oracle-patch-scripts when /u01 cannot be written). The first write creates it.
+OUTPUT_SERVER_BASE="${OUTPUT_SERVER_BASE:-/u01/oracle-patch-scripts}"
+# shellcheck disable=SC2034
+OUTPUT_HINT="set OUTPUT_DIR in oracle.conf, or ORACLE_OUTPUT_DIR, to choose where this goes"
+output_configured() {
+  [ -n "${ORACLE_OUTPUT_DIR:-}" ] && { printf '%s' "$ORACLE_OUTPUT_DIR"; return 0; }
+  local f v="" d; d="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+  for f in "$d/../../oracle.conf" "$d/../oracle.conf" "$HOME/.oracle.conf"; do
+    [ -f "$f" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?OUTPUT_DIR=' "$f" || continue
+    # shellcheck disable=SC1090
+    v="$(unset OUTPUT_DIR; . "$f" >/dev/null 2>&1; printf '%s' "${OUTPUT_DIR:-}")"
+  done
+  printf '%s' "$v"
+}
+output_writable() { local d="$1"; while [ ! -e "$d" ] && [ "$d" != / ]; do d="$(dirname "$d")"; done; [ -d "$d" ] && [ -w "$d" ]; }
+output_default_base() {
+  case "${OSTYPE:-$(uname -s | tr 'A-Z' 'a-z')}" in
+    darwin*) if output_writable "$OUTPUT_SERVER_BASE"; then printf '%s' "$OUTPUT_SERVER_BASE"; else printf '%s' "$HOME/oracle-patch-scripts"; fi;;
+    msys*|cygwin*|win*) printf '%s' "$HOME/oracle-patch-scripts";;
+    *) printf '%s' "$OUTPUT_SERVER_BASE";;
+  esac
+}
+OUTPUT_CONFIGURED="$(output_configured)"
+case "$OUTPUT_CONFIGURED" in ''|/*) ;; *) printf 'ERROR: OUTPUT_DIR must be an absolute path, got: %s\n' "$OUTPUT_CONFIGURED" >&2; exit 1;; esac
+output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
+  if [ -n "$OUTPUT_CONFIGURED" ]; then printf '%s/%s' "${OUTPUT_CONFIGURED%/}" "$1"
+  elif [ -d "$HOME/$1" ]; then printf '%s/%s' "$HOME" "$1"
+  else printf '%s/%s' "$(output_default_base)" "$1"; fi
+}
+# <<< output-location
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAVA_PATCH="${OHS_QUARTER_JAVA_PATCH:-$SCRIPT_DIR/../java-patch/java-patch.sh}"
@@ -88,7 +121,7 @@ while [ $# -gt 0 ]; do
     *) [ -z "$PATCH_ROOT" ] || die "Unknown argument: $1"; PATCH_ROOT="$1"; shift;;
   esac
 done
-[ -n "$PATCH_ROOT" ] || PATCH_ROOT=/u01/patches
+[ -n "$PATCH_ROOT" ] || PATCH_ROOT="${OUTPUT_CONFIGURED:-/u01/patches}"
 [ -x "$JAVA_PATCH" ] || die "java-patch.sh not found or not executable: $JAVA_PATCH"
 [ -x "$WLS_PATCH" ]  || die "wls-patch.sh not found or not executable: $WLS_PATCH"
 [ -x "$DBCLIENT" ]   || die "dbclient-upgrade.sh not found or not executable: $DBCLIENT"
@@ -130,9 +163,9 @@ APPLY=()
 for d in "${OPATCH_DIRS[@]}"; do APPLY+=("ohs|$d"); done
 
 # ---- run dir + one shared backup dir ----------------------------------------------------------------------
-[ -n "$RUN_DIR" ] || RUN_DIR="${RUN_BASE:-$HOME/ohs-quarter/runs}/$(date '+%Y%m%d-%H%M%S')-ohs-quarter"
+[ -n "$RUN_DIR" ] || RUN_DIR="${RUN_BASE:-$(output_path ohs-quarter)/runs}/$(date '+%Y%m%d-%H%M%S')-ohs-quarter"
 SHARED="$RUN_DIR/backup"       # the ONE shared home+inventory backup; the installer and every opatch apply use it
-mkdir -p "$RUN_DIR" || die "Cannot create the run dir $RUN_DIR"
+mkdir -p "$RUN_DIR" || die "Cannot create the run dir $RUN_DIR: $OUTPUT_HINT"
 {
   echo "created=$(ts)"
   echo "patch_root=$PATCH_ROOT"

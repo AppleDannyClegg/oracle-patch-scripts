@@ -12,12 +12,12 @@ the likely cause. No network access; what it cannot find becomes a `TODO:`.
 ```bash
 cd operations/sr-draft
 ../incident-pack/incident-pack.sh 3-12345678901 --hours 6                 # collect first
-./sr-draft.sh --pack ~/incident-pack/3-12345678901_dbhost01_20261031_021500 --prod \
+./sr-draft.sh --pack <output dir>/incident-pack/3-12345678901_dbhost01_20261031_021500 --prod \
    --business-impact "Online banking login fails for ~40% of users since 02:10; no workaround" \
    --steps "Started after the 02:00 batch; reproduces on every login; restart of ORDS did not help"
 # -> <pack>/sr/SR.md, CLAUDE-PROMPT.md, MOS-SEARCH.txt
 
-./sr-draft.sh --report ~/oracle-diag/dbhost01_20261031_090000 --error "ORA-04031: unable to allocate ..."
+./sr-draft.sh --report <output dir>/oracle-diag/dbhost01_20261031_090000 --error "ORA-04031: unable to allocate ..."
 ./sr-draft.sh --error "ORA-07445: exception encountered: core dump [kglLockHandle()+34] ..." --sid PRODDB --severity 1
 ```
 

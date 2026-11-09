@@ -46,6 +46,39 @@
 # PATCHES=id,id,.. in the config is the default list for 'run --patches'.
 
 set -o pipefail
+# >>> output-location (the same block in lib/oracle-lib.sh and every script that does not source it; tests/output-dir.sh compares them)
+# Where a script puts what it creates. ORACLE_OUTPUT_DIR in the environment wins, then OUTPUT_DIR from oracle.conf or ~/.oracle.conf.
+# With neither set, a host that already has $HOME/<tool> keeps it, so an upgrade strands no run state, backup or history; a fresh
+# host uses /u01/oracle-patch-scripts (macOS: $HOME/oracle-patch-scripts when /u01 cannot be written). The first write creates it.
+OUTPUT_SERVER_BASE="${OUTPUT_SERVER_BASE:-/u01/oracle-patch-scripts}"
+# shellcheck disable=SC2034
+OUTPUT_HINT="set OUTPUT_DIR in oracle.conf, or ORACLE_OUTPUT_DIR, to choose where this goes"
+output_configured() {
+  [ -n "${ORACLE_OUTPUT_DIR:-}" ] && { printf '%s' "$ORACLE_OUTPUT_DIR"; return 0; }
+  local f v="" d; d="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+  for f in "$d/../../oracle.conf" "$d/../oracle.conf" "$HOME/.oracle.conf"; do
+    [ -f "$f" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?OUTPUT_DIR=' "$f" || continue
+    # shellcheck disable=SC1090
+    v="$(unset OUTPUT_DIR; . "$f" >/dev/null 2>&1; printf '%s' "${OUTPUT_DIR:-}")"
+  done
+  printf '%s' "$v"
+}
+output_writable() { local d="$1"; while [ ! -e "$d" ] && [ "$d" != / ]; do d="$(dirname "$d")"; done; [ -d "$d" ] && [ -w "$d" ]; }
+output_default_base() {
+  case "${OSTYPE:-$(uname -s | tr 'A-Z' 'a-z')}" in
+    darwin*) if output_writable "$OUTPUT_SERVER_BASE"; then printf '%s' "$OUTPUT_SERVER_BASE"; else printf '%s' "$HOME/oracle-patch-scripts"; fi;;
+    msys*|cygwin*|win*) printf '%s' "$HOME/oracle-patch-scripts";;
+    *) printf '%s' "$OUTPUT_SERVER_BASE";;
+  esac
+}
+OUTPUT_CONFIGURED="$(output_configured)"
+case "$OUTPUT_CONFIGURED" in ''|/*) ;; *) printf 'ERROR: OUTPUT_DIR must be an absolute path, got: %s\n' "$OUTPUT_CONFIGURED" >&2; exit 1;; esac
+output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
+  if [ -n "$OUTPUT_CONFIGURED" ]; then printf '%s/%s' "${OUTPUT_CONFIGURED%/}" "$1"
+  elif [ -d "$HOME/$1" ]; then printf '%s/%s' "$HOME" "$1"
+  else printf '%s/%s' "$(output_default_base)" "$1"; fi
+}
+# <<< output-location
 
 VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,9 +94,9 @@ JSON_OUT=0
 VERBOSE=0
 STOP_TIMEOUT="${STOP_TIMEOUT:-180}"
 START_TIMEOUT="${START_TIMEOUT:-600}"
-RUN_BASE="${RUN_BASE:-$HOME/wls-patch/runs}"
+RUN_BASE="${RUN_BASE:-$(output_path wls-patch)/runs}"
 PATCH_BASE="${PATCH_BASE:-/u01/patches}"   # 'download' with no dir lands in $PATCH_BASE/wls
-BACKUP_DIR="${BACKUP_DIR:-$HOME/wls-patch/backups}"
+BACKUP_DIR="${BACKUP_DIR:-$(output_path wls-patch)/backups}"
 RUN_DIR=""
 LOG_FILE=""
 STATE_FILE=""
@@ -187,7 +220,7 @@ init_run_dir() {
   if [ -z "$RUN_DIR" ]; then
     RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"
   fi
-  mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR"
+  mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR: $OUTPUT_HINT"
   LOG_FILE="$RUN_DIR/wls-patch.log"
   STATE_FILE="$RUN_DIR/state"
   ln -sfn "$RUN_DIR" "$RUN_BASE/latest"

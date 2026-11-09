@@ -2,7 +2,7 @@
 
 Read-only. Runs on the database server as `oracle`, looks at every running database (and the
 listener, ORDS, WebLogic, Grid Infrastructure and GoldenGate if they are there), and leaves three
-files per run under `~/db-health-daily/<timestamp>/`:
+files per run under `<output dir>/db-health-daily/<timestamp>/`:
 
 | File | What it is |
 |---|---|
@@ -34,7 +34,7 @@ folders `db-health-daily/` and `lib/`).
 
 | Option | Meaning |
 |---|---|
-| `--out DIR` | where runs go (default `~/db-health-daily`) |
+| `--out DIR` | where runs go (default `<output dir>/db-health-daily`) |
 | `--sid SID` | one database only |
 | `--pdb NAME` | make sure this PDB is checked (open PDBs are found anyway) |
 | `--mail ADDR`, `--always-mail` | email the summary |
