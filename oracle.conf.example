@@ -20,7 +20,18 @@ OFFLINE=1
 # (lasts 60 minutes), save it in ~/.mos-token (chmod 600) or point MOS_TOKEN_FILE at the file
 #MOS_TOKEN_FILE=/home/oracle/.mos-token
 
-# Where run logs go (default ~/<script>/runs)
+# One location for everything these scripts create, download or report: each script writes to <OUTPUT_DIR>/<script>,
+# run logs to <OUTPUT_DIR>/<script>/runs, and it also replaces PATCH_BASE. Must be an absolute path. The environment
+# variable ORACLE_OUTPUT_DIR wins over this. Examples:
+#   Linux server:   OUTPUT_DIR=/u01/oracle-patch-scripts
+#   macOS laptop:   OUTPUT_DIR=/Users/you/oracle-patch-scripts
+#   Windows laptop: set the environment variable ORACLE_OUTPUT_DIR (the PowerShell tools read it too)
+# Left unset, a host that already has ~/<script> keeps using it, and a fresh host uses /u01/oracle-patch-scripts
+# (macOS: ~/oracle-patch-scripts when /u01 cannot be written). Setting this never copies old files: set it between
+# patch runs, not during one, because a later verify or rollback looks for its run under the new location.
+#OUTPUT_DIR=/u01/oracle-patch-scripts
+
+# Where run logs go when it differs from <OUTPUT_DIR>/<script>/runs
 #RUN_BASE=/u01/backup/scripts/runs
 
 # One folder for everything downloaded: patch-manifest's manifest, the patch zips (<PATCH_BASE>/<kind> the

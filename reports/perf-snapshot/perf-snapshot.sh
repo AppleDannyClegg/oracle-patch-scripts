@@ -28,7 +28,7 @@ TOOL="perf-snapshot"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-PERF_OUT="${PERF_OUT:-$HOME/perf-snapshot}"; PERF_TOP="${PERF_TOP:-20}"; PERF_PACK="${PERF_PACK:-}"
+PERF_OUT="${PERF_OUT:-$(output_path perf-snapshot)}"; PERF_TOP="${PERF_TOP:-20}"; PERF_PACK="${PERF_PACK:-}"
 FROM=""; TO=""; LAST=""; ONLY_SID=""; SQL_ID=""; WANT_AWR=0; NO_PACK=0; THREADS=0; SAMPLES=10; MAKE_TAR=1
 PACK_OK=0
 

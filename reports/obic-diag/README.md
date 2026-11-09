@@ -17,7 +17,7 @@ Read-only. It answers "why is an OBIC service not up?" by checking the four thin
 ```bash
 cd reports/obic-diag
 cp obic-diag.conf.example obic-diag.conf     # set DISCOVERY_URL / DOMAIN_HOME for this host
-./obic-diag.sh                                # -> ~/obic-diag/<host>_<ts>/REPORT.md, exit 2/1/0
+./obic-diag.sh                                # -> <output dir>/obic-diag/<host>_<ts>/REPORT.md, exit 2/1/0
 ```
 
 Options: `--discovery URL`, `--zipkin URL`, `--out DIR`, `--lines N`, `--quiet`, `--no-tar`, `--verbose`.

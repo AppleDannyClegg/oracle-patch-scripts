@@ -24,7 +24,7 @@ TOOL="obic-diag"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-OBIC_OUT="${OBIC_OUT:-$HOME/obic-diag}"
+OBIC_OUT="${OBIC_OUT:-$(output_path obic-diag)}"
 DISCOVERY_URL="${DISCOVERY_URL:-}"
 ZIPKIN_URL="${ZIPKIN_URL:-http://localhost:9411}"
 DOMAIN_HOME="${DOMAIN_HOME:-}"

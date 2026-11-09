@@ -27,10 +27,49 @@ SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[1]:-$0}")" && pwd)}"
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN="${DRY_RUN:-0}"; ASSUME_YES="${ASSUME_YES:-0}"; FORCE="${FORCE:-0}"; JSON_OUT="${JSON_OUT:-0}"; VERBOSE="${VERBOSE:-0}"; QUIET="${QUIET:-0}"
-RUN_BASE="${RUN_BASE:-$HOME/$TOOL/runs}"
+# >>> output-location (the same block in lib/oracle-lib.sh and every script that does not source it; tests/output-dir.sh compares them)
+# Where a script puts what it creates. ORACLE_OUTPUT_DIR in the environment wins, then OUTPUT_DIR from oracle.conf or ~/.oracle.conf.
+# With neither set, a host that already has $HOME/<tool> keeps it, so an upgrade strands no run state, backup or history; a fresh
+# host uses /u01/oracle-patch-scripts (macOS: $HOME/oracle-patch-scripts when /u01 cannot be written). The first write creates it.
+OUTPUT_SERVER_BASE="${OUTPUT_SERVER_BASE:-/u01/oracle-patch-scripts}"
+# shellcheck disable=SC2034
+OUTPUT_HINT="set OUTPUT_DIR in oracle.conf, or ORACLE_OUTPUT_DIR, to choose where this goes"
+output_configured() {
+  [ -n "${ORACLE_OUTPUT_DIR:-}" ] && { printf '%s' "$ORACLE_OUTPUT_DIR"; return 0; }
+  local f v="" d; d="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+  for f in "$d/../../oracle.conf" "$d/../oracle.conf" "$HOME/.oracle.conf"; do
+    [ -f "$f" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?OUTPUT_DIR=' "$f" || continue
+    # shellcheck disable=SC1090
+    v="$(unset OUTPUT_DIR; . "$f" >/dev/null 2>&1; printf '%s' "${OUTPUT_DIR:-}")"
+  done
+  printf '%s' "$v"
+}
+output_writable() { local d="$1"; while [ ! -e "$d" ] && [ "$d" != / ]; do d="$(dirname "$d")"; done; [ -d "$d" ] && [ -w "$d" ]; }
+output_default_base() {
+  case "${OSTYPE:-$(uname -s | tr 'A-Z' 'a-z')}" in
+    darwin*) if output_writable "$OUTPUT_SERVER_BASE"; then printf '%s' "$OUTPUT_SERVER_BASE"; else printf '%s' "$HOME/oracle-patch-scripts"; fi;;
+    msys*|cygwin*|win*) printf '%s' "$HOME/oracle-patch-scripts";;
+    *) printf '%s' "$OUTPUT_SERVER_BASE";;
+  esac
+}
+OUTPUT_CONFIGURED="$(output_configured)"
+case "$OUTPUT_CONFIGURED" in ''|/*) ;; *) printf 'ERROR: OUTPUT_DIR must be an absolute path, got: %s\n' "$OUTPUT_CONFIGURED" >&2; exit 1;; esac
+output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
+  if [ -n "$OUTPUT_CONFIGURED" ]; then printf '%s/%s' "${OUTPUT_CONFIGURED%/}" "$1"
+  elif [ -d "$HOME/$1" ]; then printf '%s/%s' "$HOME" "$1"
+  else printf '%s/%s' "$(output_default_base)" "$1"; fi
+}
+# <<< output-location
+output_box() { # <tool>: output_path, created (except under --dry-run). Fails closed: nothing is printed when it cannot be created.
+  local d; d="$(output_path "$1")"
+  if [ "${DRY_RUN:-0}" != 1 ]; then mkdir -p "$d" || { err "cannot create $d: $OUTPUT_HINT"; return 1; }; fi
+  printf '%s\n' "$d"
+}
+RUN_BASE="${RUN_BASE:-$(output_path "$TOOL")/runs}"
 # one folder for everything downloaded: the manifest, the patch zips (patch_base/<kind>), the tools tree
-# (patch_base/scripts). A server uses /u01/patches; set PATCH_BASE in oracle.conf (or the environment) to move it.
-PATCH_BASE="${PATCH_BASE:-/u01/patches}"
+# (patch_base/scripts). A server uses /u01/patches; set PATCH_BASE in oracle.conf (or the environment) to move it. OUTPUT_DIR, when set, is the one
+# location and replaces it, here and again after load_config.
+PATCH_BASE="${OUTPUT_CONFIGURED:-${PATCH_BASE:-/u01/patches}}"
 RUN_DIR="${RUN_DIR:-}"; LOG_FILE="${LOG_FILE:-}"; STATE_FILE="${STATE_FILE:-}"
 CMD_TIMEOUT="${CMD_TIMEOUT:-60}"; SQL_TIMEOUT="${SQL_TIMEOUT:-90}"
 HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || cat /etc/hostname 2>/dev/null || echo "${HOSTNAME:-unknown}")"; HOST="${HOST%%.*}"
@@ -162,7 +201,7 @@ require_detached() {
 init_run_dir() {
   local name="${1:-run}"
   [ -z "$RUN_DIR" ] && RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"
-  mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR"
+  mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR: $OUTPUT_HINT"
   LOG_FILE="$RUN_DIR/$TOOL.log"; STATE_FILE="$RUN_DIR/state"
   # 'latest' is how the next command (verify, rollback, cleanup) finds this run: a link that could not be moved would send
   # it to the PREVIOUS run's state and material, so the failure is said out loud and the --run-dir to pass is named
@@ -193,6 +232,7 @@ load_config() {
     . "$f"
     set +a
   done
+  [ -z "$OUTPUT_CONFIGURED" ] || PATCH_BASE="$OUTPUT_CONFIGURED"
   unexport_secrets
 }
 # unexport_secrets: set -a above exported every config variable, secrets included, into the environment of every child
@@ -376,7 +416,7 @@ REPORT=""; RAW=""; OUT=""; FINDINGS=""; NCRIT=0; NWARN=0; NINFO=0
 DIAG_LINES="${DIAG_LINES:-200}"; DIAG_DAYS="${DIAG_DAYS:-3}"
 report_init() { # <outdir>
   OUT="$1"; RAW="$OUT/raw"; REPORT="$OUT/body.md"; FINDINGS_FILE="$OUT/findings.txt"
-  mkdir -p "$RAW" || die "cannot create $RAW"; : >"$REPORT"; : >"$FINDINGS_FILE"
+  mkdir -p "$RAW" || die "cannot create $RAW: $OUTPUT_HINT"; : >"$REPORT"; : >"$FINDINGS_FILE"
 }
 finding() { # <CRIT|WARN|INFO> <area> <text>
   case "$1" in CRIT) NCRIT=$((NCRIT+1));; WARN) NWARN=$((NWARN+1));; *) NINFO=$((NINFO+1));; esac
@@ -887,6 +927,15 @@ lib_selftest() {
   t "okv_is_rotated: a subfolder of ssl is rotated" 'okv_is_rotated "/x/okv/ssl/19700101000000000000"'
   t "file_patterns jdk names the four tarball globs" '[ "$(file_patterns jdk | tr "\n" " ")" = "jdk*.tar.gz jdk*.tgz server-jre*.tar.gz jre*.tar.gz " ]'
   t "file_patterns staged names the four artifact globs" '[ "$(file_patterns staged | tr "\n" " ")" = "patches-* *.zip *.tar.gz *.tgz " ]'
+  t "output_path: ORACLE_OUTPUT_DIR wins over oracle.conf and an existing old folder" 'd=$(mktemp -d); mkdir -p $d/h/.x $d/h/mytool; printf "OUTPUT_DIR=$d/conf\n" >$d/h/.oracle.conf; [ "$(HOME=$d/h ORACLE_OUTPUT_DIR=$d/env SCRIPT_DIR=$d bash -c ". $LIB_DIR/oracle-lib.sh; output_path mytool" 2>/dev/null)" = "$d/env/mytool" ]'
+  t "output_path: OUTPUT_DIR from oracle.conf wins over an existing old folder, and a stray env OUTPUT_DIR is ignored" 'd=$(mktemp -d); mkdir -p $d/h/mytool; printf "OUTPUT_DIR=$d/conf\n" >$d/h/.oracle.conf; [ "$(env -u ORACLE_OUTPUT_DIR HOME=$d/h OUTPUT_DIR=/stray SCRIPT_DIR=$d bash -c ". $LIB_DIR/oracle-lib.sh; output_path mytool" 2>/dev/null)" = "$d/conf/mytool" ]'
+  t "output_path: unset keeps an existing \$HOME/<tool>" 'd=$(mktemp -d); mkdir -p $d/h/mytool; [ "$(env -u ORACLE_OUTPUT_DIR HOME=$d/h SCRIPT_DIR=$d bash -c ". $LIB_DIR/oracle-lib.sh; output_path mytool" 2>/dev/null)" = "$d/h/mytool" ]'
+  t "output_path: fresh Linux uses the server base, even when it cannot be written" 'd=$(mktemp -d); mkdir -p $d/h $d/ro; chmod 555 $d/ro; r="$(env -u ORACLE_OUTPUT_DIR HOME=$d/h SCRIPT_DIR=$d OUTPUT_SERVER_BASE=$d/ro/base bash -c "OSTYPE=linux-gnu; . $LIB_DIR/oracle-lib.sh; output_path mytool" 2>/dev/null)"; chmod 755 $d/ro; [ "$r" = "$d/ro/base/mytool" ]'
+  t "output_path: fresh macOS falls back to \$HOME when the server base cannot be written" 'd=$(mktemp -d); mkdir -p $d/h $d/ro; chmod 555 $d/ro; r="$(env -u ORACLE_OUTPUT_DIR HOME=$d/h SCRIPT_DIR=$d OUTPUT_SERVER_BASE=$d/ro/base bash -c "OSTYPE=darwin24; . $LIB_DIR/oracle-lib.sh; output_path mytool" 2>/dev/null)"; chmod 755 $d/ro; [ "$r" = "$d/h/oracle-patch-scripts/mytool" ]'
+  t "output_path creates nothing; output_box creates it, and not under DRY_RUN" 'd=$(mktemp -d); o=$(HOME=$d ORACLE_OUTPUT_DIR=$d/o SCRIPT_DIR=$d bash -c ". $LIB_DIR/oracle-lib.sh; output_path t; [ ! -e $d/o ] && echo NOWRITE; DRY_RUN=1 output_box t >/dev/null; [ ! -e $d/o ] && echo NODRY; DRY_RUN=0 output_box t >/dev/null; [ -d $d/o/t ] && echo MADE" 2>/dev/null); case "$o" in *NOWRITE*NODRY*MADE*) true;; *) false;; esac'
+  t "output_box fails closed naming OUTPUT_DIR" 'd=$(mktemp -d); mkdir $d/ro; chmod 555 $d/ro; o=$(HOME=$d ORACLE_OUTPUT_DIR=$d/ro/x SCRIPT_DIR=$d bash -c ". $LIB_DIR/oracle-lib.sh; output_box t; echo rc=\$?" 2>&1); chmod 755 $d/ro; case "$o" in *OUTPUT_DIR*rc=1) true;; *) false;; esac'
+  t "a relative OUTPUT_DIR is refused" '! HOME=/nonexistent ORACLE_OUTPUT_DIR=rel/path SCRIPT_DIR=/nonexistent bash -c ". $LIB_DIR/oracle-lib.sh" 2>/dev/null'
+  t "RUN_BASE follows OUTPUT_DIR from oracle.conf at load" 'd=$(mktemp -d); printf "OUTPUT_DIR=$d/conf\n" >$d/.oracle.conf; [ "$(env -u ORACLE_OUTPUT_DIR -u RUN_BASE HOME=$d SCRIPT_DIR=$d TOOL=mytool bash -c ". $LIB_DIR/oracle-lib.sh; printf %s \$RUN_BASE" 2>/dev/null)" = "$d/conf/mytool/runs" ]'
   t "file_patterns of an unknown key fails" '! file_patterns nope 2>/dev/null'
   echo "oracle-lib $ORACLE_LIB_VERSION selftest: $ok passed, $fail failed (timeout=$HAVE_TIMEOUT gnu-date=$GNU_DATE sudo=${SUDO:-no})"
   [ "$fail" = 0 ]

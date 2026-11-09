@@ -21,11 +21,11 @@ cd operations/exascale-space
 ./exascale-space.sh plan                      # what could be freed or grown, with the exact commands and sizes
 ./exascale-space.sh purge-archivelogs         # RMAN: delete archivelogs completed before sysdate-1 that are backed up to sbt
 ./exascale-space.sh grow prodvault --hc +2T   # chvault: 2 TB more HC provisioning (preflight: the pool must have it); rollback undoes it
-./exascale-space.sh release --list ~/exascale-space/<run>/orphan-candidates.txt   # rmfile the files YOU reviewed; typed confirmation
+./exascale-space.sh release --list <output dir>/exascale-space/<run>/orphan-candidates.txt   # rmfile the files YOU reviewed; typed confirmation
 ./exascale-space.sh heal                      # inspect, then purge-archivelogs where a vault is over EXA_WARN_PCT (asks; --yes runs)
 ```
 
-Report: `~/exascale-space/<host>_<ts>/REPORT.md` (FINDINGS first) plus `raw/*.txt` (every escli
+Report: `<output dir>/exascale-space/<host>_<ts>/REPORT.md` (FINDINGS first) plus `raw/*.txt` (every escli
 and SQL output untruncated) and `raw/*.csv` (pools, vaults, files per vault, the summary table).
 Hand the report to Claude as in [../../reports/oracle-diag/ANALYSE.md](../../reports/oracle-diag/ANALYSE.md).
 

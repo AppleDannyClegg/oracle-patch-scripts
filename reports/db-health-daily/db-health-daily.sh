@@ -28,7 +28,7 @@ TOOL="db-health-daily"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found next to $SCRIPT_DIR" >&2; exit 1; }
 
-HEALTH_OUT="${HEALTH_OUT:-$HOME/db-health-daily}"
+HEALTH_OUT="${HEALTH_OUT:-$(output_path db-health-daily)}"
 FS_WARN="${FS_WARN:-85}"; FS_CRIT="${FS_CRIT:-95}"; TS_WARN="${TS_WARN:-85}"; TS_CRIT="${TS_CRIT:-95}"
 FRA_WARN="${FRA_WARN:-85}"; FRA_CRIT="${FRA_CRIT:-95}"; BACKUP_WARN_DAYS="${BACKUP_WARN_DAYS:-2}"; BACKUP_CRIT_DAYS="${BACKUP_CRIT_DAYS:-7}"
 DG_LAG_WARN_MIN="${DG_LAG_WARN_MIN:-30}"; PROC_WARN="${PROC_WARN:-80}"

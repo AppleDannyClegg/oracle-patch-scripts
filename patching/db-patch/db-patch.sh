@@ -41,7 +41,7 @@ TOOL="db-patch"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-BACKUP_DIR="${BACKUP_DIR:-$HOME/db-patch/backups}"; STOP_TIMEOUT="${STOP_TIMEOUT:-300}"; START_TIMEOUT="${START_TIMEOUT:-600}"
+BACKUP_DIR="${BACKUP_DIR:-$(output_path db-patch)/backups}"; STOP_TIMEOUT="${STOP_TIMEOUT:-300}"; START_TIMEOUT="${START_TIMEOUT:-600}"
 DG_STANDBY_FIRST="${DG_STANDBY_FIRST:-yes}"
 HOME_DIR="${ORACLE_HOME:-}"; SIDS="${ORACLE_SID:-}"; GRID=0; OOP=""; ROLLING=0; NO_RP=0; NO_BACKUP=0; PATCHES="${PATCHES:-}"; PICK_RELEASE=""; USE_LATEST=0
 # detected
