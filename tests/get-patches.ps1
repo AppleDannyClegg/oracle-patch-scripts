@@ -931,6 +931,9 @@ try {
 
     Check ((Get-OutputDirSetting -ConfFiles @()) -eq $null) 'no setting -> the resolver returns nothing'
     Check ((Get-OutputDirSetting -ConfFiles @($conf)) -eq '/conf/out') 'OUTPUT_DIR in a conf is read'
+    Set-Content -LiteralPath $conf -Value "export OUTPUT_DIR=/conf/export  # inline`n"
+    Check ((Get-OutputDirSetting -ConfFiles @($conf)) -eq '/conf/export') 'export is accepted and an inline comment is stripped'
+    Set-Content -LiteralPath $conf -Value "OUTPUT_DIR=/conf/out`n"
     Check ((Get-OutputDir -ConfFiles @($conf)) -eq '/conf/out') 'the conf sets the base'
     Check ((Get-OutputDir -ConfFiles @()) -eq (Join-Path $HOME 'oracle-patch-scripts')) 'no setting -> the base defaults under HOME'
 
@@ -952,6 +955,11 @@ try {
     $env:ORACLE_OUTPUT_DIR = $savedOut; $env:PATCH_BASE = $savedPatch
     Remove-Item -LiteralPath $oh -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# ---- get.ps1's own resolver is a separate copy; run its selftest (no network) so it is covered too ------
+$getSelf = $true
+try { & { . (Join-Path $root 'get.ps1') -SelfTest } *> $null } catch { $getSelf = $false; Write-Host $_.Exception.Message }
+Check $getSelf 'get.ps1 -SelfTest passes (export, inline comment, default, env precedence)'
 
 Write-Host "get-patches gate: $script:pass passed, $script:fail failed"
 if ($script:fail -ne 0) { exit 1 }
