@@ -4,7 +4,8 @@ get.ps1 - Windows/PowerShell version of get.sh: fetch the Oracle operations scri
 
   irm https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.ps1 | iex
 
-Puts everything in $HOME\patches\scripts (PATCH_BASE if set, or the folder given as the first argument).
+Puts everything in $env:ORACLE_OUTPUT_DIR\scripts (OUTPUT_DIR in oracle.conf, or PATCH_BASE, or
+$HOME\oracle-patch-scripts by default; or the folder given as the first argument).
 Run it again later to pick up the newest version; the previous copy is kept as <folder>.old,
 and your own *.conf files are carried across.
 
@@ -26,7 +27,9 @@ Custom destination (the pipe form cannot take arguments; build a script block in
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string]$Dest = $(if ($env:PATCH_BASE) { Join-Path $env:PATCH_BASE 'scripts' } else { Join-Path (Join-Path $HOME 'patches') 'scripts' })
+    [string]$Dest,
+    # Run the resolver self-test (no network) and exit: the same cases tests/get-patches.ps1 checks.
+    [switch]$SelfTest
 )
 
 # Everything below runs in a CHILD scope, so the plain 'irm | iex' cannot leak this script's
@@ -34,6 +37,85 @@ param(
 & {
 
 $ErrorActionPreference = 'Stop'
+
+# OUTPUT_DIR: the one base every file this repo creates, downloads or reports goes under, so the tree, the
+# patches and the reports can be moved off /u01 (or out of %USERPROFILE%) in one place. ORACLE_OUTPUT_DIR in
+# the environment wins, then OUTPUT_DIR= in oracle.conf, then the per-machine default. See oracle.conf.example.
+# $ConfFiles is an injection point for the self-test only; callers leave it unset to use the real file order.
+function Get-OutputDirSetting {
+    param([string[]] $ConfFiles)
+    if ($env:ORACLE_OUTPUT_DIR) { return $env:ORACLE_OUTPUT_DIR }
+    if (-not $PSBoundParameters.ContainsKey('ConfFiles')) {
+        # Last file wins, mirroring lib/oracle-lib.sh's load_config order: a tree oracle.conf, a cwd one,
+        # then ~/.oracle.conf, then the tool conf.
+        $ConfFiles = @()
+        if ($PSScriptRoot) { $ConfFiles += (Join-Path $PSScriptRoot 'oracle.conf') }
+        $ConfFiles += (Join-Path $PWD 'oracle.conf')
+        $ConfFiles += (Join-Path $HOME '.oracle.conf')
+        $ConfFiles += (Join-Path $HOME '.get.ps1.conf')
+    }
+    $found = $null
+    foreach ($f in $ConfFiles) {
+        if (-not $f -or -not (Test-Path -LiteralPath $f)) { continue }
+        foreach ($line in (Get-Content -LiteralPath $f -ErrorAction SilentlyContinue)) {
+            # Allow "export ", as bash's source does; an unquoted trailing comment is a comment, not part of the path.
+            if ($line -match '^\s*(?:export\s+)?OUTPUT_DIR\s*=\s*(.*)$') {
+                $v = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"').Trim("'")
+                if ($v) { $found = $v }
+            }
+        }
+    }
+    return $found
+}
+
+# The resolved base: the configured OUTPUT_DIR, else %USERPROFILE%\oracle-patch-scripts.
+function Get-OutputDir {
+    param([string[]] $ConfFiles)
+    $d = if ($PSBoundParameters.ContainsKey('ConfFiles')) { Get-OutputDirSetting -ConfFiles $ConfFiles } else { Get-OutputDirSetting }
+    if ($d) { return $d }
+    return (Join-Path $HOME 'oracle-patch-scripts')
+}
+
+# An existing install keeps its old %USERPROFILE%\patches location, so upgrading get.ps1 does not move the
+# tree (matches the bash side's "nothing moves unless OUTPUT_DIR is set" rule).
+function Get-LegacyBase {
+    if (-not $HOME) { return $null }
+    $old = Join-Path $HOME 'patches'
+    if (Test-Path -LiteralPath $old) { return $old }
+    return $null
+}
+
+# Where the tree lands: under OUTPUT_DIR, or PATCH_BASE when only the legacy key is set, or the existing
+# %USERPROFILE%\patches, else the default.
+if (-not $Dest) {
+    $configured = Get-OutputDirSetting
+    $legacy = Get-LegacyBase
+    $base = if ($configured) { $configured } elseif ($env:PATCH_BASE) { $env:PATCH_BASE } elseif ($legacy) { $legacy } else { Get-OutputDir }
+    $Dest = Join-Path $base 'scripts'
+}
+
+# -SelfTest covers this copy of the resolver before any network: it cannot be dot-sourced by the other gate
+# without running the installer, so it checks itself here.
+if ($SelfTest) {
+    $fail = 0
+    $saved = $env:ORACLE_OUTPUT_DIR
+    $conf = Join-Path ([IO.Path]::GetTempPath()) ('get-out-' + [guid]::NewGuid().ToString('N') + '.conf')
+    try {
+        $env:ORACLE_OUTPUT_DIR = $null
+        if ((Get-OutputDirSetting -ConfFiles @()) -ne $null) { $fail++; Write-Host 'FAIL no setting resolves to nothing' }
+        Set-Content -LiteralPath $conf -Value "export OUTPUT_DIR=/conf/out  # inline`n"
+        if ((Get-OutputDirSetting -ConfFiles @($conf)) -ne '/conf/out') { $fail++; Write-Host 'FAIL export and an inline comment parse to /conf/out' }
+        if ((Get-OutputDir -ConfFiles @()) -ne (Join-Path $HOME 'oracle-patch-scripts')) { $fail++; Write-Host 'FAIL the default is $HOME/oracle-patch-scripts' }
+        $env:ORACLE_OUTPUT_DIR = '/env/out'
+        if ((Get-OutputDirSetting -ConfFiles @($conf)) -ne '/env/out') { $fail++; Write-Host 'FAIL ORACLE_OUTPUT_DIR beats the conf' }
+    } finally {
+        $env:ORACLE_OUTPUT_DIR = $saved
+        Remove-Item -LiteralPath $conf -Force -ErrorAction SilentlyContinue
+    }
+    if ($fail -ne 0) { throw "get.ps1 selftest: $fail failed" }
+    Write-Host 'get.ps1 selftest ok'
+    return
+}
 # Windows PowerShell 5.1 still defaults to TLS 1.0/1.1; GitHub needs 1.2 (classic 'Could not create
 # SSL/TLS secure channel'). Harmless no-op on PowerShell 7.
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
