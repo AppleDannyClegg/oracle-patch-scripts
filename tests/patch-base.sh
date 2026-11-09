@@ -31,9 +31,9 @@ grep -q 'PATCH_BASE/wls' patching/wls-patch/wls-patch.sh && ok || bad "wls-patch
 grep -q 'PATCH_BASE/db' patching/db-patch/db-patch.sh && ok || bad "db-patch download default is not \$PATCH_BASE/db"
 grep -q 'PATCH_BASE/jdk' patching/java-patch/java-patch.sh && ok || bad "java-patch download default is not \$PATCH_BASE/jdk"
 grep -q 'PATCH_BASE/scripts' get.sh && ok || bad "get.sh does not default the tree to \$PATCH_BASE/scripts"
-grep -q "Join-Path \$env:PATCH_BASE 'scripts'" get.ps1 && ok || bad "get.ps1 does not default the tree to PATCH_BASE/scripts"
-grep -q "Join-Path (Join-Path \$HOME 'patches') 'scripts'" get.ps1 && ok || bad "get.ps1's Windows default is not \$HOME\\patches\\scripts (an absolute, findable path)"
-grep -q 'Join-Path \$base \$m.Host' patching/get-patches.ps1 && ok || bad "get-patches.ps1 default Dest is not PATCH_BASE/<host>"
+grep -q "elseif (\$env:PATCH_BASE) { \$env:PATCH_BASE }" get.ps1 && grep -q "\$Dest = Join-Path \$base 'scripts'" get.ps1 && ok || bad "get.ps1 does not default the tree to PATCH_BASE/scripts when only PATCH_BASE is set"
+grep -q "\$old = Join-Path \$HOME 'patches'" get.ps1 && grep -q "elseif (\$legacy) { \$legacy } else { Get-OutputDir }" get.ps1 && ok || bad "get.ps1 does not keep an existing \$HOME\\patches, then use the OUTPUT_DIR default (an absolute, findable path)"
+grep -q 'Join-Path \$base \$HostName' patching/get-patches.ps1 && grep -q 'Get-DefaultDest \$m.Host' patching/get-patches.ps1 && ok || bad "get-patches.ps1 default Dest is not <base>/<host>"
 
 echo "patch-base gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
