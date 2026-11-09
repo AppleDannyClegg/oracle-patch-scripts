@@ -3,7 +3,7 @@ get-patches.ps1 - on a Windows 10/11 machine with internet: read the manifest th
 a server with no internet, work out which patches that server is behind on, and download them from My
 Oracle Support, ready to copy to the server. Runs in the PowerShell that ships with Windows (5.1) and in 7.
 
-  .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt             # plan + download into .\patches\wl1
+  .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt             # plan + download into OUTPUT_DIR\wl1 (-Dest overrides)
   .\get-patches.ps1 -Manifest .\patches\manifest-wl1.txt -PlanOnly   # only say what it would download
   .\get-patches.ps1 -Manifest ... -Patch 38123456                    # also download these numbers
   .\get-patches.ps1 -Manifest ... -Patch 40199083 -PatchKind jdk      # ...into jdk/, if the kind cannot be read
@@ -80,6 +80,65 @@ $script:DbOPatch = '6880880'
 # the debug/internal markers in an Oracle artifact name. A fastdebug/'internal-bin' build is not what the
 # patch tools install (java-patch refuses it), so never plan or pick one when a production file exists.
 $script:DevBuild = '(?i)internal|debug|fastdebug|early[_ ]access'
+
+# OUTPUT_DIR: the one base every file this repo creates, downloads or reports goes under, so the downloads
+# and reports can be moved off /u01 (or out of %USERPROFILE%) in one place. ORACLE_OUTPUT_DIR in the
+# environment wins, then OUTPUT_DIR= in oracle.conf, then the per-machine default. See oracle.conf.example.
+# $ConfFiles is an injection point for tests only; callers leave it unset to use the real file order.
+function Get-OutputDirSetting {
+    param([string[]] $ConfFiles)
+    if ($env:ORACLE_OUTPUT_DIR) { return $env:ORACLE_OUTPUT_DIR }
+    if (-not $PSBoundParameters.ContainsKey('ConfFiles')) {
+        # Last file wins, mirroring lib/oracle-lib.sh's load_config order. $PSScriptRoot is patching/ when the
+        # script runs as a file; ../../oracle.conf covers a script run from a nested patch folder.
+        $ConfFiles = @(
+            (Join-Path $PSScriptRoot '../../oracle.conf'),
+            (Join-Path $PSScriptRoot '../oracle.conf'),
+            (Join-Path $HOME '.oracle.conf'),
+            (Join-Path $PSScriptRoot 'get-patches.conf'),
+            (Join-Path $PWD 'get-patches.conf'),
+            (Join-Path $HOME '.get-patches.conf')
+        )
+    }
+    $found = $null
+    foreach ($f in $ConfFiles) {
+        if (-not $f -or -not (Test-Path -LiteralPath $f)) { continue }
+        foreach ($line in (Get-Content -LiteralPath $f -ErrorAction SilentlyContinue)) {
+            # Allow "export ", as bash's source does; an unquoted trailing comment is a comment, not part of the path.
+            if ($line -match '^\s*(?:export\s+)?OUTPUT_DIR\s*=\s*(.*)$') {
+                $v = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"').Trim("'")
+                if ($v) { $found = $v }
+            }
+        }
+    }
+    return $found
+}
+
+# The resolved base: the configured OUTPUT_DIR, else %USERPROFILE%\oracle-patch-scripts.
+function Get-OutputDir {
+    param([string[]] $ConfFiles)
+    $d = if ($PSBoundParameters.ContainsKey('ConfFiles')) { Get-OutputDirSetting -ConfFiles $ConfFiles } else { Get-OutputDirSetting }
+    if ($d) { return $d }
+    return (Join-Path $HOME 'oracle-patch-scripts')
+}
+
+# An existing install keeps its old %USERPROFILE%\patches location, where get.ps1 put the tree before OUTPUT_DIR,
+# so upgrading does not split the tree from the downloads (matches the bash side's "nothing moves" rule).
+function Get-LegacyBase {
+    if (-not $HOME) { return $null }
+    $old = Join-Path $HOME 'patches'
+    if (Test-Path -LiteralPath $old) { return $old }
+    return $null
+}
+
+# Where this host's downloads land when -Dest is not given: OUTPUT_DIR/<host>; PATCH_BASE is honoured when only
+# the legacy key is set, then the existing %USERPROFILE%\patches, else the default.
+function Get-DefaultDest([string] $HostName) {
+    $configured = Get-OutputDirSetting
+    $legacy = Get-LegacyBase
+    $base = if ($configured) { $configured } elseif ($env:PATCH_BASE) { $env:PATCH_BASE } elseif ($legacy) { $legacy } else { Get-OutputDir }
+    return (Join-Path $base $HostName)
+}
 
 # ---- network: the only two functions that talk to MOS --------------------------------------------------
 # the HTTP status behind a failed MOS call, or 0 when there was no HTTP answer at all (timeout, DNS, a proxy
@@ -984,7 +1043,9 @@ function Main {
     $script:ServerBase = if ($m.PatchBase) { $m.PatchBase.TrimEnd('/') } else { '/u01/patches' }
     $fw = Get-ManifestFreshnessWarning $m.Created ([datetimeoffset]::UtcNow)
     if ($fw) { Write-Warning $fw }
-    if (-not $Dest) { $base = if ($env:PATCH_BASE) { $env:PATCH_BASE } else { '.\patches' }; $Dest = Join-Path $base $m.Host }
+    # The downloads land under OUTPUT_DIR/<host>; PATCH_BASE is honoured when only the legacy key is set, and
+    # the default is %USERPROFILE%\oracle-patch-scripts, so nothing depends on the current directory.
+    if (-not $Dest) { $Dest = Get-DefaultDest $m.Host }
     # absolute from here on: the operator sees where the files go, and nothing downstream depends on the
     # process working directory (see Get-AbsolutePath)
     $Dest = Get-AbsolutePath $Dest
