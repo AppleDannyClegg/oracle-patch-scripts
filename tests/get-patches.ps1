@@ -918,5 +918,40 @@ finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ---- OUTPUT_DIR resolution (one configurable output location) ----------------------------------------
+# Get-OutputDirSetting takes an injected conf list, so this never depends on a real ~/.oracle.conf.
+$savedOut = $env:ORACLE_OUTPUT_DIR; $savedPatch = $env:PATCH_BASE
+$oh = Join-Path ([IO.Path]::GetTempPath()) ('gp-out-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $oh | Out-Null
+try {
+    $conf = Join-Path $oh 'oracle.conf'
+    Set-Content -LiteralPath $conf -Value "OUTPUT_DIR=/conf/out`n"
+    $env:ORACLE_OUTPUT_DIR = $null
+    $env:PATCH_BASE = $null
+
+    Check ((Get-OutputDirSetting -ConfFiles @()) -eq $null) 'no setting -> the resolver returns nothing'
+    Check ((Get-OutputDirSetting -ConfFiles @($conf)) -eq '/conf/out') 'OUTPUT_DIR in a conf is read'
+    Check ((Get-OutputDir -ConfFiles @($conf)) -eq '/conf/out') 'the conf sets the base'
+    Check ((Get-OutputDir -ConfFiles @()) -eq (Join-Path $HOME 'oracle-patch-scripts')) 'no setting -> the base defaults under HOME'
+
+    $env:ORACLE_OUTPUT_DIR = '/env/out'
+    Check ((Get-OutputDirSetting -ConfFiles @($conf)) -eq '/env/out') 'ORACLE_OUTPUT_DIR beats the conf'
+    Check ((Get-DefaultDest 'wl1') -eq (Join-Path '/env/out' 'wl1')) 'a host dest is <OUTPUT_DIR>/<host>'
+    $env:ORACLE_OUTPUT_DIR = $null
+
+    $env:PATCH_BASE = '/legacy/base'
+    Check ((Get-DefaultDest 'wl1') -eq (Join-Path '/legacy/base' 'wl1')) 'PATCH_BASE is the fallback when OUTPUT_DIR is unset'
+    $env:PATCH_BASE = $null
+
+    if (Get-LegacyBase) {
+        Check ((Get-DefaultDest 'wl1') -eq (Join-Path (Get-LegacyBase) 'wl1')) 'an existing %USERPROFILE%\patches is kept (an upgrade moves nothing)'
+    } else {
+        Check ((Get-DefaultDest 'wl1') -eq (Join-Path (Get-OutputDir) 'wl1')) 'no setting, no old folder -> <base>/<host>'
+    }
+} finally {
+    $env:ORACLE_OUTPUT_DIR = $savedOut; $env:PATCH_BASE = $savedPatch
+    Remove-Item -LiteralPath $oh -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "get-patches gate: $script:pass passed, $script:fail failed"
 if ($script:fail -ne 0) { exit 1 }
