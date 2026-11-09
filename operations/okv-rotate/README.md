@@ -79,7 +79,7 @@ verify one node before the other.
   `OKV_HOSTNAME` and `UPDATE_TIMESTAMP` too, which the runbook forbids. Ask Gen/Oracle before repointing.
 - **`run`** — `inspect`, then `wait`, then `verify`.
 - **`report`** — `inspect` with `--report`: writes `REPORT.md` + `raw/` under `$CERT_OUT` (default
-  `~/okv-rotate`).
+  `<output dir>/okv-rotate`).
 
 There is deliberately **no** local certificate-issuing step: the rotation is a console action this script
 does not perform, and rebuilding a wallet is a different, rarer job (`cert-renew.sh inspect okv` lists it;
@@ -96,7 +96,7 @@ its `okv` target has no apply).
 --timeout SECS        wait: give up after this long (default 3600; the client refreshes ~hourly)
 --interval SECS       wait: seconds between okvclient.ora polls (default 60)
 --max-runs N          wait: optional cap on polls (default 0 = no cap; rely on --timeout)
---out DIR             report output dir (default $CERT_OUT or ~/okv-rotate)
+--out DIR             report output dir (default $CERT_OUT or <output dir>/okv-rotate)
 --report  --dry-run  --yes  --force  --json  --verbose  --run-dir DIR
 ```
 

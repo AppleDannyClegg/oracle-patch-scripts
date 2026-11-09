@@ -59,7 +59,7 @@ CERT=""; KEY=""; CHAIN=""; CN=""; SAN=""; BITS="${CSR_BITS:-2048}"; CERT_ALIAS="
 DO_RESTART=0; NO_SCAN=0; REPORT_OUT=0
 KS_PASSWORDS="${KS_PASSWORDS:-}"; WLS_KS_PASS="${WLS_KS_PASS:-}"; WLS_KS_TYPE="${WLS_KS_TYPE:-JKS}"; WALLET_PASSWORD="${WALLET_PASSWORD:-}"
 CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"; KEY_PASSWORD="${KEY_PASSWORD:-}"; CSR_SUBJECT_SUFFIX="${CSR_SUBJECT_SUFFIX:-}"
-VERIFY_WAIT="${VERIFY_WAIT:-90}"; CERT_DIR="${CERT_DIR:-$HOME/cert-renew/csr}"; CERT_OUT="${CERT_OUT:-$HOME/cert-renew}"; CHECK_HOST="${CHECK_HOST:-$(hostname -f 2>/dev/null || hostname)}"
+VERIFY_WAIT="${VERIFY_WAIT:-90}"; CERT_DIR="${CERT_DIR:-$(output_path cert-renew)/csr}"; CERT_OUT="${CERT_OUT:-$(output_path cert-renew)}"; CHECK_HOST="${CHECK_HOST:-$(hostname -f 2>/dev/null || hostname)}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"; GG_DEPLOY_DIRS="${GG_DEPLOY_DIRS:-}"; OKV_DIRS="${OKV_DIRS:-}"; RESTART_CMDS="${RESTART_CMDS:-}"
 WARN_DAYS="${WARN_DAYS:-30}"; INFO_DAYS="${INFO_DAYS:-90}"; PORT_LIMIT="${PORT_LIMIT:-100}"
 CERTS=""        # rows: days|kind|target|where|cn|issuer|notafter|sig|bits|serial|flags

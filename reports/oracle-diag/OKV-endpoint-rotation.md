@@ -52,7 +52,7 @@ Log in on the Key Vault node shown as `OKV_HOSTNAME` for this endpoint and rotat
 
 ```bash
 ./okv-rotate.sh verify           # the runbook's step 4/5 as pass/fail; exit 2 CRIT / 1 WARN / 0
-./okv-rotate.sh report           # the same as REPORT.md + raw/ under $CERT_OUT (default ~/okv-rotate), for the change record
+./okv-rotate.sh report           # the same as REPORT.md + raw/ under $CERT_OUT (default <output dir>/okv-rotate), for the change record
 ```
 
 `verify` is `inspect` with the assertions escalated: a node still on `/ssl` is CRIT, a TDE wallet that is not `OPEN` on some instance is CRIT, a `PHYSICAL_STANDBY` with no `MRP` row is CRIT, and a `gv$encryption_wallet` read that fails is a WARN saying the assertion was **not evaluated** (never a pass). `apply` = `wait` then `verify`; `run` = `inspect`, `wait`, `verify`.

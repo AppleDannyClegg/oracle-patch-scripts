@@ -40,7 +40,7 @@ cd reports/perf-snapshot
 ./perf-snapshot.sh --last 30m --threads                      # WebLogic/ORDS slow: thread dumps too
 ```
 
-Output: `~/perf-snapshot/<host>_<ts>/REPORT.md` (FINDINGS first), `raw/` (AWR/ASH/ADDM text, the
+Output: `<output dir>/perf-snapshot/<host>_<ts>/REPORT.md` (FINDINGS first), `raw/` (AWR/ASH/ADDM text, the
 sampled session lines, full query output) and a `.tar.gz`. Hand it to Claude as in
 [../oracle-diag/ANALYSE.md](../oracle-diag/ANALYSE.md), with the complaint: *"users say APEX was
 slow 09:00-10:30; here is the perf-snapshot for that window"*.

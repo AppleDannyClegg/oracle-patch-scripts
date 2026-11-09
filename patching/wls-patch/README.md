@@ -149,8 +149,8 @@ What is different from a normal patch run:
 | An SPB's SPBAT apply fails | Stops and rolls back: `opatch nrollback -idFile` for the bundle, `restore` if that is not enough |
 | `opatch rollback` exits 0 but the patch is still in `opatch lspatches` | Not recorded as rolled back; rollback exits 1 and points at `restore` (same re-read as apply, which trusts the inventory, not the exit status) |
 
-Everything it runs is logged under `~/wls-patch/runs/<timestamp>/wls-patch.log`
-(`~/wls-patch/runs/latest` points at the most recent run). OPatch's own logs are in
+Everything it runs is logged under `<output dir>/wls-patch/runs/<timestamp>/wls-patch.log`
+(`<output dir>/wls-patch/runs/latest` points at the most recent run). OPatch's own logs are in
 `$ORACLE_HOME/cfgtoollogs/opatch/`.
 
 ## Individual commands

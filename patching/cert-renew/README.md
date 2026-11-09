@@ -14,7 +14,7 @@ cd patching/cert-renew
 cp cert-renew.conf.example cert-renew.conf && chmod 600 cert-renew.conf   # keystore/wallet passwords, WebLogic creds
 ./cert-renew.sh inspect                                  # the table; add --report for REPORT.md + exit code for cron
 ./cert-renew.sh csr dbhost01 --cn dbhost01.bank.example --san dbhost01,dbhost01-vip   # key + CSR for the CA
-./cert-renew.sh plan wls:base_domain:ms1 --cert issued.pem --key ~/cert-renew/csr/dbhost01/dbhost01.key --chain chain.pem
+./cert-renew.sh plan wls:base_domain:ms1 --cert issued.pem --key <output dir>/cert-renew/csr/dbhost01/dbhost01.key --chain chain.pem
 ./cert-renew.sh run  wls:base_domain:ms1 --cert issued.pem --key ... --chain chain.pem --restart
 ```
 
@@ -71,7 +71,7 @@ present **INFO** (its certificate is the OMS's business). `inspect --report` wri
 `plan`/`preflight` check that `--key` matches `--cert`, the chain verifies, the cert is valid now,
 `CHECK_HOST` is in CN/SAN, the tools and credentials are there and the files are writable.
 `backup` copies the current keystore/wallet/properties/`config.xml` into
-`~/cert-renew/runs/<ts>/backup/<target>/`; `apply` runs it first if it has not been done.
+`<output dir>/cert-renew/runs/<ts>/backup/<target>/`; `apply` runs it first if it has not been done.
 `verify <target>` probes the port: serial = the new cert, days left, hostname, chain (`-untrusted`
 with what the server sends, against `--chain` or the system store). `rollback` restores the
 files (WebLogic: WLST back to the previous keystore settings, prompting for the old keystore

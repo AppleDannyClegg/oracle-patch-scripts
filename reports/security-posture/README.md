@@ -14,7 +14,7 @@ cd reports/security-posture
 # prints PASS/FAIL counts and the findings; writes SCORECARD.md and REPORT.md
 ```
 
-Output under `~/security-posture/<host>_<ts>/`: `SCORECARD.md` (FAIL rows first, then INFO, then
+Output under `<output dir>/security-posture/<host>_<ts>/`: `SCORECARD.md` (FAIL rows first, then INFO, then
 PASS), `REPORT.md` (scorecard + FINDINGS + evidence), `raw/`, and a `.tar.gz`. Hand `REPORT.md`
 to Claude with *"this is a security-posture report; write the remediation plan ordered by risk,
 with the exact SQL/commands, and tell me which FAILs are acceptable with a documented exception"*.

@@ -259,7 +259,7 @@ main() {
   load_config; parse_opts "$@"
   [ -n "$PACK" ] || [ -n "$REPORT_DIR" ] || [ -n "$ERRORS_GIVEN" ] || [ -n "$ERROR_FILE" ] || { usage; exit 1; }
   [ -n "$PACK" ] && { [ -d "$PACK" ] || { [ -f "$PACK" ] && die "$PACK is a file: give the pack directory (untar it first)"; die "$PACK not found"; }; }
-  [ -n "$OUTDIR" ] || OUTDIR="$([ -n "$PACK" ] && echo "$PACK/sr" || echo "$HOME/sr-draft/$(date '+%Y%m%d-%H%M%S')")"; mkdir -p "$OUTDIR" || die "cannot create $OUTDIR"
+  [ -n "$OUTDIR" ] || OUTDIR="$([ -n "$PACK" ] && echo "$PACK/sr" || echo "$(output_path sr-draft)/$(date '+%Y%m%d-%H%M%S')")"; mkdir -p "$OUTDIR" || die "cannot create $OUTDIR: $OUTPUT_HINT"
   if [ -n "$PACK" ]; then FACTS_FILE="$PACK/FACTS.txt"; [ -f "$FACTS_FILE" ] || warn "$PACK has no FACTS.txt (not an incident-pack directory?) - facts will be thin"
   elif [ -n "$REPORT_DIR" ]; then report_facts; else live_facts; fi
   mine_errors

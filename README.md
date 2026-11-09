@@ -151,6 +151,37 @@ Where to put the files:
 with no network at all. The MOS search strings and Doc IDs that `sr-draft` prints are for you to
 use on a machine that can reach support.oracle.com.
 
+## Where the output goes
+
+Everything these scripts create, download or report goes in one folder per script under one location: reports and
+tarballs in `<output dir>/<script>`, run logs and rollback state in `<output dir>/<script>/runs`. Set it once:
+
+| Platform | How |
+|---|---|
+| Linux server | `OUTPUT_DIR=/u01/oracle-patch-scripts` in `oracle.conf` at the top of the tree, or in `~/.oracle.conf` |
+| macOS laptop | `OUTPUT_DIR=/Users/you/oracle-patch-scripts` in `~/.oracle.conf` |
+| Windows laptop | the environment variable `ORACLE_OUTPUT_DIR` (`get.ps1` and `get-patches.ps1` read it too) |
+
+The order is: the `ORACLE_OUTPUT_DIR` environment variable, then `OUTPUT_DIR` from `oracle.conf` or `~/.oracle.conf`. It must
+be an absolute path. A script's own `--out` still overrides it for that run. When it is set it also replaces `PATCH_BASE`,
+so downloads land in the same place.
+
+When it is not set:
+
+- A host that already has `~/<script>` keeps using it, so an upgrade strands no run state, backup or history.
+- A fresh Linux host uses `/u01/oracle-patch-scripts`, and stops with a message if that cannot be written. It does not
+  fall back to somewhere else.
+- A fresh macOS laptop uses `/u01/oracle-patch-scripts` if it can be written, otherwise `~/oracle-patch-scripts`.
+  Windows uses `%USERPROFILE%\oracle-patch-scripts`.
+
+**To move an existing host to one location, set `OUTPUT_DIR`.** Setting it never copies old files. Set it between patch
+runs, not during one: a later `verify`, `rollback` or `cleanup` looks for its run under the new location and will not find
+a run started under the old one. Copy `~/<script>/runs` across first if you need the older runs, and `~/space-forecast/history`
+or `~/exascale-space/history` if you want those trend lines to continue.
+
+Not moved: `~/.mos-token` (a credential), short-lived `mktemp` files, the OHS and Database Client home backups
+(`--backup-dir`, default `/u01/backup`), and the installed product folders (`APEX_BASE`, `ORDS_BASE`).
+
 ## Running each script
 
 Copy the whole tree to the server (the folders need `lib/` next to them), then run each script from
@@ -209,7 +240,7 @@ cp ords-patch.conf.example ords-patch.conf   # ORDS_HOME/ORDS_CONFIG, SYS passwo
 
 ```bash
 cd reports/oracle-diag
-./oracle-diag.sh                             # writes ~/oracle-diag/<host>_<timestamp>/REPORT.md and a .tar.gz
+./oracle-diag.sh                             # writes <output dir>/oracle-diag/<host>_<timestamp>/REPORT.md and a .tar.gz
 ./oracle-diag.sh --days 7 --pdb APEXPDB      # longer look-back, include one PDB's queries
 ./oracle-diag.sh --skip wls --no-tar         # leave out a component, keep the folder only
 ```

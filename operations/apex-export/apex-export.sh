@@ -39,7 +39,7 @@ TOOL="apex-export"; VERSION="1.0.0"
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
 APPS=(); WS=""; SINCE=""; PDB_NAME=""; ALL=0; PUSH=0; REV=""; TO=""; NEW_ID=""; REPORT_OUT=0
-APEX_REPO="${APEX_REPO:-$HOME/apex-export/repo}"; APEX_OUT="${APEX_OUT:-$HOME/apex-export}"; APEX_STALE_DAYS="${APEX_STALE_DAYS:-7}"; APEX_CRON="${APEX_CRON:-30 2 * * *}"; APEX_PUSH="${APEX_PUSH:-0}"
+APEX_REPO="${APEX_REPO:-$(output_path apex-export)/repo}"; APEX_OUT="${APEX_OUT:-$(output_path apex-export)}"; APEX_STALE_DAYS="${APEX_STALE_DAYS:-7}"; APEX_CRON="${APEX_CRON:-30 2 * * *}"; APEX_PUSH="${APEX_PUSH:-0}"
 APEX_EXPORT_OPTS="${APEX_EXPORT_OPTS:--split -skipExportDate -expOriginalIds -expPubReports -expACLAssignments}"
 CONNECT=""; CONN_NAME=""; DBN=""; PDBN=""; TARGET=""   # per connection: TARGET=<repo>/<db>/<pdb>
 TOOL_MODE=""   # sqlcl | java

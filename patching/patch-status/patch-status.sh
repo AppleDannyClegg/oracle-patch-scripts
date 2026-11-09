@@ -29,7 +29,7 @@ TOOL="patch-status"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-PATCH_OUT="${PATCH_OUT:-$HOME/patch-status}"; USE_MOS=0; NO_NET=0; FMT=table; DO_REPORT=0; MAKE_TAR=1
+PATCH_OUT="${PATCH_OUT:-$(output_path patch-status)}"; USE_MOS=0; NO_NET=0; FMT=table; DO_REPORT=0; MAKE_TAR=1
 ROWS=""   # product|home|installed|date|latest|behind|status|note
 LATEST_CPU="$(latest_cpu_date)"
 
