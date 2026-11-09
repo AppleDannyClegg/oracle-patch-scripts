@@ -104,8 +104,9 @@ function Get-OutputDirSetting {
     foreach ($f in $ConfFiles) {
         if (-not $f -or -not (Test-Path -LiteralPath $f)) { continue }
         foreach ($line in (Get-Content -LiteralPath $f -ErrorAction SilentlyContinue)) {
-            if ($line -match '^\s*OUTPUT_DIR\s*=\s*(.*)$') {
-                $v = $Matches[1].Trim().Trim('"').Trim("'")
+            # Allow "export ", as bash's source does; an unquoted trailing comment is a comment, not part of the path.
+            if ($line -match '^\s*(?:export\s+)?OUTPUT_DIR\s*=\s*(.*)$') {
+                $v = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"').Trim("'")
                 if ($v) { $found = $v }
             }
         }
@@ -124,6 +125,7 @@ function Get-OutputDir {
 # An existing install keeps its old %USERPROFILE%\patches location, where get.ps1 put the tree before OUTPUT_DIR,
 # so upgrading does not split the tree from the downloads (matches the bash side's "nothing moves" rule).
 function Get-LegacyBase {
+    if (-not $HOME) { return $null }
     $old = Join-Path $HOME 'patches'
     if (Test-Path -LiteralPath $old) { return $old }
     return $null
