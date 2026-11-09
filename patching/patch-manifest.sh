@@ -33,9 +33,42 @@
 # half-read host never looks up to date.
 
 set -uo pipefail
+# >>> output-location (the same block in lib/oracle-lib.sh and every script that does not source it; tests/output-dir.sh compares them)
+# Where a script puts what it creates. ORACLE_OUTPUT_DIR in the environment wins, then OUTPUT_DIR from oracle.conf or ~/.oracle.conf.
+# With neither set, a host that already has $HOME/<tool> keeps it, so an upgrade strands no run state, backup or history; a fresh
+# host uses /u01/oracle-patch-scripts (macOS: $HOME/oracle-patch-scripts when /u01 cannot be written). The first write creates it.
+OUTPUT_SERVER_BASE="${OUTPUT_SERVER_BASE:-/u01/oracle-patch-scripts}"
+# shellcheck disable=SC2034
+OUTPUT_HINT="set OUTPUT_DIR in oracle.conf, or ORACLE_OUTPUT_DIR, to choose where this goes"
+output_configured() {
+  [ -n "${ORACLE_OUTPUT_DIR:-}" ] && { printf '%s' "$ORACLE_OUTPUT_DIR"; return 0; }
+  local f v="" d; d="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+  for f in "$d/../../oracle.conf" "$d/../oracle.conf" "$HOME/.oracle.conf"; do
+    [ -f "$f" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?OUTPUT_DIR=' "$f" || continue
+    # shellcheck disable=SC1090
+    v="$(unset OUTPUT_DIR; . "$f" >/dev/null 2>&1; printf '%s' "${OUTPUT_DIR:-}")"
+  done
+  printf '%s' "$v"
+}
+output_writable() { local d="$1"; while [ ! -e "$d" ] && [ "$d" != / ]; do d="$(dirname "$d")"; done; [ -d "$d" ] && [ -w "$d" ]; }
+output_default_base() {
+  case "${OSTYPE:-$(uname -s | tr 'A-Z' 'a-z')}" in
+    darwin*) if output_writable "$OUTPUT_SERVER_BASE"; then printf '%s' "$OUTPUT_SERVER_BASE"; else printf '%s' "$HOME/oracle-patch-scripts"; fi;;
+    msys*|cygwin*|win*) printf '%s' "$HOME/oracle-patch-scripts";;
+    *) printf '%s' "$OUTPUT_SERVER_BASE";;
+  esac
+}
+OUTPUT_CONFIGURED="$(output_configured)"
+case "$OUTPUT_CONFIGURED" in ''|/*) ;; *) printf 'ERROR: OUTPUT_DIR must be an absolute path, got: %s\n' "$OUTPUT_CONFIGURED" >&2; exit 1;; esac
+output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
+  if [ -n "$OUTPUT_CONFIGURED" ]; then printf '%s/%s' "${OUTPUT_CONFIGURED%/}" "$1"
+  elif [ -d "$HOME/$1" ]; then printf '%s/%s' "$HOME" "$1"
+  else printf '%s/%s' "$(output_default_base)" "$1"; fi
+}
+# <<< output-location
 
-# one folder for everything downloaded; a server uses /u01/patches (PATCH_BASE in the environment moves it)
-PATCH_BASE="${PATCH_BASE:-/u01/patches}"
+# one folder for everything downloaded; a server uses /u01/patches (PATCH_BASE in the environment moves it; OUTPUT_DIR, when set, replaces it)
+PATCH_BASE="${OUTPUT_CONFIGURED:-${PATCH_BASE:-/u01/patches}}"
 
 die() { echo "patch-manifest: $*" >&2; exit 1; }
 

@@ -44,7 +44,7 @@ says which CPU the home should be at; the actual patch numbers come from MOS Doc
 | `--mos` | look up newest RU/PSU names on MOS |
 | `--no-net` | no network calls at all |
 | `--json`, `--csv` | machine-readable output |
-| `--report` | write `REPORT.md` + `raw/` + tar.gz under `PATCH_OUT` (default `~/patch-status`) |
+| `--report` | write `REPORT.md` + `raw/` + tar.gz under `PATCH_OUT` (default `<output dir>/patch-status`) |
 | `--out DIR`, `--quiet`, `--no-tar` | |
 
 Config keys: `PATCH_OUT`, `MOS_TOKEN_FILE`, `SQL_CONNECT`. Needs `lib/oracle-lib.sh`

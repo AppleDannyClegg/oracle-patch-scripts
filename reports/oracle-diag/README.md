@@ -22,7 +22,7 @@ OAM/OIM, WebCenter, FLEXCUBE, OBP and OFSAA.
 ./oracle-diag.sh --sid PRODDB --pdb APEXPDB --skip wls
 ```
 
-It leaves `~/oracle-diag/<host>_<time>/REPORT.md` (plus `raw/` with the untruncated logs and command
+It leaves `<output dir>/oracle-diag/<host>_<time>/REPORT.md` (plus `raw/` with the untruncated logs and command
 output) and a `.tar.gz` of the lot. Copy the tarball off (`scp`), then give Claude the REPORT.md or
 the whole archive and say **"analyse this oracle-diag report"** (step by step in [ANALYSE.md](ANALYSE.md)). The report starts with a FINDINGS
 list from the script's own rules (disk/FRA/tablespace thresholds, locked APEX/ORDS accounts,
@@ -48,7 +48,7 @@ hung instance cannot hang the report.
 
 | Option | Meaning |
 |---|---|
-| `--out DIR` | where to write (default `~/oracle-diag`) |
+| `--out DIR` | where to write (default `<output dir>/oracle-diag`) |
 | `--days N` | log look-back, default 3 |
 | `--lines N` | lines of any one log kept in REPORT.md, default 200 (`raw/` keeps up to 5000) |
 | `--sid SID` | only this database (default: every running instance in `/etc/oratab`) |

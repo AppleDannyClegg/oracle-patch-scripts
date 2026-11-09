@@ -35,7 +35,7 @@
 #                           installer (the README's 12c client patches). Only the ids named; a failure restores
 #   --dry-run  --yes
 #
-# Environment: START_TIMEOUT, POLL, RUN_BASE (default $HOME/dbclient-upgrade/runs), OS_RELEASE (default
+# Environment: START_TIMEOUT, POLL, RUN_BASE (default <output dir>/dbclient-upgrade/runs), OS_RELEASE (default
 # /etc/os-release, then /etc/redhat-release).
 #
 # Exit (preflight): 0 ready; 1 a blocking problem; 2 a check could not be completed, so "ready" cannot be said.
@@ -55,10 +55,43 @@
 #   - verify: "sqlplus ... Version 19.14.0.0.0" (README) and oracle.rdbms.rsf VER 19.x in comps.xml (KB585169)
 
 set -uo pipefail
+# >>> output-location (the same block in lib/oracle-lib.sh and every script that does not source it; tests/output-dir.sh compares them)
+# Where a script puts what it creates. ORACLE_OUTPUT_DIR in the environment wins, then OUTPUT_DIR from oracle.conf or ~/.oracle.conf.
+# With neither set, a host that already has $HOME/<tool> keeps it, so an upgrade strands no run state, backup or history; a fresh
+# host uses /u01/oracle-patch-scripts (macOS: $HOME/oracle-patch-scripts when /u01 cannot be written). The first write creates it.
+OUTPUT_SERVER_BASE="${OUTPUT_SERVER_BASE:-/u01/oracle-patch-scripts}"
+# shellcheck disable=SC2034
+OUTPUT_HINT="set OUTPUT_DIR in oracle.conf, or ORACLE_OUTPUT_DIR, to choose where this goes"
+output_configured() {
+  [ -n "${ORACLE_OUTPUT_DIR:-}" ] && { printf '%s' "$ORACLE_OUTPUT_DIR"; return 0; }
+  local f v="" d; d="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
+  for f in "$d/../../oracle.conf" "$d/../oracle.conf" "$HOME/.oracle.conf"; do
+    [ -f "$f" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?OUTPUT_DIR=' "$f" || continue
+    # shellcheck disable=SC1090
+    v="$(unset OUTPUT_DIR; . "$f" >/dev/null 2>&1; printf '%s' "${OUTPUT_DIR:-}")"
+  done
+  printf '%s' "$v"
+}
+output_writable() { local d="$1"; while [ ! -e "$d" ] && [ "$d" != / ]; do d="$(dirname "$d")"; done; [ -d "$d" ] && [ -w "$d" ]; }
+output_default_base() {
+  case "${OSTYPE:-$(uname -s | tr 'A-Z' 'a-z')}" in
+    darwin*) if output_writable "$OUTPUT_SERVER_BASE"; then printf '%s' "$OUTPUT_SERVER_BASE"; else printf '%s' "$HOME/oracle-patch-scripts"; fi;;
+    msys*|cygwin*|win*) printf '%s' "$HOME/oracle-patch-scripts";;
+    *) printf '%s' "$OUTPUT_SERVER_BASE";;
+  esac
+}
+OUTPUT_CONFIGURED="$(output_configured)"
+case "$OUTPUT_CONFIGURED" in ''|/*) ;; *) printf 'ERROR: OUTPUT_DIR must be an absolute path, got: %s\n' "$OUTPUT_CONFIGURED" >&2; exit 1;; esac
+output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
+  if [ -n "$OUTPUT_CONFIGURED" ]; then printf '%s/%s' "${OUTPUT_CONFIGURED%/}" "$1"
+  elif [ -d "$HOME/$1" ]; then printf '%s/%s' "$HOME" "$1"
+  else printf '%s/%s' "$(output_default_base)" "$1"; fi
+}
+# <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""
 DRY_RUN=0; ASSUME_YES=0
-START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$HOME/dbclient-upgrade/runs}"
+START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path dbclient-upgrade)/runs}"
 OS_RELEASE="${OS_RELEASE:-}"
 problems=0; unknowns=0
 OH=""; DOMS=""; INV=""; COMPS=""; PRE_IDS=""; PRE_RSF=""; ZIP=""
@@ -502,7 +535,7 @@ no_weblogic() {
 }
 
 open_run() {
-  RUN_DIR="$RUN_BASE/$STAMP-run"; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR"
+  RUN_DIR="$RUN_BASE/$STAMP-run"; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
   STATE="$RUN_DIR/state"; : >"$STATE"; printf '%s' "$NARR" >"$RUN_DIR/dbclient-upgrade.log"; NARR=""
   state oracle_home "$OH"; state inventory "$INV"; state backup_dir "$BK"; state pre_patches "$PRE_IDS"; state pre_rsf "$PRE_RSF"
   log "run dir   : $RUN_DIR"

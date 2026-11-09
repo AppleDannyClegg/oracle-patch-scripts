@@ -57,7 +57,7 @@ EOF
 
 run() { # each invocation gets its own log; run() is called in $( ), so a counter would not persist
   local f; f="$(printf '%s/run.%02d.log' "$T" "$(( $(find "$T" -maxdepth 1 -name 'run.*.log' | wc -l | tr -d ' ') + 1 ))")"
-  HOME="$T" ORACLE_HOME="$1" JAVA_HOME="$T/jdk" STOP_TIMEOUT=10 START_TIMEOUT=10 bash "$SCRIPT" "${@:2}" >"$f" 2>&1; echo $?; }
+  HOME="$T" ORACLE_OUTPUT_DIR="$T" ORACLE_HOME="$1" JAVA_HOME="$T/jdk" STOP_TIMEOUT=10 START_TIMEOUT=10 bash "$SCRIPT" "${@:2}" >"$f" 2>&1; echo $?; }
 lastlog() { tail -4 "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"; }
 
 # ---- precheck is run when OPatch is new enough -------------------------------------------------------

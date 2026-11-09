@@ -16,7 +16,7 @@ cd operations/incident-pack
 ./incident-pack.sh 3-12345678901 --hang --yes                 # database hang: hanganalyze 3 + systemstate 258
 ```
 
-Output: `~/incident-pack/<SR>_<host>_<ts>/` and `<SR>_<host>_<ts>.tar.gz` (+ `.partNN` above 2 GB
+Output: `<output dir>/incident-pack/<SR>_<host>_<ts>/` and `<SR>_<host>_<ts>.tar.gz` (+ `.partNN` above 2 GB
 or with `--split`), `.sha256` next to it. `MANIFEST.md` lists the facts and every file;
 `FACTS.txt` is the machine-readable summary `sr-draft.sh` reads. A file is counted as collected
 only when its write succeeded and it is in the pack; anything that could not be written (disk

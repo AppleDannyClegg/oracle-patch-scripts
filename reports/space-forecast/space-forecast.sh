@@ -28,7 +28,7 @@ TOOL="space-forecast"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-SPACE_OUT="${SPACE_OUT:-$HOME/space-forecast}"; SPACE_HISTORY="${SPACE_HISTORY:-$HOME/space-forecast/history}"
+SPACE_OUT="${SPACE_OUT:-$(output_path space-forecast)}"; SPACE_HISTORY="${SPACE_HISTORY:-$(output_path space-forecast)/history}"
 SPACE_WINDOW="${SPACE_WINDOW:-30}"; SPACE_WARN_DAYS="${SPACE_WARN_DAYS:-30}"; SPACE_CRIT_DAYS="${SPACE_CRIT_DAYS:-7}"
 ONLY_SID=""; CSV=0; NO_PACK=0; MAKE_TAR=1; TODAY="$(date +%Y-%m-%d)"
 # forecast rows (kind|db|name|used|max|pct|per_day_mb|days_to_90|days_to_100|points|since) go to $RAW/forecast.rows:
