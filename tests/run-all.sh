@@ -13,10 +13,11 @@
 #   --log PATH   also write the transcript (header, every gate as it finishes, the summary) to PATH. Without it
 #                the transcript lives in the run's temp dir: kept when the run fails, deleted when it passes.
 #
-# ONE RUN AT A TIME: a lock is taken at the start (${TMPDIR:-/tmp}/oracle-patch-scripts-run-all.lock). A second
-# run-all refuses to start and names the holder, so two suites cannot starve each other into a timeout and leave
-# an ambiguous rc=143. A lock left by a killed holder (SIGKILL runs no trap) is detected by its pid and cleared,
-# with a line saying so, so one dead run does not turn every later suite into rc=2.
+# ONE RUN AT A TIME PER TREE: a lock is taken at the start,
+# ${TMPDIR:-/tmp}/oracle-patch-scripts-run-all.$(pwd -P | cksum | awk '{print $1}').lock - named by the tree, so a
+# second run of the SAME tree refuses to start and names the holder (two suites cannot starve each other into a
+# timeout and an ambiguous rc=143), while two runs in two DIFFERENT worktrees do NOT exclude each other. A lock
+# left by a killed holder (SIGKILL runs no trap) is detected by its pid and cleared, with a line saying so.
 #
 # No gates named = every gate below. The docker gates (oracle-free-container, okv-diag) are not here: run those alone.
 # Every gate here works in its own mktemp dir, so they can run side by side (the lock is about a whole suite, not
