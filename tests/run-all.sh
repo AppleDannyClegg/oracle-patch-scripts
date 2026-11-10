@@ -84,9 +84,14 @@ if [ "$SHOW_LIMITS" = 1 ]; then
     exit 0
 fi
 
-# One run at a time: two suites on one box starve each other into a timeout and the rc=143 is ambiguous.
-LOCK_BASE="${RUN_ALL_LOCK:-${TMPDIR:-/tmp}}"; LOCK_BASE="${LOCK_BASE%/}"
-LOCK="$LOCK_BASE/oracle-patch-scripts-run-all.lock"
+# One run at a time PER TREE: two runs of the same checkout starve each other into a timeout and the rc=143 is
+# ambiguous. The lock lives in TMPDIR and is named by a hash of the tree's real path, so a nested copy of this
+# script in another directory (tests/run-all-harness.sh) gets its own lock and is not refused. What this does
+# NOT stop: two suites in two DIFFERENT worktrees of the same repo - different trees, different locks. RUN_ALL_LOCK
+# overrides the path.
+LOCK_BASE="${TMPDIR:-/tmp}"; LOCK_BASE="${LOCK_BASE%/}"
+TREE_KEY="$(pwd -P | cksum | awk '{print $1}')"
+LOCK="${RUN_ALL_LOCK:-$LOCK_BASE/oracle-patch-scripts-run-all.$TREE_KEY.lock}"
 if ! mkdir "$LOCK" 2>/dev/null; then
     holder="$(cat "$LOCK/holder" 2>/dev/null || true)"
     hpid="${holder#pid=}"; hpid="${hpid%% *}"
@@ -95,8 +100,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
         exit 2
     fi
     # The holder is not running: SIGKILL runs no trap, so its lock outlives it. Take it over and SAY SO, rather
-    # than turning every later suite into rc=2 until someone finds a directory in TMPDIR. mv is the claim: if a
-    # second starter wins the race it gets the dir and this one re-refuses.
+    # than turning every later suite into rc=2. mv is the claim: a second starter that wins the race re-refuses.
     if ! mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
         echo "run-all.sh: another run-all took the stale lock first - refusing to start" >&2
         exit 2
@@ -222,9 +226,9 @@ run_limited() {                     # run_limited <key> <name> <command...>
     # say which of the two kills ended it: the tally's rc=137 explains itself then, instead of reading as a crash
     if [ -f "$out/$key.timedout" ]; then
         if [ "$rc" = 137 ]; then
-            echo "gate timed out: wall-clock limit ${limit}s reached (the gate was still running), then it ignored TERM for 5s and was KILLed - raise this gate's limit (gate_timeout) or split it" >>"$out/$key.log"
+            echo "gate timed out: wall-clock limit ${limit}s, KILLed after TERM - raise this gate's limit (gate_timeout) or split it" >>"$out/$key.log"
         else
-            echo "gate timed out: wall-clock limit ${limit}s reached (the gate was still running), killed with TERM - raise this gate's limit (gate_timeout) or split it" >>"$out/$key.log"
+            echo "gate timed out: wall-clock limit ${limit}s, killed with TERM - raise this gate's limit (gate_timeout) or split it" >>"$out/$key.log"
         fi
     fi
     return $rc

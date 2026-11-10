@@ -54,7 +54,7 @@ before=$SECONDS
 out=$(run --timeout 1 gate-hang 2>&1); rc=$?
 took=$((SECONDS - before))
 check "$([ "$rc" != 0 ] && echo 1)" "--timeout 1 with a hung gate exits non-zero (rc=$rc)"
-check "$(printf '%s\n' "$out" | grep -q 'timed out: no output for 1s' && echo 1)" "--timeout 1 says the gate timed out, and how it was killed"
+check "$(printf '%s\n' "$out" | grep -q 'timed out: wall-clock limit 1s' && echo 1)" "--timeout 1 says the gate timed out, and how it was killed"
 check "$(printf '%s\n' "$out" | grep -qE '^FAIL .*gate-hang' && echo 1)" "--timeout 1 marks the gate FAIL in the summary"
 check "$([ "$took" -lt 30 ] && echo 1)" "--timeout 1 did not wait for the 60s gate (took ${took}s)"
 
