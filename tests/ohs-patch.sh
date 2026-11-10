@@ -365,6 +365,12 @@ else skip "plan from a zip-only patch folder: no zip/unzip in this image, the fi
 # backup: a run dir and the three archives, nothing stopped; refused undetached
 build; running; rc="$(PATCH_INTERACTIVE=1 runc backup "$PD" --yes)"
 [ "$rc" != 0 ] && nobackup && [ ! -d "$T/runs" ] && grep -q 'ohs-patch backup changes this host' "$T/out" && ok || bad "an interactive backup was not refused: rc $rc"
+# --run-dir is HONOURED by backup (T291, Edi #13261): the composer takes one shared backup and then applies with
+# --backup-run $SHARED (ohs-quarter.sh:249 then :336), and this script refuses without $SHARED/state. A backup that
+# accepts --run-dir and writes its own $RUN_BASE/<stamp>-run leaves the composer's apply with no state at all.
+build; running; SH="$T/shared"; rc="$(runc backup "$PD" --run-dir "$SH" --yes)"
+[ "$rc" = 0 ] && [ -f "$SH/state" ] && ok || bad "backup ignored --run-dir: rc $rc, $SH/state $([ -f "$SH/state" ] && echo present || echo MISSING), run dirs: $(find "$T/runs" -mindepth 1 -maxdepth 1 2>/dev/null | head -3 | tr '\n' ' ')"
+
 build; running; rc="$(runc backup "$PD" --dry-run --yes)"
 [ "$rc" = 0 ] && nobackup && [ ! -d "$T/runs" ] && [ -z "$(acts)" ] && ok || bad "backup --dry-run changed something: rc $rc, actions [$(acts)]"
 build; running; rc="$(runc backup "$PD" --yes)"

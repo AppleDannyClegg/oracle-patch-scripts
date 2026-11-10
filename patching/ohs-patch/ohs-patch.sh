@@ -684,7 +684,10 @@ plan_steps() {
 
 # a new run dir and its state: what rollback reads
 open_run() {
-  RUN_DIR="$RUN_BASE/$STAMP-run"; ( umask 077; mkdir -p "$RUN_DIR" ) || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  # --run-dir was parsed for EVERY command (:746) and read only by rollback (:720), so a caller that asked for a
+  # shared run dir - the composer's one-backup phase, ohs-quarter.sh dshared/oshared - got its backup written to
+  # $RUN_BASE/<stamp>-run instead, and the later apply --backup-run $SHARED refused with "has no state" (T291).
+  RUN_DIR="${RUN_DIR_ARG:-$RUN_BASE/$STAMP-run}"; ( umask 077; mkdir -p "$RUN_DIR" ) || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
   chmod 700 "$RUN_DIR" 2>/dev/null || die "cannot make run dir $RUN_DIR private (chmod 700 failed)"
   ( umask 077; : >>"$RUN_DIR/run.log" ); chmod 600 "$RUN_DIR/run.log" 2>/dev/null || die "cannot make $RUN_DIR/run.log private (chmod 600 failed)"
   STATE="$RUN_DIR/state"; : >"$STATE"; printf '%s' "$NARR" >"$RUN_DIR/ohs-patch.log"; NARR=""

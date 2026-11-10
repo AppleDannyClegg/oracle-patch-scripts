@@ -153,6 +153,12 @@ build; rm -rf "${T:?}/backup"; rc="$(pre)"
 build; rm -f "$T/home/.wlst/"*; rc="$(pre)"
 [ "$rc" = 1 ] && grep -q 'no stored node manager credentials' "$T/out" && ok || bad "no NM creds: rc $rc"
 
+# --run-dir is HONOURED by backup (T291, Edi #13261): the composer takes one shared backup and then applies with
+# --backup-run $SHARED (ohs-quarter.sh:249 then :336), and the child refuses without $SHARED/state. A backup that
+# accepts --run-dir and writes its own $RUN_BASE/<stamp>-run instead leaves the composer's apply with no state at all.
+build; SH="$T/shared"; rc="$(dbc backup "$PD" --run-dir "$SH" --yes)"
+[ "$rc" = 0 ] && [ -f "$SH/state" ] && ok || bad "backup ignored --run-dir: rc $rc, $SH/state $([ -f "$SH/state" ] && echo present || echo MISSING), run dirs: $(find "$T/runs" -mindepth 1 -maxdepth 1 2>/dev/null | head -3 | tr '\n' ' ')"
+
 # ---- run ------------------------------------------------------------------------------------------------
 build; rc="$(dbc run "$PD" --yes)"
 [ "$rc" = 0 ] && [ "$(rsf)" = 19.0.0.0.0 ] && [ "$(cat "$OH/.sqlv")" = 19.14.0.0.0 ] && ok || bad "run on a ready home: rc $rc, rsf $(rsf): $(grep -E 'ERROR|BLOCK' "$T/out" | head -3)"
