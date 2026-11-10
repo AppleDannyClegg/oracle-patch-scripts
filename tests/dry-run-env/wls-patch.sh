@@ -96,6 +96,12 @@ case "${CASE:-}" in ps_unreadable) : >"$T/ps.fail"; [ "$CMD" = heal ] && touch "
 # T264: heal deletes an orphaned .lok and reports "0 issue(s) found, 0 fixed" when the delete FAILS. The ps list is
 # READABLE here (no ps.fail) and no server is up, so the .lok is orphaned by the script's own rule and the rm is the
 # change it claims: FAIL_heal__rm_fails makes only that call fail, so the case is about the delete, not about ps.
-CASES_heal="$CASES_heal rm_fails"
+CASES_heal="$CASES_heal rm_fails lock_fails"
 FAIL_heal__rm_fails='^rm -f .*/servers/ms1/.*\.lok'
-case "${CASE:-}" in rm_fails) [ "$CMD" = heal ] && : >"$DOM/servers/ms1/tmp/ms1.lok";; esac
+# the OTHER delete heal performs: a stale OPatch lock. pgrep finds nothing (no $T/pgrep.txt), so heal may treat
+# the lock as stale and remove it - and the removal is the change it claims, so a failed rm must be counted
+FAIL_heal__lock_fails='^rm -f .*/\.patch_storage/patch_locked'
+case "${CASE:-}" in
+  rm_fails) [ "$CMD" = heal ] && : >"$DOM/servers/ms1/tmp/ms1.lok";;
+  lock_fails) [ "$CMD" = heal ] && { mkdir -p "$OH/.patch_storage"; : >"$OH/.patch_storage/patch_locked"; };;
+esac

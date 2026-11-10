@@ -75,7 +75,7 @@ covered_by() {
     dbclient-upgrade:*) printf 'tests/dbclient-upgrade.sh' ;;
     # T264: heal's delete-failure path is reached by THIS gate's heal:rm_fails case (the default heal case finds no
     # issue, so it is still not exercised there) - named rather than left as "no gate reaches this verb"
-    wls-patch:heal)     printf 'tests/false-success-gate.sh heal:rm_fails' ;;
+    wls-patch:heal)     printf 'tests/false-success-gate.sh heal:rm_fails + heal:lock_fails' ;;
     *)                  printf 'none - no gate reaches this verb, raise it' ;;
   esac
 }
