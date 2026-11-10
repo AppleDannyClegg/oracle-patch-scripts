@@ -64,12 +64,25 @@ readonly_cmds='inspect plan latest preflight verify expiring diff validate recov
 # restored_from= and opatch_upgraded=1 (wls-patch), deleted= (exascale-space release) are change claims too (DeepSeek 21:00);
 # not a blanket '=1' - app_stopped=1 and dry_run=1 are sub-states written before the change
 default_ok='^(applied[^=]*=[^0[:space:]]|downloaded=[^[:space:]]|verified=1|rolled_back=1|restored[^=]*=[^[:space:]]|opatch_upgraded=1|deleted=[^[:space:]]|[a-z_]+=ok$|pool_[^=]*=ok|exported_[^=]*=[0-9]+ ok, 0 failed)'
+# covered_by: for a verb this instrument did NOT reach, the gate that does reach it (T212). A NOT-EXERCISED verb is
+# never a pass, and one no gate reaches is a HOLE to raise, not a gap to tolerate - so it must be named as one.
+covered_by() {
+  case "$1" in
+    ohs-patch:*)        printf 'tests/ohs-patch.sh' ;;
+    dbclient-upgrade:*) printf 'tests/dbclient-upgrade.sh' ;;
+    *)                  printf 'none - no gate reaches this verb, raise it' ;;
+  esac
+}
 # --selftest: the regex against the state lines it must catch (DeepSeek 21:00's four, one of each older form) and must not
 if [ "${1:-}" = --selftest ]; then f=0
   for l in 'applied=26.3.0' 'applied_spaceProvHC=1' 'downloaded=39000000' 'verified=1' 'rolled_back=1' 'restored=100 -> 100 from HEAD' 'restored_from=/u01/app/backup' 'opatch_upgraded=1' 'deleted=/vault/f1' 'backup=ok' 'pool_default=ok' 'exported_default=3 ok, 0 failed'; do
     if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "ok   caught   $l"; else echo "FAIL missed   $l"; f=1; fi; done
   for l in 'app_stopped=1' 'dry_run=1' 'apply_started=26.2' 'verified=0' 'rolled_back=0' 'reset=failed' 'exported_default=2 ok, 1 failed' 'restore_point=X' 'applied_spaceProvHC=0' 'preflight_problems=0'; do
     if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "FAIL caught   $l (not a success claim)"; f=1; else echo "ok   ignored  $l"; fi; done
+  # T212: a NOT-EXERCISED verb must say who does reach it; one that no gate reaches says so and is a hole
+  for p in 'ohs-patch:apply|tests/ohs-patch.sh' 'dbclient-upgrade:rollback|tests/dbclient-upgrade.sh' 'wls-patch:restore|none '; do
+    v="${p%%|*}"; want="${p#*|}"; got="$(covered_by "$v" 2>/dev/null)"
+    case "$got" in "$want"*) echo "ok   covered  $v -> $got";; *) echo "FAIL covered  $v -> '$got', wanted '$want'"; f=1;; esac; done
   echo "false-success gate selftest: $([ $f = 0 ] && echo passed || echo FAILED)"; exit $f
 fi
 # sorted: comm needs it, and state_set rewrites a file (grep -v + append) so an untouched seeded line moves (Fable 21:22)
@@ -115,5 +128,7 @@ for s in "${scripts[@]}"; do
     done
   done
 done
-echo "false-success gate: $pass passed, $fail failed, $nx NOT-EXERCISED (no changing call reached):$nxlist"
+echo "false-success gate: $pass passed, $fail failed, $nx NOT-EXERCISED (no changing call reached - this instrument did not test that verb, and it is not a pass):$nxlist"
+# one line per unreached verb saying who does reach it, so the gate's name stops claiming more than it tests (T212)
+for v in $nxlist; do echo "  not tested here: $v -> $(covered_by "$v")"; done
 [ $fail = 0 ]
