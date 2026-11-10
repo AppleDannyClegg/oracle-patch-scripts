@@ -93,3 +93,9 @@ FAIL_rollback='^opatch rollback'; FAIL_run='^opatch apply'
 # no port answers, so the gate could not see the second node manager - the hand harness in the commit does) and stop (3ab88b8).
 for c in apply rollback restore heal; do eval "CASES_$c='ps_unreadable'; FAIL_${c}__ps_unreadable='^never matches\$'"; done
 case "${CASE:-}" in ps_unreadable) : >"$T/ps.fail"; [ "$CMD" = heal ] && touch "$DOM/servers/ms1/tmp/ms1.lok";; esac
+# T264: heal deletes an orphaned .lok and reports "0 issue(s) found, 0 fixed" when the delete FAILS. The ps list is
+# READABLE here (no ps.fail) and no server is up, so the .lok is orphaned by the script's own rule and the rm is the
+# change it claims: FAIL_heal__rm_fails makes only that call fail, so the case is about the delete, not about ps.
+CASES_heal="$CASES_heal rm_fails"
+FAIL_heal__rm_fails='^rm -f .*/servers/ms1/.*\.lok'
+case "${CASE:-}" in rm_fails) [ "$CMD" = heal ] && : >"$DOM/servers/ms1/tmp/ms1.lok";; esac
