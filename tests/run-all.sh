@@ -64,7 +64,7 @@ gate_timeout() { # <gate name>
     esac
 }
 
-GATES=(output-dir wls-quarter ohs-quarter ohs-quarter-stage java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
+GATES=(output-dir wls-quarter ohs-quarter ohs-quarter-stage java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate false-success-selftest self-contained-gate
     secret-argv-gate java-patch-cacerts java-patch-inplace java-patch db-patch-opatch-min db-patch-ru-title
     get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
     patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch dbclient-upgrade wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate backup-perms)
@@ -76,8 +76,13 @@ add_gate() {
     GATES+=("$1")
 }
 if [ $# -gt 0 ]; then GATES=(); for g in "$@"; do add_gate "$g"; done; fi
-# the two extra jobs are only added where they can run: a copy of this tree (tests/run-all-harness.sh) has neither
+# the extra jobs are only added where they can run: a copy of this tree (tests/run-all-harness.sh) has none of them
 if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-patches.ps1 ]; then add_gate get-patches; fi
+# get-mos-token is a bash gate that shells the script's own -SelfTest, so it needs pwsh/powershell (it accepts both)
+# and it SELF-SKIPS with rc 0 when neither is installed - and this harness marks a gate ok on rc 0 and a last line
+# with no FAIL and no 'N failed', so a skip would draw an `ok` row for work that never ran. Added only where pwsh
+# exists, the same shape as get-patches above, so the row is absent rather than green-but-empty.
+if { command -v pwsh >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1; } && [ -f tests/get-mos-token.sh ]; then add_gate get-mos-token; fi
 if command -v shellcheck >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then add_gate shellcheck; fi
 
 if [ "$SHOW_LIMITS" = 1 ]; then
