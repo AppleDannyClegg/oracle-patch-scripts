@@ -29,10 +29,15 @@ fi
 echo "waiting for the database (first start of this image takes a few minutes)"
 for _ in $(seq 1 120); do docker logs "$NAME" 2>&1 | grep -q "DATABASE IS READY TO USE" && break; sleep 5; done
 docker logs "$NAME" 2>&1 | grep -q "DATABASE IS READY TO USE" || { echo "database did not come up"; docker logs --tail 30 "$NAME"; exit 1; }
-# what a real server has and the slim image lacks: an oratab entry, a home for oracle, procps. Plus an okvclient.ora
+# what a real server has and the slim image lacks: an oratab entry, a home for oracle, procps, and a /u01 the
+# oracle user can write. Without /u01 a script that keeps a run dir (okv-diag) stops at "Cannot create run dir
+# /u01/oracle-patch-scripts/..." before it writes its report: lib/oracle-lib.sh uses the server base on Linux even
+# when it cannot be written, on purpose, so the container must supply it rather than the library fall back. Creating
+# it keeps the DEFAULT output location under test, which setting ORACLE_OUTPUT_DIR for these runs would bypass.
+# Plus an okvclient.ora
 # fixture so okv-diag's OKV half (discovery, reachability, cert age, okvutil) is EXERCISED, not a "no okvclient.ora
 # found" WARN that the rc<=2 pass rule records as green (Vision/Jocasta 10:34).
-docker exec -u root "$NAME" bash -c 'grep -q "^FREE:" /etc/oratab 2>/dev/null || echo "FREE:$ORACLE_HOME:N" >>/etc/oratab; mkdir -p /home/oracle && chown oracle /home/oracle
+docker exec -u root "$NAME" bash -c 'grep -q "^FREE:" /etc/oratab 2>/dev/null || echo "FREE:$ORACLE_HOME:N" >>/etc/oratab; mkdir -p /home/oracle /u01 && chown oracle /home/oracle /u01
   command -v ps >/dev/null || microdnf install -y procps-ng hostname which >/dev/null 2>&1 || echo "procps install failed (no network?) - the scripts fall back to /proc"'
 docker exec -u oracle -e HOME=/home/oracle "$NAME" bash -c 'mkdir -p /home/oracle/okv/conf /home/oracle/okv/ssl /home/oracle/okv/bin
   printf "SERVER=127.0.0.1:1\nSSL_WALLET_LOC=/home/oracle/okv/ssl\n" > /home/oracle/okv/conf/okvclient.ora
