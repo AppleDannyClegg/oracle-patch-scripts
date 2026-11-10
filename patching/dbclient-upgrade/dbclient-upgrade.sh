@@ -27,7 +27,8 @@
 #   --oracle-home DIR       the OHS home; default: $ORACLE_HOME, then the central inventory
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes (default /u01/backup)
-#   --run-dir DIR           rollback: the run to restore from
+#   --run-dir DIR           the run dir to write: backup (a composer's one backup, ohs-quarter.sh) and the run
+#                           rollback restores from
 #   --backup-run DIR        apply: restore from this run's backup (a composer's one backup) instead of the latest
 #   --keep-patches ID,ID    patches you have checked are NOT 12c Database Client patches; every other installed
 #                           patch must be rolled back first (README). The script cannot check this for you

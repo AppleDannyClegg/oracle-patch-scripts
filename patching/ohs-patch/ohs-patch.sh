@@ -30,7 +30,8 @@
 #   --oracle-home DIR       the OHS (or WebLogic) home; default: $ORACLE_HOME, then the central inventory
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes, for the free-space check (default /u01/backup)
-#   --run-dir DIR           rollback: the run to restore from (default: the latest under <output dir>/ohs-patch/runs)
+#   --run-dir DIR           the run dir to write: backup (a composer's one backup, ohs-quarter.sh), and the run
+#                           rollback restores from (default: the latest under <output dir>/ohs-patch/runs)
 #   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
 #                           its first patch) instead of the latest one taken for this patch; the home must match
 #   --no-backup             refused: the backup is the README's rollback
