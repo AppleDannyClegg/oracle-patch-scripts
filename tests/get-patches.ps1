@@ -1056,5 +1056,32 @@ $getSelf = $true
 try { & { . (Join-Path $root 'get.ps1') -SelfTest } *> $null } catch { $getSelf = $false; Write-Host $_.Exception.Message }
 Check $getSelf 'get.ps1 -SelfTest passes (export, inline comment, default, env precedence)'
 
+# ---- Select-MosFile: which of a record's files is taken, as the ONE rule both the plan and the download use ------
+# T229 (Edi #12944, Gort #12945/#12948): two edges, both about a file taken without saying so. A non-JDK record whose
+# ONLY file is an internal/debug artifact was warned and taken ($script:DevBuild is not what a patch tool installs,
+# and java-patch refuses one); and the single-file fallback took a file labelled for another release silently.
+function F([string] $name, [string] $release, [string] $platform = 'Linux x86-64') {
+    [pscustomobject]@{ Name = $name; Url = "https://example/$name"; Sha = ''; Release = $release; Platform = $platform }
+}
+$fDbg = @(F 'p39919567_122140_Linux-x86-64_debug.zip' '12.2.1.4.0')
+$r = Select-MosFile $fDbg '12.2.1.4.0' 'wls'
+Check (-not $r.File -and $r.Reason -match 'internal/debug') "a non-JDK record whose only file is an internal/debug artifact is refused, not taken: file [$($r.File.Name)] reason [$($r.Reason)]"
+Check ($r.Warning -notmatch 'only an internal/debug') "the refusal is not also a 'taking it anyway' warning: [$($r.Warning)]"
+$fDbgOhs = @(F 'p40005842_122140_Linux-x86-64_internal.zip' '12.2.1.4.0')
+$r = Select-MosFile $fDbgOhs '12.2.1.4.0' 'ohs'
+Check (-not $r.File -and $r.Reason -match 'internal/debug') "the same refusal for an ohs record: [$($r.File.Name)] [$($r.Reason)]"
+# control: a production file beside the debug one is still taken, and no refusal
+$fBoth = @(F 'p39919567_122140_Linux-x86-64_debug.zip' '12.2.1.4.0'; F 'p39919567_122140_Linux-x86-64.zip' '12.2.1.4.0')
+$r = Select-MosFile $fBoth '12.2.1.4.0' 'wls'
+Check ($r.File -and $r.File.Name -eq 'p39919567_122140_Linux-x86-64.zip') "a record listing both takes the production file, not the debug one: [$($r.File.Name)]"
+# the single-file fallback: still taken (the courtesy is kept), but never silently - it names both labels
+$fOther = @(F 'p39425385_190000_Linux-x86-64.zip' '19.0.0.0.0')
+$r = Select-MosFile $fOther '12.2.1.4.0' 'dbclient'
+Check ($r.File -and $r.File.Name -eq 'p39425385_190000_Linux-x86-64.zip') "one file under another release label is still taken (the fallback is kept): [$($r.File.Name)]"
+Check ($r.Warning -match '19\.0\.0\.0\.0' -and $r.Warning -match '12\.2\.1\.4\.0') "and it says so, naming both releases: [$($r.Warning)]"
+$fSame = @(F 'p34761383_122140_Linux-x86-64.zip' '12.2.1.4.0')
+$r = Select-MosFile $fSame '12.2.1.4.0' 'dbclient'
+Check ($r.File -and -not $r.Warning) "a file matching the release says nothing (no noise on the normal path): [$($r.Warning)]"
+
 Write-Host "get-patches gate: $script:pass passed, $script:fail failed"
 if ($script:fail -ne 0) { exit 1 }
