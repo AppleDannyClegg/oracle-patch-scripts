@@ -375,7 +375,7 @@ if have_zip; then
 build; running; ZD="$T/patches/zipped"; mkdir -p "$ZD"; (cd "$PD" && zip -qr "$ZD/p40005842_122140_Linux-x86-64.zip" 40005842)
 before="$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)"
 rc="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"; rc2="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"
-[ "$rc" = 0 ] && [ "$rc2" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "plan is not read-only: rc $rc/$rc2, actions [$(acts)], runs $([ -d "$T/runs" ] && echo made): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
+[ "$rc" = 0 ] && [ "$rc2" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "plan is not read-only: rc $rc/$rc2 (want 0/0), actions [$(acts)] (want empty), backup $([ -n "$(find "$T/backup" -mindepth 1 2>/dev/null | head -1)" ] && echo MADE || echo none), runs $([ -d "$T/runs" ] && echo MADE || echo none): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
 [ "$before" = "$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)" ] && ok || bad "plan changed the patch folder: $(cd "$ZD" && find . | sort | tr '\n' ' ')"
 grep -q "would run $DOM/bin/stopComponent.sh ohs1" "$T/out" && grep -q 'would back up' "$T/out" && grep -q 'opatch apply -silent' "$T/out" && ok || bad "plan does not list the steps: $(grep -c dry-run "$T/out") dry-run lines"
 grep -q 'run does all of this' "$T/out" && ok || bad "plan does not say run does these steps for you"
@@ -467,7 +467,7 @@ build; running; : >"$LSP"; touch "$T/apply.fail"; rc="$(runr --yes)"
 
 # verify: read-only, and not ready says so
 build; running; rc="$(runc verify "$PD")"
-[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q '40005842 is NOT installed' "$T/out" && ok || bad "verify before the apply: rc $rc (want 1)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q '40005842 is NOT installed' "$T/out" && ok || bad "verify before the apply: rc $rc (want 1), actions [$(acts)] (want empty), NOT-installed line count $(grep -c '40005842 is NOT installed' "$T/out") (want 1): $(grep -E 'ERROR|WARN' "$T/out" | head -2)"
 build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; touch "$T/curl.fail"; rc="$(runc verify "$PD")"
 [ "$rc" = 1 ] && grep -q 'does not answer on port 7777' "$T/out" && ok || bad "verify with a port down: rc $rc (want 1)"
 

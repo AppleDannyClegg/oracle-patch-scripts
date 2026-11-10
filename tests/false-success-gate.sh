@@ -73,6 +73,13 @@ covered_by() {
   case "$1" in
     ohs-patch:*)        printf 'tests/ohs-patch.sh' ;;
     dbclient-upgrade:*) printf 'tests/dbclient-upgrade.sh' ;;
+    # T245: nominate the instrument that actually reaches the verb instead of 'none'. okv-rotate's read/advisory
+    # verbs are driven by its own gate; the two sequences (apply, run) and rman-ops' evidence pack are reached by
+    # the named cases HERE, and the plain label says so because with no injected failure they reach no change.
+    okv-rotate:apply)   printf 'this gate, apply:okvutil_fails' ;;
+    okv-rotate:run)     printf 'this gate, run:okvutil_fails' ;;
+    rman-ops:run)       printf 'this gate, run:rman_fails' ;;
+    okv-rotate:check|okv-rotate:rollback|okv-rotate:backup|okv-rotate:wait:repointed_no_wallet) printf 'tests/okv-rotate.sh' ;;
     # T264: heal's delete-failure path is reached by THIS gate's heal:rm_fails case (the default heal case finds no
     # issue, so it is still not exercised there) - named rather than left as "no gate reaches this verb"
     wls-patch:heal)     printf 'tests/false-success-gate.sh heal:rm_fails + heal:lock_fails' ;;
@@ -86,7 +93,8 @@ if [ "${1:-}" = --selftest ]; then f=0
   for l in 'app_stopped=1' 'dry_run=1' 'apply_started=26.2' 'verified=0' 'rolled_back=0' 'reset=failed' 'exported_default=2 ok, 1 failed' 'restore_point=X' 'applied_spaceProvHC=0' 'preflight_problems=0'; do
     if printf '%s\n' "$l" | grep -qE -- "$default_ok"; then echo "FAIL caught   $l (not a success claim)"; f=1; else echo "ok   ignored  $l"; fi; done
   # T212: a NOT-EXERCISED verb must say who does reach it; one that no gate reaches says so and is a hole
-  for p in 'ohs-patch:apply|tests/ohs-patch.sh' 'dbclient-upgrade:rollback|tests/dbclient-upgrade.sh' 'wls-patch:restore|none '; do
+  for p in 'ohs-patch:apply|tests/ohs-patch.sh' 'dbclient-upgrade:rollback|tests/dbclient-upgrade.sh' 'wls-patch:restore|none ' \
+           'okv-rotate:rollback|tests/okv-rotate.sh' 'okv-rotate:apply|this gate, apply:okvutil_fails' 'rman-ops:run|this gate, run:rman_fails'; do
     v="${p%%|*}"; want="${p#*|}"; got="$(covered_by "$v" 2>/dev/null)"
     case "$got" in "$want"*) echo "ok   covered  $v -> $got";; *) echo "FAIL covered  $v -> '$got', wanted '$want'"; f=1;; esac; done
   echo "false-success gate selftest: $([ $f = 0 ] && echo passed || echo FAILED)"; exit $f

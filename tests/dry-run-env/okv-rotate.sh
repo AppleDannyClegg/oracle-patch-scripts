@@ -91,3 +91,22 @@ OK_wait__not_switched_okvutil_fails='^(rotated=(yes|ok|true)|switched=(yes|ok|tr
 [ "${CASE:-}" = repointed_no_wallet ] && export OKV_STUB_NO_WALLET=1
 FAIL_wait__repointed_no_wallet='^$'
 OK_wait__repointed_no_wallet='^(rotated=(yes|ok|true)|switched=(yes|ok|true)|verify=ok|all_open=ok)$'
+# apply and run are the two verbs no other gate reaches (T245): tests/okv-rotate.sh drives check/verify/wait/
+# backup/rollback, and these two sequences - wait then verify, and check+wait+verify - are only reachable here.
+# The property: a failed okvutil read must end the sequence non-zero. apply has no change of its own (the console
+# rotation is manual), so the failure is the only thing that can make it claim anything, and a 0 after FAILED is
+# exactly the false success this gate exists for.
+# apply/run: the world is ALREADY switched with the wallet present, so verify would PASS - that is what makes the
+# case bite. With okvutil broken the only honest exit is non-zero; a sequence that swallows the failed read runs
+# verify on a healthy world and claims a clean apply, which is the false success T245 is about.
+if [ "${CASE:-}" = okvutil_fails ] && { [ "${CMD:-}" = apply ] || [ "${CMD:-}" = run ]; }; then
+  mkdir -p "$O/ssl/19700101000000000000"
+  printf 'not a real p12\n' >"$O/ssl/19700101000000000000/ewallet.p12"
+  printf 'SERVER=okv1.example:5696,okv2.example:5696\nSSL_WALLET_LOC=%s/ssl/19700101000000000000\nOKV_HOSTNAME=okv1.example\nUPDATE_TIMESTAMP=2026-10-31 12:00:00\n' "$O" >"$O/conf/okvclient.ora"
+fi
+CASES_apply="okvutil_fails"
+FAIL_apply__okvutil_fails='okvutil .*list'
+OK_apply__okvutil_fails='^(rotated=(yes|ok|true)|switched=(yes|ok|true)|verify=ok|all_open=ok)$'
+CASES_run="okvutil_fails"
+FAIL_run__okvutil_fails='okvutil .*list'
+OK_run__okvutil_fails='^(rotated=(yes|ok|true)|switched=(yes|ok|true)|verify=ok|all_open=ok)$'
