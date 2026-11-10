@@ -84,6 +84,9 @@ C2="$T/client2/19.0.0.0"; C3="$T/client3/19.0.0.0"; C4="$T/client4/foo"
 O="$T/ohs/fmw"
 mkdir -p "$O/ohs/bin" "$O/oracle_common" "$O/inventory"
 echo '<distribution status="installed" name="Oracle HTTP Server (Standalone)" version="12.2.1.4.0"/>' >"$O/inventory/registry.xml"
+# its Database Client is 12c (oracle.rdbms.rsf in comps.xml, the KB585169 check), as on Gen's home
+mkdir -p "$O/inventory/ContentsXML"
+printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="12.1.0.2.0" BUILD_NUMBER="0"/>\n</PRD_LIST>\n' >"$O/inventory/ContentsXML/comps.xml"
 # the collocated shape: OHS installed into the WebLogic home itself
 mkdir -p "$H/ohs/bin"
 echo '<component name="WebLogic Server" version="12.2.1.4.0"/><component name="Oracle Coherence" version="12.2.1.4.0"/><distribution status="installed" name="Oracle HTTP Server (Collocated)" version="12.2.1.4.0"/>' >"$H/inventory/registry.xml"
@@ -162,9 +165,15 @@ if [ -f "$OUT" ]; then
   grep -q "warning: could not read the version of $C2" "$T/run.log" && bad "warned although C2's version came from its inventory" || ok
   grep -q "^home|$H|" "$OUT" && bad "the WebLogic home is listed twice (wls and home lines)" || ok
   # OHS: a standalone home is kind ohs with its release, never 'other'; a collocated one gets an ohs| line
-  has "$OUT" "home|$O|ohs|12.2.1.4.0|13.9.4.2.23"
+  # ...with its Database Client level as a 6th field (back-compatible: readers check a minimum count)
+  has "$OUT" "home|$O|ohs|12.2.1.4.0|13.9.4.2.23|12.1.0.2.0"
   has "$OUT" "patch|$O|38000222|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501"
-  has "$OUT" "ohs|$H|12.2.1.4.0"
+  # the collocated home has no comps.xml: the client field is empty and the run says so
+  has "$OUT" "ohs|$H|12.2.1.4.0|"
+  grep -q "warning: could not read the Database Client level (oracle.rdbms.rsf) of $H" "$T/run.log" && ok || bad "no warning for an OHS home whose client level is unreadable"
+  grep -q "warning: could not read the Database Client level.* of $O" "$T/run.log" && bad "warned although $O's client level was read" || ok
+  # db/agent/other homes keep five fields: the client field is OHS-only
+  grep -E "^home\|[^|]*\|(db|agent|other)\|[^|]*\|[^|]*\|" "$OUT" && bad "a non-OHS home| line grew a 6th field" || ok
   grep -q "^ohs|$O|" "$OUT" && bad "OHS: the standalone home also got an ohs| line (it is a home|..|ohs line)" || ok
   grep -q 'OPatch succeeded' "$OUT" && bad "opatch chatter leaked into the manifest" || ok
 else
