@@ -26,7 +26,7 @@ pass=0; fail=0
 ok()  { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 
-SCRIPT=patching/ohs-quarter/ohs-quarter.sh
+# the fixture defines the fake home and dbc(); SCRIPT is set after it, so the child it runs is the real one
 # shellcheck source=tests/fixtures/dbclient-home.sh
 . tests/fixtures/dbclient-home.sh
 SCRIPT=patching/ohs-quarter/ohs-quarter.sh
