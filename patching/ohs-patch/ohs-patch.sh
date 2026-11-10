@@ -479,8 +479,17 @@ state() { [ -n "$STATE" ] && printf '%s=%s\n' "$1" "$2" >>"$STATE"; return 0; }
 # under --dry-run it only says so: no caller has to remember to return before it
 # stdin is /dev/null: the output goes to run.log, so a child that prompts (a node manager password) would wait on a
 # question nobody can see; with no stdin it fails at once and takes the caller's failure path
-redact_pw() { sed -E 's/((password|passwd|pwd|secret|token|credential)[[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1***REDACTED***/Ig'; }
-do_cmd() { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $*"; return 0; fi; log "  \$ $*"; "$@" </dev/null 2>&1 | redact_pw >>"$RUN_DIR/run.log"; return "${PIPESTATUS[0]}"; }
+# The output goes STRAIGHT to the file, not through a filter: a pipe is held open by anything the command leaves
+# running, and this runs the stop/start scripts in an outage window - a start that never returns is worse than a
+# log line. run.log is owner-only in an owner-only dir (private_log below); that is its protection.
+do_cmd() { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $*"; return 0; fi; log "  \$ $*"; private_log || return 1; "$@" >>"$RUN_DIR/run.log" 2>&1 </dev/null; }
+# the run dir and its command log, owner-only, wherever RUN_DIR came from (open_run, open_log, or a run re-used by
+# apply/rollback that an older copy of this script left 755/644). A failure stops the command: nothing is logged
+# into a file others can read.
+private_log() {
+  chmod 700 "$RUN_DIR" 2>/dev/null && ( umask 077; : >>"$RUN_DIR/run.log" ) && chmod 600 "$RUN_DIR/run.log" 2>/dev/null && return 0
+  err "cannot make $RUN_DIR and its run.log owner-only (chmod failed) - the command was not run"; return 1
+}
 # T195: a private-umask wrapper for CREATING the archives only - the rest of the script (tar -x on
 # rollback, opatch, unzip, the installer) must keep the host/oracle umask, or the home comes back 0700/0600.
 do_cmd_p() { local u; u="$(umask)"; umask 077; do_cmd "$@"; local r=$?; umask "$u"; return $r; }

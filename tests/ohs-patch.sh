@@ -14,6 +14,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 SCRIPT=patching/ohs-patch/ohs-patch.sh
 T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
+# an explicit umask, so the permission assertions below do not depend on who runs the gate. GATE_UMASK=0077 re-runs it tight
+umask "${GATE_UMASK:-0022}"
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
@@ -240,6 +242,19 @@ case "$a" in *startNM*) ok;; *) bad "node manager not started: [$a]";; esac
 [ "$(find "$T"/backup/ohs-40005842-* -name '*.tgz' | wc -l | tr -d ' ')" = 3 ] && ok || bad "backup not home + domain + inventory: $(find "$T/backup" -name '*.tgz' | tr '\n' ' ')"
 st | grep -q '^applied=40005842$' && st | grep -q '^outcome=applied$' && ok || bad "state does not record the apply: $(st | tr '\n' ' ')"
 grep -q 'applied and verified' "$T/out" && ok || bad "no 'applied and verified' line"
+# the run dir, its command log and the rollback archives hold wallets and credentials: owner-only whatever umask
+# the host hands the script. This gate sets 022 at its top (the common default, and the one that used to leave them
+# 755/644); run it again under 'umask 077' and these must read the same.
+pm() { ls -ld "$1" 2>/dev/null | cut -c1-10; }
+_bk="$(ls -d "$T"/backup/ohs-40005842-* 2>/dev/null | head -1)"; _rl="$(ls "$T"/runs/*/run.log 2>/dev/null | head -1)"
+[ "$(pm "$_bk")" = "drwx------" ] && ok || bad "backup dir is $(pm "$_bk"), want drwx------ (umask $(umask))"
+_open=""; for _f in "$_bk"/*.tgz; do [ "$(pm "$_f")" = "-rw-------" ] || _open="$_open ${_f##*/}=$(pm "$_f")"; done
+[ -z "$_open" ] && ok || bad "rollback archives not owner-only:$_open (umask $(umask))"
+[ "$(pm "$_rl")" = "-rw-------" ] && ok || bad "run.log is $(pm "$_rl"), want -rw------- (umask $(umask))"
+[ "$(pm "$(dirname "$_rl")")" = "drwx------" ] && ok || bad "run dir is $(pm "$(dirname "$_rl")"), want drwx------ (umask $(umask))"
+# ...and the script must NOT have handed its children a private umask: what the patch lays down in the home keeps
+# the host's modes (a home restored or patched owner-only stops OHS for every other account)
+[ "$(umask)" = "${GATE_UMASK:-0022}" ] && ok || bad "the gate's own umask moved to $(umask)"
 # rollback of that run: home back without the patch, started again
 : >"$T/actions"; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" rollback --yes >"$T/out" 2>&1 </dev/null; echo $?)"
 [ "$rc" = 0 ] && [ ! -e "$OH/ohs/PATCHED" ] && ! grep -q 40005842 "$LSP" && ok || bad "rollback of a good run: rc $rc, PATCHED $([ -e "$OH/ohs/PATCHED" ] && echo present): $(grep ERROR "$T/out" | head -2)"
