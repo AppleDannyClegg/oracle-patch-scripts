@@ -7,6 +7,7 @@
 #        a script-wide `umask 077` breaks this (it makes the home private and a start fails after a rollback).
 # Own mktemp dir, nothing shared touched; offline only.
 set -u
+# shellcheck disable=SC2034  # config vars are consumed by the sourced script functions, not here
 cd "$(dirname "$0")/.." || exit 1
 T="$(mktemp -d)"; trap 'chmod -R u+rwX "$T" 2>/dev/null; rm -rf "$T"' EXIT
 pass=0; fail=0
@@ -24,7 +25,8 @@ stub() { # <base>
 
 # one script, one caller umask -> prints "rundir log archive... restored-dir restored-file opatch-file ambient"
 measure() { # <relpath> <umask>
-  local rel="$1" um="$2" base="$T/$(echo "$rel" | tr / _)-$2"
+  local rel="$1"; local um="$2"
+  local base; base="$T/$(echo "$rel" | tr / _)-$2"
   funcs "$rel" "$rel.funcs"; mkdir -p "$base"; stub "$base"
   (
     umask "$um"; set +e; RUN_DIR=""
@@ -33,18 +35,21 @@ measure() { # <relpath> <umask>
     case "$rel" in
       patching/ohs-patch/ohs-patch.sh)
         OH="$base/OH"; DOMS="$base/dom/domain1"; INV="$base/inv"; BK="$base/backup"
-        RUN_BASE="$base/runs"; OUTPUT_HINT="$base"; DRY_RUN=0
-        STAMP=fixture; open_run >/dev/null 2>&1; backup_all >/dev/null 2>&1
+        : "$OH" "$DOMS" "$INV" "$BK"
+        RUN_BASE="$base/runs"; OUTPUT_HINT="$base"; DRY_RUN=0; : "$RUN_BASE" "$OUTPUT_HINT" "$DRY_RUN"
+        STAMP=fixture; : "$STAMP"; open_run >/dev/null 2>&1; backup_all >/dev/null 2>&1
         ART="$BK"; RC=do_cmd; AF="$BK/home.tgz" ;;
       patching/dbclient-upgrade/dbclient-upgrade.sh)
         OH="$base/OH"; DOMS="$base/dom/domain1"; INV="$base/inv"; BK="$base/backup"
-        RUN_BASE="$base/runs"; OUTPUT_HINT="$base"; DRY_RUN=0
-        STAMP=fixture; open_run >/dev/null 2>&1; backup_all >/dev/null 2>&1
+        : "$OH" "$DOMS" "$INV" "$BK"
+        RUN_BASE="$base/runs"; OUTPUT_HINT="$base"; DRY_RUN=0; : "$RUN_BASE" "$OUTPUT_HINT" "$DRY_RUN"
+        STAMP=fixture; : "$STAMP"; open_run >/dev/null 2>&1; backup_all >/dev/null 2>&1
         ART="$BK"; RC=do_cmd; AF="$BK/home.tgz" ;;
       patching/wls-patch/wls-patch.sh)
         setup_env() { :; }; state_set() { :; }
         ORACLE_HOME="$base/OH"; DOMAINS="$base/dom/domain1"; BACKUP_DIR="$base/backups"
-        RUN_BASE="$base/runs"; RUN_DIR=""; OUTPUT_HINT="$base"; DRY_RUN=0; VERSION=gate
+        : "$ORACLE_HOME" "$DOMAINS" "$BACKUP_DIR"
+        RUN_BASE="$base/runs"; RUN_DIR=""; OUTPUT_HINT="$base"; DRY_RUN=0; VERSION=gate; : "$RUN_BASE" "$OUTPUT_HINT" "$DRY_RUN" "$VERSION"
         cmd_backup >/dev/null 2>&1
         d="$(ls -d "$BACKUP_DIR"/*/ 2>/dev/null | tail -1)"; d="${d%/}"; ART="$d"; RC=run_cmd; AF="$d/oracle_home.tar.gz" ;;
     esac
