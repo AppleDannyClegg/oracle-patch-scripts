@@ -157,6 +157,11 @@ build; rm -f "$T/home/.wlst/"*; rc="$(pre)"
 # --backup-run $SHARED (ohs-quarter.sh:249 then :336), and the child refuses without $SHARED/state. A backup that
 # accepts --run-dir and writes its own $RUN_BASE/<stamp>-run instead leaves the composer's apply with no state at all.
 build; SH="$T/shared"; rc="$(dbc backup "$PD" --run-dir "$SH" --yes)"
+# the composer's SEQUENCE, not just the option: backup with --run-dir, then apply with --backup-run on THAT dir,
+# with nothing running (the composer stops before it applies). rc 0 here; on the pre-fix bytes the apply is rc 1 with
+# "apply refused: no completed backup" - the outage already started. T291/Edi #13313.
+build; rc="$(dbc backup "$PD" --run-dir "$SH" --yes)"; : >"$T/ps.txt"; rc2="$(dbc apply "$PD" --backup-run "$SH" --yes)"
+[ "$rc" = 0 ] && [ "$rc2" = 0 ] && ok || bad "the composer's backup -> apply link: backup rc $rc, $SH/state $([ -f "$SH/state" ] && echo present || echo MISSING), apply rc $rc2: $(grep -E 'ERROR' "$T/out" | head -2)"
 [ "$rc" = 0 ] && [ -f "$SH/state" ] && ok || bad "backup ignored --run-dir: rc $rc, $SH/state $([ -f "$SH/state" ] && echo present || echo MISSING), run dirs: $(find "$T/runs" -mindepth 1 -maxdepth 1 2>/dev/null | head -3 | tr '\n' ' ')"
 
 # ---- run ------------------------------------------------------------------------------------------------
