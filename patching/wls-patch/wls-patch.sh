@@ -129,14 +129,18 @@ die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 
 # run_cmd: execute (or print under --dry-run), tee output to log, return exit code
+redact_pw() { sed -E 's/((password|passwd|pwd|secret|token|credential)[[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1***REDACTED***/Ig'; }
 run_cmd() {
   log "CMD: $*"
   if [ "$DRY_RUN" = 1 ]; then
     return 0
   fi
-  "$@" </dev/null 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+  "$@" </dev/null 2>&1 | redact_pw | tee -a "${LOG_FILE:-/dev/null}"
   return "${PIPESTATUS[0]}"
 }
+# T195: private umask for CREATING the backup archives only; every other child (opatch, unzip, tar -x)
+# keeps the host umask, or the home is re-permissioned on rollback/apply.
+run_cmd_p() { local u; u="$(umask)"; umask 077; run_cmd "$@"; local r=$?; umask "$u"; return $r; }
 
 # run_sh: run a shell snippet with stdin/stdout detached, output appended to the log.
 # Needed for START_CMD/STOP_CMD and server start scripts: anything they leave running in the
@@ -220,8 +224,10 @@ init_run_dir() {
   if [ -z "$RUN_DIR" ]; then
     RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"
   fi
-  mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  ( umask 077; mkdir -p "$RUN_DIR" ) || die "Cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  chmod 700 "$RUN_DIR" 2>/dev/null || die "cannot make run dir $RUN_DIR private (chmod 700 failed)"
   LOG_FILE="$RUN_DIR/wls-patch.log"
+  ( umask 077; : >>"$LOG_FILE" ); chmod 600 "$LOG_FILE" 2>/dev/null || die "cannot make $LOG_FILE private (chmod 600 failed)"
   STATE_FILE="$RUN_DIR/state"
   ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
   log "wls-patch $VERSION  run dir: $RUN_DIR  dry-run=$DRY_RUN"
@@ -797,9 +803,10 @@ cmd_backup() {
   stamp="$(date '+%Y%m%d-%H%M%S')"
   dest="$BACKUP_DIR/$stamp"
   if [ "$DRY_RUN" = 1 ]; then log "dry-run: would back up $ORACLE_HOME and domains to $dest"; return 0; fi
-  mkdir -p "$dest" || die "Cannot create $dest"
+  ( umask 077; mkdir -p "$dest" ) || die "Cannot create $dest"
+  chmod 700 "$dest" 2>/dev/null || die "cannot make $dest private (chmod 700 failed) - refusing to write a readable backup"
   log "Backing up ORACLE_HOME to $dest/oracle_home.tar.gz (this takes a while)"
-  run_cmd tar -czf "$dest/oracle_home.tar.gz" -C "$(dirname "$ORACLE_HOME")" \
+  run_cmd_p tar -czf "$dest/oracle_home.tar.gz" -C "$(dirname "$ORACLE_HOME")" \
     --exclude='*/logs/*' --exclude='*.log' "$(basename "$ORACLE_HOME")" \
     || die "ORACLE_HOME backup failed - not safe to continue"
   local d i=0
@@ -807,11 +814,12 @@ cmd_backup() {
     [ -z "$d" ] && continue
     i=$((i + 1))
     log "Backing up domain $d"
-    run_cmd tar -czf "$dest/domain-$i.tar.gz" -C "$(dirname "$d")" \
+    run_cmd_p tar -czf "$dest/domain-$i.tar.gz" -C "$(dirname "$d")" \
       --exclude='*/servers/*/logs/*' --exclude='*/servers/*/tmp/*' --exclude='*/servers/*/cache/*' \
       "$(basename "$d")" || die "Domain backup failed for $d"
     printf '%s\n' "$d" >>"$dest/domains.txt"
   done <<<"$DOMAINS"
+  for _a in "$dest"/*.tar.gz; do chmod 600 "$_a" 2>/dev/null || die "cannot make $_a private (chmod 600 failed)"; done
   printf '%s\n' "$ORACLE_HOME" >"$dest/oracle_home.txt"
   ln -sfn "$dest" "$BACKUP_DIR/latest"
   state_set backup_dir "$dest"

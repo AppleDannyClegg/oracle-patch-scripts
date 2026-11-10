@@ -217,7 +217,11 @@ state() { [ -n "$STATE" ] && printf '%s=%s\n' "$1" "$2" >>"$STATE"; return 0; }
 # under --dry-run it only says so: no caller has to remember to return before it
 # stdin is /dev/null: the output goes to run.log, so a child that prompts (a node manager password) would wait on a
 # question nobody can see; with no stdin it fails at once and takes the caller's failure path
-do_cmd() { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $*"; return 0; fi; log "  \$ $*"; "$@" >>"$RUN_DIR/run.log" 2>&1 </dev/null; }
+redact_pw() { sed -E 's/((password|passwd|pwd|secret|token|credential)[[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1***REDACTED***/Ig'; }
+do_cmd() { if [ "$DRY_RUN" = 1 ]; then log "dry-run: would run $*"; return 0; fi; log "  \$ $*"; "$@" </dev/null 2>&1 | redact_pw >>"$RUN_DIR/run.log"; return "${PIPESTATUS[0]}"; }
+# T195: a private-umask wrapper for CREATING the archives only - the rest of the script (tar -x on
+# rollback, opatch, unzip, the installer) must keep the host/oracle umask, or the home comes back 0700/0600.
+do_cmd_p() { local u; u="$(umask)"; umask 077; do_cmd "$@"; local r=$?; umask "$u"; return $r; }
 
 # after a failed stop/start: the child's last lines from run.log, and the remedy when they read like a credentials prompt
 why_failed() {
@@ -309,14 +313,16 @@ nothing_running() {
 
 backup_all() { # into BK; every archive listed back (tar -tzf) and non-empty; all or nothing
   local d f
-  mkdir -p "$BK" || { err "cannot create $BK"; return 1; }
-  do_cmd tar -C "$(dirname "$OH")" -czf "$BK/home.tgz" "$(basename "$OH")" || { err "home backup failed"; return 1; }
+  ( umask 077; mkdir -p "$BK" ) || { err "cannot create $BK"; return 1; }
+  chmod 700 "$BK" 2>/dev/null || { err "cannot make backup dir $BK private (chmod 700 failed) - refusing to write a readable backup"; return 1; }
+  do_cmd_p tar -C "$(dirname "$OH")" -czf "$BK/home.tgz" "$(basename "$OH")" || { err "home backup failed"; return 1; }
   while IFS= read -r d; do [ -n "$d" ] || continue
-    do_cmd tar -C "$(dirname "$d")" --exclude='*/logs/*' --exclude='*/tmp/*' -czf "$BK/domain-$(basename "$d").tgz" "$(basename "$d")" || { err "domain backup of $d failed"; return 1; }
+    do_cmd_p tar -C "$(dirname "$d")" --exclude='*/logs/*' --exclude='*/tmp/*' -czf "$BK/domain-$(basename "$d").tgz" "$(basename "$d")" || { err "domain backup of $d failed"; return 1; }
   done <<<"$DOMS"
-  if [ -n "$INV" ]; then do_cmd tar -C "$(dirname "$INV")" -czf "$BK/oraInventory.tgz" "$(basename "$INV")" || { err "central inventory backup failed"; return 1; }
+  if [ -n "$INV" ]; then do_cmd_p tar -C "$(dirname "$INV")" -czf "$BK/oraInventory.tgz" "$(basename "$INV")" || { err "central inventory backup failed"; return 1; }
   else err "no central inventory location (oraInst.loc) - the README's rollback needs it backed up"; return 1; fi
   for f in "$BK"/*.tgz; do
+    chmod 600 "$f" 2>/dev/null || { err "cannot make $f private (chmod 600 failed)"; return 1; }
     [ -s "$f" ] && tar -tzf "$f" >/dev/null 2>&1 || { err "backup $f does not read back - not a usable rollback"; return 1; }
   done
   return 0
@@ -535,7 +541,9 @@ no_weblogic() {
 }
 
 open_run() {
-  RUN_DIR="$RUN_BASE/$STAMP-run"; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  RUN_DIR="$RUN_BASE/$STAMP-run"; ( umask 077; mkdir -p "$RUN_DIR" ) || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  chmod 700 "$RUN_DIR" 2>/dev/null || die "cannot make run dir $RUN_DIR private (chmod 700 failed)"
+  ( umask 077; : >>"$RUN_DIR/run.log" ); chmod 600 "$RUN_DIR/run.log" 2>/dev/null || die "cannot make $RUN_DIR/run.log private (chmod 600 failed)"
   STATE="$RUN_DIR/state"; : >"$STATE"; printf '%s' "$NARR" >"$RUN_DIR/dbclient-upgrade.log"; NARR=""
   state oracle_home "$OH"; state inventory "$INV"; state backup_dir "$BK"; state pre_patches "$PRE_IDS"; state pre_rsf "$PRE_RSF"
   log "run dir   : $RUN_DIR"
