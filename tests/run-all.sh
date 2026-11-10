@@ -15,7 +15,8 @@
 #
 # ONE RUN AT A TIME: a lock is taken at the start (${TMPDIR:-/tmp}/oracle-patch-scripts-run-all.lock). A second
 # run-all refuses to start and names the holder, so two suites cannot starve each other into a timeout and leave
-# an ambiguous rc=143. If the holder is dead, rm -rf that lock.
+# an ambiguous rc=143. A lock left by a killed holder (SIGKILL runs no trap) is detected by its pid and cleared,
+# with a line saying so, so one dead run does not turn every later suite into rc=2.
 #
 # No gates named = every gate below. The docker gates (oracle-free-container, okv-diag) are not here: run those alone.
 # Every gate here works in its own mktemp dir, so they can run side by side (the lock is about a whole suite, not
@@ -84,11 +85,25 @@ if [ "$SHOW_LIMITS" = 1 ]; then
 fi
 
 # One run at a time: two suites on one box starve each other into a timeout and the rc=143 is ambiguous.
-LOCK="${RUN_ALL_LOCK:-${TMPDIR:-/tmp}/oracle-patch-scripts-run-all.lock}"
+LOCK_BASE="${RUN_ALL_LOCK:-${TMPDIR:-/tmp}}"; LOCK_BASE="${LOCK_BASE%/}"
+LOCK="$LOCK_BASE/oracle-patch-scripts-run-all.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
     holder="$(cat "$LOCK/holder" 2>/dev/null || true)"
-    echo "run-all.sh: another run-all is live (${holder:-holder unknown}) - refusing to start, so two suites cannot time each other out. If that run is dead: rm -rf $LOCK" >&2
-    exit 2
+    hpid="${holder#pid=}"; hpid="${hpid%% *}"
+    if [ -n "$hpid" ] && kill -0 "$hpid" 2>/dev/null; then
+        echo "run-all.sh: another run-all is live (${holder:-holder unknown}) - refusing to start, so two suites cannot time each other out. If that run is dead: rm -rf $LOCK" >&2
+        exit 2
+    fi
+    # The holder is not running: SIGKILL runs no trap, so its lock outlives it. Take it over and SAY SO, rather
+    # than turning every later suite into rc=2 until someone finds a directory in TMPDIR. mv is the claim: if a
+    # second starter wins the race it gets the dir and this one re-refuses.
+    if ! mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+        echo "run-all.sh: another run-all took the stale lock first - refusing to start" >&2
+        exit 2
+    fi
+    rm -rf "$LOCK.stale.$$"
+    echo "run-all.sh: removed a stale run-all lock (holder ${hpid:-unknown} is not running)" >&2
+    mkdir "$LOCK" 2>/dev/null || { echo "run-all.sh: could not take the lock after clearing it: $LOCK" >&2; exit 2; }
 fi
 printf 'pid=%s started=%s dir=%s\n' "$$" "$(date '+%Y-%m-%d %H:%M:%S')" "$PWD" >"$LOCK/holder"
 
