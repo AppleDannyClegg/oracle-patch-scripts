@@ -16,9 +16,14 @@ SCRIPT=patching/ohs-patch/ohs-patch.sh
 T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 # an explicit umask, so the permission assertions below do not depend on who runs the gate. GATE_UMASK=0077 re-runs it tight
 umask "${GATE_UMASK:-0022}"
-pass=0; fail=0
+pass=0; fail=0; skipped=0
 ok()  { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
+# skip: a case that CANNOT run here (a fixture tool this image does not have) is not a failure and not a pass.
+# It is counted and named, so a green summary says how much of the gate actually ran (T213).
+skip() { skipped=$((skipped + 1)); echo "SKIP $*"; }
+# the zip fixtures need both: zip to build the archive, unzip for the script to read it (oraclelinux:8 has neither)
+have_zip() { command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; }
 
 OH="$T/ohs"; DOM="$T/domains/ohs_domain"; PD="$T/patches/ohs"; LSP="$T/ohs/inventory/lsp.txt"  # in the home: a restore brings the old list back
 build() {
@@ -285,11 +290,14 @@ rc="$(runr --yes)"
 rm -f "$T/stub/tar" "$T/tar.fail"
 
 # dry run on a folder holding only the zip: nothing stopped, nothing applied, patch folder and backup dir untouched
+# (needs zip to build the fixture; without it the folder stays unzipped and the case would pass for the wrong reason)
+if have_zip; then
 build; running; (cd "$PD" && zip -qr ../p40005842_122140_Linux-x86-64.zip 40005842) && rm -rf "$PD/40005842" && mv "$T/patches/p40005842_122140_Linux-x86-64.zip" "$PD/"
 before="$(cd "$PD" && find . | sort)"; rc="$(runr --dry-run --yes)"
 [ "$rc" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "dry-run: rc $rc, actions [$(acts)], runs $([ -d "$T/runs" ] && echo made): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
 [ "$before" = "$(cd "$PD" && find . | sort)" ] && ok || bad "dry-run changed the patch folder"
 grep -q 'dry-run: would .*opatch apply' "$T/out" && ok || bad "dry-run does not say what it would apply"
+else skip "dry-run on a zip-only patch folder: no zip/unzip in this image, the fixture cannot be built"; fi
 
 # stop not proved: nothing applied, components started again
 build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
@@ -344,6 +352,7 @@ runc() { local c="$1"; shift; HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME=""
 fromhome() { grep -F "$OH/" "$T/ps.txt"; }
 
 # plan: read-only, twice, from a patch dir holding only the zip - no run dir, no backup, no 'extracted' folder
+if have_zip; then
 build; running; ZD="$T/patches/zipped"; mkdir -p "$ZD"; (cd "$PD" && zip -qr "$ZD/p40005842_122140_Linux-x86-64.zip" 40005842)
 before="$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)"
 rc="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"; rc2="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"
@@ -351,6 +360,7 @@ rc="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"; rc2="$(PATCH_INTERACTIVE=1 runc pla
 [ "$before" = "$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)" ] && ok || bad "plan changed the patch folder: $(cd "$ZD" && find . | sort | tr '\n' ' ')"
 grep -q "would run $DOM/bin/stopComponent.sh ohs1" "$T/out" && grep -q 'would back up' "$T/out" && grep -q 'opatch apply -silent' "$T/out" && ok || bad "plan does not list the steps: $(grep -c dry-run "$T/out") dry-run lines"
 grep -q 'run does all of this' "$T/out" && ok || bad "plan does not say run does these steps for you"
+else skip "plan from a zip-only patch folder: no zip/unzip in this image, the fixture cannot be built"; fi
 
 # backup: a run dir and the three archives, nothing stopped; refused undetached
 build; running; rc="$(PATCH_INTERACTIVE=1 runc backup "$PD" --yes)"
@@ -467,5 +477,5 @@ grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! gre
 build; rc="$(runc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
 
-echo "ohs-patch gate: $pass passed, $fail failed"
+echo "ohs-patch gate: $pass passed, $fail failed${skipped:+, $skipped skipped (a case this image cannot run: not a pass, not a failure)}"
 [ "$fail" = 0 ]
