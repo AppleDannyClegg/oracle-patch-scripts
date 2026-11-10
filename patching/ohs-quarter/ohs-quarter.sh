@@ -51,11 +51,16 @@
 #   --java-home DIR    the JDK to replace (passed to java-patch and wls-patch)
 #   --run-dir DIR      this outage's run dir (default: $RUN_BASE/<stamp>-ohs-quarter)
 #   --backup-dir DIR   where the backups go (passed to wls-patch and the installer)
-#   --remove-12c IDS   pass the opt-in 12c-patch removal to the installer (comma list; default: do not remove)
+#   --remove-12c IDS   the 12c Database Client patches to roll back before the 19c installer (comma list of patch
+#                      numbers; default: none). Passed to dbclient-upgrade.sh as --remove-patches: it rolls back
+#                      only the ids named, after the backup and the stop, proves each gone, and restores on failure
+#   --keep-patches IDS patches in the home you have checked are NOT 12c Database Client patches (comma list). The
+#                      installer step refuses while any installed patch is neither removed nor kept; passed to
+#                      dbclient-upgrade.sh as --keep-patches, which takes it on your word
 #   --skip LIST        folders this outage deliberately leaves out (comma list, e.g. --skip wlspsu,jdbc). Required
 #                      for every folder above that is missing or empty; naming a folder that has content is refused
 #   --no-cacerts       do not carry CA aliases across (java-patch)
-#   --force            passed to every child
+#   --force            passed to java-patch and wls-patch, the two children that have a --force
 #   --yes --dry-run    as the children
 #   -h|--help
 #
@@ -111,7 +116,7 @@ die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; SKIP=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
+PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; SKIP=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --patch-root)  optchk "$@"; PATCH_ROOT="$2"; shift 2;;
@@ -120,6 +125,7 @@ while [ $# -gt 0 ]; do
     --run-dir)     optchk "$@"; RUN_DIR="$2"; shift 2;;
     --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2;;
     --remove-12c)  optchk "$@"; REMOVE_12C="$2"; shift 2;;
+    --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2;;
     --skip)        optchk "$@"; SKIP="$2"; shift 2;;
     --no-cacerts)  NO_CACERTS=1; shift;;
     --force)       FORCE=1; shift;;
@@ -225,10 +231,14 @@ JOPTS=(); [ -n "$JAVA_HOME_ARG" ] && JOPTS+=(--java-home "$JAVA_HOME_ARG"); [ "$
 WOPTS=(); [ -n "$ORACLE_HOME_ARG" ] && WOPTS+=(--oracle-home "$ORACLE_HOME_ARG"); [ -n "$JAVA_HOME_ARG" ] && WOPTS+=(--java-home "$JAVA_HOME_ARG")
 [ -n "$BACKUP_DIR" ] && WOPTS+=(--backup-dir "$BACKUP_DIR"); [ "$FORCE" = 1 ] && WOPTS+=(--force); [ "$DRY" = 1 ] && WOPTS+=(--dry-run); [ "$YES" = 1 ] && WOPTS+=(--yes)
 DOpts=(); [ -n "$ORACLE_HOME_ARG" ] && DOpts+=(--oracle-home "$ORACLE_HOME_ARG"); [ -n "$BACKUP_DIR" ] && DOpts+=(--backup-dir "$BACKUP_DIR")
-[ -n "$REMOVE_12C" ] && DOpts+=(--remove-12c "$REMOVE_12C")
-[ "$FORCE" = 1 ] && DOpts+=(--force); [ "$DRY" = 1 ] && DOpts+=(--dry-run); [ "$YES" = 1 ] && DOpts+=(--yes)
+# every option here must be one the child's own parser has an arm for: a child that meets an option it does not
+# know stops with "unknown option", and tests/ohs-quarter.sh checks each of these against the real scripts.
+# dbclient-upgrade.sh calls the removal --remove-patches; it and ohs-patch.sh have no --force
+[ -n "$REMOVE_12C" ] && DOpts+=(--remove-patches "$REMOVE_12C")
+[ -n "$KEEP_PATCHES" ] && DOpts+=(--keep-patches "$KEEP_PATCHES")
+[ "$DRY" = 1 ] && DOpts+=(--dry-run); [ "$YES" = 1 ] && DOpts+=(--yes)
 OOPTS=(); [ -n "$ORACLE_HOME_ARG" ] && OOPTS+=(--oracle-home "$ORACLE_HOME_ARG")
-[ "$FORCE" = 1 ] && OOPTS+=(--force); [ "$DRY" = 1 ] && OOPTS+=(--dry-run); [ "$YES" = 1 ] && OOPTS+=(--yes)
+[ "$DRY" = 1 ] && OOPTS+=(--dry-run); [ "$YES" = 1 ] && OOPTS+=(--yes)
 
 jrun()    { local cmd="$1"; shift; "$JAVA_PATCH" "$cmd" "$@" "${JOPTS[@]}" --run-dir "$RUN_DIR/java"; }
 wrun()    { local cmd="$1"; shift; "$WLS_PATCH" "$cmd" "$@" "${WOPTS[@]}" --run-dir "$RUN_DIR/wls"; }
@@ -291,7 +301,9 @@ for entry in "${APPLY[@]}"; do
   case "$owner" in
     java) jrun preflight "$arg" --will-stop || die "java-patch preflight failed - nothing changed"; log "jdk: $arg preflight OK";;
     wls)  wrun preflight "$arg" || die "wls-patch preflight failed - nothing changed"; log "wlspsu: $arg preflight OK";;
-    dc)   drun preflight "$arg" --will-stop || die "dbclient-upgrade preflight failed - nothing changed"; log "dbclient: $arg preflight OK";;
+    # no --will-stop here: that is java-patch's option. dbclient-upgrade's preflight only REPORTS what runs from the
+    # home (its apply is what refuses a running home), and it stops at an option it does not know
+    dc)   drun preflight "$arg" || die "dbclient-upgrade preflight failed - nothing changed"; log "dbclient: $arg preflight OK";;
     ohs)  orun preflight "$arg" || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
   esac
 done
