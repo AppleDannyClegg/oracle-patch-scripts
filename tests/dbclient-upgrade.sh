@@ -11,6 +11,8 @@
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# SCRIPT is the child the fixture's dbc() runs, so shellcheck cannot see the use from here
+# shellcheck disable=SC2034
 SCRIPT=patching/dbclient-upgrade/dbclient-upgrade.sh
 T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "${T:?}"' EXIT
 pass=0; fail=0
