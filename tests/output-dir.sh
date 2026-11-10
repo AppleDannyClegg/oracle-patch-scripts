@@ -30,7 +30,14 @@ left="$(git grep -nE '\$HOME/[a-z-]+' -- 'patching/*.sh' 'operations/*.sh' 'repo
 
 # every script either uses the resolver or goes through the lib's RUN_BASE
 while IFS= read -r f; do
-  case "$f" in *file-patterns*) continue;; esac
+  case "$f" in
+    *file-patterns*) continue;;
+    # ohs-quarter-stage.sh writes ONLY under the <patch-root> argument it is given - the folder
+    # ohs-quarter.sh --patch-root then reads - and creates no run dir, log or report of its own. Routing its
+    # output through OUTPUT_DIR would put the staged patches where the runbook does not look, so it is exempt
+    # by design, with the reason, rather than wired in (T217, #12927).
+    patching/ohs-quarter/ohs-quarter-stage.sh) continue;;
+  esac
   if grep -qE 'output_path|OUTPUT_CONFIGURED' "$f"; then ok
   elif grep -qE '\. .*oracle-lib\.sh' "$f" && grep -qE 'init_run_dir|reuse_or_init|report_init' "$f"; then ok
   else bad "$f: not wired to the output location"; fi
