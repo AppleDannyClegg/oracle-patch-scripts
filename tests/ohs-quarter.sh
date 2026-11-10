@@ -84,7 +84,9 @@ aapply_line() { awk -v s="$1" '$2=="apply" { n=split($3,a,"/"); if (a[n]==s) { p
 mkroot "$T/root" 1 1 1 1 1 1 1 1
 runq "$T/root" && ok || bad "happy path failed: $(tail -3 "$T/out")"
 grep -q 'java preflight .*--will-stop' "$T/calls.log" && ok || bad "java preflight did not get --will-stop"
-grep -q 'dbclient preflight .*--will-stop' "$T/calls.log" && ok || bad "dbclient preflight did not get --will-stop"
+# --will-stop is java-patch's option; dbclient-upgrade.sh has none and stops at "unknown option" (this line used to
+# assert the opposite, against a stub that accepts anything)
+grep -q 'dbclient preflight' "$T/calls.log" && ! grep -q 'dbclient preflight .*--will-stop' "$T/calls.log" && ok || bad "dbclient preflight missing, or handed --will-stop, which the real script rejects"
 grep -q '^java apply .*--will-stop' "$T/calls.log" && bad "apply was given --will-stop (it must not be)" || ok
 stop="$(line 'ohs stop')"; [ -n "$stop" ] && ok || bad "no ohs stop"
 # every preflight before the stop; every apply after it
@@ -255,6 +257,25 @@ grep -qE '^(java|wls|dbclient|ohs) (stop|apply|start|backup)' "$T/calls.log" && 
 bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run >"$T/out" 2>&1 && ok || bad "dry-run failed: $(tail -3 "$T/out")"
 miss="$(grep -E '^(java|wls|dbclient|ohs) (stop|apply|start|backup|rollback|restore)' "$T/calls.log" | grep -v -- '--dry-run')"
 [ -z "$miss" ] && ok || bad "a changing call ran without --dry-run: $miss"
+
+# ---- the options the composer hands each child are options that child really has -----------------------------
+# The stubs accept anything, so a flag the real child rejects ("unknown option") sails through every test above:
+# --remove-12c and --force both reached dbclient-upgrade.sh, which has neither. Run with every option set, then
+# look each '--flag' a stub was called with up in the REAL script's own option parser.
+: >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk" "$T/stop.ok" "$T/start.ok" "$T/start.failed"
+bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run --force --no-cacerts --java-home /j --oracle-home /o \
+  --backup-dir "$T/bkd" --remove-12c 111,222,333 --keep-patches 444 >"$T/out" 2>&1 && ok || bad "run with every option set failed: $(tail -3 "$T/out")"
+grep -q '^dbclient .*--remove-patches 111,222,333' "$T/calls.log" && ok || bad "--remove-12c did not reach the installer as --remove-patches 111,222,333: $(grep '^dbclient' "$T/calls.log" | head -2)"
+grep -q '^dbclient .*--keep-patches 444' "$T/calls.log" && ok || bad "--keep-patches did not reach the installer"
+REAL_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+for pair in "java:java-patch/java-patch.sh" "wls:wls-patch/wls-patch.sh" "dbclient:dbclient-upgrade/dbclient-upgrade.sh" "ohs:ohs-patch/ohs-patch.sh"; do
+  who="${pair%%:*}"; real="$REAL_DIR/${pair#*:}"
+  flags="$(grep "^$who " "$T/calls.log" | tr ' ' '\n' | grep '^--[a-z]' | sort -u)"
+  [ -n "$flags" ] && ok || bad "no $who call recorded - the contract check below would pass on nothing"
+  unknown=""
+  for f in $flags; do grep -qE -- "(^|[ |(])$f([|)])" "$real" || unknown="$unknown $f"; done
+  [ -z "$unknown" ] && ok || bad "ohs-quarter passes $who options its script (${pair#*:}) has no arm for:$unknown"
+done
 
 echo "ohs-quarter gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
