@@ -744,6 +744,49 @@ finally {
     $p7 = @(Get-PatchPlan (Read-Manifest $ohsCur) | Where-Object { $_.Kind -eq 'ohs' })
     Check ($p7.Count -eq 0) "an OHS home on the newest bundle plans nothing, got $($p7.Count)"
 
+    # ---- the manifest's Database Client level decides the DB19C question; titles are only the old-manifest fallback ----
+    # lines in the shape patch-manifest.sh prints them (home|..|ohs|<release>|<opatch>|<rsf VER>, ohs|<home>|<release>|<rsf VER>),
+    # with BARE patch lines: 'opatch lspatches' on a real home can give a number and no title, so no title rule can fire
+    $cl = Join-Path $tmp 'ohsclient.txt'
+    @('host|wl8', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.23|no', 'ohs|/u01/fmw|12.2.1.4.0|12.1.0.2.0',
+      'home|/u01/ohs12|ohs|12.2.1.4.0|13.9.4.2.23|12.1.0.2.0', 'patch|/u01/ohs12|36187026|',
+      'home|/u01/ohs19|ohs|12.2.1.4.0|13.9.4.2.23|19.14.0.0.0', 'patch|/u01/ohs19|34761383|',
+      'home|/u01/ohs19plain|ohs|12.2.1.4.0|13.9.4.2.23|19.14.0.0.0', 'patch|/u01/ohs19plain|36187026|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115',
+      'home|/u01/ohsnone|ohs|12.2.1.4.0|13.9.4.2.23|', 'patch|/u01/ohsnone|36187026|',
+      'home|/u01/ohsbad|ohs|12.2.1.4.0|13.9.4.2.23|unknown',
+      'home|/u01/client|db|19.27.0.0.0|12.2.0.1.44') | Set-Content -LiteralPath $cl
+    $m8 = Read-Manifest $cl
+    $by = @{}; foreach ($h in $m8.Homes) { $by[$h.Home] = $h }
+    Check ($by['/u01/ohs12'].Client -eq '12.1.0.2.0' -and $by['/u01/ohs19'].Client -eq '19.14.0.0.0') "a standalone OHS home's Database Client level is read: [$($by['/u01/ohs12'].Client)] [$($by['/u01/ohs19'].Client)]"
+    Check ($by['/u01/ohsnone'].Client -eq '' -and $by['/u01/client'].Client -eq '') "an empty or absent client level reads as '' (trailing field, old manifests and other kinds)"
+    Check (@($m8.Ohs)[0].Client -eq '12.1.0.2.0') "a collocated ohs| line's Database Client level is read: [$(@($m8.Ohs)[0].Client)]"
+    $all8 = @(Get-PatchPlan $m8 3>&1)
+    $w8 = @($all8 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $p8 = @($all8 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
+    $dc8 = @($p8 | Where-Object { $_.Kind -eq 'dbclient' })
+    $ohs8 = @($p8 | Where-Object { $_.Kind -eq 'ohs' })
+    Check (@($dc8 | Where-Object { $_.For -eq '/u01/ohs12' -and $_.Patch -eq '34761383' }).Count -eq 1) "a 12c-client OHS home is planned the Database Client 19c installer 34761383: $(@($dc8 | ForEach-Object { "$($_.For)=$($_.Patch)" }) -join ',')"
+    Check (@($dc8 | Where-Object { $_.For -eq '/u01/fmw' -and $_.Patch -eq '34761383' }).Count -eq 1) "a collocated 12c-client OHS home is planned the installer too"
+    Check ($dc8.Count -eq 2) "the installer is planned for the 12c-client homes only (not 19c, not unknown), got $($dc8.Count)"
+    Check (@($dc8 | ForEach-Object { Get-PatchFolder -Item $_ } | Sort-Object -Unique) -join ',' -eq 'dbclient') "the installer's folder is dbclient/"
+    Check (@($dc8 | Where-Object { $_.Installed -eq '12.1.0.2.0' }).Count -eq 2) "the installer item shows the client level it found"
+    Check (@($w8 | Where-Object { "$_" -like '*/u01/ohs12*12.1.0.2.0*34761383*BEFORE*' }).Count -eq 1) "the 12c-client home is told the installer goes on before the bundle: $(@($w8) -join ' / ')"
+    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs12' -and $_.Patch -eq '40005842' }).Count -eq 1) "the 12c-client home still gets its OHS bundle in the same download"
+    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs19' -and $_.Patch -eq '40005842' }).Count -eq 1) "a 19c-client home with bare patch lines is planned the DB19C bundle"
+    Check (@($w8 | Where-Object { "$_" -like '*/u01/ohs19 *' -or "$_" -like '*/u01/ohs19:*' }).Count -eq 0) "a 19c-client home gets no 'confirm the client' warning - the manifest already answered it: $(@($w8) -join ' / ')"
+    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs19plain' }).Count -eq 1 -and @($w8 | Where-Object { "$_" -like '*/u01/ohs19plain*' }).Count -eq 0) "the client level outranks a plain-line title: a 19c client is planned the DB19C bundle, no warning"
+    Check (@($w8 | Where-Object { "$_" -like '*/u01/ohsnone*no OHS bundle installed*KB585169*' }).Count -eq 1) "no client level in the manifest: the title fallback still warns to confirm the client"
+    Check (@($w8 | Where-Object { "$_" -like "*/u01/ohsbad*'unknown' is not a version*" }).Count -eq 1) "a client level that is not a version is said, not read as 19 or as 12"
+    Check (@($w8 | Where-Object { "$_" -like '*/u01/ohsbad*no OHS bundle installed*KB585169*' }).Count -eq 1) "...and that home falls back to the title rule"
+    # -PatchKind dbclient is a real kind, and an upload hint names the step that uses the folder
+    Check ((Get-PatchItem -Patch '34761383' -Kind 'dbclient').Kind -eq 'dbclient') "-PatchKind dbclient is accepted"
+    $hd = Join-Path $tmp 'hints-dbclient'; New-Item -ItemType Directory -Path (Join-Path $hd 'dbclient'), (Join-Path $hd 'ohs') | Out-Null
+    Set-Content -LiteralPath (Join-Path $hd 'dbclient/p34761383_122140_Linux-x86-64.zip') 'x'; Set-Content -LiteralPath (Join-Path $hd 'ohs/p40005842_122140_Linux-x86-64.zip') 'x'
+    $hints8 = @(Get-UploadHints 'wl8' $hd '/u01/patches')
+    $iDc = [array]::FindIndex([string[]] $hints8, [Predicate[string]] { param($x) $x -like '*:/u01/patches/dbclient/*dbclient-upgrade.sh*' })
+    $iOhs = [array]::FindIndex([string[]] $hints8, [Predicate[string]] { param($x) $x -like '*:/u01/patches/ohs/*ohs-patch.sh*' })
+    Check ($iDc -ge 0 -and $iOhs -gt $iDc) "the upload hints name dbclient/ and its script, before the ohs/ line: $($hints8 -join ' / ')"
+
     # ---- Read-Manifest refuses a garbled/unknown line, a short line, and an unknown platform (Weyland [P2]) ---
     $bad = Join-Path $tmp 'bad.txt'
     @('host|wl1', 'wsl|/u01/wls|12.2.1.4.0|13.9.4.2.0|yes', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
