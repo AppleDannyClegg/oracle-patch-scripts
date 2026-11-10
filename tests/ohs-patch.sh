@@ -29,9 +29,12 @@ bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 # skip <reason> <assertions-not-run>: a case that CANNOT run here (a fixture tool this image does not have) is not a
 # failure and not a pass. It is counted and named, with the number of assertions behind it, so a green summary says
 # how much of the gate actually ran and 'skipped 2' is not read as 'two assertions' (T213, T263).
-# The count is enforced, not assumed (T303): with one argument the arithmetic errors, set -uo pipefail has no -e, so the
-# gate would carry on and the summary would under-count ("1 skipped (0 assertions not run)") - the exact shape T263
-# exists to stop. A missing or non-numeric count stops the gate instead of quietly reporting less than it ran.
+# The count is enforced, not assumed (T303). Measured, because the first account of this was wrong (Puck #13646):
+#   skip "reason"        -> "$2: unbound variable" under set -u, rc 1, no summary line. Loud already, but it names a
+#                          line number, not the case that forgot its count.
+#   skip "reason" 2x     -> error "value too great for base", and the function CARRIES ON with skipped_asserts
+#                          unchanged, so the summary says "1 skipped (0 assertions not run)" - the silent under-count.
+# This guard names the case and stops the gate before either shape can be read as a tally.
 skip() {
   case "${2:-}" in
     '' | *[!0-9]*) echo "FAIL skip(): '$1' needs an assertion count as its second argument"; exit 1 ;;
