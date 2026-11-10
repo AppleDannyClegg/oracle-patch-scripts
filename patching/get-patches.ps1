@@ -836,8 +836,10 @@ function Get-MosFiles([string] $Patch) {
 # production (not internal/debug), archive, then for a JDK .tar.gz before .zip before MOS's order.
 # Returns File (or $null), Candidates (every file that passed, best first), Reason (why File is $null) and Warning
 # (a note for the caller to print). It never throws or prints: the plan skips on $null, the download refuses.
-# Only Kind 'jdk' is strict. java-patch.sh takes only a production .tar.gz (or the zip holding one), and the JDK is
-# the one product that lists internal builds, .rpm packages and both archive kinds; every other kind keeps the
+# Two rules hold for every kind: an internal/debug artifact is refused (it is not what a patch tool installs), and
+# the single-file fallback under another release label says so instead of taking the file quietly (T229). Beyond
+# that only Kind 'jdk' is strict: java-patch.sh takes only a production .tar.gz (or the zip holding one), and the JDK
+# is the one product that lists internal builds, .rpm packages and both archive kinds; every other kind keeps the
 # courtesy fallbacks it always had, because nobody has shown a record where they pick wrongly.
 function Select-MosFile($Files, [string] $Release, [string] $Kind) {
     $jdk = $Kind -eq 'jdk'
@@ -852,8 +854,12 @@ function Select-MosFile($Files, [string] $Release, [string] $Kind) {
     if ($Release) {
         $tag = '_' + $Release.Replace('.', '')
         $matching = @($forUs | Where-Object { $_.Release.StartsWith($Release) -or $_.Name.Contains($tag) })
-        # one file under another release label is still the patch's file (a -Patch number, a re-labelled record)
-        if ($matching.Count -eq 0 -and $forUs.Count -eq 1) { $matching = $forUs }
+        # one file under another release label is still the patch's file (a -Patch number, a re-labelled record):
+        # taken, but never silently - the file's label is not the release asked for (T229)
+        if ($matching.Count -eq 0 -and $forUs.Count -eq 1) {
+            $matching = $forUs
+            $r.Warning = "the record lists one file and it is labelled release '$($forUs[0].Release)', not '$Release' - taking it: $($forUs[0].Name)"
+        }
         if ($matching.Count -eq 0) {
             $r.Reason = "several files and none is for release '$Release':`n" + (($forUs | ForEach-Object { "    $($_.Name)  release $($_.Release)  ($($_.Platform))" }) -join "`n")
             return $r
@@ -865,10 +871,11 @@ function Select-MosFile($Files, [string] $Release, [string] $Kind) {
     # Oracle lists a production artifact and sometimes an internal/debug one for the same release. A
     # fastdebug/'internal-bin' tarball is not what a patch tool installs (java-patch refuses it)
     $production = @($matching | Where-Object { $_.Name -notmatch $script:DevBuild })
+    # every kind refuses here, not just the JDK (T229, Edi #12944): an internal/debug artifact is not what a patch
+    # tool installs, so taking it downloads the wrong bytes and reads as a success. Refuse and let -Patch carry it.
     if ($production.Count -eq 0) {
         if ($jdk) { $r.Reason = "only an internal/debug build is listed ($(& $names $matching)) - not a production JDK"; return $r }
-        $r.Warning = "only an internal/debug artifact is listed for release '$Release': $($matching[0].Name)"
-        $production = $matching
+        $r.Reason = "only an internal/debug artifact is listed for release '$Release': $($matching[0].Name) - not a production file, so pass -Patch with the number from MOS Doc 2806740.2"; return $r
     }
     # the patch tools take an archive (.zip, .tar.gz); an .rpm/.exe/.deb is for a package manager
     $archives = @($production | Where-Object { $_.Name -match '(?i)\.(zip|t(ar\.)?gz)$' })
