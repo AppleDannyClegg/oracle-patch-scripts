@@ -1,5 +1,5 @@
 #!/bin/bash
-# run-all.sh [-j N] [--timeout SECS] [gate ...]
+# run-all.sh [-j N] [--timeout SECS] [--show-limits] [gate ...]
 # Run the offline gates, at most N at a time, each with a wall-clock limit, and print each one's last line,
 # its time and its exit code.
 #
@@ -7,18 +7,25 @@
 #                box is what took it to load 60 on 10 cores, and the runs came back 143 with no tally.
 #   --timeout N  kill a gate that runs longer than N seconds (default $GATE_TIMEOUT, else 300), so a gate
 #                that hangs reports instead of holding the harness open with nothing printed. It is sent TERM
-#                at N seconds and KILL 5s later, so the wall limit on an unkillable gate is N+5.
+#                at N seconds and KILL 5s later, so the wall limit on an unkillable gate is N+5. A per-gate
+#                override wins: GATE_TIMEOUT_<gate> (dashes -> underscores) or the built-in below.
+#   --show-limits  print each gate and its wall-clock limit, then exit 0 - the budget, inspectable.
 #   --log PATH   also write the transcript (header, every gate as it finishes, the summary) to PATH. Without it
 #                the transcript lives in the run's temp dir: kept when the run fails, deleted when it passes.
 #
+# ONE RUN AT A TIME: a lock is taken at the start (${TMPDIR:-/tmp}/oracle-patch-scripts-run-all.lock). A second
+# run-all refuses to start and names the holder, so two suites cannot starve each other into a timeout and leave
+# an ambiguous rc=143. If the holder is dead, rm -rf that lock.
+#
 # No gates named = every gate below. The docker gates (oracle-free-container, okv-diag) are not here: run those alone.
-# Every gate here works in its own mktemp dir, so they can run side by side. Exit 1 if any gate printed FAIL,
-# reported "N failed" with N > 0, exited non-zero, or timed out.
+# Every gate here works in its own mktemp dir, so they can run side by side (the lock is about a whole suite, not
+# one gate). Exit 1 if any gate printed FAIL, reported "N failed" with N > 0, exited non-zero, or timed out.
 cd "$(dirname "$0")/.." || exit 1
 
 JOBS="${JOBS:-4}"
 GATE_TIMEOUT="${GATE_TIMEOUT:-300}"
 LOG="${LOG:-}"
+SHOW_LIMITS=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -j | --timeout)
@@ -27,6 +34,7 @@ while [ $# -gt 0 ]; do
             shift 2 ;;
         -j*)         JOBS="${1#-j}"; shift ;;
         --timeout=*) GATE_TIMEOUT="${1#--timeout=}"; shift ;;
+        --show-limits) SHOW_LIMITS=1; shift ;;
         --log | -l)  [ -n "${2:-}" ] || { echo "run-all.sh: $1 needs a path" >&2; exit 2; }; LOG="$2"; shift 2 ;;
         --log=*)     LOG="${1#--log=}"; shift ;;
         --)          shift; break ;;
@@ -36,6 +44,23 @@ while [ $# -gt 0 ]; do
 done
 case "$JOBS" in '' | *[!0-9]* | 0) echo "run-all.sh: -j needs a positive number, not '$JOBS'" >&2; exit 2 ;; esac
 case "$GATE_TIMEOUT" in '' | *[!0-9]* | 0) echo "run-all.sh: --timeout needs a positive number of seconds, not '$GATE_TIMEOUT'" >&2; exit 2 ;; esac
+
+# A gate's wall-clock limit: GATE_TIMEOUT_<gate> wins (dashes -> underscores), else a built-in for a gate that
+# needs real headroom, else the run's --timeout. false-success sweeps the whole tree and takes ~258-289s on an
+# idle box, so 300 left under 15% headroom and any overlap turned it into a timeout (T205, Gort #12833).
+gate_timeout() { # <gate name>
+    local name="$1" var override
+    var="GATE_TIMEOUT_${name//-/_}"
+    eval "override=\${$var:-}"
+    case "$override" in
+        '' | *[!0-9]*) ;;
+        *) printf '%s' "$override"; return ;;
+    esac
+    case "$name" in
+        false-success-gate) printf '%s' 600 ;;
+        *) printf '%s' "$GATE_TIMEOUT" ;;
+    esac
+}
 
 GATES=(output-dir wls-quarter ohs-quarter ohs-quarter-stage java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
     secret-argv-gate java-patch-cacerts java-patch-inplace java-patch db-patch-opatch-min db-patch-ru-title
@@ -52,6 +77,20 @@ if [ $# -gt 0 ]; then GATES=(); for g in "$@"; do add_gate "$g"; done; fi
 # the two extra jobs are only added where they can run: a copy of this tree (tests/run-all-harness.sh) has neither
 if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-patches.ps1 ]; then add_gate get-patches; fi
 if command -v shellcheck >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then add_gate shellcheck; fi
+
+if [ "$SHOW_LIMITS" = 1 ]; then
+    for g in "${GATES[@]}"; do printf '%-28s %ss\n' "$g" "$(gate_timeout "$g")"; done
+    exit 0
+fi
+
+# One run at a time: two suites on one box starve each other into a timeout and the rc=143 is ambiguous.
+LOCK="${RUN_ALL_LOCK:-${TMPDIR:-/tmp}/oracle-patch-scripts-run-all.lock}"
+if ! mkdir "$LOCK" 2>/dev/null; then
+    holder="$(cat "$LOCK/holder" 2>/dev/null || true)"
+    echo "run-all.sh: another run-all is live (${holder:-holder unknown}) - refusing to start, so two suites cannot time each other out. If that run is dead: rm -rf $LOCK" >&2
+    exit 2
+fi
+printf 'pid=%s started=%s dir=%s\n' "$$" "$(date '+%Y-%m-%d %H:%M:%S')" "$PWD" >"$LOCK/holder"
 
 out="$(mktemp -d)"
 transcript="$out/run-all.log"
@@ -122,9 +161,9 @@ report() {
 # symptom one layer up. Exit from the handler, and keep the logs since the run did not finish.
 on_stop() { stop_all; bad=1; report; exit 1; }
 trap 'on_stop' TERM INT
-trap 'stop_all; if [ "${bad:-0}" = 1 ]; then echo "logs kept: $out"; else rm -rf "$out"; fi' EXIT
+trap 'stop_all; rm -rf "$LOCK"; if [ "${bad:-0}" = 1 ]; then echo "logs kept: $out"; else rm -rf "$out"; fi' EXIT
 start=$SECONDS
-say "run-all: ${#GATES[@]} gates, at most $JOBS at a time, ${GATE_TIMEOUT}s limit each (TERM, then KILL 5s later)"
+say "run-all: ${#GATES[@]} gates, at most $JOBS at a time, ${GATE_TIMEOUT}s default limit per gate, per-gate overrides applied (--show-limits lists them; TERM, then KILL 5s later)"
 say "started $(date '+%Y-%m-%d %H:%M:%S')  host $(uname -n)  head $(git rev-parse --short HEAD 2>/dev/null || echo '-')  dir $PWD"
 say "gates: ${GATES[*]}"
 
@@ -132,6 +171,7 @@ say "gates: ${GATES[*]}"
 # a gate that prints nothing for that long is hung, or starved by more work than the box can carry
 run_limited() {                     # run_limited <key> <name> <command...>
     local key="$1" name="$2"; shift 2
+    local limit; limit="$(gate_timeout "$name")"
     # own process group for this gate (bash 3.2 job control; there is no setsid on macOS), so the timeout can
     # kill the GROUP: killing the gate's shell alone leaves whatever the gate started running, which is how
     # last night ended with 34 orphaned gates holding a 10-core box at load 40+ after every harness was dead
@@ -142,7 +182,7 @@ run_limited() {                     # run_limited <key> <name> <command...>
     set +m
     # the watchdog polls rather than sleeping the full limit, so it exits within a second of the gate ending
     # instead of lingering; its output goes to /dev/null so it cannot hold the caller's pipe open
-    ( while [ "$i" -lt "$GATE_TIMEOUT" ]; do
+    ( while [ "$i" -lt "$limit" ]; do
           kill -0 "$pid" 2>/dev/null || exit 0
           sleep 1; i=$((i + 1))
       done
@@ -167,9 +207,9 @@ run_limited() {                     # run_limited <key> <name> <command...>
     # say which of the two kills ended it: the tally's rc=137 explains itself then, instead of reading as a crash
     if [ -f "$out/$key.timedout" ]; then
         if [ "$rc" = 137 ]; then
-            echo "gate timed out: no output for ${GATE_TIMEOUT}s, then it ignored TERM for 5s and was KILLed - a gate that prints nothing for that long is hung, or the box is overloaded" >>"$out/$key.log"
+            echo "gate timed out: no output for ${limit}s, then it ignored TERM for 5s and was KILLed - a gate that prints nothing for that long is hung, or the box is overloaded" >>"$out/$key.log"
         else
-            echo "gate timed out: no output for ${GATE_TIMEOUT}s, killed with TERM - a gate that prints nothing for that long is hung, or the box is overloaded" >>"$out/$key.log"
+            echo "gate timed out: no output for ${limit}s, killed with TERM - a gate that prints nothing for that long is hung, or the box is overloaded" >>"$out/$key.log"
         fi
     fi
     return $rc
