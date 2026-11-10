@@ -28,3 +28,9 @@ v\$datafile where file#=5 and name|0
 A
 export RMAN_CMD="$T/env/bin/rman" RESTORE_SCRATCH_DIR="$T/env/scratch" RMAN_TIMEOUT=30 RMAN_OUT="$T/env/out"
 ARGS="--sid FREE"
+# run is the evidence pack - inspect, recovery window, ZDLRA, validate - and no other gate reaches it (T245): the
+# dedicated gates cover the changing verbs, so a validate that fails and is then reported as a clean pack would be
+# caught by nothing. Every rman call is failed here; the pack must end non-zero rather than print its report.
+CASES_run="rman_fails"
+FAIL_run__rman_fails='^rman '
+OK_run__rman_fails='^(verified=1|validated=1|recovery_window=ok|all_clear=1|evidence=ok)$'
