@@ -37,7 +37,7 @@ done
 case "$JOBS" in '' | *[!0-9]* | 0) echo "run-all.sh: -j needs a positive number, not '$JOBS'" >&2; exit 2 ;; esac
 case "$GATE_TIMEOUT" in '' | *[!0-9]* | 0) echo "run-all.sh: --timeout needs a positive number of seconds, not '$GATE_TIMEOUT'" >&2; exit 2 ;; esac
 
-GATES=(output-dir wls-quarter ohs-quarter java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
+GATES=(output-dir wls-quarter ohs-quarter ohs-quarter-stage java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
     secret-argv-gate java-patch-cacerts java-patch-inplace java-patch db-patch-opatch-min db-patch-ru-title
     get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
     patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch dbclient-upgrade wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate)
