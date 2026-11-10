@@ -29,7 +29,15 @@ bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 # skip <reason> <assertions-not-run>: a case that CANNOT run here (a fixture tool this image does not have) is not a
 # failure and not a pass. It is counted and named, with the number of assertions behind it, so a green summary says
 # how much of the gate actually ran and 'skipped 2' is not read as 'two assertions' (T213, T263).
-skip() { skipped=$((skipped + 1)); skipped_asserts=$((skipped_asserts + $2)); echo "SKIP $1 ($2 assertions not run)"; }
+# The count is enforced, not assumed (T303): with one argument the arithmetic errors, set -uo pipefail has no -e, so the
+# gate would carry on and the summary would under-count ("1 skipped (0 assertions not run)") - the exact shape T263
+# exists to stop. A missing or non-numeric count stops the gate instead of quietly reporting less than it ran.
+skip() {
+  case "${2:-}" in
+    '' | *[!0-9]*) echo "FAIL skip(): '$1' needs an assertion count as its second argument"; exit 1 ;;
+  esac
+  skipped=$((skipped + 1)); skipped_asserts=$((skipped_asserts + $2)); echo "SKIP $1 ($2 assertions not run)";
+}
 # the zip fixtures need both: zip to build the archive, unzip for the script to read it (oraclelinux:8 has neither)
 have_zip() { command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; }
 
@@ -491,5 +499,8 @@ grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! gre
 build; rc="$(runc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
 
-echo "ohs-patch gate: $pass passed, $fail failed${skipped:+, $skipped skipped ($skipped_asserts assertions not run: a case this host cannot run - not a pass, not a failure)}"
+# the tail is printed only when something WAS skipped: ${skipped:+...} expands for the string "0" too, so a clean run
+# used to say "0 skipped (0 assertions not run: ...)" - a summary claiming a gap it did not have (T316)
+skiptail=""; [ "$skipped" -gt 0 ] && skiptail=", $skipped skipped ($skipped_asserts assertions not run: a case this host cannot run - not a pass, not a failure)"
+echo "ohs-patch gate: $pass passed, $fail failed$skiptail"
 [ "$fail" = 0 ]
