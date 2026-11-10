@@ -222,9 +222,9 @@ run_limited() {                     # run_limited <key> <name> <command...>
     # say which of the two kills ended it: the tally's rc=137 explains itself then, instead of reading as a crash
     if [ -f "$out/$key.timedout" ]; then
         if [ "$rc" = 137 ]; then
-            echo "gate timed out: no output for ${limit}s, then it ignored TERM for 5s and was KILLed - a gate that prints nothing for that long is hung, or the box is overloaded" >>"$out/$key.log"
+            echo "gate timed out: wall-clock limit ${limit}s reached (the gate was still running), then it ignored TERM for 5s and was KILLed - raise this gate's limit (gate_timeout) or split it" >>"$out/$key.log"
         else
-            echo "gate timed out: no output for ${limit}s, killed with TERM - a gate that prints nothing for that long is hung, or the box is overloaded" >>"$out/$key.log"
+            echo "gate timed out: wall-clock limit ${limit}s reached (the gate was still running), killed with TERM - raise this gate's limit (gate_timeout) or split it" >>"$out/$key.log"
         fi
     fi
     return $rc
