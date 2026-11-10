@@ -98,6 +98,8 @@ RUN_BASE="${RUN_BASE:-$(output_path wls-patch)/runs}"
 PATCH_BASE="${PATCH_BASE:-/u01/patches}"   # 'download' with no dir lands in $PATCH_BASE/wls
 BACKUP_DIR="${BACKUP_DIR:-$(output_path wls-patch)/backups}"
 RUN_DIR=""
+# T195: do not trust the host umask for the run dir/log or rollback archives.
+umask 077
 LOG_FILE=""
 STATE_FILE=""
 MOS_BASE="${MOS_BASE:-https://updates.oracle.com}"
@@ -129,12 +131,13 @@ die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }   # option value present and not another option
 
 # run_cmd: execute (or print under --dry-run), tee output to log, return exit code
+redact_pw() { sed -E 's/((password|passwd|pwd|secret|token|credential)[[:space:]]*[=:][[:space:]]*)[^[:space:]]+/\1***REDACTED***/Ig'; }
 run_cmd() {
   log "CMD: $*"
   if [ "$DRY_RUN" = 1 ]; then
     return 0
   fi
-  "$@" </dev/null 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+  "$@" </dev/null 2>&1 | redact_pw | tee -a "${LOG_FILE:-/dev/null}"
   return "${PIPESTATUS[0]}"
 }
 
@@ -221,7 +224,9 @@ init_run_dir() {
     RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$name"
   fi
   mkdir -p "$RUN_DIR" || die "Cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  chmod 700 "$RUN_DIR" 2>/dev/null || true
   LOG_FILE="$RUN_DIR/wls-patch.log"
+  ( umask 077; : >>"$LOG_FILE" ); chmod 600 "$LOG_FILE" 2>/dev/null || true
   STATE_FILE="$RUN_DIR/state"
   ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
   log "wls-patch $VERSION  run dir: $RUN_DIR  dry-run=$DRY_RUN"
@@ -798,6 +803,7 @@ cmd_backup() {
   dest="$BACKUP_DIR/$stamp"
   if [ "$DRY_RUN" = 1 ]; then log "dry-run: would back up $ORACLE_HOME and domains to $dest"; return 0; fi
   mkdir -p "$dest" || die "Cannot create $dest"
+  chmod 700 "$dest" 2>/dev/null || true
   log "Backing up ORACLE_HOME to $dest/oracle_home.tar.gz (this takes a while)"
   run_cmd tar -czf "$dest/oracle_home.tar.gz" -C "$(dirname "$ORACLE_HOME")" \
     --exclude='*/logs/*' --exclude='*.log' "$(basename "$ORACLE_HOME")" \
@@ -812,6 +818,7 @@ cmd_backup() {
       "$(basename "$d")" || die "Domain backup failed for $d"
     printf '%s\n' "$d" >>"$dest/domains.txt"
   done <<<"$DOMAINS"
+  chmod 600 "$dest"/*.tar.gz 2>/dev/null || true
   printf '%s\n' "$ORACLE_HOME" >"$dest/oracle_home.txt"
   ln -sfn "$dest" "$BACKUP_DIR/latest"
   state_set backup_dir "$dest"
