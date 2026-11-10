@@ -20,6 +20,9 @@ What it looks up, for everything in the manifest:
   - newest "OHS (NATIVE) [DB19C] BUNDLE PATCH <release>.<yymmdd>" for Linux x86-64, into ohs/ (not the Apache
     plug-in bundle). 'ohs-patch.sh run <dir>' applies it: preflight, stop, backup, opatch apply, start, verify,
     with an automatic rollback if anything after the backup fails
+  - the Database Client 19c installer 34761383 into dbclient/, when the manifest says the home's Database Client
+    (oracle.rdbms.rsf) is still below 19 and the current OHS bundle is a DB19C one: that bundle may only go on
+    a home whose client was upgraded first (KB585169). 'dbclient-upgrade.sh' runs it; it is an installer, not opatch
   Database or client home (e.g. a 19c client)
   - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it when the home's OPatch is
     older than 12.2.0.1.40 or than the RU's README asks for
@@ -34,7 +37,7 @@ What it looks up, for everything in the manifest:
   - the newest '<FAMILY> BUNDLE PATCH' for every fmw| line the manifest reports (ADF, OPSS, WSM,
     SOA, ...), looked up in the same WebLogic release's Recommended list
 Anything else Oracle lists for these homes (MOS Doc 2806740.2): add it with -Patch. Its folder and its apply
-step come from -PatchKind (wls|spb|db|jdk|ohs); a JDK record is recognised on its own, anything else is assumed
+step come from -PatchKind (wls|spb|db|jdk|ohs|dbclient); a JDK record is recognised on its own, anything else is assumed
 WebLogic and says so, because the file names alone cannot tell a database Release Update from a WebLogic PSU.
 
 Token: log in to My Oracle Support in a browser, open https://updates.oracle.com/Orion/GenToken/get_token,
@@ -51,7 +54,7 @@ param(
     [string] $Dest,
     [string] $TokenFile = (Join-Path $HOME '.mos-token'),
     [string[]] $Patch = @(),
-    # where a -Patch number's file goes and which apply step it belongs to: wls|spb|db|jdk|ohs. Inferred for a
+    # where a -Patch number's file goes and which apply step it belongs to: wls|spb|db|jdk|ohs|dbclient. Inferred for a
     # JDK record (the only unambiguous case), otherwise 'wls' with a warning - a DB RU and a WLS PSU are both
     # p<number>_<release>_Linux-x86-64.zip, so guessing between them would be a string match dressed as a rule
     [string] $PatchKind = '',
@@ -305,7 +308,9 @@ function Read-Manifest([string] $Path) {
             }
             'home' {
                 if ($f.Count -lt 5 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'home|' needs home|kind|version|opatch (home and kind are keys)" }
-                $m.Homes += [pscustomobject]@{ Home = $f[1]; Kind = $f[2]; Version = $f[3]; OPatch = $f[4]; Patches = @() }
+                # Client: the trailing <DB client level> patch-manifest.sh writes for kind ohs (oracle.rdbms.rsf VER, raw,
+                # may be empty); '' on every other kind and on a manifest written before the field existed
+                $m.Homes += [pscustomobject]@{ Home = $f[1]; Kind = $f[2]; Version = $f[3]; OPatch = $f[4]; Client = $(if ($f.Count -gt 5) { $f[5].Trim() } else { '' }); Patches = @() }
             }
             'patch' {
                 if ($f.Count -lt 4 -or -not $f[1] -or -not $f[2]) { throw "$Path line '$line': 'patch|' needs home|number|description (home and number are keys)" }
@@ -314,7 +319,7 @@ function Read-Manifest([string] $Path) {
             }
             'ohs' {
                 if ($f.Count -lt 2 -or -not $f[1]) { throw "$Path line '$line': 'ohs|' needs a WebLogic home" }
-                $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }) }
+                $m.Ohs += [pscustomobject]@{ Home = $f[1]; Release = $(if ($f.Count -gt 2) { $f[2] } else { '' }); Client = $(if ($f.Count -gt 3) { $f[3].Trim() } else { '' }) }
             }
             'jdk' {
                 if ($f.Count -lt 4 -or -not $f[1] -or -not $f[2] -or -not $f[3]) { throw "$Path line '$line': 'jdk|' needs home|version|major" }
@@ -400,7 +405,7 @@ function New-PlanItem([string] $Kind, [string] $What, [string] $Installed, $Row,
 }
 
 # The kinds a -Patch item can be put in, and the folder each one downloads into.
-$script:PatchKinds = @('wls', 'spb', 'db', 'jdk', 'ohs')
+$script:PatchKinds = @('wls', 'spb', 'db', 'jdk', 'ohs', 'dbclient')
 
 # 'jdk' when the record says so plainly, otherwise '' - see the -PatchKind comment in param().
 function Get-PatchKindFromFiles($Files) {
@@ -651,10 +656,10 @@ function Get-FmwPlan($Manifest) {
 # standalone (home|..|ohs) or collocated in a WebLogic home (ohs|<wls home>). Linux x86-64 only: OHS is native.
 # Exact rows only - the 'APACHE PLUGIN BUNDLE PATCH' (the WebLogic plug-in for Apache) is a look-alike.
 function Get-OhsPlan($Manifest) {
-    $homes = @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; Patches = $_.Patches } }) +
+    $homes = @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; Client = $_.Client; Patches = $_.Patches } }) +
         @($Manifest.Ohs | ForEach-Object {
                 $o = $_; $w = $Manifest.Wls | Where-Object { $_.Home -eq $o.Home } | Select-Object -First 1
-                [pscustomobject]@{ Home = $o.Home; Release = $o.Release; Patches = $(if ($w) { $w.Patches } else { @() }) } }))
+                [pscustomobject]@{ Home = $o.Home; Release = $o.Release; Client = $o.Client; Patches = $(if ($w) { $w.Patches } else { @() }) } }))
     foreach ($h in $homes) {
         if (-not $h.Release) { Write-Warning "$($h.Home): the manifest has no OHS release for this home - get its OHS bundle from MOS Doc 2806740.2 by hand"; continue }
         $short = ($h.Release.Split('.')[0..3]) -join '.'
@@ -669,14 +674,33 @@ function Get-OhsPlan($Manifest) {
         # the series matters, not only the date: the DB19C bundle 'must be applied only to an Oracle Fusion Middleware
         # home where the Oracle Database Client 12c has been upgraded to 19c' (40005842 README, Section 2, KB585169).
         # Follow the series the home is on; a home on the plain line is not planned a DB19C bundle
-        $haveDb19 = @($h.Patches | Where-Object { $_.Description -match '(?i)^OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE' }).Count -gt 0
-        $havePlain = @($h.Patches | Where-Object { $_.Description -match '(?i)^OHS \(NATIVE\) BUNDLE PATCH' }).Count -gt 0
-        if ($newest.Abstract -match '(?i)DB19C' -and -not $haveDb19) {
-            if ($havePlain) {
-                Write-Warning "$($h.Home): on the plain OHS bundle line ($have) - the current bundle $($newest.Number) is the DB19C one, which needs the home's Database Client upgraded to 19c first (KB585169). Not planned: do that upgrade, then run again."
-                continue
+        # The home's Database Client level (oracle.rdbms.rsf, from the manifest) decides when it is there: it is the
+        # fact the rule is about. The patch titles are only the fallback for a manifest written before the field
+        # existed - 'opatch lspatches' on a real home can print bare patch numbers, and then no title matches at all.
+        $clientMajor = $null
+        if ($h.Client -match '^\s*(\d+)\.') { $clientMajor = [int] $Matches[1] }
+        elseif ($h.Client) { Write-Warning "$($h.Home): the manifest's Database Client level '$($h.Client)' is not a version - falling back to the installed patch titles" }
+        $isDb19 = $newest.Abstract -match '(?i)DB19C'
+        if ($null -ne $clientMajor) {
+            if ($isDb19 -and $clientMajor -lt 19) {
+                # the installer is the 12.2.1.4 one (34761383 README); for any other release name the gap, do not guess a number
+                if ($short -eq '12.2.1.4') {
+                    Write-Warning "$($h.Home): Database Client $($h.Client) - the current OHS bundle $($newest.Number) is a DB19C one, which may only go on a home whose client was upgraded to 19c first (KB585169). Planned the installer 34761383 into dbclient/: run dbclient-upgrade.sh with it BEFORE the bundle."
+                    New-PlanItem 'dbclient' "Database Client 19c installer ($($h.Home))" $h.Client ([pscustomobject]@{ Number = '34761383'; Abstract = 'DB Client 19c Upgrade for FMW 12.2.1.4.0' }) $h.Release $h.Home
+                } else {
+                    Write-Warning "$($h.Home): Database Client $($h.Client) - the current OHS bundle $($newest.Number) is a DB19C one, which needs the client upgraded to 19c first (KB585169). This script knows the installer for 12.2.1.4 only: find the one for $short on MOS and pass it with -Patch <number> -PatchKind dbclient."
+                }
             }
-            Write-Warning "$($h.Home): no OHS bundle installed - $($newest.Number) is a DB19C bundle; confirm this home's Database Client was upgraded to 19c (KB585169) before applying it."
+        } else {
+            $haveDb19 = @($h.Patches | Where-Object { $_.Description -match '(?i)^OHS \(NATIVE\) DB19C BUNDLE PATCH|DB CLIENT 19C UPGRADE' }).Count -gt 0
+            $havePlain = @($h.Patches | Where-Object { $_.Description -match '(?i)^OHS \(NATIVE\) BUNDLE PATCH' }).Count -gt 0
+            if ($isDb19 -and -not $haveDb19) {
+                if ($havePlain) {
+                    Write-Warning "$($h.Home): on the plain OHS bundle line ($have) - the current bundle $($newest.Number) is the DB19C one, which needs the home's Database Client upgraded to 19c first (KB585169). Not planned: do that upgrade, then run again."
+                    continue
+                }
+                Write-Warning "$($h.Home): no OHS bundle installed - $($newest.Number) is a DB19C bundle; confirm this home's Database Client was upgraded to 19c (KB585169) before applying it."
+            }
         }
         $new = [regex]::Match($newest.Abstract, $pat).Groups[1].Value
         if (-not $have -or $new -gt $have) { New-PlanItem 'ohs' "OHS bundle ($($h.Home))" $have $newest $h.Release $h.Home }
@@ -1007,6 +1031,8 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
     $out = @()
     $l = & $line 'wls' '*.zip' "   then: wls-patch.sh run $b/wls"; if ($l) { $out += $l }
     $l = & $line 'spb' '*.zip' "   then: wls-patch.sh run $b/spb"; if ($l) { $out += $l }
+    # dbclient before ohs: the DB19C OHS bundle may only go on a home whose client is already 19c (KB585169)
+    $l = & $line 'dbclient' '*.zip' "   then: dbclient-upgrade.sh preflight $b/dbclient   (before any OHS DB19C bundle)"; if ($l) { $out += $l }
     $l = & $line 'ohs' '*.zip' "   then: ohs-patch.sh run $b/ohs"; if ($l) { $out += $l }
     $l = & $line 'db' '*.zip' ''; if ($l) { $out += $l }
     $l = & $line 'jdk' '*.tar.gz' ''; if ($l) { $out += $l }
