@@ -302,7 +302,7 @@ build; running; touch "$T/curl.fail"; rc="$(runr --yes)"
 [ "$rc" != 0 ] && ! st | grep -q '^applied=' && ok || bad "ports never answer: rc $rc (want non-zero, not applied)"
 # no curl on the host (a PATH holding only the tools the script needs): the port check is skipped, the apply stands
 build; running; mkdir -p "$T/bin"; rm -f "$T/stub/curl"
-for t in bash sh sed awk grep tr cut sort head tail date mkdir rm mv tar gzip find du df dirname basename cat env sleep nohup mktemp unzip wc ls; do
+for t in chmod bash sh sed awk grep tr cut sort head tail date mkdir rm mv tar gzip find du df dirname basename cat env sleep nohup mktemp unzip wc ls; do
   ln -sf "$(command -v "$t")" "$T/bin/$t"; done
 rc="$(HOME="$T/home" PATH="$T/stub:$T/bin" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" "$T/bin/bash" "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1 </dev/null; echo $?)"
 [ "$rc" = 0 ] && grep -q 'curl not available' "$T/out" && st | grep -q '^applied=40005842$' && ok || bad "no curl: rc $rc (want 0, applied, a warning): $(grep -E 'ERROR|WARN' "$T/out" | head -3)"
