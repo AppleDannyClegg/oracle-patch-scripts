@@ -26,7 +26,8 @@
 # That is what keeps "OHS QUARTER OK" from being printed over an outage that applied two of thirteen sets.
 # These folder names are this runbook's, one per step, and they carry the order. get-patches.ps1 files its
 # downloads by patch kind (wls/ db/ spb/ ohs/ jdk/), which is a different layout: a root holding wls/, db/ or
-# spb/ is refused, and the patches have to be sorted into the folders above first.
+# spb/ is refused, and the patches have to be sorted into the folders above first:
+#   ohs-quarter-stage.sh plan <download-dir> <patch-root>, then run - it files each zip by its patch number.
 #
 # ALL PATCH LOGIC LIVES IN THE CHILDREN. The extra opatch rows go through ohs-patch.sh because it already applies
 # an arbitrary opatch patch to this home; wls-patch.sh carries only the WLS PSU, because it drags in WebLogic
@@ -150,7 +151,7 @@ done
 # one is a download tree that has not been sorted: stop, or this would apply the two names that happen to match
 foreign=""
 for k in wls db spb; do [ -d "$PATCH_ROOT/$k" ] && foreign="$foreign $k/"; done
-[ -z "$foreign" ] || die "$PATCH_ROOT holds$foreign - that is a get-patches.ps1 download tree, filed by patch kind. This runbook reads one folder per step (${SETS[*]}): sort the patches into those folders first. Nothing changed."
+[ -z "$foreign" ] || die "$PATCH_ROOT holds$foreign - that is a get-patches.ps1 download tree, filed by patch kind. This runbook reads one folder per step (${SETS[*]}): sort the patches into those folders first ($SCRIPT_DIR/ohs-quarter-stage.sh plan <that tree> <a new root> does it). Nothing changed."
 
 # ---- what this outage has, in the order it is applied ----------------------------------------------------
 JDK_TAR=""; WLSPSU_DIR=""; INSTALLER_DIR=""; OPATCH_DIRS=()
