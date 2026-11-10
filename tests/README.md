@@ -27,6 +27,7 @@ one line per gate with its time and exit code. The docker gates are left out. fa
 | `okv-diag.sh` | behavioural | okv-diag.sh probes an explicit `SERVER=host:PORT` on PORT (not the 5696 default); a config with no `SERVER=` is a CRIT, never a clean exit 0; `--okv-home` names the path in the no-config message; and TERM stops the run (rc=143). Plus a static guard against the GNU-only sed BRE `\+`, which BSD sed cannot match - the docker harness runs GNU sed and never signals, so neither is visible there |
 | `dry-run-gate.sh` | behavioural | no DDL/DML/flashback/PL-SQL/patch/restart/switch/ggsci verb reaches a tool under `--dry-run` |
 | `false-success-gate.sh` | behavioural | a change command that fails does not exit 0 or record a success state |
+| `false-success-selftest.sh` | static | the gate's `--selftest` assertions actually RUN in a suite run: every change claim in `default_ok` is caught, no sub-state is, the covered_by map is right, and the terminal `passed` line is present with at least 20 assertions - an argument the gate does not understand would otherwise sweep nothing and print `0 passed, 0 failed` rc=0 |
 | `unreadable-gate.sh` | behavioural | a report whose reads failed does not print a clean verdict or exit 0 |
 | `oracle-free-container.sh` | end-to-end | the seven read-only reports (the six DB reports plus `okv-diag`, with an okvclient.ora fixture so its OKV half is exercised) against a real Oracle Free instance (needs docker) |
 
@@ -42,7 +43,8 @@ tests/get-patches.ps1         # pwsh; canned MOS answers, no network
 tests/okv-rotate.sh            # fake OKV_HOME + stubs; no database
 tests/okv-diag.sh              # local OKV fixtures + a real TERM; no database, no docker
 tests/dry-run-gate.sh          # whole tree; [script...] for one
-tests/false-success-gate.sh    # whole tree; [script...] for one; --selftest
+tests/false-success-gate.sh    # whole tree; [script...] for one
+tests/false-success-selftest.sh # the gate's --selftest assertions, as a gate row
 tests/unreadable-gate.sh       # whole gate; [script...] for one
 tests/oracle-free-container.sh # docker
 ```

@@ -8,6 +8,13 @@
 # a conflict, no OHS component; and that an unreadable ps or a failed lspatches is exit 2 (never READY).
 # What it cannot prove: that a real 12.2.1.4 home lays these files out the same way - a real host's preflight is that.
 #
+# SKIP, not FAIL, when the host has no zip/unzip: the two zip-only folder cases (dry-run, plan) build their fixture
+# with `zip` and the script reads it with `unzip`. Measured 10 Nov 2026 on both: macOS with a PATH mask holding
+# every /usr/bin and /bin entry except those two (Edi, T213 check) and oraclelinux:8, which has neither (the
+# container lane). The tally counts ASSERTIONS not run, per case, so ', 2 skipped (7 assertions not run)' is not
+# read as two missed assertions. Making those cases RUN rather than skip means installing zip and unzip in the
+# image (dnf at build time, needs network) - not done, so the container lane still does not exercise the zip path.
+#
 # Usage: tests/ohs-patch.sh
 
 set -uo pipefail
@@ -16,12 +23,13 @@ SCRIPT=patching/ohs-patch/ohs-patch.sh
 T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 # an explicit umask, so the permission assertions below do not depend on who runs the gate. GATE_UMASK=0077 re-runs it tight
 umask "${GATE_UMASK:-0022}"
-pass=0; fail=0; skipped=0
+pass=0; fail=0; skipped=0; skipped_asserts=0
 ok()  { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
-# skip: a case that CANNOT run here (a fixture tool this image does not have) is not a failure and not a pass.
-# It is counted and named, so a green summary says how much of the gate actually ran (T213).
-skip() { skipped=$((skipped + 1)); echo "SKIP $*"; }
+# skip <reason> <assertions-not-run>: a case that CANNOT run here (a fixture tool this image does not have) is not a
+# failure and not a pass. It is counted and named, with the number of assertions behind it, so a green summary says
+# how much of the gate actually ran and 'skipped 2' is not read as 'two assertions' (T213, T263).
+skip() { skipped=$((skipped + 1)); skipped_asserts=$((skipped_asserts + $2)); echo "SKIP $1 ($2 assertions not run)"; }
 # the zip fixtures need both: zip to build the archive, unzip for the script to read it (oraclelinux:8 has neither)
 have_zip() { command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; }
 
@@ -297,7 +305,7 @@ before="$(cd "$PD" && find . | sort)"; rc="$(runr --dry-run --yes)"
 [ "$rc" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "dry-run: rc $rc, actions [$(acts)], runs $([ -d "$T/runs" ] && echo made): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
 [ "$before" = "$(cd "$PD" && find . | sort)" ] && ok || bad "dry-run changed the patch folder"
 grep -q 'dry-run: would .*opatch apply' "$T/out" && ok || bad "dry-run does not say what it would apply"
-else skip "dry-run on a zip-only patch folder: no zip/unzip in this image, the fixture cannot be built"; fi
+else skip "dry-run on a zip-only patch folder: no zip/unzip on this host, the fixture cannot be built" 3; fi
 
 # stop not proved: nothing applied, components started again
 build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
@@ -360,7 +368,7 @@ rc="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"; rc2="$(PATCH_INTERACTIVE=1 runc pla
 [ "$before" = "$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)" ] && ok || bad "plan changed the patch folder: $(cd "$ZD" && find . | sort | tr '\n' ' ')"
 grep -q "would run $DOM/bin/stopComponent.sh ohs1" "$T/out" && grep -q 'would back up' "$T/out" && grep -q 'opatch apply -silent' "$T/out" && ok || bad "plan does not list the steps: $(grep -c dry-run "$T/out") dry-run lines"
 grep -q 'run does all of this' "$T/out" && ok || bad "plan does not say run does these steps for you"
-else skip "plan from a zip-only patch folder: no zip/unzip in this image, the fixture cannot be built"; fi
+else skip "plan from a zip-only patch folder: no zip/unzip on this host, the fixture cannot be built" 4; fi
 
 # backup: a run dir and the three archives, nothing stopped; refused undetached
 build; running; rc="$(PATCH_INTERACTIVE=1 runc backup "$PD" --yes)"
@@ -483,5 +491,5 @@ grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! gre
 build; rc="$(runc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
 
-echo "ohs-patch gate: $pass passed, $fail failed${skipped:+, $skipped skipped (a case this image cannot run: not a pass, not a failure)}"
+echo "ohs-patch gate: $pass passed, $fail failed${skipped:+, $skipped skipped ($skipped_asserts assertions not run: a case this host cannot run - not a pass, not a failure)}"
 [ "$fail" = 0 ]
