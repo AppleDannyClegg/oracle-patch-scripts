@@ -7,11 +7,41 @@
 #   --keep    leave the container running afterwards (re-runs are then seconds, not minutes)
 #   --trace   route every sqlplus call through a wrapper that records statements and answers in
 #             tests/out/sqltrace.{in,out}; grep the .out for ORA-/SP2- to find SQL the scripts swallow
+#   --selftest  run only the pass/fail verdict checks on synthetic logs, no docker - for the verdict rule itself
 # Needs docker. The slim image has no ps/hostname/free; the first run installs procps-ng into the container.
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="$REPO/tests/out"; NAME=oradba-test; IMG=gvenzl/oracle-free:23-slim; KEEP=0; TRACE=0
-for a in "$@"; do case "$a" in --keep) KEEP=1;; --trace) TRACE=1;; *) echo "unknown option $a"; exit 2;; esac; done
+OUT="$REPO/tests/out"; NAME=oradba-test; IMG=gvenzl/oracle-free:23-slim; KEEP=0; TRACE=0; SELFTEST=0
+for a in "$@"; do case "$a" in --keep) KEEP=1;; --trace) TRACE=1;; --selftest) SELFTEST=1;; *) echo "unknown option $a"; exit 2;; esac; done
+
+# The verdict for one report run. A report exits 0 (clean), 1 (warnings) or 2 (criticals); those are the only
+# passes. Anything above 2 is a FAIL, and so is a log carrying [ERROR]: lib err()/die() write that when the run
+# aborted or a tool failed - a run dir it could not create, an opatch that would not run. rc alone missed the
+# [ERROR]-then-exit-1 case: a report that died at "Cannot create run dir" still exited 1, which rc<=2 called green
+# (T160, and the NOT-EXERCISED class). Printed so run() can count it into the one fail flag.
+run_verdict() { # <name> <rc> <logfile>; return 1 (and print a FAIL line) when this run did not pass
+  local name=$1 rc=$2 log=$3
+  if [ "$rc" -gt 2 ]; then echo "   FAIL $name: exit $rc (a report exits 0, 1 or 2)"; return 1; fi
+  if grep -q '\[ERROR\]' "$log" 2>/dev/null; then echo "   FAIL $name: the log carries [ERROR] (the run aborted or a tool failed)"; return 1; fi
+  return 0
+}
+
+if [ "$SELFTEST" = 1 ]; then
+  st=0; d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+  expect() { # <want: pass|fail> <rc> <log body> <label>
+    printf '%s\n' "$3" >"$d/log"
+    if run_verdict selftest "$2" "$d/log" >/dev/null; then got=pass; else got=fail; fi
+    [ "$got" = "$1" ] && echo "ok   - $4" || { echo "FAIL - $4 (want $1, got $got)"; st=1; }
+  }
+  expect pass 0 '2026-01-01 00:00:00 [INFO ] report: /x/REPORT.md (0 critical, 0 warnings, 0 info)' 'clean report exits 0 -> pass'
+  expect pass 1 '2026-01-01 00:00:00 [INFO ] report: /x/REPORT.md (0 critical, 3 warnings, 0 info)' 'rc 1 warnings-only -> pass'
+  expect pass 2 '2026-01-01 00:00:00 [CRIT] FREE: last DB backup never' 'rc 2 criticals-only -> pass'
+  expect fail 3 '2026-01-01 00:00:00 [ERROR] something the report could not do' 'rc 3 -> FAIL'
+  expect fail 1 '2026-01-01 00:00:00 [ERROR] Cannot create run dir /u01/oracle-patch-scripts/okv-diag/runs/x' 'an [ERROR] then exit 1 -> FAIL (T160)'
+  expect fail 2 '2026-01-01 00:00:00 [CRIT] FREE: no backup
+2026-01-01 00:00:00 [ERROR] opatch lspatches failed' 'a [ERROR] deeper in the log -> FAIL even at rc 2'
+  echo "--- selftest: $st failed (0 = all passed) ---"; exit "$st"
+fi
 command -v docker >/dev/null || { echo "docker not found"; exit 1; }
 # serialize: two runs share NAME and OUT and would clobber each other (kind of Docker: ONE oradba-test). mkdir is atomic.
 # Added after three seats raced the same container (Legion/GERTY 10:35). rm -rf this lock if a run died holding it.
@@ -61,7 +91,7 @@ docker exec -u oracle "$NAME" bash -c 'cd /scripts && bash lib/oracle-lib.sh sel
 fail=0
 run() { local name=$1; shift; echo "== $name: $*"
   docker exec -u oracle -e HOME=/home/oracle -e OFFLINE=1 ${SQLCMD:+-e SQL_CMD=$SQLCMD} "$NAME" bash -c "cd /scripts && $*" >"$OUT/$name.log" 2>&1
-  local rc=$?; echo "   exit $rc  ($OUT/$name.log)"; grep -E '^- (CRIT|WARN)|^# FINDINGS|[0-9]+ critical, [0-9]+ warnings' "$OUT/$name.log" | head -8 | sed 's/^/   /'; [ "$rc" -gt 2 ] && fail=1; }
+  local rc=$?; echo "   exit $rc  ($OUT/$name.log)"; grep -E '^- (CRIT|WARN)|^# FINDINGS|[0-9]+ critical, [0-9]+ warnings' "$OUT/$name.log" | head -8 | sed 's/^/   /'; run_verdict "$name" "$rc" "$OUT/$name.log" || fail=1; }
 run db-health    reports/db-health-daily/db-health-daily.sh --out /home/oracle/dbh --no-tar
 run perf         reports/perf-snapshot/perf-snapshot.sh --last 30m --no-pack --out /home/oracle/perf --no-tar
 run space        reports/space-forecast/space-forecast.sh --out /home/oracle/space --no-tar
