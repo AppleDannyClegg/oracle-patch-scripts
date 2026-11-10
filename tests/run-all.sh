@@ -40,7 +40,7 @@ case "$GATE_TIMEOUT" in '' | *[!0-9]* | 0) echo "run-all.sh: --timeout needs a p
 GATES=(output-dir wls-quarter ohs-quarter java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate self-contained-gate
     secret-argv-gate java-patch-cacerts java-patch-inplace java-patch db-patch-opatch-min db-patch-ru-title
     get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
-    patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch dbclient-upgrade wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate)
+    patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch dbclient-upgrade wls-patch-conflict wls-patch-discovery db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate backup-perms)
 # add_gate skips a gate that is already in the list. Every entry goes through it - the typed list as well as the
 # two auto-appends - because two entries for one name run it twice over the same log and rc file, and a passing
 # copy then overwrites a failing copy's tally. One name, one launch, one file.
