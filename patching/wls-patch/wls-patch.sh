@@ -1219,6 +1219,9 @@ cmd_heal() {
   setup_env
   [ -n "$RUN_DIR" ] || init_run_dir heal
   local fixed=0 found=0
+  # T264: a delete that FAILS is an issue heal could not fix. Counting it in neither fixed nor found used to make
+  # heal print '0 issue(s) found, 0 fixed' and exit 0, so a stuck lock it could not remove read as nothing to do.
+  local failed_fix=0
 
   # 1. stale OPatch lock
   if [ -e "$ORACLE_HOME/.patch_storage/patch_locked" ]; then
@@ -1230,7 +1233,9 @@ cmd_heal() {
       die "OPatch lock present and the process list is unreadable - the lock is only stale when no OPatch runs; heal refused"
     else
       log "Removing stale OPatch lock (no opatch process)"
-      run_cmd rm -f "$ORACLE_HOME/.patch_storage/patch_locked" && fixed=$((fixed + 1))
+      if run_cmd rm -f "$ORACLE_HOME/.patch_storage/patch_locked"; then fixed=$((fixed + 1))
+      else failed_fix=$((failed_fix + 1)); err "could not remove $ORACLE_HOME/.patch_storage/patch_locked - the stale OPatch lock is still there"
+      fi
     fi
   fi
 
@@ -1258,7 +1263,9 @@ cmd_heal() {
     if [ -n "$n" ] && printf '%s\n' "$up" | awk '{print $1}' | grep -qx "$n"; then continue; fi
     found=$((found + 1))
     log "Removing orphaned lock $lok (server $n not running)"
-    run_cmd rm -f "$lok" && fixed=$((fixed + 1))
+    if run_cmd rm -f "$lok"; then fixed=$((fixed + 1))
+    else failed_fix=$((failed_fix + 1)); err "could not remove $lok - the orphaned lock is still there and blocks the server start"
+    fi
   done < <([ -n "$DOMAIN_HOME" ] && find "$DOMAIN_HOME/servers" -name '*.lok' 2>/dev/null)
 
   # 4. old OPatch (only reports; apply handles the upgrade if kit present)
@@ -1290,7 +1297,8 @@ cmd_heal() {
     fi
   fi
 
-  log "heal: $found issue(s) found, $fixed fixed"
+  log "heal: $found issue(s) found, $fixed fixed, $failed_fix could not be fixed"
+  [ "$failed_fix" = 0 ] || die "heal could not fix $failed_fix of $found issue(s) - the failures above are still there, so heal is NOT clean"
 }
 
 # ---------------------------------------------------------------------------
