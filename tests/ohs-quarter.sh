@@ -110,11 +110,54 @@ miss="$(awk '$1=="dbclient" && $2=="apply" || $1=="ohs" && $2=="apply"' "$T/call
 shared="$(sed -n 's/.*--backup-run \([^ ]*\).*/\1/p' "$T/calls.log" | sort -u)"
 [ "$(printf '%s\n' "$shared" | wc -l | tr -d ' ')" = 1 ] && [ -n "$shared" ] && ok || bad "applies did not share one run dir: [$shared]"
 
-# ---- a missing/empty folder is skipped, not failed -----------------------------------------------------------
+# ---- a missing/empty folder is left out ONLY when --skip names it -------------------------------------------
+# The composer used to skip a missing folder on its own and still print "OHS QUARTER OK". Pointed at a
+# get-patches.ps1 download tree (folders by patch kind) it would have applied the two names that match and
+# reported success over an outage that did two of thirteen sets.
+runskip() { # <root> <skip list> [env...]: runq with --skip
+  local root="$1" skip="$2"; shift 2
+  : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
+  env "$@" bash "$SCRIPT" --patch-root "$root" --run-dir "$T/run" --yes --skip "$skip" >"$T/out" 2>&1
+}
+nochild() { [ ! -s "$T/calls.log" ] && ok || bad "$1: a child was called ($(head -2 "$T/calls.log" | tr '\n' ';'))"; }
+REST=jdbc,libovd,fmwthirdparty,perl,libdms2,libiau
 mkroot "$T/root2" 1 1 1 1 0 0 0 0
-runq "$T/root2" && ok || bad "an outage without webgate/oss/ohs failed: $(tail -3 "$T/out")"
+# not named: refused before any child is called, and it prints the list to add
+runq "$T/root2" && bad "a root missing nine folders ran without --skip" || ok
+nochild "missing folders without --skip"
+grep -q 'Not applying a partial runbook' "$T/out" && ok || bad "the partial-root refusal was not named: $(tail -1 "$T/out")"
+grep -q -- "--skip webgate,oss,ohs,$REST" "$T/out" && ok || bad "the refusal did not print the --skip list to add: $(tail -1 "$T/out")"
+[ ! -e "$T/run" ] && ok || bad "a refused root still created a run dir"
+# named: runs, applies what is there, and the last line does not claim the whole runbook
+runskip "$T/root2" "webgate,oss,ohs,$REST" && ok || bad "an outage that names what it leaves out failed: $(tail -3 "$T/out")"
 [ -z "$(aapply_line webgate)" ] && [ -z "$(aapply_line ohs)" ] && ok || bad "a skipped folder was applied"
 grep -q 'webgate/: missing' "$T/out" && ok || bad "the skipped webgate/ folder was not named"
+tail -1 "$T/out" | grep -q 'PARTIAL BY REQUEST: 4 of 13 sets' && ok || bad "a partial outage did not say so on its last line: $(tail -1 "$T/out")"
+tail -1 "$T/out" | grep -q "LEFT OUT (--skip): webgate oss ohs ${REST//,/ }" && ok || bad "the last line did not list what was left out: $(tail -1 "$T/out")"
+grep -q "^left_out=webgate oss ohs ${REST//,/ }\$" "$T/run/state" && ok || bad "the run state does not record what was left out: $(grep left_out "$T/run/state")"
+# the whole runbook says so, and only then
+runq "$T/root" && tail -1 "$T/out" | grep -q 'OHS QUARTER OK: all 13 sets' && ok || bad "a full outage did not say all 13 sets: $(tail -1 "$T/out")"
+grep -q '^left_out=-$' "$T/run/state" && ok || bad "a full outage recorded something left out"
+# named but present: refused, either the flag or the folder is wrong
+runskip "$T/root" "webgate" && bad "--skip of a folder that has content ran" || ok
+nochild "--skip of a present folder"
+grep -q -- '--skip names webgate, but' "$T/out" && ok || bad "the contradicted --skip was not named: $(tail -1 "$T/out")"
+# a name this runbook does not have
+runskip "$T/root" "wls" && bad "--skip of an unknown name ran" || ok
+grep -q "not a folder of this runbook" "$T/out" && ok || bad "an unknown --skip name was not refused by name"
+# a get-patches.ps1 download tree: folders by patch kind. Refused whole, whatever --skip says.
+mkdir -p "$T/gp/jdk" "$T/gp/ohs" "$T/gp/wls" "$T/gp/db" "$T/gp/spb"
+: >"$T/gp/jdk/jdk-1.8.0_511_linux-x64_bin.tar.gz"; : >"$T/gp/ohs/p40005842.zip"; : >"$T/gp/wls/p39919567.zip"
+runq "$T/gp" && bad "a get-patches download tree ran" || ok
+nochild "a get-patches download tree"
+grep -q 'get-patches.ps1 download tree' "$T/out" && grep -q 'wls/ db/ spb/' "$T/out" && ok || bad "the download tree was not refused by name: $(tail -1 "$T/out")"
+runskip "$T/gp" "wlspsu,dbclient,dbclientru,webgate,oss,$REST" && bad "a get-patches download tree ran once --skip named the rest" || ok
+nochild "a get-patches download tree with --skip"
+# the same tree for an OHS-only host has just jdk/ and ohs/: nothing foreign to see, so it is the --skip rule that stops it
+mkdir -p "$T/gp2/jdk" "$T/gp2/ohs"; : >"$T/gp2/jdk/jdk-1.8.0_511_linux-x64_bin.tar.gz"; : >"$T/gp2/ohs/p40005842.zip"
+runq "$T/gp2" && bad "a two-folder root ran as if it were the whole runbook" || ok
+nochild "a two-folder root"
+grep -q 'OHS QUARTER OK' "$T/out" && bad "a two-folder root printed OHS QUARTER OK" || ok
 
 # ---- JDK apply failure: only the JDK is rolled back, then start -----------------------------------------------
 runq "$T/root" FAIL_JAVA_APPLY=1; rc=$?

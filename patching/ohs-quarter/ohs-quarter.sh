@@ -19,8 +19,14 @@
 #   libovd/         LibOVD 39465265                    ohs-patch.sh
 #   fmwthirdparty/  FMW third-party 39574504           ohs-patch.sh
 #   perl/  libdms2/  libiau/   PERL 38590502, LIBDMS2 38098858, LIBIAU 38832179   ohs-patch.sh
-# A folder that is missing or empty is skipped (so a re-run after a partial hand-fix does not fail); the order
-# among the opatch bundles is the one above, WebGate after the DBCLIENT RU for the 19.29 prereq.
+# The order among the opatch bundles is the one above, WebGate after the DBCLIENT RU for the 19.29 prereq.
+#
+# EVERY FOLDER ABOVE MUST BE THERE, OR BE NAMED IN --skip. A folder that is missing or empty is not applied, and
+# this script will not decide that for you: it stops before anything changes and prints the --skip list to add.
+# That is what keeps "OHS QUARTER OK" from being printed over an outage that applied two of thirteen sets.
+# These folder names are this runbook's, one per step, and they carry the order. get-patches.ps1 files its
+# downloads by patch kind (wls/ db/ spb/ ohs/ jdk/), which is a different layout: a root holding wls/, db/ or
+# spb/ is refused, and the patches have to be sorted into the folders above first.
 #
 # ALL PATCH LOGIC LIVES IN THE CHILDREN. The extra opatch rows go through ohs-patch.sh because it already applies
 # an arbitrary opatch patch to this home; wls-patch.sh carries only the WLS PSU, because it drags in WebLogic
@@ -46,6 +52,8 @@
 #   --run-dir DIR      this outage's run dir (default: $RUN_BASE/<stamp>-ohs-quarter)
 #   --backup-dir DIR   where the backups go (passed to wls-patch and the installer)
 #   --remove-12c IDS   pass the opt-in 12c-patch removal to the installer (comma list; default: do not remove)
+#   --skip LIST        folders this outage deliberately leaves out (comma list, e.g. --skip wlspsu,jdbc). Required
+#                      for every folder above that is missing or empty; naming a folder that has content is refused
 #   --no-cacerts       do not carry CA aliases across (java-patch)
 #   --force            passed to every child
 #   --yes --dry-run    as the children
@@ -103,7 +111,7 @@ die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
+PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; SKIP=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --patch-root)  optchk "$@"; PATCH_ROOT="$2"; shift 2;;
@@ -112,6 +120,7 @@ while [ $# -gt 0 ]; do
     --run-dir)     optchk "$@"; RUN_DIR="$2"; shift 2;;
     --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2;;
     --remove-12c)  optchk "$@"; REMOVE_12C="$2"; shift 2;;
+    --skip)        optchk "$@"; SKIP="$2"; shift 2;;
     --no-cacerts)  NO_CACERTS=1; shift;;
     --force)       FORCE=1; shift;;
     --yes)         YES=1; shift;;
@@ -127,6 +136,21 @@ done
 [ -x "$DBCLIENT" ]   || die "dbclient-upgrade.sh not found or not executable: $DBCLIENT"
 [ -x "$OHS_PATCH" ]  || die "ohs-patch.sh not found or not executable: $OHS_PATCH"
 [ -d "$PATCH_ROOT" ] || die "patch root is not a directory: $PATCH_ROOT"
+
+# ---- the folders are the contract: every one is applied, or left out by name --------------------------------
+SETS=(jdk wlspsu dbclient dbclientru webgate oss ohs jdbc libovd fmwthirdparty perl libdms2 libiau)
+is_set() { local s; for s in "${SETS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
+skipped() { case ",$SKIP," in *",$1,"*) return 0;; esac; return 1; }
+IFS=',' read -r -a skip_names <<<"$SKIP"
+for s in "${skip_names[@]}"; do
+  [ -n "$s" ] || continue
+  is_set "$s" || die "--skip names '$s', which is not a folder of this runbook (${SETS[*]})"
+done
+# get-patches.ps1 names its folders by patch kind. wls/, db/ and spb/ are never this runbook's, so a root holding
+# one is a download tree that has not been sorted: stop, or this would apply the two names that happen to match
+foreign=""
+for k in wls db spb; do [ -d "$PATCH_ROOT/$k" ] && foreign="$foreign $k/"; done
+[ -z "$foreign" ] || die "$PATCH_ROOT holds$foreign - that is a get-patches.ps1 download tree, filed by patch kind. This runbook reads one folder per step (${SETS[*]}): sort the patches into those folders first. Nothing changed."
 
 # ---- what this outage has, in the order it is applied ----------------------------------------------------
 JDK_TAR=""; WLSPSU_DIR=""; INSTALLER_DIR=""; OPATCH_DIRS=()
@@ -155,6 +179,24 @@ for fam in dbclientru webgate oss ohs jdbc libovd fmwthirdparty perl libdms2 lib
 done
 [ -n "$JDK_TAR$WLSPSU_DIR$INSTALLER_DIR" ] || [ "${#OPATCH_DIRS[@]}" -gt 0 ] || die "nothing to apply under $PATCH_ROOT (no jdk/, wlspsu/, dbclient/ or opatch dir with content)"
 
+# what was found, set against what the operator said to leave out. Both directions are refused before any change:
+# a folder that is not there and was not named, and a folder that was named but is there.
+present=" "
+[ -n "$JDK_TAR" ] && present="${present}jdk "
+[ -n "$WLSPSU_DIR" ] && present="${present}wlspsu "
+[ -n "$INSTALLER_DIR" ] && present="${present}dbclient "
+for d in "${OPATCH_DIRS[@]}"; do present="${present}$(basename "$d") "; done
+unasked=""; contradicted=""; LEFT_OUT=""
+for s in "${SETS[@]}"; do
+  case "$present" in
+    *" $s "*) skipped "$s" && contradicted="$contradicted $s";;
+    *) if skipped "$s"; then LEFT_OUT="${LEFT_OUT:+$LEFT_OUT }$s"; else unasked="${unasked:+$unasked,}$s"; fi;;
+  esac
+done
+[ -z "$contradicted" ] || die "--skip names$contradicted, but $PATCH_ROOT has content for it. Remove it from --skip to apply it, or move the folder away. Nothing changed."
+[ -z "$unasked" ] || die "Not applying a partial runbook without being told to. Missing or empty under $PATCH_ROOT: ${unasked//,/ }. Stage them, or add  --skip $unasked${SKIP:+,$SKIP}  to leave them out on purpose. Nothing changed."
+APPLIED_N=$(( ${#SETS[@]} - $(printf '%s' "$LEFT_OUT" | wc -w | tr -d ' ') ))
+
 # the ordered apply list, as owner|arg, for the preflight/apply/verify loops
 APPLY=()
 [ -n "$JDK_TAR" ] && APPLY+=("java|$JDK_TAR")
@@ -174,6 +216,7 @@ mkdir -p "$RUN_DIR" || die "Cannot create the run dir $RUN_DIR: $OUTPUT_HINT"
   echo "wlspsu=${WLSPSU_DIR:--}"
   echo "installer=${INSTALLER_DIR:--}"
   echo "opatch=${OPATCH_DIRS[*]:-}"
+  echo "left_out=${LEFT_OUT:--}"
 } >"$RUN_DIR/state"
 
 # ---- child invocations -----------------------------------------------------------------------------------
@@ -257,7 +300,7 @@ done
 what=""; for entry in "${APPLY[@]}"; do what="${what:+$what + }$(basename "${entry#*|}")"; done
 if [ "$DRY" = 0 ] && [ "$YES" = 0 ]; then
   [ -t 0 ] || die "Non-interactive and --yes not given: refusing to stop the components and apply ($what)"
-  printf 'Preflight OK. Stop the components, apply %s in one outage, then start once? [y/N] ' "$what"
+  printf 'Preflight OK. Stop the components, apply %s in one outage (%s of %s sets%s), then start once? [y/N] ' "$what" "$APPLIED_N" "${#SETS[@]}" "${LEFT_OUT:+; left out: $LEFT_OUT}"
   ans=""; read -r ans || true
   case "$ans" in [Yy]*) YES=1; JOPTS+=(--yes); WOPTS+=(--yes); DOpts+=(--yes); OOPTS+=(--yes);; *) die "aborted - nothing changed";; esac
 fi
@@ -301,4 +344,8 @@ for entry in "${APPLY[@]}"; do
   esac
 done
 
-log "=== 7/7 OHS QUARTER OK: $(printf '%s ' "$what")applied in one outage; the shared backup is under $SHARED"
+if [ -n "$LEFT_OUT" ]; then
+  log "=== 7/7 OHS QUARTER OK, PARTIAL BY REQUEST: $APPLIED_N of ${#SETS[@]} sets applied in one outage ($what). LEFT OUT (--skip): $LEFT_OUT. The shared backup is under $SHARED"
+else
+  log "=== 7/7 OHS QUARTER OK: all ${#SETS[@]} sets applied in one outage ($what); the shared backup is under $SHARED"
+fi
