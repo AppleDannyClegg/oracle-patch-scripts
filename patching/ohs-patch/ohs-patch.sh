@@ -30,7 +30,8 @@
 #   --oracle-home DIR       the OHS (or WebLogic) home; default: $ORACLE_HOME, then the central inventory
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes, for the free-space check (default /u01/backup)
-#   --run-dir DIR           rollback: the run to restore from (default: the latest under <output dir>/ohs-patch/runs)
+#   --run-dir DIR           the run dir to write: backup (a composer's one backup, ohs-quarter.sh), and the run
+#                           rollback restores from (default: the latest under <output dir>/ohs-patch/runs)
 #   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
 #                           its first patch) instead of the latest one taken for this patch; the home must match
 #   --no-backup             refused: the backup is the README's rollback
@@ -684,7 +685,10 @@ plan_steps() {
 
 # a new run dir and its state: what rollback reads
 open_run() {
-  RUN_DIR="$RUN_BASE/$STAMP-run"; ( umask 077; mkdir -p "$RUN_DIR" ) || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
+  # --run-dir was parsed for EVERY command (:746) and read only by rollback (:720), so a caller that asked for a
+  # shared run dir - the composer's one-backup phase, ohs-quarter.sh dshared/oshared - got its backup written to
+  # $RUN_BASE/<stamp>-run instead, and the later apply --backup-run $SHARED refused with "has no state" (T291).
+  RUN_DIR="${RUN_DIR_ARG:-$RUN_BASE/$STAMP-run}"; ( umask 077; mkdir -p "$RUN_DIR" ) || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"
   chmod 700 "$RUN_DIR" 2>/dev/null || die "cannot make run dir $RUN_DIR private (chmod 700 failed)"
   ( umask 077; : >>"$RUN_DIR/run.log" ); chmod 600 "$RUN_DIR/run.log" 2>/dev/null || die "cannot make $RUN_DIR/run.log private (chmod 600 failed)"
   STATE="$RUN_DIR/state"; : >"$STATE"; printf '%s' "$NARR" >"$RUN_DIR/ohs-patch.log"; NARR=""
