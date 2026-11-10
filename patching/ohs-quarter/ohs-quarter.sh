@@ -252,7 +252,10 @@ oshared() { local cmd="$1"; shift; "$OHS_PATCH" "$cmd" "$@" "${OOPTS[@]}" --run-
 backup_once() {
   [ -n "$JDK_TAR" ] && { jrun backup || return 1; }
   if [ -n "$WLSPSU_DIR" ]; then wrun backup || return 1; fi
-  if [ -n "$INSTALLER_DIR" ]; then dshared backup || return 1
+  # the child needs the patch dir: `backup <dir>` (dbclient-upgrade.sh:652). The ohs twin has always passed it
+  # (:257); this one did not, so the one-backup phase failed at "backup needs <dir>" before it ever wrote the
+  # shared state the apply reads back (T291, found by the composer gate).
+  if [ -n "$INSTALLER_DIR" ]; then dshared backup "$INSTALLER_DIR" || return 1
   elif [ "${#OPATCH_DIRS[@]}" -gt 0 ]; then oshared backup "${OPATCH_DIRS[0]}" || return 1; fi
   return 0
 }

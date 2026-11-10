@@ -32,7 +32,7 @@ else
 fi
 # a changing call, on one line 'tool argv | stdin': the same verbs tests/dry-run-gate.sh forbids under --dry-run
 CHANGE_RE='^(sqlplus|sql) .*\| *(.*; *)?(alter +(pluggable|database|user|system|tablespace)|drop|create|flashback|shutdown|startup|truncate|delete|update|insert|grant|revoke|exec|begin|@)|^(opatch .*(apply|rollback|napply)|ords .*(install|upgrade|war)|srvctl .*(stop|start|modify|remove|add)|systemctl .*(stop|start|restart)|keytool .*(-import|-delete|-genkey)|orapki .*wallet .*(add|import|remove|create)|expdp|impdp|datapatch|java .*(weblogic\.Deployer|APEXExport|-jar)|lsnrctl .*(stop|start|reload)|crsctl .*(stop|start)|emctl .*(stop|start)|wlst\.sh|crontab - )|^(rman|ggsci) .*\| *(.*; *)?(restore|duplicate|delete|recover|backup|run|stop|start|alter|add|crosscheck|change|catalog|kill|send .*(handlecollisions|nohandlecollisions|forcestop))|^escli .*(chvault|rmfile|mkvault|rmvault|chfile|mkfile|chpool)|^dgmgrl .*\| *(.*; *)?(switchover|failover|reinstate|enable|disable|edit|remove|add|create|convert|stop|start|shutdown|startup)'
-for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl escli crontab pgrep ps; do
+for tool in sqlplus sql rman opatch srvctl systemctl ords java keytool orapki expdp impdp ggsci datapatch lsnrctl crsctl emctl wlst.sh dgmgrl escli crontab pgrep ps rm; do
   cat >"$STUB/$tool" <<'STUB'
 #!/bin/sh
 me="$(basename "$0")"
@@ -55,6 +55,9 @@ case "$me" in sqlplus|sql)   # canned answers so scripts reach their change step
   printf '%s' "$q" | grep -q "'ok'" && echo ok
   while IFS='|' read -r re ans; do [ -n "$re" ] && printf '%s' "$q" | grep -qiE -- "$re" && { echo "$ans"; break; }; done <"$ANSWERS";;
 esac
+# rm: a delete the script asked for, unless FAIL_RE singled it out above - then it is the change that failed and
+# the gate asserts the script did not exit 0 claiming it worked (wls-patch heal's lock removal, T264)
+[ "$me" = rm ] && exec /bin/rm "$@"
 exit 0
 STUB
   chmod +x "$STUB/$tool"
@@ -77,6 +80,9 @@ covered_by() {
     okv-rotate:run)     printf 'this gate, run:okvutil_fails' ;;
     rman-ops:run)       printf 'this gate, run:rman_fails' ;;
     okv-rotate:check|okv-rotate:rollback|okv-rotate:backup|okv-rotate:wait:repointed_no_wallet) printf 'tests/okv-rotate.sh' ;;
+    # T264: heal's delete-failure path is reached by THIS gate's heal:rm_fails case (the default heal case finds no
+    # issue, so it is still not exercised there) - named rather than left as "no gate reaches this verb"
+    wls-patch:heal)     printf 'tests/false-success-gate.sh heal:rm_fails + heal:lock_fails' ;;
     *)                  printf 'none - no gate reaches this verb, raise it' ;;
   esac
 }
