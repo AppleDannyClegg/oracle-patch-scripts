@@ -23,6 +23,12 @@ What it looks up, for everything in the manifest:
   - the Database Client 19c installer 34761383 into dbclient/, when the manifest says the home's Database Client
     (oracle.rdbms.rsf) is still below 19 and the current OHS bundle is a DB19C one: that bundle may only go on
     a home whose client was upgraded first (KB585169). 'dbclient-upgrade.sh' runs it; it is an installer, not opatch
+  - for a 12.2.1.4 home, the rest of the set 'ohs-quarter.sh' applies in one outage (WLS PSU, DBCLIENT RU, WebGate,
+    OSS, JDBC, LibOVD, FMW third-party, PERL, LIBDMS2, LIBIAU), into ohsset/. These are FIXED patch numbers, the
+    October 2026 row of MOS Doc 2806740.2 - MOS has no query that returns them, so they are not looked up and go
+    stale each quarter: pass that quarter's numbers with -OhsSet <file> ("<number> <folder>" per line, the same
+    file ohs-quarter-stage.sh --map reads). A number the home already has is not downloaded. On the server,
+    'ohs-quarter-stage.sh plan <download dir> <patch root>' files everything into the folders ohs-quarter.sh reads
   Database or client home (e.g. a 19c client)
   - newest "Database Release Update 19.N" for the release, and OPatch 6880880 with it when the home's OPatch is
     older than 12.2.0.1.40 or than the RU's README asks for
@@ -37,7 +43,7 @@ What it looks up, for everything in the manifest:
   - the newest '<FAMILY> BUNDLE PATCH' for every fmw| line the manifest reports (ADF, OPSS, WSM,
     SOA, ...), looked up in the same WebLogic release's Recommended list
 Anything else Oracle lists for these homes (MOS Doc 2806740.2): add it with -Patch. Its folder and its apply
-step come from -PatchKind (wls|spb|db|jdk|ohs|dbclient); a JDK record is recognised on its own, anything else is assumed
+step come from -PatchKind (wls|spb|db|jdk|ohs|dbclient|ohsset); a JDK record is recognised on its own, anything else is assumed
 WebLogic and says so, because the file names alone cannot tell a database Release Update from a WebLogic PSU.
 
 Token: log in to My Oracle Support in a browser, open https://updates.oracle.com/Orion/GenToken/get_token,
@@ -54,10 +60,13 @@ param(
     [string] $Dest,
     [string] $TokenFile = (Join-Path $HOME '.mos-token'),
     [string[]] $Patch = @(),
-    # where a -Patch number's file goes and which apply step it belongs to: wls|spb|db|jdk|ohs|dbclient. Inferred for a
+    # where a -Patch number's file goes and which apply step it belongs to: wls|spb|db|jdk|ohs|dbclient|ohsset. Inferred for a
     # JDK record (the only unambiguous case), otherwise 'wls' with a warning - a DB RU and a WLS PSU are both
     # p<number>_<release>_Linux-x86-64.zip, so guessing between them would be a string match dressed as a rule
     [string] $PatchKind = '',
+    # this quarter's ohs-quarter.sh set, "<patch number> <runbook folder>" per line ('#' comments) - replaces the
+    # built-in October 2026 table. The same file ohs-quarter-stage.sh takes as --map
+    [string] $OhsSet = '',
     [switch] $PlanOnly
 )
 
@@ -405,7 +414,7 @@ function New-PlanItem([string] $Kind, [string] $What, [string] $Installed, $Row,
 }
 
 # The kinds a -Patch item can be put in, and the folder each one downloads into.
-$script:PatchKinds = @('wls', 'spb', 'db', 'jdk', 'ohs', 'dbclient')
+$script:PatchKinds = @('wls', 'spb', 'db', 'jdk', 'ohs', 'dbclient', 'ohsset')
 
 # 'jdk' when the record says so plainly, otherwise '' - see the -PatchKind comment in param().
 function Get-PatchKindFromFiles($Files) {
@@ -655,11 +664,15 @@ function Get-FmwPlan($Manifest) {
 # Oracle HTTP Server: the newest 'OHS (NATIVE) [DB19C] BUNDLE PATCH <release>.<yymmdd>' for every OHS home,
 # standalone (home|..|ohs) or collocated in a WebLogic home (ohs|<wls home>). Linux x86-64 only: OHS is native.
 # Exact rows only - the 'APACHE PLUGIN BUNDLE PATCH' (the WebLogic plug-in for Apache) is a look-alike.
-function Get-OhsPlan($Manifest) {
-    $homes = @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; Client = $_.Client; Patches = $_.Patches } }) +
+function Get-OhsHomeList($Manifest) {
+    @(@($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' } | ForEach-Object { [pscustomobject]@{ Home = $_.Home; Release = $_.Version; Client = $_.Client; Patches = $_.Patches } }) +
         @($Manifest.Ohs | ForEach-Object {
                 $o = $_; $w = $Manifest.Wls | Where-Object { $_.Home -eq $o.Home } | Select-Object -First 1
                 [pscustomobject]@{ Home = $o.Home; Release = $o.Release; Client = $o.Client; Patches = $(if ($w) { $w.Patches } else { @() }) } }))
+}
+
+function Get-OhsPlan($Manifest) {
+    $homes = Get-OhsHomeList $Manifest
     foreach ($h in $homes) {
         if (-not $h.Release) { Write-Warning "$($h.Home): the manifest has no OHS release for this home - get its OHS bundle from MOS Doc 2806740.2 by hand"; continue }
         $short = ($h.Release.Split('.')[0..3]) -join '.'
@@ -707,12 +720,88 @@ function Get-OhsPlan($Manifest) {
     }
 }
 
+# ---- the rest of the ohs-quarter.sh set ---------------------------------------------------------------
+# ohs-quarter.sh applies thirteen folders in one outage. The JDK, the OHS bundle and the installer are looked up
+# above; the other ten are single patches MOS has no "newest of" query for - the FMW CPU Patch Advisor page
+# (KA1182 / Doc 2806740.2, 'Oracle HTTP Server 12.2.1.4 (with a DB Client 19c)') names them each quarter. So this
+# is a TABLE, not a lookup, and it is the October 2026 row. The same numbers, with the same folders, are the
+# built-in table of patching/ohs-quarter/ohs-quarter-stage.sh; tests/get-patches.ps1 fails if the two differ.
+$script:OhsSetQuarter = 'October 2026'
+$script:OhsSetFolders = @('wlspsu', 'dbclient', 'dbclientru', 'webgate', 'oss', 'ohs', 'jdbc', 'libovd', 'fmwthirdparty', 'perl', 'libdms2', 'libiau')
+$script:OhsSetBuiltIn = @(
+    '39919567 wlspsu', '34761383 dbclient', '39425385 dbclientru', '39114058 webgate', '39567777 oss', '40005842 ohs',
+    '39487427 jdbc', '39465265 libovd', '39574504 fmwthirdparty', '38590502 perl', '38098858 libdms2', '38832179 libiau')
+
+# "<number> <folder>" lines -> rows. A line that is not that shape, a folder the runbook does not have, or a
+# number or folder given twice is refused: a table read wrongly is a set downloaded wrongly
+function ConvertTo-OhsSet([string[]] $Lines, [string] $From) {
+    $rows = @()
+    foreach ($raw in $Lines) {
+        $l = ($raw -replace '#.*$', '').Trim()
+        if (-not $l) { continue }
+        if ($l -notmatch '^(\d{6,9})\s+(\S+)$') { throw "${From}: '$raw' is not '<patch number> <folder>'" }
+        $n = $Matches[1]; $fo = $Matches[2]
+        if ($fo -notin $script:OhsSetFolders) { throw "${From}: '$fo' is not a folder ohs-quarter.sh reads ($($script:OhsSetFolders -join ' '))" }
+        if ($rows | Where-Object { $_.Number -eq $n -or $_.Folder -eq $fo }) { throw "${From}: patch $n or folder $fo is listed twice" }
+        $rows += [pscustomobject]@{ Number = $n; Folder = $fo }
+    }
+    if ($rows.Count -eq 0) { throw "${From}: no '<patch number> <folder>' lines" }
+    $rows
+}
+
+function Get-OhsSetTable {
+    if ($OhsSet) {
+        if (-not (Test-Path -LiteralPath $OhsSet)) { throw "-OhsSet: $OhsSet not found" }
+        return [pscustomobject]@{ Rows = @(ConvertTo-OhsSet @(Get-Content -LiteralPath $OhsSet) "-OhsSet $OhsSet"); Label = "-OhsSet $OhsSet" }
+    }
+    [pscustomobject]@{ Rows = @(ConvertTo-OhsSet $script:OhsSetBuiltIn 'the built-in table'); Label = "the built-in $($script:OhsSetQuarter) table" }
+}
+
+# $Planned is what the lookups above already planned: the OHS bundle and the installer are theirs (a MOS lookup
+# and the manifest's client level), so the table never adds a second copy of either - with one exception, the
+# installer for a home whose manifest carries NO client level, which the lookup cannot decide and so never plans.
+function Get-OhsSetPlan($Manifest, $Planned) {
+    $homes = @(Get-OhsHomeList $Manifest | Where-Object { $_.Release -and (($_.Release.Split('.')[0..3]) -join '.') -eq '12.2.1.4' })
+    if ($homes.Count -eq 0) { return }
+    $set = Get-OhsSetTable
+    $seen = @{}
+    foreach ($p in @($Planned)) { if ($p.Patch) { $seen["$($p.Patch)"] = $true } }
+    $tableBundle = @($set.Rows | Where-Object { $_.Folder -eq 'ohs' })[0]
+    foreach ($h in $homes) {
+        $have = @{}
+        foreach ($ip in @($h.Patches)) { if ($ip.Id) { $have["$($ip.Id)".Trim()] = $true } }
+        # the one fact MOS does give about the quarter: its current OHS bundle. If that is not the table's, the
+        # table is another quarter's and the other rows are probably superseded too - say so, do not guess them
+        $mosBundle = @($Planned | Where-Object { $_.Kind -eq 'ohs' -and $_.For -eq $h.Home })[0]
+        if ($tableBundle -and $mosBundle -and "$($mosBundle.Patch)" -ne $tableBundle.Number) {
+            Write-Warning "$($h.Home): MOS's current OHS bundle is $($mosBundle.Patch) but $($set.Label) has $($tableBundle.Number) - that table is for another quarter, so the ohsset/ numbers below are probably superseded. Take this quarter's from MOS Doc 2806740.2 and pass them with -OhsSet <file>."
+        }
+        foreach ($r in $set.Rows) {
+            if ($r.Folder -eq 'ohs') { continue }
+            if ($seen[$r.Number] -or $have[$r.Number]) { continue }
+            if ($r.Folder -eq 'dbclient') {
+                # a level that is a version means the lookup above decided; anything else (absent, 'unknown') did not
+                if ($h.Client -match '^\s*\d+\.') { continue }
+                Write-Warning "$($h.Home): the manifest has no readable Database Client level for this home, so whether it needs the 19c installer $($r.Number) cannot be told from here - downloading it into dbclient/ anyway. 'dbclient-upgrade.sh preflight' on the server says whether the home needs it; re-run patch-manifest.sh from a current copy to get the level."
+            }
+            $seen[$r.Number] = $true
+            $kind = if ($r.Folder -eq 'dbclient') { 'dbclient' } else { 'ohsset' }
+            New-PlanItem $kind "ohs-quarter set: $($r.Folder) ($($h.Home))" '' ([pscustomobject]@{ Number = $r.Number; Abstract = "$($set.Label), not looked up on MOS" }) $h.Release $h.Home
+        }
+    }
+}
+
 function Get-PatchPlan($Manifest) {
     foreach ($w in $Manifest.Wls) { Get-WlsPlan $w }
     foreach ($h in ($Manifest.Homes | Where-Object { $_.Kind -eq 'db' })) { Get-DbPlan $h }
     if ($Manifest.Jdks) { Get-JdkPlan $Manifest.Jdks }
     if ($Manifest.Fmw) { Get-FmwPlan $Manifest }
-    if ($Manifest.Ohs -or ($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' })) { Get-OhsPlan $Manifest }
+    if ($Manifest.Ohs -or ($Manifest.Homes | Where-Object { $_.Kind -eq 'ohs' })) {
+        # the warnings stay in the warning stream; only the items are kept to tell the set what is already planned
+        $ohs = @(Get-OhsPlan $Manifest)
+        $ohs
+        Get-OhsSetPlan $Manifest $ohs
+    }
 }
 
 # ---- download ------------------------------------------------------------------------------------------
@@ -1034,6 +1123,8 @@ function Get-UploadHints([string] $HostName, [string] $Dest, [string] $Base) {
     # dbclient before ohs: the DB19C OHS bundle may only go on a home whose client is already 19c (KB585169)
     $l = & $line 'dbclient' '*.zip' "   then: dbclient-upgrade.sh preflight $b/dbclient   (before any OHS DB19C bundle)"; if ($l) { $out += $l }
     $l = & $line 'ohs' '*.zip' "   then: ohs-patch.sh run $b/ohs"; if ($l) { $out += $l }
+    # the set is not applied from ohsset/: the stage helper files it, by patch number, into the runbook's folders
+    $l = & $line 'ohsset' '*.zip' "   then: ohs-quarter-stage.sh plan $b <a new patch root>   (files the whole download for ohs-quarter.sh; do not point ohs-patch.sh at ohsset/)"; if ($l) { $out += $l }
     $l = & $line 'db' '*.zip' ''; if ($l) { $out += $l }
     $l = & $line 'jdk' '*.tar.gz' ''; if ($l) { $out += $l }
     $out

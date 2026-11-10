@@ -787,6 +787,58 @@ finally {
     $iOhs = [array]::FindIndex([string[]] $hints8, [Predicate[string]] { param($x) $x -like '*:/u01/patches/ohs/*ohs-patch.sh*' })
     Check ($iDc -ge 0 -and $iOhs -gt $iDc) "the upload hints name dbclient/ and its script, before the ohs/ line: $($hints8 -join ' / ')"
 
+    # ---- the rest of the ohs-quarter.sh set: a table, planned into ohsset/ -----------------------------------
+    # the two tables are one fact kept in two languages: the stage helper files by these numbers, so a number
+    # downloaded here and unknown there is refused on the server (seen on the first real run, with the SPB)
+    $stageMap = @((Get-Content -LiteralPath (Join-Path $root 'patching/ohs-quarter/ohs-quarter-stage.sh')) -join "`n" |
+        Select-String -Pattern '(?s)\nMAP="(.*?)"' | ForEach-Object { $_.Matches[0].Groups[1].Value -split "`n" } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object)
+    Check ($stageMap.Count -eq 12 -and (($stageMap -join ',') -eq ((@($script:OhsSetBuiltIn) | Sort-Object) -join ','))) "the built-in set is ohs-quarter-stage.sh's table, number for number: [$($stageMap -join ',')] vs [$((@($script:OhsSetBuiltIn) | Sort-Object) -join ',')]"
+    # the shape of the first real manifest: a collocated home, client 12.1, three bare patch lines
+    $real = Join-Path $tmp 'ohsset.txt'
+    @('host|wl9', 'plat|linux|x86_64', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.25|no', 'patch|/u01/fmw|27516009|', 'patch|/u01/fmw|39487427|',
+      'ohs|/u01/fmw|12.2.1.4.0|12.1.0.2.0') | Set-Content -LiteralPath $real
+    $all9 = @(Get-PatchPlan (Read-Manifest $real) 3>&1)
+    $w9 = @($all9 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $p9 = @($all9 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
+    $set9 = @($p9 | Where-Object { $_.Kind -eq 'ohsset' })
+    $want9 = @('39919567', '39425385', '39114058', '39567777', '39465265', '39574504', '38590502', '38098858', '38832179')
+    Check ((@($set9 | ForEach-Object { $_.Patch } | Sort-Object) -join ',') -eq (($want9 | Sort-Object) -join ',')) "a 12.2.1.4 OHS home is planned the rest of the runbook set, less the one it has (39487427): $(@($set9 | ForEach-Object { $_.Patch }) -join ',')"
+    Check (@($set9 | ForEach-Object { Get-PatchFolder -Item $_ } | Sort-Object -Unique) -join ',' -eq 'ohsset') "the set's folder is ohsset/"
+    Check (@($set9 | Where-Object { $_.Release -ne '12.2.1.4.0' -or $_.For -ne '/u01/fmw' }).Count -eq 0) "each set item carries the home and its release, so a record with several releases cannot be picked blind"
+    Check (@($p9 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 1 -and @($p9 | Where-Object { $_.Patch -eq '40005842' }).Count -eq 1) "the installer and the OHS bundle are planned once each - the table adds no second copy: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
+    Check (@($w9 | Where-Object { "$_" -like '*another quarter*' }).Count -eq 0) "no stale-table warning when MOS's bundle is the table's: $(@($w9) -join ' / ')"
+    # the first fixture again: which homes get the set, and the installer where the lookup could not decide
+    $set8 = @($p8 | Where-Object { $_.Kind -eq 'ohsset' })
+    Check ($set8.Count -eq 10) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
+    Check (@($w8 | Where-Object { "$_" -like '*/u01/ohsnone*no readable Database Client level*34761383*' }).Count -eq 0 -and @($p8 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 2) "an installer already planned for another home is not planned or warned about again"
+    $noCl = Join-Path $tmp 'ohsset-nocl.txt'
+    @('host|wl9', 'plat|linux|x86_64', 'home|/u01/ohsold|ohs|12.2.1.4.0|13.9.4.2.23', 'patch|/u01/ohsold|36187026|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115',
+      'home|/u01/ohs14|ohs|14.1.2.0.0|13.9.4.2.23|19.14.0.0.0') | Set-Content -LiteralPath $noCl
+    $allN = @(Get-PatchPlan (Read-Manifest $noCl) 3>&1)
+    $wN = @($allN | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $pN = @($allN | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
+    Check (@($pN | Where-Object { $_.Kind -eq 'dbclient' -and $_.Patch -eq '34761383' -and $_.For -eq '/u01/ohsold' }).Count -eq 1) "a manifest with no client level (written before the field) still gets the installer downloaded: $(@($pN | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
+    Check (@($wN | Where-Object { "$_" -like '*/u01/ohsold*no readable Database Client level*34761383*dbclient-upgrade.sh preflight*' }).Count -eq 1) "...and is told why, and what decides it on the server: $(@($wN) -join ' / ')"
+    Check (@($pN | Where-Object { $_.For -eq '/u01/ohs14' -and $_.Kind -in 'ohsset', 'dbclient' }).Count -eq 0) "a home that is not 12.2.1.4 is not planned the 12.2.1.4 set"
+    # -OhsSet replaces the table; a table whose OHS bundle is not MOS's current one is another quarter's
+    $setFile = Join-Path $tmp 'ohsset-q.txt'
+    @('# next quarter', '41000001 wlspsu', '41000002 ohs   # not what MOS lists', '', '41000003 webgate') | Set-Content -LiteralPath $setFile
+    $OhsSet = $setFile
+    $allQ = @(Get-PatchPlan (Read-Manifest $real) 3>&1)
+    $OhsSet = ''
+    $wQ = @($allQ | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+    $pQ = @($allQ | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] -and $_.Kind -eq 'ohsset' })
+    Check ((@($pQ | ForEach-Object { $_.Patch }) -join ',') -eq '41000001,41000003') "-OhsSet replaces the built-in table, and its ohs row is never downloaded from the table: $(@($pQ | ForEach-Object { $_.Patch }) -join ',')"
+    Check (@($wQ | Where-Object { "$_" -like '*/u01/fmw*40005842*41000002*another quarter*-OhsSet*' }).Count -eq 1) "a table whose OHS bundle is not the one MOS lists is called another quarter's: $(@($wQ) -join ' / ')"
+    foreach ($badSet in @(@('39919567'), @('39919567 wls'), @('39919567 wlspsu', '39919567 oss'), @('39919567 wlspsu', '40000000 wlspsu'), @('# nothing'))) {
+        $threw = $false; try { ConvertTo-OhsSet $badSet 'test' | Out-Null } catch { $threw = $true }
+        Check $threw "a set table that is malformed, names a folder the runbook lacks, repeats a number or folder, or is empty is refused: [$($badSet -join ' | ')]"
+    }
+    Check ((Get-PatchItem -Patch '39425385' -Kind 'ohsset').Kind -eq 'ohsset') "-PatchKind ohsset is accepted"
+    New-Item -ItemType Directory -Path (Join-Path $hd 'ohsset') | Out-Null; Set-Content -LiteralPath (Join-Path $hd 'ohsset/p39425385_190000_Linux-x86-64.zip') 'x'
+    $hints9 = @(Get-UploadHints 'wl8' $hd '/u01/patches')
+    Check (@($hints9 | Where-Object { $_ -like '*:/u01/patches/ohsset/*ohs-quarter-stage.sh plan /u01/patches *' }).Count -eq 1) "the upload hint for ohsset/ names the stage helper, not ohs-patch.sh: $($hints9 -join ' / ')"
+
     # ---- Read-Manifest refuses a garbled/unknown line, a short line, and an unknown platform (Weyland [P2]) ---
     $bad = Join-Path $tmp 'bad.txt'
     @('host|wl1', 'wsl|/u01/wls|12.2.1.4.0|13.9.4.2.0|yes', 'jdk|/j|1.8.0_471|8') | Set-Content -LiteralPath $bad
