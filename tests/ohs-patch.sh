@@ -45,7 +45,25 @@ skip() {
 have_zip() { command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; }
 
 OH="$T/ohs"; DOM="$T/domains/ohs_domain"; PD="$T/patches/ohs"; LSP="$T/ohs/inventory/lsp.txt"  # in the home: a restore brings the old list back
+# The script starts node manager with 'nohup ... &' and never waits for it (correct: it is a daemon). The stub is
+# therefore a child that can run AFTER the script has exited: under suite load its 'startNM' landed in the NEXT
+# case's actions ("plan is not read-only: actions [startNM]") or missed its own. So (1) every script run settles:
+# it waits for as many finished node-manager stubs as the run logged launches; (2) each case has an id baked into
+# the stub, and a stub from an earlier case writes nothing.
+CASE=0
+settle() {
+  local n; n="$(grep -cF 'startNodeManager.sh &' "$T/out" 2>/dev/null | head -1)"
+  n=$(( ${n:-0} - $(grep -cF 'would run nohup' "$T/out" 2>/dev/null || true) ))
+  [ "$n" -gt 0 ] || return 0
+  echo $(( $(cat "$T/nm.launched" 2>/dev/null || echo 0) + n )) >"$T/nm.launched"
+  for _ in $(seq 1 100); do
+    [ "$(wc -l <"$T/nm.done" 2>/dev/null || echo 0)" -ge "$(cat "$T/nm.launched")" ] && return 0
+    sleep 0.1
+  done
+  echo "WARN settle: node manager stub not finished after 10s" >&2
+}
 build() {
+  CASE=$((CASE + 1)); echo "$CASE" >"$T/case"; rm -f "$T/nm.launched" "$T/nm.done"
   rm -rf "${T:?}/ohs" "${T:?}"/ohs.failed-* "${T:?}/domains" "${T:?}/patches" "${T:?}/home" "${T:?}/stub" "${T:?}/backup" "${T:?}/inv" "${T:?}/runs" "${T:?}"/inv.failed-*
   mkdir -p "$OH/ohs/bin" "$OH/OPatch" "$OH/inventory" "$DOM/config/fmwconfig/components/OHS/instances/ohs1" "$DOM/bin" \
     "$PD/40005842/etc/config" "$T/home/.wlst" "$T/stub" "$T/backup" "$T/inv/ContentsXML"
@@ -123,7 +141,8 @@ echo "stopNM" >>"$T/actions"; [ -e "$T/nm.down" ] && { echo "Node Manager is not
 S
   cat >"$DOM/bin/startNodeManager.sh" <<S
 #!/bin/sh
-echo "startNM" >>"$T/actions"; echo " 5151 /jdk/bin/java -cp $OH/oracle_common/x.jar weblogic.NodeManager" >>"$T/ps.txt"; exit 0
+[ "\$(cat "$T/case")" = "$CASE" ] || exit 0
+echo "startNM" >>"$T/actions"; echo " 5151 /jdk/bin/java -cp $OH/oracle_common/x.jar weblogic.NodeManager" >>"$T/ps.txt"; echo done >>"$T/nm.done"; exit 0
 S
   cat >"$DOM/bin/startComponent.sh" <<S
 #!/bin/sh
@@ -251,7 +270,7 @@ build; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" bash "$SCRIPT" preflight "$T/no
 
 # ---- run -------------------------------------------------------------------------------------------------
 runr() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" \
-  bash "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" "$@" >"$T/out" 2>&1 </dev/null; echo $?; }
+  bash "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" "$@" >"$T/out" 2>&1 </dev/null; echo $?; settle; }
 acts() { tr '\n' ' ' 2>/dev/null <"$T/actions"; }
 running() { printf ' 4242 %s/ohs/bin/httpd -d %s/config/fmwconfig/components/OHS/instances/ohs1 -k start\n 4343 /jdk/bin/java -cp %s/oracle_common/x.jar weblogic.NodeManager\n' "$OH" "$DOM" "$OH" >"$T/ps.txt"; }
 nobackup() { [ -z "$(find "$T/backup" -mindepth 1 2>/dev/null)" ]; }
@@ -280,7 +299,7 @@ _open=""; for _f in "$_bk"/*.tgz; do [ "$(pm "$_f")" = "-rw-------" ] || _open="
 # the host's modes (a home restored or patched owner-only stops OHS for every other account)
 [ "$(umask)" = "${GATE_UMASK:-0022}" ] && ok || bad "the gate's own umask moved to $(umask)"
 # rollback of that run: home back without the patch, started again
-: >"$T/actions"; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" rollback --yes >"$T/out" 2>&1 </dev/null; echo $?)"
+: >"$T/actions"; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" rollback --yes >"$T/out" 2>&1 </dev/null; echo $?; settle)"
 [ "$rc" = 0 ] && [ ! -e "$OH/ohs/PATCHED" ] && ! grep -q 40005842 "$LSP" && ok || bad "rollback of a good run: rc $rc, PATCHED $([ -e "$OH/ohs/PATCHED" ] && echo present): $(grep ERROR "$T/out" | head -2)"
 case "$(acts)" in *"stop ohs1"*"start ohs1"*) ok;; *) bad "rollback did not stop then start: [$(acts)]";; esac
 
@@ -346,7 +365,7 @@ build; running; touch "$T/curl.fail"; rc="$(runr --yes)"
 build; running; mkdir -p "$T/bin"; rm -f "$T/stub/curl"
 for t in chmod bash sh sed awk grep tr cut sort head tail date mkdir rm mv tar gzip find du df dirname basename cat env sleep nohup mktemp unzip wc ls; do
   ln -sf "$(command -v "$t")" "$T/bin/$t"; done
-rc="$(HOME="$T/home" PATH="$T/stub:$T/bin" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" "$T/bin/bash" "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1 </dev/null; echo $?)"
+rc="$(HOME="$T/home" PATH="$T/stub:$T/bin" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" "$T/bin/bash" "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1 </dev/null; echo $?; settle)"
 [ "$rc" = 0 ] && grep -q 'curl not available' "$T/out" && st | grep -q '^applied=40005842$' && ok || bad "no curl: rc $rc (want 0, applied, a warning): $(grep -E 'ERROR|WARN' "$T/out" | head -3)"
 rm -rf "${T:?}/bin"
 # a harmless 'tail -f' on a file in the home blocks the apply (fail-closed by design): known, not discovered
@@ -367,7 +386,7 @@ build; running; rc="$(PATCH_INTERACTIVE=1 PATCH_DETACHED=1 runr --yes)"
 
 # ---- the steps as commands: plan, backup, stop, apply, start, verify (run is these, in this order) ---------------
 runc() { local c="$1"; shift; HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" \
-  bash "$SCRIPT" "$c" "$@" --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1 </dev/null; echo $?; }
+  bash "$SCRIPT" "$c" "$@" --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1 </dev/null; echo $?; settle; }
 fromhome() { grep -F "$OH/" "$T/ps.txt"; }
 
 # plan: read-only, twice, from a patch dir holding only the zip - no run dir, no backup, no 'extracted' folder
@@ -483,7 +502,7 @@ build; running; touch "$T/stop.stuck"; rc="$(runr --yes)"
 # a stop that prompts for a password must fail at once, not wait on (or read) the operator's terminal: its output goes
 # to run.log, so in tmux the prompt would be invisible and the run would hang mid-outage
 build; running; touch "$T/stop.prompt"
-rc="$(printf 'yes\nyes\n' | HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1; echo $?)"
+rc="$(printf 'yes\nyes\n' | HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1; echo $?; settle)"
 [ "$rc" = 1 ] && ! acts | grep -q 'password read' && ! acts | grep -q apply && grep -q 'stopComponent.sh ohs1 failed' "$T/out" && ok || bad "a stop that prompts read stdin or went on: rc $rc, actions [$(acts)]"
 grep -q 'Enter Node Manager password' "$T/out" && grep -q 'startComponent.sh ohs1 storeUserConfig' "$T/out" && ok || bad "a prompting stop does not show the prompt and the storeUserConfig remedy: $(grep -A3 'ohs1 failed' "$T/out")"
 build; running; touch "$T/stop.fail"; rc="$(runr --yes)"
