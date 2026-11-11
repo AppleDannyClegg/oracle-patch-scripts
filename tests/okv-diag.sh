@@ -54,6 +54,15 @@ else no "no-SERVER=: rc=$rc (want 2) and/or no 'has no usable SERVER= line' CRIT
 OKV_OUT="$T/out-b2" bash "$SH" --okv-home "$T/absent" --no-tar --quiet >/dev/null 2>&1
 grep -q "no okvclient.ora under --okv-home $T/absent" "$T"/out-b2/*/REPORT.md 2>/dev/null && ok || no "okv-home message does not name $T/absent"
 
+# 2c. the reachability tally is reconciled against the SERVER lines PARSED, not trusted (T384): a line the probe
+#     cannot turn into an OK/UNREACHABLE result used to vanish from the count (and, with 0 counted, was reported as
+#     "no usable SERVER= line" - the wrong reason for the right verdict). An EMPTY host (`SERVER=:5999`) is declared
+#     and then skipped by the probe loop: a server line whose reachability was NOT established.
+mkfixture "$T/b3" 'SERVER=:5999'
+OKV_OUT="$T/out-b3" bash "$SH" --okv-home "$T/b3" --no-tar --quiet >/dev/null 2>&1; rc=$?
+if [ "$rc" = 2 ] && grep -q 'reachability line(s) counted against 1 SERVER line(s) parsed' "$T"/out-b3/*/REPORT.md 2>/dev/null; then ok
+else no "an unparseable probe line: rc=$rc (want 2), count-vs-parsed CRIT $([ -n "$(grep -o 'reachability line(s) counted[^;]*' "$T"/out-b3/*/REPORT.md 2>/dev/null)" ] && echo present || echo MISSING)"; fi
+
 # 3. TERM stops the run (rc=143) instead of falling through. The okvutil stub sleeps, so the signal lands in a
 #    deterministic window rather than racing the probe's 5s timeout.
 mkfixture "$T/c" 'SERVER=127.0.0.1:1'

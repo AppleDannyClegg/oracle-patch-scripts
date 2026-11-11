@@ -50,16 +50,23 @@ okv_configs() {
 
 # server_reachable <okvclient.ora>: one OK / UNREACHABLE line per SERVER= host:port on a 5s probe.
 server_reachable() {
-  local f="$1" s p
+  local f="$1" s p n=0 entries
   printf 'servers reachable (TCP 5696 unless the line names a port):\n'
+  # the ENTRIES the SERVER= line declares, so the caller can tell "a line I could not probe" from "no line at all":
+  # an empty host (`SERVER=:5999`) or a stray separator is declared and then skipped by the loop below (T384)
+  entries="$(okv_field "$f" SERVER | tr ',' '\n' | grep -c '[^[:space:]]' 2>/dev/null || true)"
   for s in $(okv_field "$f" SERVER | tr ',' '\n' | cut -d: -f1 | sed '/^[[:space:]]*$/d'); do
     # sed -nE, not 'sed -n' with BRE '\+': BSD sed has no BRE \+, the substitution never matches on macOS, and
     # the port falls through to the 5696 default below - a healthy endpoint on its named port is reported
     # unreachable CRIT (TARS/Jocasta/Vision 3 Nov). ERE works on both BSD and GNU sed.
     p="$(printf '%s\n' "$(okv_field "$f" SERVER)" | tr ',' '\n' | grep -E "^${s}(:|$)" | sed -nE 's/^[^:]*:([0-9]+).*/\1/p' | head -1)"
     p="${p:-5696}"
+    n=$((n + 1))
     if to 5 bash -c "</dev/tcp/$s/$p" 2>/dev/null; then printf '  %s:%s OK\n' "$s" "$p"; else printf '  %s:%s UNREACHABLE\n' "$s" "$p"; fi
   done
+  # the count the caller reconciles against its own OK/UNREACHABLE tally: a line this loop could not turn into a
+  # probe result is a server whose reachability was NOT established, and it must not be counted as nothing (T384)
+  printf '  parsed %s server line(s), probed %s\n' "${entries:-0}" "$n"
 }
 
 # endpoint_cert <okvclient.ora>: the endpoint certificate lives 1 year. A console rotation does not replace
@@ -122,7 +129,13 @@ diag_okv_client() {
     { server_reachable "$f"; } >"$rfile" 2>&1
     fence_start; head -n "$DIAG_LINES" "$rfile" >>"$REPORT"; fence_end
     nok="$(grep -cE '^  [^ ]+:[0-9]+ OK$' "$rfile" 2>/dev/null || true)"; nbad="$(grep -cE '^  [^ ]+:[0-9]+ UNREACHABLE$' "$rfile" 2>/dev/null || true)"
-    if [ $(( ${nok:-0} + ${nbad:-0} )) -eq 0 ]; then
+    local parsed; parsed="$(sed -nE 's/^  parsed ([0-9]+) server line\(s\), probed [0-9]+$/\1/p' "$rfile" | tail -1)"
+    if [ "${parsed:-0}" != "$(( ${nok:-0} + ${nbad:-0} ))" ] && [ "${parsed:-0}" != 0 ]; then
+      # the tally must be the number of server lines PARSED. If a probe line does not match the counter's shape the
+      # count is silently short and an unreachable server disappears from the report - the count is checked against
+      # what was parsed rather than trusted (T384).
+      finding CRIT okv "$f: $(( ${nok:-0} + ${nbad:-0} )) reachability line(s) counted against ${parsed} SERVER line(s) parsed - a server line the probe did not turn into an OK/UNREACHABLE result, so a server this client needs was NOT probed; the fence above shows what was probed"
+    elif [ $(( ${nok:-0} + ${nbad:-0} )) -eq 0 ]; then
       # no SERVER= line means nothing was probed: that is an unreadable read, not a clean one. Without this the
       # report shows an empty reachability fence, 0 findings and exit 0 while the client reaches no Key Vault
       # (Vision, 3 Nov).
