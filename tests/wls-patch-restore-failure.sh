@@ -82,5 +82,21 @@ rc="$(restore "$T/home-baddom" "$BD")"
 grep -q 'Domain restore failed' "$T/out" && ok || bad "the domain failure is not named: $(grep -E 'ERROR' "$T/out" | head -2)"
 [ -z "$(claims "$T/home-baddom" "$BD")" ] && ok || bad "restored_from=$BD was recorded after a failed domain restore - a false success"
 
+# 5. two restores of one home inside the same second (a composer or a retry loop): the moved-aside path must always
+#    be NEW. The aside name has second resolution, so this case pre-creates the aside directories for this second and
+#    the next two, each already holding a home - the state a restore one second earlier leaves - and then restores.
+#    Before the fix, mv moved the home INTO an existing aside directory and died with "mv failed"
+#    ('Directory not empty') before it touched a good archive (T382).
+build; mkdir -p "$T/home-twice"; rm -rf "$T"/env/fmw.broken-* "$T"/env/domains/*.broken-*
+now="$(date +%s)"; pre=""
+for k in 0 1 2; do
+  ts="$(date -r "$((now + k))" '+%Y%m%d-%H%M%S' 2>/dev/null || date -d "@$((now + k))" '+%Y%m%d-%H%M%S')"
+  a="$ORACLE_HOME.broken-$ts"; mkdir -p "$a/$(basename "$ORACLE_HOME")"; : >"$a/$(basename "$ORACLE_HOME")/earlier"; pre="$pre $a"
+done
+HOME="$T/home-twice" bash "$SCRIPT" restore "$T/env/backups/b1" --yes >"$T/out" 2>&1; rc=$?
+asides="$(ls -d "$ORACLE_HOME".broken-* 2>/dev/null | wc -l | tr -d ' ')"
+untouched=1; for a in $pre; do [ -f "$a/$(basename "$ORACLE_HOME")/earlier" ] && [ "$(ls -A "$a" | wc -l | tr -d ' ')" = 1 ] || untouched=0; done
+[ "$rc" = 0 ] && [ "$asides" = 4 ] && [ "$untouched" = 1 ] && ok || bad "a second restore in the same second: rc $rc (want 0), $asides aside dirs (want 4: 3 earlier + 1 new), earlier asides untouched=$untouched: $(grep -E 'ERROR|mv' "$T/out" | head -2)"
+
 echo "wls-patch restore-failure gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

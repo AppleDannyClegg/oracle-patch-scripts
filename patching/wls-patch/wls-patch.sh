@@ -826,6 +826,16 @@ cmd_backup() {
   log "Backup complete: $dest"
 }
 
+
+# aside_path <dir>: a path that does not exist yet, for moving <dir> aside. The stamp has second resolution, so a second
+# restore inside the same second (a composer, a retry loop) used to reuse the first one's aside directory: mv then moved
+# the home INTO it and died "Directory not empty" before touching a good archive (T382). A taken name gets -1, -2, ...
+aside_path() {
+  local base p n=0
+  base="$1.broken-$(date '+%Y%m%d-%H%M%S')"; p="$base"
+  while [ -e "$p" ] || [ -L "$p" ]; do n=$((n + 1)); p="$base-$n"; done
+  printf '%s' "$p"
+}
 cmd_restore() {
   setup_env
   [ -n "$RUN_DIR" ] || { RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir restore; }
@@ -840,7 +850,7 @@ cmd_restore() {
   fi
   confirm "Replace $ORACLE_HOME with backup $src?" || return 1
   local aside
-  aside="$ORACLE_HOME.broken-$(date '+%Y%m%d-%H%M%S')"
+  aside="$(aside_path "$ORACLE_HOME")"
   log "Moving $ORACLE_HOME aside to $aside"
   run_cmd mv "$ORACLE_HOME" "$aside" || die "mv failed"
   run_cmd tar -xzf "$src/oracle_home.tar.gz" -C "$(dirname "$ORACLE_HOME")" || die "Restore failed - old home is at $aside"
@@ -849,7 +859,7 @@ cmd_restore() {
     local d i=0
     while read -r d; do
       i=$((i + 1))
-      run_cmd mv "$d" "$d.broken-$(date '+%Y%m%d-%H%M%S')"
+      run_cmd mv "$d" "$(aside_path "$d")"
       run_cmd tar -xzf "$src/domain-$i.tar.gz" -C "$(dirname "$d")" || die "Domain restore failed for $d"
     done <"$src/domains.txt"
   fi
