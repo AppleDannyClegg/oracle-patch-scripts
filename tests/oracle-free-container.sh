@@ -26,6 +26,16 @@ run_verdict() { # <name> <rc> <logfile>; return 1 (and print a FAIL line) when t
   return 0
 }
 
+# A kept container (--keep) is reused by the next run, and its /scripts is whatever tree CREATED it. A run from another
+# worktree attached to it went green on that other tree's code (T399: a container mounted on /tmp/t202 served a run
+# from /tmp/t384-wt). mount_is_repo says whether a mount source is this repo, both sides resolved (/tmp and
+# /private/tmp are one directory on macOS); an empty or missing source is never a match.
+mount_is_repo() { # <mount source> <repo>
+  local a b; [ -n "$1" ] || return 1
+  a="$(cd "$1" 2>/dev/null && pwd -P)" || return 1; b="$(cd "$2" 2>/dev/null && pwd -P)" || return 1
+  [ "$a" = "$b" ]
+}
+
 if [ "$SELFTEST" = 1 ]; then
   st=0; d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
   expect() { # <want: pass|fail> <rc> <log body> <label>
@@ -40,6 +50,16 @@ if [ "$SELFTEST" = 1 ]; then
   expect fail 1 '2026-01-01 00:00:00 [ERROR] Cannot create run dir /u01/oracle-patch-scripts/okv-diag/runs/x' 'an [ERROR] then exit 1 -> FAIL (T160)'
   expect fail 2 '2026-01-01 00:00:00 [CRIT] FREE: no backup
 2026-01-01 00:00:00 [ERROR] opatch lspatches failed' 'a [ERROR] deeper in the log -> FAIL even at rc 2'
+  mexpect() { # <want: match|refuse> <source> <repo> <label>
+    if mount_is_repo "$2" "$3"; then got=match; else got=refuse; fi
+    [ "$got" = "$1" ] && echo "ok   - $4" || { echo "FAIL - $4 (want $1, got $got)"; st=1; }
+  }
+  mkdir -p "$d/repoA" "$d/repoB"; ln -s "$d/repoA" "$d/linkA"
+  mexpect match "$d/repoA" "$d/repoA" 'a container mounted on this repo -> reuse'
+  mexpect refuse "$d/repoB" "$d/repoA" 'a container mounted on ANOTHER tree -> refuse (T399)'
+  mexpect match "$d/linkA" "$d/repoA" 'the same dir by another path (a symlink, /tmp vs /private/tmp) -> reuse'
+  mexpect refuse "" "$d/repoA" 'no /scripts mount found -> refuse'
+  mexpect refuse "$d/gone" "$d/repoA" 'a mount source that no longer exists -> refuse'
   echo "--- selftest: $st failed (0 = all passed) ---"; exit "$st"
 fi
 command -v docker >/dev/null || { echo "docker not found"; exit 1; }
@@ -53,6 +73,9 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
   docker rm -f "$NAME" >/dev/null 2>&1
   docker run -d --name "$NAME" -p 1521:1521 -e ORACLE_PASSWORD=Oracle_123 -v "$REPO":/scripts:ro "$IMG" >/dev/null || exit 1
   CREATED=1
+else
+  src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/scripts"}}{{.Source}}{{end}}{{end}}' "$NAME" 2>/dev/null)"
+  mount_is_repo "$src" "$REPO" || { echo "the running $NAME container mounts ${src:-nothing} at /scripts, not this repo ($REPO) - its reports would test THAT tree's scripts. Refusing. If that container is yours to drop: docker rm -f $NAME, then re-run"; exit 2; }
 fi
 # readiness is checked even when this run attached to a container another run just created: docker run -d returns
 # as soon as the container exists, so "in docker ps" means started, not ready (Vision 10:35:41 finding #1).
