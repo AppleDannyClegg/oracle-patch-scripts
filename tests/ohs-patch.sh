@@ -29,7 +29,18 @@ bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 # skip <reason> <assertions-not-run>: a case that CANNOT run here (a fixture tool this image does not have) is not a
 # failure and not a pass. It is counted and named, with the number of assertions behind it, so a green summary says
 # how much of the gate actually ran and 'skipped 2' is not read as 'two assertions' (T213, T263).
-skip() { skipped=$((skipped + 1)); skipped_asserts=$((skipped_asserts + $2)); echo "SKIP $1 ($2 assertions not run)"; }
+# The count is enforced, not assumed (T303). Measured, because the first account of this was wrong (Puck #13646):
+#   skip "reason"        -> "$2: unbound variable" under set -u, rc 1, no summary line. Loud already, but it names a
+#                          line number, not the case that forgot its count.
+#   skip "reason" 2x     -> error "value too great for base", and the function CARRIES ON with skipped_asserts
+#                          unchanged, so the summary says "1 skipped (0 assertions not run)" - the silent under-count.
+# This guard names the case and stops the gate before either shape can be read as a tally.
+skip() {
+  case "${2:-}" in
+    '' | *[!0-9]*) echo "FAIL skip(): '$1' needs an assertion count as its second argument"; exit 1 ;;
+  esac
+  skipped=$((skipped + 1)); skipped_asserts=$((skipped_asserts + $2)); echo "SKIP $1 ($2 assertions not run)";
+}
 # the zip fixtures need both: zip to build the archive, unzip for the script to read it (oraclelinux:8 has neither)
 have_zip() { command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; }
 
@@ -364,7 +375,7 @@ if have_zip; then
 build; running; ZD="$T/patches/zipped"; mkdir -p "$ZD"; (cd "$PD" && zip -qr "$ZD/p40005842_122140_Linux-x86-64.zip" 40005842)
 before="$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)"
 rc="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"; rc2="$(PATCH_INTERACTIVE=1 runc plan "$ZD")"
-[ "$rc" = 0 ] && [ "$rc2" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "plan is not read-only: rc $rc/$rc2, actions [$(acts)], runs $([ -d "$T/runs" ] && echo made): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
+[ "$rc" = 0 ] && [ "$rc2" = 0 ] && [ -z "$(acts)" ] && nobackup && [ ! -d "$T/runs" ] && ok || bad "plan is not read-only: rc $rc/$rc2 (want 0/0), actions [$(acts)] (want empty), backup $([ -n "$(find "$T/backup" -mindepth 1 2>/dev/null | head -1)" ] && echo MADE || echo none), runs $([ -d "$T/runs" ] && echo MADE || echo none): $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
 [ "$before" = "$(cd "$ZD" && find . | sort; cksum "$ZD"/*.zip)" ] && ok || bad "plan changed the patch folder: $(cd "$ZD" && find . | sort | tr '\n' ' ')"
 grep -q "would run $DOM/bin/stopComponent.sh ohs1" "$T/out" && grep -q 'would back up' "$T/out" && grep -q 'opatch apply -silent' "$T/out" && ok || bad "plan does not list the steps: $(grep -c dry-run "$T/out") dry-run lines"
 grep -q 'run does all of this' "$T/out" && ok || bad "plan does not say run does these steps for you"
@@ -456,7 +467,7 @@ build; running; : >"$LSP"; touch "$T/apply.fail"; rc="$(runr --yes)"
 
 # verify: read-only, and not ready says so
 build; running; rc="$(runc verify "$PD")"
-[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q '40005842 is NOT installed' "$T/out" && ok || bad "verify before the apply: rc $rc (want 1)"
+[ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q '40005842 is NOT installed' "$T/out" && ok || bad "verify before the apply: rc $rc (want 1), actions [$(acts)] (want empty), NOT-installed line count $(grep -c '40005842 is NOT installed' "$T/out") (want 1): $(grep -E 'ERROR|WARN' "$T/out" | head -2)"
 build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; touch "$T/curl.fail"; rc="$(runc verify "$PD")"
 [ "$rc" = 1 ] && grep -q 'does not answer on port 7777' "$T/out" && ok || bad "verify with a port down: rc $rc (want 1)"
 
@@ -491,5 +502,8 @@ grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! gre
 build; rc="$(runc frobnicate)"
 grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
 
-echo "ohs-patch gate: $pass passed, $fail failed${skipped:+, $skipped skipped ($skipped_asserts assertions not run: a case this host cannot run - not a pass, not a failure)}"
+# the tail is printed only when something WAS skipped: ${skipped:+...} expands for the string "0" too, so a clean run
+# used to say "0 skipped (0 assertions not run: ...)" - a summary claiming a gap it did not have (T316)
+skiptail=""; [ "$skipped" -gt 0 ] && skiptail=", $skipped skipped ($skipped_asserts assertions not run: a case this host cannot run - not a pass, not a failure)"
+echo "ohs-patch gate: $pass passed, $fail failed$skiptail"
 [ "$fail" = 0 ]
