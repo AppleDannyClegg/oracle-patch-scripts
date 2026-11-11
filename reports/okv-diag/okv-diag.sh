@@ -163,10 +163,12 @@ diag_okv_client() {
 # tde_checks <sid>: the database side - the TDE keystore must be OPEN against every instance, or TDE cannot
 # read an encrypted tablespace. Every keystore line names the INSTANCE, and the CONTAINER when v$containers and
 # v$encryption_wallet.con_id can be read (12.1+); a home where they cannot (non-CDB on an older release) is probed
-# first and gets the plain query, so it never loses its keystore check for a label (T384 shape (b), Gort #13808).
+# first and gets the plain query, so it never loses its keystore check for a label.
 # A keystore that is not OPEN is a CRIT, except for a keystore TYPE that tde_configuration does not use: under
-# KEYSTORE_CONFIGURATION=OKV a CLOSED FILE row is not an outage (a false CRIT on a real report, 11 Nov). With no
-# tde_configuration nothing says a type is unused, so every non-OPEN row stays a CRIT. A failed read is a WARN.
+# KEYSTORE_CONFIGURATION=OKV a CLOSED FILE row is not an outage. With no
+# tde_configuration nothing says a type is unused, so every non-OPEN row stays a CRIT. OPEN_NO_MASTER_KEY is a
+# WARN: the keystore is open but that container has no master key, so its encrypted data cannot be relied on.
+# A failed read is a WARN.
 tde_checks() {
   local sid="$1" cfg used="" ks rows err st wrl wt con lbl sev note
   h3 "database $sid: TDE keystore"
@@ -187,6 +189,7 @@ tde_checks() {
       [ -n "$st" ] || continue
       lbl="instance $sid${con:+, container $con}"; note=""
       case "$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')" in
+        OPEN_NO_MASTER_KEY) sev=WARN; note=" - keystore open but no master key set for this container" ;;
         OPEN*) sev=INFO ;;
         *) sev=CRIT
            if [ -n "$used" ] && [ -n "$wrl" ] && ! printf '%s\n' "$used" | tr '|' '\n' | grep -qixF -- "$wrl"; then

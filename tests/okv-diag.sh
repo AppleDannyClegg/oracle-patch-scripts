@@ -71,10 +71,10 @@ OKV_OUT="$T/out-c" bash "$SH" --okv-home "$T/c" --no-tar --quiet >/dev/null 2>&1
 pid=$!; sleep 1; kill -TERM "$pid" 2>/dev/null; wait "$pid"; rc=$?
 [ "$rc" = 143 ] && ok || no "signal: TERM gave rc=$rc (want 143) - the handler swallowed the signal and the run continued"
 
-# 4. the database side (T384): every keystore line names its instance, and its container when v$containers can be
-#    read; a non-CDB / pre-12c home that cannot read v$containers keeps its keystore check (shape (b), Gort #13808); a
+# 4. the database side: every keystore line names its instance, and its container when v$containers can be
+#    read; a non-CDB / pre-12c home that cannot read v$containers keeps its keystore check; a
 #    keystore that is not OPEN is a CRIT only for a keystore type tde_configuration uses - a CLOSED FILE row under
-#    KEYSTORE_CONFIGURATION=OKV is not an outage (the false alarm on a real report, 11 Nov). No database: a sqlplus
+#    KEYSTORE_CONFIGURATION=OKV is not an outage. No database: a sqlplus
 #    stub answers each statement the script sends, by what the statement selects.
 #    mkdb <dir> <tde_configuration|-> <containers: yes|no> <keystore rows, one per line: status|wrl_type|wallet_type|con>
 mkdb() {
@@ -123,7 +123,7 @@ r="$(rundb "$T/d3")"
 printf '%s\n' "$r" | grep -q 'CRIT.*container CDB\$ROOT: TDE keystore status = CLOSED' && ok \
   || { no "no tde_configuration: a CLOSED keystore must stay a CRIT:"; printf '%s\n' "$r" | grep 'TDE keystore' | sed 's/^/    /'; }
 # 4d. v$containers unreadable (non-CDB on an old release): the keystore is STILL checked, instance-labelled, no container
-#     and no 'NOT checked' / 'did not complete' WARN - the regression shape (a) would have caused
+#     and no 'NOT checked' / 'did not complete' WARN: a join that fails would lose the whole check
 mkdb "$T/d4" '-' no 'CLOSED|HSM|HSM|x'
 r="$(rundb "$T/d4")"
 if printf '%s\n' "$r" | grep -q 'CRIT.*instance TDB1: TDE keystore status = CLOSED (wrl_type=HSM' \
@@ -140,6 +140,14 @@ mkdb "$T/d6" 'KEYSTORE_CONFIGURATION=OKV' yes 'CLOSED||?|PDB2'
 r="$(rundb "$T/d6")"
 printf '%s\n' "$r" | grep -q 'CRIT.*container PDB2: TDE keystore status = CLOSED (wrl_type=?' && ok \
   || { no "empty wrl_type: a CLOSED row must stay a CRIT:"; printf '%s\n' "$r" | grep 'TDE keystore' | sed 's/^/    /'; }
+
+# 4g. OPEN_NO_MASTER_KEY is open but has no master key set for that container: a WARN, not a healthy INFO
+mkdb "$T/d7" 'KEYSTORE_CONFIGURATION=OKV' yes 'OPEN|OKV|HSM|CDB$ROOT
+OPEN_NO_MASTER_KEY|OKV|HSM|PDB3'
+r="$(rundb "$T/d7")"
+if printf '%s\n' "$r" | grep -q 'WARN.*container PDB3: TDE keystore status = OPEN_NO_MASTER_KEY .*no master key set for this container' \
+   && printf '%s\n' "$r" | grep -q 'INFO.*container CDB\$ROOT: TDE keystore status = OPEN (wrl_type=OKV'; then ok
+else no "OPEN_NO_MASTER_KEY: want a WARN with the no-master-key note and plain OPEN still INFO:"; printf '%s\n' "$r" | grep 'TDE keystore' | sed 's/^/    /'; fi
 
 echo "okv-diag gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
