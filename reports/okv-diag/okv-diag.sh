@@ -161,15 +161,44 @@ diag_okv_client() {
 }
 
 # tde_checks <sid>: the database side - the TDE keystore must be OPEN against every instance, or TDE cannot
-# read an encrypted tablespace. sql_checks adds a WARN naming the sid when the batch does not complete, so a
-# failed read is never a clean verdict.
+# read an encrypted tablespace. Every keystore line names the INSTANCE, and the CONTAINER when v$containers and
+# v$encryption_wallet.con_id can be read (12.1+); a home where they cannot (non-CDB on an older release) is probed
+# first and gets the plain query, so it never loses its keystore check for a label (T384 shape (b), Gort #13808).
+# A keystore that is not OPEN is a CRIT, except for a keystore TYPE that tde_configuration does not use: under
+# KEYSTORE_CONFIGURATION=OKV a CLOSED FILE row is not an outage (a false CRIT on a real report, 11 Nov). With no
+# tde_configuration nothing says a type is unused, so every non-OPEN row stays a CRIT. A failed read is a WARN.
 tde_checks() {
-  local sid="$1"
+  local sid="$1" cfg used="" ks rows err st wrl wt con lbl sev note
   h3 "database $sid: TDE keystore"
-  sql_checks "$sid" "$sid" "
-select 'CHECK|'||case when upper(status) like 'OPEN%' then 'INFO' else 'CRIT' end||'|TDE keystore status = '||status||' (wallet_type='||nvl(wallet_type,'?')||')' from v\$encryption_wallet;
-select 'CHECK|INFO|wallet_root = '||nvl(value,'(unset)') from v\$parameter where name='wallet_root';
-select 'CHECK|INFO|tde_configuration = '||nvl(value,'(unset)') from v\$parameter where name='tde_configuration';" || true
+  # tde_configuration (18c+; no row before it, so max() gives '-'). A failed read leaves 'used' empty = no downgrade.
+  cfg="$(sql_lines "$sid" "select nvl(max(value),'-') from v\$parameter where name='tde_configuration';" 2>/dev/null)" || cfg="(not read)"
+  used="$(printf '%s' "$cfg" | tr '[:lower:]' '[:upper:]' | sed -nE 's/.*KEYSTORE_CONFIGURATION=([A-Z|]+).*/\1/p')"
+  ks="select 'KS|'||w.status||'|'||w.wrl_type||'|'||nvl(w.wallet_type,'?')"
+  if sql_lines "$sid" "select count(*) from v\$containers c, v\$encryption_wallet w where c.con_id=w.con_id;" >/dev/null 2>&1; then
+    ks="$ks||'|'||nvl(c.name,'con_id '||w.con_id) from v\$encryption_wallet w left join v\$containers c on c.con_id=w.con_id order by w.con_id;"
+  else ks="$ks from v\$encryption_wallet w;"; fi
+  if ! rows="$(sql_lines "$sid" "$ks" 2>&1)"; then
+    err="$(printf '%s\n' "$rows" | grep -aoE '(ORA|SP2)-[0-9]+[^|]{0,70}' | head -1)"
+    finding WARN db "instance $sid: the TDE keystore state was NOT checked (v\$encryption_wallet read failed: ${err:-no error text})"
+  elif ! printf '%s\n' "$rows" | grep -q '^KS|'; then
+    finding WARN db "instance $sid: the TDE keystore state was NOT checked (v\$encryption_wallet returned no rows)"
+  else
+    while IFS='|' read -r _ st wrl wt con; do
+      [ -n "$st" ] || continue
+      lbl="instance $sid${con:+, container $con}"; note=""
+      case "$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')" in
+        OPEN*) sev=INFO ;;
+        *) sev=CRIT
+           if [ -n "$used" ] && [ -n "$wrl" ] && ! printf '%s\n' "$used" | tr '|' '\n' | grep -qixF -- "$wrl"; then
+             sev=INFO; note=" - not a keystore type tde_configuration uses (KEYSTORE_CONFIGURATION=$used), so not an outage"
+           fi ;;
+      esac
+      finding "$sev" db "$lbl: TDE keystore status = $st (wrl_type=${wrl:-?}, wallet_type=${wt:-?})$note"
+    done <<<"$(printf '%s\n' "$rows" | grep '^KS|')"
+  fi
+  finding INFO db "instance $sid: tde_configuration = $([ "$cfg" = - ] && echo '(unset)' || echo "$cfg")"
+  sql_checks "$sid" "instance $sid" "
+select 'CHECK|INFO|wallet_root = '||nvl(value,'(unset)') from v\$parameter where name='wallet_root';" || true
 }
 
 diag_databases() {
