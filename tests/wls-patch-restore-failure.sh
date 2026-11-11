@@ -47,6 +47,11 @@ build
 restore() {
   local home="$1" src="$2"
   mkdir -p "$home"
+  # wls-patch names the moved-aside home "$ORACLE_HOME.broken-$(date +%Y%m%d-%H%M%S)" - SECOND resolution. Two of these
+  # cases run inside the same second, so the second restore finds the first's aside directory already there, mv tries to
+  # move the home INTO it, and dies with "mv failed" before touching the archive. Clearing the leftovers is this gate
+  # staying about the ARCHIVE; the same-second collision is a separate finding (reported, not fixed here).
+  rm -rf "$T"/env/fmw.broken-* "$T"/env/domains/*.broken-*
   HOME="$home" bash "$SCRIPT" restore "$src" --yes >"$T/out" 2>&1
   echo $?
 }
