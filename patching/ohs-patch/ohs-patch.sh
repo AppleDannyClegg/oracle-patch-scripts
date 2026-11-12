@@ -36,6 +36,9 @@
 #   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
 #                           its first patch) instead of the latest one taken for this patch; the home must match
 #   --no-backup             refused: the backup is the README's rollback
+#   --client-19c-pending    preflight only: the DB Client 19c upgrade (34761383) runs BEFORE this patch in the same
+#                           outage (ohs-quarter.sh passes it), so a 12c client and a CheckApplicable that cannot pass
+#                           on 12c are reported, not blocking; apply runs its own preflight without it, on the 19c home
 #   --dry-run               the changing commands: say what would be done, change nothing (the zip goes to a scratch dir)
 #   --yes                   the changing commands: do not ask for confirmation (without it a terminal must answer 'yes')
 #
@@ -98,7 +101,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
-DRY_RUN=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""
+DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
 problems=0; unknowns=0
 # what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
@@ -271,7 +274,7 @@ cmd_inspect() {
     local b; b="$(printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE)' | cut -d';' -f2 | head -1)"
     log "  OHS bundle: ${b:-none}"
     local rv; rv="$(rsf_version "$OH")"
-    log "  DB client : ${rv:+oracle.rdbms.rsf $rv}${rv:-unknown (no oracle.rdbms.rsf in $OH/inventory/ContentsXML/comps.xml)}"
+    log "  DB client : $([ -n "$rv" ] && printf "oracle.rdbms.rsf %s" "$rv" || printf "unknown (no oracle.rdbms.rsf in %s)" "$OH/inventory/ContentsXML/comps.xml")"
     if printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "  series    : DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then log "  series    : plain OHS bundle line"
     else log "  series    : no OHS bundle installed yet"; fi
@@ -343,13 +346,15 @@ cmd_preflight() {
 
   # DB19C series (KB585169)
   local rsf; rsf="$(rsf_version "$OH")"
-  log "DB client : ${rsf:+oracle.rdbms.rsf $rsf}${rsf:-unknown (no oracle.rdbms.rsf in $OH/inventory/ContentsXML/comps.xml)}"
+  log "DB client : $([ -n "$rsf" ] && printf "oracle.rdbms.rsf %s" "$rsf" || printf "unknown (no oracle.rdbms.rsf in %s)" "$OH/inventory/ContentsXML/comps.xml")"
   if printf '%s' "$title" | grep -qi 'DB19C'; then
     # the client level, when the inventory shows it, decides; the bundle titles are only the fallback
     if [ -n "$rsf" ]; then
       case "$rsf" in
         19.*) log "series   : the home has the Database Client 19c (oracle.rdbms.rsf $rsf) - a DB19C bundle fits" ;;
-        *) block "$id is a DB19C bundle and needs the Database Client 19c in $OH, but oracle.rdbms.rsf is $rsf - install the DB Client 19c Upgrade (patch 34761383, an FMW installer with no rollback but the backup; KB585169) first" ;;
+        *) if [ "$CLIENT19_PENDING" = 1 ]; then
+             log "series   : $id is a DB19C bundle; oracle.rdbms.rsf is $rsf now and the DB Client 19c upgrade runs before it in this outage - apply checks it again on the 19c home"
+           else block "$id is a DB19C bundle and needs the Database Client 19c in $OH, but oracle.rdbms.rsf is $rsf - install the DB Client 19c Upgrade (patch 34761383, an FMW installer with no rollback but the backup; KB585169) first"; fi ;;
       esac
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "series   : home is on the DB19C line"
     elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then block "$id is a DB19C bundle but $OH is on the plain OHS bundle line - the Database Client 19c upgrade (KB585169) comes first"
@@ -363,6 +368,10 @@ cmd_preflight() {
   app="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckApplicable -ph . -oh "$OH" 2>&1)"; arc=$?
   if [ "$arc" = 0 ] && printf '%s' "$app" | grep -qiE 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
     log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
+  elif [ "$CLIENT19_PENDING" = 1 ]; then
+    # on a 12c client a DB19C patch cannot pass CheckApplicable yet (it needs oracle.rdbms.rsf 19); apply's own
+    # preflight asks again once the upgrade earlier in the outage has run, and a failure there restores
+    warn "components: CheckApplicable did not pass on the 12c client (rc $arc) - deferred: the DB Client 19c upgrade runs first in this outage and apply checks again. OPatch said: $(printf '%s\n' "$app" | grep -viE '^(oracle interim patch installer|copyright|invoking prereq|opatch (failed|succeeded))' | grep . | head -3 | tr '\n' ' ')"
   elif printf '%s' "$app" | grep -qi 'requires component(s) that are not installed'; then
     miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
     block "$id needs ${miss:-a component} that is not installed in $OH (OUI-67073) - opatch apply would refuse after the stop. For a DB19C bundle that is the Database Client 19c upgrade (KB585169), which comes first"
@@ -908,6 +917,7 @@ main() {
       --run-dir)     optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
       --backup-run)  optchk "$@"; BACKUP_RUN_ARG="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
+      --client-19c-pending) CLIENT19_PENDING=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --no-backup) NO_BACKUP=1; shift ;;
       -h|--help) usage; exit 0 ;;

@@ -341,7 +341,9 @@ for entry in "${APPLY[@]}"; do
     # no --will-stop here: that is java-patch's option. dbclient-upgrade's preflight only REPORTS what runs from the
     # home (its apply is what refuses a running home), and it stops at an option it does not know
     dc)   drun preflight "$arg" || die "dbclient-upgrade preflight failed - nothing changed"; log "dbclient: $arg preflight OK";;
-    ohs)  orun preflight "$arg" || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
+    # the DB Client 19c installer runs before every opatch set in this outage, so a DB19C set on today's 12c client
+    # is checked again by its own apply (field run 12 Nov 2026: 40005842 refused at 1/7 on the 12c client)
+    ohs)  if [ -n "$INSTALLER_DIR" ]; then orun preflight "$arg" --client-19c-pending; else orun preflight "$arg"; fi || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
   esac
 done
 

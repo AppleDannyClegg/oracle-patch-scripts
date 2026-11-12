@@ -325,6 +325,11 @@ grep -q '^dbclient .*--keep-patches 444' "$T/calls.log" && ok || bad "--keep-pat
 # disk, or stops preflight UNKNOWN on a box with no /u01/backup (T1114, Louie #15840)
 grep -q '^ohs preflight ' "$T/calls.log" && ! grep '^ohs preflight ' "$T/calls.log" | grep -qv -- "--backup-dir $T/bkd" && ok \
   || bad "--backup-dir did not reach every ohs-patch preflight: $(grep '^ohs preflight' "$T/calls.log" | head -2)"
+# the installer is staged, so every opatch preflight gets --client-19c-pending (the 19c client comes first in this
+# outage); no opatch apply does - apply re-checks on the 19c home (field run 12 Nov 2026, 40005842 at 1/7)
+grep -q '^ohs preflight ' "$T/calls.log" && ! grep '^ohs preflight ' "$T/calls.log" | grep -qv -- '--client-19c-pending' && ok \
+  || bad "--client-19c-pending did not reach every ohs-patch preflight: $(grep '^ohs preflight' "$T/calls.log" | head -2)"
+! grep -E '^ohs (apply|verify|stop|start|rollback|backup) ' "$T/calls.log" | grep -q -- '--client-19c-pending' && ok || bad "--client-19c-pending leaked past preflight"
 REAL_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 for pair in "java:java-patch/java-patch.sh" "wls:wls-patch/wls-patch.sh" "dbclient:dbclient-upgrade/dbclient-upgrade.sh" "ohs:ohs-patch/ohs-patch.sh"; do
   who="${pair%%:*}"; real="$REAL_DIR/${pair#*:}"
