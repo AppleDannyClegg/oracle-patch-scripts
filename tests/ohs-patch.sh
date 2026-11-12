@@ -439,6 +439,13 @@ build; running; grep -v weblogic.NodeManager "$T/ps.txt" >"$T/ps.new"; mv "$T/ps
 [ "$rc" = 0 ] && [ -z "$(fromhome)" ] && ok || bad "stop with node manager already down: rc $rc (want 0, the home is clear)"
 build; running; touch "$T/stop.stuck"; rc="$(runc stop --yes)"
 [ "$rc" = 1 ] && grep -q 'still running from' "$T/out" && ok || bad "stop that leaves a process: rc $rc (want 1)"
+# a given --run-dir is where stop and start log (ohs-quarter passes its outage's opatch dir), not a new
+# $RUN_BASE/<stamp>-stop|start beside it (T1107, Nexus #15824)
+build; running; rc="$(runc stop --yes --run-dir "$T/outage")"; rs="$(runc start --yes --run-dir "$T/outage")"
+[ "$rc" = 0 ] && [ "$rs" = 0 ] && grep -q 'stopNodeManager' "$T/outage/ohs-patch.log" && grep -q 'startNodeManager' "$T/outage/ohs-patch.log" \
+  && [ -z "$(find "$T/runs" -maxdepth 1 \( -name '*-stop' -o -name '*-start' \) 2>/dev/null)" ] \
+  && [ "$(stat -c %a "$T/outage" 2>/dev/null || stat -f %Lp "$T/outage")" = 700 ] && ok \
+  || bad "stop/start --run-dir: rc $rc/$rs, given dir [$(ls -A "$T/outage" 2>/dev/null | tr '\n' ' ')], runs [$(ls "$T/runs" 2>/dev/null | tr '\n' ' ')]"
 
 # apply: needs a completed backup of this home for this patch, and nothing running from the home
 build; rc="$(runc apply "$PD" --yes)"

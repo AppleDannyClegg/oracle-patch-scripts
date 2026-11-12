@@ -30,8 +30,9 @@
 #   --oracle-home DIR       the OHS (or WebLogic) home; default: $ORACLE_HOME, then the central inventory
 #   --domain-home DIR       the domain holding the OHS components; default: every domain in domain-registry.xml
 #   --backup-dir DIR        where the backup goes, for the free-space check (default /u01/backup)
-#   --run-dir DIR           the run dir to write: backup (a composer's one backup, ohs-quarter.sh), and the run
-#                           rollback restores from (default: the latest under <output dir>/ohs-patch/runs)
+#   --run-dir DIR           the run dir to write: backup (a composer's one backup, ohs-quarter.sh), stop and start
+#                           (their log), and the run rollback restores from (default: the latest under
+#                           <output dir>/ohs-patch/runs)
 #   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
 #                           its first patch) instead of the latest one taken for this patch; the home must match
 #   --no-backup             refused: the backup is the README's rollback
@@ -789,8 +790,9 @@ discover() {
   [ -n "$COMPS" ] || die "no OHS component in any domain of $OH - pass --domain-home"
 }
 
-# a run dir for a command that changes the services but is not part of a run (its log only)
-open_log() { RUN_DIR="$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$1"; [ "$DRY_RUN" = 1 ] && return 0; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"; }
+# a run dir for a command that changes the services but is not part of a run (its log only). A given --run-dir is
+# used as it is: ohs-quarter.sh passes its outage's dir, so stop and start log there, not beside it (T1107)
+open_log() { RUN_DIR="${RUN_DIR_ARG:-$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-$1}"; [ "$DRY_RUN" = 1 ] && return 0; mkdir -p "$RUN_DIR" || die "cannot create run dir $RUN_DIR: $OUTPUT_HINT"; }
 
 cmd_stop() {
   require_detached stop
