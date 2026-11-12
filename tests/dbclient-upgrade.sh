@@ -42,6 +42,13 @@ build; mkdir -p "$OH/wlserver"; echo '<registry><distribution status="installed"
 grep -q 'registry.xml names: WebLogic Server$' "$T/out" && ok || bad "the refusal does not show what registry.xml names: $(grep BLOCKING "$T/out" | head -1)"
 build; printf '<registry>\n <distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n  <feature-set name="ohs"/>\n </distribution>\n <distribution status="installed" name="Oracle HTTP Server Web Tier" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 1 ] && grep -q 'registry.xml names: Fusion Middleware Infrastructure; Oracle HTTP Server Web Tier$' "$T/out" && ok || bad "two distributions not both named: $(grep BLOCKING "$T/out" | head -1)"
+# the names listed (T1118, Nexus #15849): two tags on one line, a deinstalled entry, more than 8, a wrapped tag
+regnames() { printf "$1" >"$OH/inventory/registry.xml"; rc="$(pre)"; [ "$rc" = 1 ] && grep -q "registry.xml names: $2\$" "$T/out" && ok || bad "$3: rc $rc: $(grep BLOCKING "$T/out" | sed 's/.*registry.xml names: //' | head -1)"; }
+build; regnames '<registry><distribution status="installed" name="A"/><distribution status="installed" name="B"/></registry>\n' 'A; B' "two distributions on one line"
+build; regnames '<distribution status="deinstalled" name="Old"/>\n<distribution status="installed" name="New"/>\n' 'New' "a deinstalled distribution was listed"
+build; regnames "$(for i in 1 2 3 4 5 6 7 8 9 10; do printf '<distribution status="installed" name="P%s"/>\\n' $i; done)" 'P1; P2; P3; P4; P5; P6; P7; P8; ... (2 more)' "more than 8 names"
+build; regnames '<distribution status="installed"\n    name="Wrapped" version="1"/>\n' 'Wrapped' "a tag with name= on the next line"
+build; regnames '<distribution status="deinstalled" name="Old"/>\n' 'no installed <distribution> entries' "only a deinstalled entry"
 build; rm -f "$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*registry.xml' "$T/out" && ! grep -q READY "$T/out" && ok || bad "no registry.xml was not UNKNOWN: rc $rc"
 

@@ -381,10 +381,23 @@ scope_of() {
   else echo embedded; fi
 }
 
-# the products registry.xml does name (its <distribution> names, deduplicated), so a refusal shows what is there
+# the products registry.xml does name, so a refusal shows what is there: each installed <distribution>'s name, in
+# file order, deduplicated, at most 8 then a count. The file is read whole, so two tags on one line and a tag whose
+# attributes wrap are both seen; a status other than "installed" (deinstalled) is not a product of this home.
 reg_products() {
-  sed -n 's/.*<distribution[^>]*[[:space:]]name="\([^"]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null \
-    | awk '!seen[$0]++' | head -8 | awk 'NR>1{printf "; "} {printf "%s", $0} END{if (NR==0) printf "no <distribution> entries"}'
+  awk '{ s = s " " $0 } END {
+    while (match(s, /<distribution[ \t][^>]*>/)) {
+      tag = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+      if (match(tag, /[ \t]status="[^"]*"/) && substr(tag, RSTART, RLENGTH) !~ /"installed"$/) continue
+      if (!match(tag, /[ \t]name="[^"]*"/)) continue
+      nm = substr(tag, RSTART + 7, RLENGTH - 8)
+      if (nm in seen) continue
+      seen[nm] = 1; n++
+      if (n <= 8) out = out (n > 1 ? "; " : "") nm
+    }
+    if (n == 0) out = "no installed <distribution> entries"; else if (n > 8) out = out "; ... (" (n - 8) " more)"
+    printf "%s", out
+  }' "$1/inventory/registry.xml" 2>/dev/null
 }
 
 # 'ok <what>' / 'block <what>' / 'unknown <why>': RHEL or Oracle Linux 7.4 or later (the README's only OS)
