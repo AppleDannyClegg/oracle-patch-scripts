@@ -381,6 +381,12 @@ scope_of() {
   else echo embedded; fi
 }
 
+# the products registry.xml does name (its <distribution> names, deduplicated), so a refusal shows what is there
+reg_products() {
+  sed -n 's/.*<distribution[^>]*[[:space:]]name="\([^"]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null \
+    | awk '!seen[$0]++' | head -8 | awk 'NR>1{printf "; "} {printf "%s", $0} END{if (NR==0) printf "no <distribution> entries"}'
+}
+
 # 'ok <what>' / 'block <what>' / 'unknown <why>': RHEL or Oracle Linux 7.4 or later (the README's only OS)
 os_check() {
   local f="$OS_RELEASE" id ver name
@@ -447,7 +453,7 @@ cmd_preflight() {
   case "$(scope_of "$OH")" in
     standalone) log "scope     : standalone OHS (registry.xml 'Oracle HTTP Server (Standalone)') - in KB585169's scope" ;;
     collocated) log "scope     : collocated OHS (registry.xml 'Oracle HTTP Server (Collocated)') - in KB585169's scope" ;;
-    embedded) block "registry.xml in $OH names neither 'Oracle HTTP Server (Standalone)' nor '(Collocated)': an OHS embedded in another FMW product, or a home not installed by the OHS installer - KB585169 puts it out of scope" ;;
+    embedded) block "registry.xml in $OH names neither 'Oracle HTTP Server (Standalone)' nor '(Collocated)': an OHS embedded in another FMW product, or a home not installed by the OHS installer - KB585169 puts it out of scope. registry.xml names: $(reg_products "$OH")" ;;
     *) unknown "cannot read $OH/inventory/registry.xml - how the home was installed (KB585169's scope) is unknown" ;;
   esac
 

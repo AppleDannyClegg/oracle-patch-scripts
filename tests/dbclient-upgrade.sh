@@ -39,6 +39,9 @@ build; echo '<registry><distribution status="installed" name="Oracle HTTP Server
 [ "$rc" = 0 ] && grep -q 'scope     : collocated' "$T/out" && ok || bad "a collocated home: rc $rc"
 build; mkdir -p "$OH/wlserver"; echo '<registry><distribution status="installed" name="WebLogic Server" version="12.2.1.4.0"/></registry>' >"$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*embedded in another FMW product' "$T/out" && ok || bad "an embedded OHS (WebLogic Server, no OHS product) was not refused: rc $rc"
+grep -q 'registry.xml names: WebLogic Server$' "$T/out" && ok || bad "the refusal does not show what registry.xml names: $(grep BLOCKING "$T/out" | head -1)"
+build; printf '<registry>\n <distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n  <feature-set name="ohs"/>\n </distribution>\n <distribution status="installed" name="Oracle HTTP Server Web Tier" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'registry.xml names: Fusion Middleware Infrastructure; Oracle HTTP Server Web Tier$' "$T/out" && ok || bad "two distributions not both named: $(grep BLOCKING "$T/out" | head -1)"
 build; rm -f "$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*registry.xml' "$T/out" && ! grep -q READY "$T/out" && ok || bad "no registry.xml was not UNKNOWN: rc $rc"
 
