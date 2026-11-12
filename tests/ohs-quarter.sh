@@ -268,6 +268,10 @@ bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run --force
   --backup-dir "$T/bkd" --remove-12c 111,222,333 --keep-patches 444 >"$T/out" 2>&1 && ok || bad "run with every option set failed: $(tail -3 "$T/out")"
 grep -q '^dbclient .*--remove-patches 111,222,333' "$T/calls.log" && ok || bad "--remove-12c did not reach the installer as --remove-patches 111,222,333: $(grep '^dbclient' "$T/calls.log" | head -2)"
 grep -q '^dbclient .*--keep-patches 444' "$T/calls.log" && ok || bad "--keep-patches did not reach the installer"
+# ohs-patch checks free space on its backup dir and defaults to /u01/backup: without --backup-dir it reads the wrong
+# disk, or stops preflight UNKNOWN on a box with no /u01/backup (T1114, Louie #15840)
+grep -q '^ohs preflight ' "$T/calls.log" && ! grep '^ohs preflight ' "$T/calls.log" | grep -qv -- "--backup-dir $T/bkd" && ok \
+  || bad "--backup-dir did not reach every ohs-patch preflight: $(grep '^ohs preflight' "$T/calls.log" | head -2)"
 REAL_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 for pair in "java:java-patch/java-patch.sh" "wls:wls-patch/wls-patch.sh" "dbclient:dbclient-upgrade/dbclient-upgrade.sh" "ohs:ohs-patch/ohs-patch.sh"; do
   who="${pair%%:*}"; real="$REAL_DIR/${pair#*:}"
