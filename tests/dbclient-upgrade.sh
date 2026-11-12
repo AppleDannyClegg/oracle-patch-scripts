@@ -42,6 +42,16 @@ build; mkdir -p "$OH/wlserver"; echo '<registry><distribution status="installed"
 grep -q 'registry.xml names: WebLogic Server$' "$T/out" && ok || bad "the refusal does not show what registry.xml names: $(grep BLOCKING "$T/out" | head -1)"
 build; printf '<registry>\n <distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n  <feature-set name="ohs"/>\n </distribution>\n <distribution status="installed" name="Oracle HTTP Server Web Tier" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 1 ] && grep -q 'registry.xml names: Fusion Middleware Infrastructure; Oracle HTTP Server Web Tier$' "$T/out" && ok || bad "two distributions not both named: $(grep BLOCKING "$T/out" | head -1)"
+# the field shape (12 Nov 2026): a multi-line registry.xml whose distribution is plain "Oracle HTTP Server", plus OPatch
+field_reg() { printf '<registry>\n   <distributions>\n      <distribution status="installed" name="Oracle HTTP Server" version="12.2.1.4.0">\n         <feature-set name="WebLogic Server"/>\n      </distribution>\n%b      <distribution status="installed" name="OPatch" version="13.9.4.2.25">\n      </distribution>\n   </distributions>\n</registry>\n' "$1" >"$OH/inventory/registry.xml"; }
+build; mkdir -p "$OH/wlserver"; field_reg ""; rc="$(pre)"
+[ "$rc" = 0 ] && grep -q 'scope     : standalone OHS (registry.xml: Oracle HTTP Server; OPatch)' "$T/out" && ok || bad "the field standalone shape (plain 'Oracle HTTP Server' + OPatch) was not standalone: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -2)"
+build; field_reg '      <distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n      </distribution>\n'; rc="$(pre)"
+[ "$rc" = 0 ] && grep -q 'scope     : collocated OHS' "$T/out" && ok || bad "plain OHS + Infrastructure was not collocated: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -2)"
+build; field_reg '      <distribution status="installed" name="Oracle Forms and Reports" version="12.2.1.4.0">\n      </distribution>\n'; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*embedded in another FMW product.*Oracle Forms and Reports' "$T/out" && ok || bad "plain OHS inside a Forms home was not refused as embedded: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -2)"
+build; printf '<registry>\n <distribution status="installed" name="Oracle HTTP Server Plugins" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 1 ] && ok || bad "a distribution only starting with 'Oracle HTTP Server' passed as the OHS installer's: rc $rc"
 build; rm -f "$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*registry.xml' "$T/out" && ! grep -q READY "$T/out" && ok || bad "no registry.xml was not UNKNOWN: rc $rc"
 
