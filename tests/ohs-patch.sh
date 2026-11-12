@@ -226,6 +226,15 @@ OUI-67073:UtilSession failed: Patch 40005842 requires component(s) that are not 
 OPatch failed with error code 73'
 build; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842 needs .*oracle.rdbms.rsf:19.0.0.0.0.*KB585169' "$T/out" && ! grep -q READY "$T/out" && ok || bad "a home missing a required component was not blocking: rc $rc, $(grep -E 'BLOCK|applicable|WARN' "$T/out" | head -3)"
+
+# a zip that is not an OPatch patch (no etc/config/inventory.xml inside: an unzip-into-place tool, say) is refused
+# by preflight, before the outage (T1067: ohs-quarter.sh applies RDA 39798204 through this script, unverified)
+if have_zip; then
+  build; rm -rf "${PD:?}/40005842"; mkdir -p "$T/tool/rda"; echo '#!/bin/sh' >"$T/tool/rda/rda.sh"
+  (cd "$T/tool" && zip -q -r "$PD/p39798204_122140_Generic.zip" rda); rm -f "$T/opatch.log"; rc="$(run)"
+  [ "$rc" = 2 ] && grep -q 'no patch in .*etc/config/inventory.xml' "$T/out" && ! grep -q READY "$T/out" && ! grep -qE '^(apply|prereq)' "$T/opatch.log" 2>/dev/null && ok || bad "a zip that is not an OPatch patch was not refused at preflight: rc $rc, $(tail -2 "$T/out")"
+  rm -rf "${T:?}/tool"
+else skip "a non-OPatch zip refused at preflight (no zip/unzip)" 1; fi
 # CheckApplicable failing for another reason blocks with its own words; one that cannot run is UNKNOWN, never READY
 build; printf 'Prereq "checkApplicable" failed.\nPatch 40005842: Platform 46 is not supported\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*not applicable.*Platform 46' "$T/out" && ok || bad "a failed CheckApplicable was not blocking: rc $rc: $(grep BLOCK "$T/out")"

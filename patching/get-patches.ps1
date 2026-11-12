@@ -724,16 +724,17 @@ function Get-OhsPlan($Manifest) {
 }
 
 # ---- the rest of the ohs-quarter.sh set ---------------------------------------------------------------
-# ohs-quarter.sh applies thirteen folders in one outage. The JDK, the OHS bundle and the installer are looked up
-# above; the other ten are single patches MOS has no "newest of" query for - the FMW CPU Patch Advisor page
+# ohs-quarter.sh applies sixteen folders in one outage. The JDK, the OHS bundle and the installer are looked up
+# above; the other thirteen are single patches MOS has no "newest of" query for - the FMW CPU Patch Advisor page
 # (KA1182 / Doc 2806740.2, 'Oracle HTTP Server 12.2.1.4 (with a DB Client 19c)') names them each quarter. So this
 # is a TABLE, not a lookup, and it is the October 2026 row. The same numbers, with the same folders, are the
 # built-in table of patching/ohs-quarter/ohs-quarter-stage.sh; tests/get-patches.ps1 fails if the two differ.
 $script:OhsSetQuarter = 'October 2026'
-$script:OhsSetFolders = @('wlspsu', 'dbclient', 'dbclientru', 'webgate', 'oss', 'ohs', 'jdbc', 'libovd', 'fmwthirdparty', 'perl', 'libdms2', 'libiau')
+$script:OhsSetFolders = @('wlspsu', 'dbclient', 'dbclientru', 'webgate', 'oss', 'ohs', 'fmwbp', 'jdbc', 'libovd', 'fmwthirdparty', 'perl', 'libdms2', 'libiau', 'cloningspu', 'rda')
 $script:OhsSetBuiltIn = @(
-    '39919567 wlspsu', '34761383 dbclient', '39425385 dbclientru', '39114058 webgate', '39567777 oss', '40005842 ohs',
-    '39487427 jdbc', '39465265 libovd', '39574504 fmwthirdparty', '38590502 perl', '38098858 libdms2', '38832179 libiau')
+    '39919567 wlspsu', '34761383 dbclient', '39425385 dbclientru', '39114058 webgate', '39567777 oss', '40005842 ohs', '36789759 fmwbp',
+    '39487427 jdbc', '39465265 libovd', '39574504 fmwthirdparty', '38590502 perl', '38098858 libdms2', '38832179 libiau',
+    '37056593 cloningspu', '39798204 rda')
 
 # "<number> <folder>" lines -> rows. A line that is not that shape, a folder the runbook does not have, or a
 # number or folder given twice is refused: a table read wrongly is a set downloaded wrongly

@@ -69,7 +69,7 @@ mkroot() { # <dir> [jdk] [wlspsu] [dbclient] [dbclientru] [webgate] [oss] [ohs] 
   [ "${2:-1}" = 1 ] && { mkdir -p "$d/jdk"; : >"$d/jdk/jdk-1.8.0_511_linux-x64_bin.tar.gz"; }
   local specs="wlspsu:${3:-1} dbclient:${4:-1} dbclientru:${5:-1} webgate:${6:-1} oss:${7:-1} ohs:${8:-1}"
   for s in $specs; do [ "${s#*:}" = 1 ] && { mkdir -p "$d/${s%%:*}"; : >"$d/${s%%:*}/patch.zip"; }; done
-  if [ "${9:-0}" = 1 ]; then for f in jdbc libovd fmwthirdparty perl libdms2 libiau; do mkdir -p "$d/$f"; : >"$d/$f/p.zip"; done; fi
+  if [ "${9:-0}" = 1 ]; then for f in fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda; do mkdir -p "$d/$f"; : >"$d/$f/p.zip"; done; fi
 }
 runq() { # <root> [env assignments...]
   local root="$1"; shift
@@ -97,11 +97,12 @@ lastpre="$(grep -n ' preflight' "$T/calls.log" | tail -1 | cut -d: -f1)"
 [ "$(grep -c '^java backup' "$T/calls.log")" = 1 ] && [ "$(grep -c '^wls backup' "$T/calls.log")" = 1 ] && [ "$(grep -c '^dbclient backup' "$T/calls.log")" = 1 ] && ok || bad "the backup phase is not one java + one wls + one shared: [$(grep ' backup' "$T/calls.log")]"
 [ "$(grep -c '^ohs stop' "$T/calls.log")" = 1 ] && ok || bad "ohs stop not exactly once"
 [ "$(grep -c '^ohs start' "$T/calls.log")" = 1 ] && ok || bad "ohs start not exactly once"
-# apply order: java -> wls -> dbclient -> dbclientru -> webgate -> oss -> ohs -> jdbc -> libovd -> fmwthirdparty -> perl -> libdms2 -> libiau
+# apply order: java -> wls -> dbclient -> dbclientru -> webgate -> oss -> ohs -> fmwbp -> jdbc -> libovd -> fmwthirdparty -> perl -> libdms2 -> libiau
+#   -> cloningspu -> rda
 ja="$(line '^java apply')"; wa="$(line '^wls apply')"; da="$(line '^dbclient apply')"
 ru="$(aapply_line dbclientru)"; wg="$(aapply_line webgate)"; oss="$(aapply_line oss)"; oh="$(aapply_line ohs)"
-jb="$(aapply_line jdbc)"; lo="$(aapply_line libovd)"; ft="$(aapply_line fmwthirdparty)"; pe="$(aapply_line perl)"; dm="$(aapply_line libdms2)"; ia="$(aapply_line libiau)"
-all="$ja $wa $da $ru $wg $oss $oh $jb $lo $ft $pe $dm $ia"
+fb="$(aapply_line fmwbp)"; jb="$(aapply_line jdbc)"; lo="$(aapply_line libovd)"; ft="$(aapply_line fmwthirdparty)"; pe="$(aapply_line perl)"; dm="$(aapply_line libdms2)"; ia="$(aapply_line libiau)"; cs="$(aapply_line cloningspu)"; rd="$(aapply_line rda)"
+all="$ja $wa $da $ru $wg $oss $oh $fb $jb $lo $ft $pe $dm $ia $cs $rd"
 for v in $all; do [ -n "$v" ] || bad "an expected apply is missing (chain: $all)"; done
 prev=0; good=1
 for v in $all; do [ "$v" -gt "$prev" ] || good=0; prev="$v"; done
@@ -115,14 +116,14 @@ shared="$(sed -n 's/.*--backup-run \([^ ]*\).*/\1/p' "$T/calls.log" | sort -u)"
 # ---- a missing/empty folder is left out ONLY when --skip names it -------------------------------------------
 # The composer used to skip a missing folder on its own and still print "OHS QUARTER OK". Pointed at a
 # get-patches.ps1 download tree (folders by patch kind) it would have applied the two names that match and
-# reported success over an outage that did two of thirteen sets.
+# reported success over an outage that did two of sixteen sets.
 runskip() { # <root> <skip list> [env...]: runq with --skip
   local root="$1" skip="$2"; shift 2
   : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
   env "$@" bash "$SCRIPT" --patch-root "$root" --run-dir "$T/run" --yes --skip "$skip" >"$T/out" 2>&1
 }
 nochild() { [ ! -s "$T/calls.log" ] && ok || bad "$1: a child was called ($(head -2 "$T/calls.log" | tr '\n' ';'))"; }
-REST=jdbc,libovd,fmwthirdparty,perl,libdms2,libiau
+REST=fmwbp,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau,cloningspu,rda
 mkroot "$T/root2" 1 1 1 1 0 0 0 0
 # not named: refused before any child is called, and it prints the list to add
 runq "$T/root2" && bad "a root missing nine folders ran without --skip" || ok
@@ -134,11 +135,11 @@ grep -q -- "--skip webgate,oss,ohs,$REST" "$T/out" && ok || bad "the refusal did
 runskip "$T/root2" "webgate,oss,ohs,$REST" && ok || bad "an outage that names what it leaves out failed: $(tail -3 "$T/out")"
 [ -z "$(aapply_line webgate)" ] && [ -z "$(aapply_line ohs)" ] && ok || bad "a skipped folder was applied"
 grep -q 'webgate/: missing' "$T/out" && ok || bad "the skipped webgate/ folder was not named"
-tail -1 "$T/out" | grep -q 'PARTIAL BY REQUEST: 4 of 13 sets' && ok || bad "a partial outage did not say so on its last line: $(tail -1 "$T/out")"
+tail -1 "$T/out" | grep -q 'PARTIAL BY REQUEST: 4 of 16 sets' && ok || bad "a partial outage did not say so on its last line: $(tail -1 "$T/out")"
 tail -1 "$T/out" | grep -q "LEFT OUT (--skip): webgate oss ohs ${REST//,/ }" && ok || bad "the last line did not list what was left out: $(tail -1 "$T/out")"
 grep -q "^left_out=webgate oss ohs ${REST//,/ }\$" "$T/run/state" && ok || bad "the run state does not record what was left out: $(grep left_out "$T/run/state")"
 # the whole runbook says so, and only then
-runq "$T/root" && tail -1 "$T/out" | grep -q 'OHS QUARTER OK: all 13 sets' && ok || bad "a full outage did not say all 13 sets: $(tail -1 "$T/out")"
+runq "$T/root" && tail -1 "$T/out" | grep -q 'OHS QUARTER OK: all 16 sets' && ok || bad "a full outage did not say all 16 sets: $(tail -1 "$T/out")"
 grep -q '^left_out=-$' "$T/run/state" && ok || bad "a full outage recorded something left out"
 # named but present: refused, either the flag or the folder is wrong
 runskip "$T/root" "webgate" && bad "--skip of a folder that has content ran" || ok

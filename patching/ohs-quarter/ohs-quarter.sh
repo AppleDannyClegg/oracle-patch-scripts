@@ -15,15 +15,21 @@
 #   webgate/        OAM WebGate DB19c 39114058         ohs-patch.sh    needs DBCLIENT FOR FMW 19.29 or later
 #   oss/            OSS 19C bundle 39567777            ohs-patch.sh    advisor applies OHS + OSS + DB Client together
 #   ohs/            OHS (NATIVE) DB19c 40005842        ohs-patch.sh
+#   fmwbp/          FMW Platform BP 36789759           ohs-patch.sh    functionality fixes (Daniel 7 Nov: in the set)
 #   jdbc/           JDBC 19.31 39487427                ohs-patch.sh
 #   libovd/         LibOVD 39465265                    ohs-patch.sh
 #   fmwthirdparty/  FMW third-party 39574504           ohs-patch.sh
 #   perl/  libdms2/  libiau/   PERL 38590502, LIBDMS2 38098858, LIBIAU 38832179   ohs-patch.sh
+#   cloningspu/     Cloning SPU 37056593               ohs-patch.sh
+#   rda/            RDA 39798204 (26.3 for FMW 12.2.1.4)  ohs-patch.sh  UNVERIFIED: nobody here has read its README, so
+#                   whether it is an OPatch patch is not known. If it is not, ohs-patch.sh preflight refuses it before
+#                   the outage ("no patch in <dir> (... etc/config/inventory.xml)", tests/ohs-patch.sh) - then
+#                   install it by hand and pass --skip rda.
 # The order among the opatch bundles is the one above, WebGate after the DBCLIENT RU for the 19.29 prereq.
 #
 # EVERY FOLDER ABOVE MUST BE THERE, OR BE NAMED IN --skip. A folder that is missing or empty is not applied, and
 # this script will not decide that for you: it stops before anything changes and prints the --skip list to add.
-# That is what keeps "OHS QUARTER OK" from being printed over an outage that applied two of thirteen sets.
+# That is what keeps "OHS QUARTER OK" from being printed over an outage that applied two of sixteen sets.
 # These folder names are this runbook's, one per step, and they carry the order. get-patches.ps1 files its
 # downloads by patch kind (wls/ db/ spb/ ohs/ jdk/), which is a different layout: a root holding wls/, db/ or
 # spb/ is refused, and the patches have to be sorted into the folders above first:
@@ -145,7 +151,7 @@ done
 [ -d "$PATCH_ROOT" ] || die "patch root is not a directory: $PATCH_ROOT"
 
 # ---- the folders are the contract: every one is applied, or left out by name --------------------------------
-SETS=(jdk wlspsu dbclient dbclientru webgate oss ohs jdbc libovd fmwthirdparty perl libdms2 libiau)
+SETS=(jdk wlspsu dbclient dbclientru webgate oss ohs fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda)
 is_set() { local s; for s in "${SETS[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 skipped() { case ",$SKIP," in *",$1,"*) return 0;; esac; return 1; }
 IFS=',' read -r -a skip_names <<<"$SKIP"
@@ -181,7 +187,7 @@ dirs_ok() { # <dir> <name>: 0 when usable; logs the skip otherwise
 }
 dirs_ok "$PATCH_ROOT/wlspsu" wlspsu && WLSPSU_DIR="$PATCH_ROOT/wlspsu"
 dirs_ok "$PATCH_ROOT/dbclient" dbclient && INSTALLER_DIR="$PATCH_ROOT/dbclient"
-for fam in dbclientru webgate oss ohs jdbc libovd fmwthirdparty perl libdms2 libiau; do
+for fam in dbclientru webgate oss ohs fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda; do
   dirs_ok "$PATCH_ROOT/$fam" "$fam" && OPATCH_DIRS+=("$PATCH_ROOT/$fam")
 done
 [ -n "$JDK_TAR$WLSPSU_DIR$INSTALLER_DIR" ] || [ "${#OPATCH_DIRS[@]}" -gt 0 ] || die "nothing to apply under $PATCH_ROOT (no jdk/, wlspsu/, dbclient/ or opatch dir with content)"

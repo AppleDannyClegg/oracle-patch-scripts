@@ -17,30 +17,38 @@ snapshot() { (cd "$1" && find . | LC_ALL=C sort); }
 tree() { # <dir>: a full download
   local d="$1"; mkdir -p "$d/wls" "$d/ohs" "$d/jdk" "$d/dbclient" "$d/db"
   local n
-  for n in 39919567 39425385 39114058 39567777 39487427 39465265 39574504 38590502 38098858 38832179; do echo "zip $n" >"$d/wls/p${n}_122140_Generic.zip"; done
+  for n in 39919567 39425385 39114058 39567777 36789759 39487427 39465265 39574504 38590502 38098858 38832179 37056593 39798204; do echo "zip $n" >"$d/wls/p${n}_122140_Generic.zip"; done
   echo "zip 40005842" >"$d/ohs/p40005842_122140_Linux-x86-64.zip"
   echo "zip 34761383" >"$d/dbclient/p34761383_122140_Linux-x86-64.zip"
   echo "tar" >"$d/jdk/jdk-8u511-linux-x64.tar.gz"; echo "jdkzip" >"$d/jdk/p18143322_180511_Linux-x86-64.zip"
   echo "note" >"$d/README.txt"
 }
 
+# ---- the stage and the composer name the same folders: a folder the stage fills and ohs-quarter.sh does not read
+# is a patch the outage never applies while it still prints OK (T1067). Read from both scripts, not restated here.
+sets_of() { sed -n 's/^SETS=(\(.*\))$/\1/p' "$1"; }
+qsets="$(sets_of "$REPO/patching/ohs-quarter/ohs-quarter.sh")"; ssets="$(sets_of "$S")"
+r=0; [ -n "$qsets" ] && [ "$qsets" = "$ssets" ] || r=1; ok $r "the stage's SETS are ohs-quarter.sh's, in order: stage [$ssets] composer [$qsets]"
+maps="$(sed -n '/^MAP="/,/"$/p' "$S" | tr -d '"' | sed 's/^MAP=//' | awk 'NF == 2 { print $2 }')"
+r=0; for f in $maps; do case " $qsets " in *" $f "*) ;; *) r=1; echo "  stage MAP folder $f is not in ohs-quarter.sh SETS";; esac; done
+[ "$(printf '%s\n' $maps | grep -c .)" = 15 ] || r=1; ok $r "every folder in the stage's table is one ohs-quarter.sh reads (15 table rows; the JDK is the tarball)"
 # ---- plan changes nothing and names every destination ----
 tree "$T/dl"; before="$(snapshot "$T/dl")"
 "$S" plan "$T/dl" "$T/root" >"$T/plan.out" 2>&1; ok $? "plan on a full tree exits 0"
 r=0; [ "$(snapshot "$T/dl")" = "$before" ] && [ ! -e "$T/root" ] || r=1; ok $r "plan moves nothing and creates no root"
 has "$T/plan.out" "wlspsu/" && has "$T/plan.out" "p39919567_122140_Generic.zip"; ok $? "plan names the WLS PSU's folder"
-has "$T/plan.out" "all 13 runbook folders are filled"; ok $? "plan says all 13 folders are filled"
+has "$T/plan.out" "all 16 runbook folders are filled"; ok $? "plan says all 16 folders are filled"
 has "$T/plan.out" "jdk/p18143322_180511_Linux-x86-64.zip"; ok $? "plan lists the JDK zip as left, not as an unknown patch"
 
 # ---- run: every file in its runbook folder, the kind folders no longer carry patches ----
 "$S" run "$T/dl" "$T/root" >"$T/run.out" 2>&1; ok $? "run on a full tree exits 0"
-want="dbclient/p34761383_122140_Linux-x86-64.zip dbclientru/p39425385_122140_Generic.zip fmwthirdparty/p39574504_122140_Generic.zip jdbc/p39487427_122140_Generic.zip jdk/jdk-8u511-linux-x64.tar.gz libdms2/p38098858_122140_Generic.zip libiau/p38832179_122140_Generic.zip libovd/p39465265_122140_Generic.zip ohs/p40005842_122140_Linux-x86-64.zip oss/p39567777_122140_Generic.zip perl/p38590502_122140_Generic.zip webgate/p39114058_122140_Generic.zip wlspsu/p39919567_122140_Generic.zip"
+want="cloningspu/p37056593_122140_Generic.zip dbclient/p34761383_122140_Linux-x86-64.zip dbclientru/p39425385_122140_Generic.zip fmwbp/p36789759_122140_Generic.zip fmwthirdparty/p39574504_122140_Generic.zip jdbc/p39487427_122140_Generic.zip jdk/jdk-8u511-linux-x64.tar.gz libdms2/p38098858_122140_Generic.zip libiau/p38832179_122140_Generic.zip libovd/p39465265_122140_Generic.zip ohs/p40005842_122140_Linux-x86-64.zip oss/p39567777_122140_Generic.zip perl/p38590502_122140_Generic.zip rda/p39798204_122140_Generic.zip webgate/p39114058_122140_Generic.zip wlspsu/p39919567_122140_Generic.zip"
 got="$(cd "$T/root" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
-r=0; [ "$got" = "$want" ] || r=1; ok $r "run files the 13 sets exactly: [$got]"
+r=0; [ "$got" = "$want" ] || r=1; ok $r "run files the 16 sets exactly: [$got]"
 r=0; [ "$(cat "$T/root/webgate/p39114058_122140_Generic.zip")" = "zip 39114058" ] || r=1; ok $r "a staged file is the file that was downloaded"
 r=0; [ -z "$(find "$T/dl/wls" "$T/dl/ohs" "$T/dl/dbclient" -type f)" ] || r=1; ok $r "run moved the patches out of the kind folders"
 for k in wls db spb; do r=0; [ ! -e "$T/root/$k" ] || r=1; ok $r "the staged root has no $k/ (ohs-quarter.sh refuses one)"; done
-has "$T/run.out" "staged 13 file(s)"; ok $? "run counts what it staged"
+has "$T/run.out" "staged 16 file(s)"; ok $? "run counts what it staged"
 
 # ---- the staged root is one ohs-quarter.sh accepts, and the download tree is one it refuses ----
 mk() { printf '#!/bin/sh\nexit 0\n' >"$1"; chmod +x "$1"; }
@@ -55,8 +63,8 @@ q "$T/root" >"$T/q-root.out" 2>&1
 # ---- a partial download: staged, and the missing folders are named with the --skip list ----
 mkdir -p "$T/part/ohs" "$T/part/dbclient"; echo a >"$T/part/ohs/p40005842_122140_Linux-x86-64.zip"; echo b >"$T/part/dbclient/p34761383_122140_Linux-x86-64.zip"
 "$S" run "$T/part" "$T/root-part" >"$T/part.out" 2>&1; ok $? "a partial download is staged (exit 0)"
-has "$T/part.out" "NOT IN THIS DOWNLOAD: jdk wlspsu dbclientru webgate oss jdbc libovd fmwthirdparty perl libdms2 libiau"; ok $? "the folders the download lacks are named"
-has "$T/part.out" "--skip jdk,wlspsu,dbclientru,webgate,oss,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau"; ok $? "the --skip list ohs-quarter.sh would need is printed, not applied"
+has "$T/part.out" "NOT IN THIS DOWNLOAD: jdk wlspsu dbclientru webgate oss fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda"; ok $? "the folders the download lacks are named"
+has "$T/part.out" "--skip jdk,wlspsu,dbclientru,webgate,oss,fmwbp,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau,cloningspu,rda"; ok $? "the --skip list ohs-quarter.sh would need is printed, not applied"
 
 # ---- refusals: all before any change ----
 refuses() { # <what> <expected text> <src> <dest> [args...]
@@ -80,7 +88,7 @@ has "$T/b.out" "WLS PSU in wlspsu/"; ok $? "...and the output says the home take
 ! has "$T/b.out" "Add it with --map"; ok $? "...not the unknown-number error"
 "$S" run "$T/b" "$T/root-b" >"$T/b-run.out" 2>&1; ok $? "run with a Stack Patch Bundle present exits 0"
 r=0; [ -f "$T/b/spb/p40129641_122140_Generic.zip" ] && [ ! -e "$T/root-b/spb" ] || r=1; ok $r "...the bundle stays where it was and the root gets no spb/"
-has "$T/b-run.out" "staged 13 file(s)"; ok $? "...and the 13 runbook sets are staged"
+has "$T/b-run.out" "staged 16 file(s)"; ok $? "...and the 16 runbook sets are staged"
 # a --map line for the bundle's number still files it: the table is asked before the spb/ rule
 mkdir -p "$T/bm/spb"; echo spb >"$T/bm/spb/p40129641_122140_Generic.zip"; printf '40129641 wlspsu\n' >"$T/bmap"
 "$S" run "$T/bm" "$T/root-bm" --map "$T/bmap" >"$T/bm.out" 2>&1; ok $? "--map naming the bundle's number exits 0"

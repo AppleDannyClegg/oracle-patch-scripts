@@ -43,7 +43,7 @@ OHS_QUARTER_DBCLIENT=patching/dbclient-upgrade/dbclient-upgrade.sh \
 OHS_QUARTER_OHS_PATCH=patching/ohs-patch/ohs-patch.sh \
 HOME="$T/home" PATH="$T/stub:$PATH" RUN_BASE="$T/runs" START_TIMEOUT=1 POLL=1 OS_RELEASE="$T/os-release" \
   bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --oracle-home "$OH" --backup-dir "$T/backup" \
-  --skip wlspsu,dbclientru,webgate,oss,ohs,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau >"$T/out" 2>&1
+  --skip wlspsu,dbclientru,webgate,oss,ohs,fmwbp,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau,cloningspu,rda >"$T/out" 2>&1
 rc=$?
 
 SHARED="$T/run/backup"

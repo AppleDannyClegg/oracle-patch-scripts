@@ -792,7 +792,7 @@ finally {
     # downloaded here and unknown there is refused on the server (seen on the first real run, with the SPB)
     $stageMap = @((Get-Content -LiteralPath (Join-Path $root 'patching/ohs-quarter/ohs-quarter-stage.sh')) -join "`n" |
         Select-String -Pattern '(?s)\nMAP="(.*?)"' | ForEach-Object { $_.Matches[0].Groups[1].Value -split "`n" } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object)
-    Check ($stageMap.Count -eq 12 -and (($stageMap -join ',') -eq ((@($script:OhsSetBuiltIn) | Sort-Object) -join ','))) "the built-in set is ohs-quarter-stage.sh's table, number for number: [$($stageMap -join ',')] vs [$((@($script:OhsSetBuiltIn) | Sort-Object) -join ',')]"
+    Check ($stageMap.Count -eq 15 -and (($stageMap -join ',') -eq ((@($script:OhsSetBuiltIn) | Sort-Object) -join ','))) "the built-in set is ohs-quarter-stage.sh's table, number for number: [$($stageMap -join ',')] vs [$((@($script:OhsSetBuiltIn) | Sort-Object) -join ',')]"
     # the shape of the first real manifest: a collocated home, client 12.1, three bare patch lines
     $real = Join-Path $tmp 'ohsset.txt'
     @('host|wl9', 'plat|linux|x86_64', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.25|no', 'patch|/u01/fmw|27516009|', 'patch|/u01/fmw|39487427|',
@@ -801,7 +801,7 @@ finally {
     $w9 = @($all9 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
     $p9 = @($all9 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
     $set9 = @($p9 | Where-Object { $_.Kind -eq 'ohsset' })
-    $want9 = @('39919567', '39425385', '39114058', '39567777', '39465265', '39574504', '38590502', '38098858', '38832179')
+    $want9 = @('39919567', '39425385', '39114058', '39567777', '36789759', '39465265', '39574504', '38590502', '38098858', '38832179', '37056593', '39798204')
     Check ((@($set9 | ForEach-Object { $_.Patch } | Sort-Object) -join ',') -eq (($want9 | Sort-Object) -join ',')) "a 12.2.1.4 OHS home is planned the rest of the runbook set, less the one it has (39487427): $(@($set9 | ForEach-Object { $_.Patch }) -join ',')"
     Check (@($set9 | ForEach-Object { Get-PatchFolder -Item $_ } | Sort-Object -Unique) -join ',' -eq 'ohsset') "the set's folder is ohsset/"
     Check (@($set9 | Where-Object { $_.Release -ne '12.2.1.4.0' -or $_.For -ne '/u01/fmw' }).Count -eq 0) "each set item carries the home and its release, so a record with several releases cannot be picked blind"
@@ -821,7 +821,7 @@ finally {
     Check (@($pc | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'Coherence*' }).Count -eq 0 -and @($pc | Where-Object { $_.Kind -eq 'spb' }).Count -eq 0) "an OHS home with Coherence installed is planned no MOS Coherence patch: $(@($pc | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     # the first fixture again: which homes get the set, and the installer where the lookup could not decide
     $set8 = @($p8 | Where-Object { $_.Kind -eq 'ohsset' })
-    Check ($set8.Count -eq 10) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
+    Check ($set8.Count -eq 13) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
     Check (@($w8 | Where-Object { "$_" -like '*/u01/ohsnone*no readable Database Client level*34761383*' }).Count -eq 0 -and @($p8 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 2) "an installer already planned for another home is not planned or warned about again"
     $noCl = Join-Path $tmp 'ohsset-nocl.txt'
     @('host|wl9', 'plat|linux|x86_64', 'home|/u01/ohsold|ohs|12.2.1.4.0|13.9.4.2.23', 'patch|/u01/ohsold|36187026|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115',

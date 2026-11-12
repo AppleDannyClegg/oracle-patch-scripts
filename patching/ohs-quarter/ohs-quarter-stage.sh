@@ -2,8 +2,8 @@
 # ohs-quarter-stage.sh - sort a get-patches.ps1 download tree into the folders ohs-quarter.sh reads.
 #
 # get-patches.ps1 files what it downloads by patch kind (wls/ spb/ db/ ohs/ jdk/ dbclient/). ohs-quarter.sh reads
-# one folder per step of its runbook (jdk wlspsu dbclient dbclientru webgate oss ohs jdbc libovd fmwthirdparty perl
-# libdms2 libiau) and refuses a root that holds wls/, db/ or spb/. This script is the step between the two: it
+# one folder per step of its runbook (jdk wlspsu dbclient dbclientru webgate oss ohs fmwbp jdbc libovd fmwthirdparty
+# perl libdms2 libiau cloningspu rda) and refuses a root that holds wls/, db/ or spb/. This script is the step between the two: it
 # reads the patch NUMBER out of each Oracle file name (p<number>_<release>_<platform>.zip) and puts the file in
 # the folder the runbook applies that number from. It needs no network and reads nothing but file names.
 #
@@ -40,7 +40,7 @@
 
 set -uo pipefail
 
-SETS=(jdk wlspsu dbclient dbclientru webgate oss ohs jdbc libovd fmwthirdparty perl libdms2 libiau)
+SETS=(jdk wlspsu dbclient dbclientru webgate oss ohs fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda)
 # number folder - ohs-quarter.sh's own table (its header, "The set, in the order this script applies it")
 MAP="39919567 wlspsu
 34761383 dbclient
@@ -48,12 +48,15 @@ MAP="39919567 wlspsu
 39114058 webgate
 39567777 oss
 40005842 ohs
+36789759 fmwbp
 39487427 jdbc
 39465265 libovd
 39574504 fmwthirdparty
 38590502 perl
 38098858 libdms2
-38832179 libiau"
+38832179 libiau
+37056593 cloningspu
+39798204 rda"
 
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
