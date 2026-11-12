@@ -16,6 +16,10 @@ SCRIPT="$ROOT/patching/ohs-quarter/ohs-quarter.sh"
 [ -f "$SCRIPT" ] || { echo "ohs-quarter gate: $SCRIPT not found"; exit 2; }
 
 T="$(cd "$(mktemp -d /tmp/oq.XXXXXX)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
+# the signals this test's caller already ignores, as a start would see them. run-all starts each gate as a background
+# job, which bash gives SIGINT ignored, and a non-interactive shell cannot reset a signal ignored on entry (POSIX), so
+# a start inherits that ignore whatever ohs-quarter does. The start check below fails only on traps beyond these (T1171).
+bash -c 'trap -p TERM INT' >"$T/start-base"
 pass=0; fail=0
 ok() { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
@@ -249,7 +253,8 @@ runq "$T/root" FAIL_DB_APPLY=1 SIGNAL_AT='dbclient rollback'; rc=$?
 # outage (Nexus T1144)
 for c in "FAIL_FIRST_STOP=1" "FAIL_DB_APPLY=1" "SIGNAL_AT=dbclient apply" "SIGNAL_AT=ohs stop"; do
   runq "$T/root" "$c"
-  [ -n "$(line '^ohs start')" ] && [ ! -s "$T/start-traps" ] && ok || bad "$c: a start ran with signals ignored: $(sort -u "$T/start-traps" | tr '\n' ' ')"
+  leaked="$(sort -u "$T/start-traps" | grep -vxF -f "$T/start-base")"
+  [ -n "$(line '^ohs start')" ] && [ -z "$leaked" ] && ok || bad "$c: a start ran with signals ignored that the caller did not ignore: $(printf '%s' "$leaked" | tr '\n' ' ')"
 done
 
 # ---- the promises the header makes, each tested (Cerebro 23:05:15: a hook defined but never set is a
