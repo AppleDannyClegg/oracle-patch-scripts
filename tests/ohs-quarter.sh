@@ -54,7 +54,8 @@ case "$1" in
       */oss) [ -n "${FAIL_OSS:-}" ] && exit 1;;
       */ohs) [ -n "${FAIL_OHS_APPLY:-}" ] && exit 1;;
     esac ;;
-  start) if [ -n "${FAIL_START:-}" ] && [ ! -e "__T__/start.failed" ]; then : >"__T__/start.failed"; exit 1; fi; : >"__T__/start.ok" ;;
+  start) bash -c 'trap -p TERM INT' >>"__T__/start-traps"   # what a daemon started now would inherit (T1137)
+    if [ -n "${FAIL_START:-}" ] && [ ! -e "__T__/start.failed" ]; then : >"__T__/start.failed"; exit 1; fi; : >"__T__/start.ok" ;;
   verify) [ -n "${FAIL_VERIFY:-}" ] && exit 1; [ "$who" = ohs ] && [ -n "${FAIL_OHS_VERIFY:-}" ] && exit 1 ;;
   rollback) [ -n "${FAIL_ROLLBACK:-}" ] && exit 1 ;;
   restore) [ -n "${FAIL_WLS_RESTORE:-}" ] && exit 1 ;;
@@ -76,7 +77,7 @@ mkroot() { # <dir> [jdk] [wlspsu] [dbclient] [dbclientru] [webgate] [oss] [ohs] 
 }
 runq() { # <root> [env assignments...]
   local root="$1"; shift
-  : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
+  : >"$T/calls.log"; : >"$T/start-traps"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
   env "$@" bash "$SCRIPT" --patch-root "$root" --run-dir "$T/run" --yes >"$T/out" 2>&1
 }
 line() { grep -n "$1" "$T/calls.log" | head -1 | cut -d: -f1; }
@@ -242,6 +243,14 @@ runq "$T/root" FAIL_DB_APPLY=1 SIGNAL_AT='dbclient rollback'; rc=$?
 [ "$rc" = 1 ] && ok || bad "a signal during recovery exited $rc (want 1: the recovery finishes)"
 [ "$(grep -c '^dbclient rollback' "$T/calls.log")" = 1 ] && [ "$(grep -c '^java rollback' "$T/calls.log")" = 1 ] && ok \
   || bad "a signal during recovery ran a restore twice: $(grep -E 'rollback|restore' "$T/calls.log" | tr '\n' ' ')"
+
+# every start - a failed-stop restart, a recovery, a signalled recovery - gives the components default INT/TERM: an
+# ignored signal is inherited, and a node manager or OHS started with TERM ignored cannot be stopped by the next
+# outage (Nexus T1144)
+for c in "FAIL_FIRST_STOP=1" "FAIL_DB_APPLY=1" "SIGNAL_AT=dbclient apply" "SIGNAL_AT=ohs stop"; do
+  runq "$T/root" "$c"
+  [ -n "$(line '^ohs start')" ] && [ ! -s "$T/start-traps" ] && ok || bad "$c: a start ran with signals ignored: $(sort -u "$T/start-traps" | tr '\n' ' ')"
+done
 
 # ---- the promises the header makes, each tested (Cerebro 23:05:15: a hook defined but never set is a
 #      test that does not run) -----------------------------------------------------------------------------------

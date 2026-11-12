@@ -298,17 +298,19 @@ recover() {
     jrun rollback || { err "java-patch rollback failed - restore the JDK by hand"; rec=0; }
   fi
   if [ "$rec" = 1 ]; then
+    trap ':' INT TERM   # handled, not ignored: what this starts gets default INT/TERM, so the next stop can stop it
     orun start || { err "the components did not start after recovery - manual attention needed"; rec=0; }
   else
     err "Recovery incomplete - components NOT started: the home may be part-patched. Fix by hand."
   fi
   [ "$rec" = 1 ]
 }
-# a signal during a recovery is ignored, so a second recovery never starts inside the first (T1137)
+# a signal during a recovery is ignored, so a second recovery never starts inside the first and a Ctrl-C to the
+# process group does not cut a restore short. An ignored signal is inherited, so every start sets ':' instead (T1137)
 fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
 # after a stop that did not lead to any apply: start the components again rather than leave them down (T1135)
 restart_after_stop() {
-  trap '' INT TERM
+  trap ':' INT TERM
   err "$1 - nothing patched. Starting them again"
   if ! orun start; then
     # a component the stop could not stop is still UP, and a start of it can fail: ask every component's ports (T1145)
