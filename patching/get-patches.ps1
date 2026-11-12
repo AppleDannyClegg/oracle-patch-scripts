@@ -502,10 +502,10 @@ function Get-WlsPlan($Wls, [switch] $OhsHome) {
         }
     }
 
-    # FMW Platform Bundle: only where one is installed
+    # FMW Platform Bundle: only where one is installed. An OHS home takes the set's fmwbp/ 36789759 instead (T1067)
     $bundlePattern = "(?i)^FMW PLATFORM BUNDLE PATCH $esc(?:\.0)?\.(\d{6})"
     $have = Get-InstalledLevel $Wls $bundlePattern
-    if ($have) {
+    if ($have -and -not $OhsHome) {
         $newest = Select-Newest $rows $bundlePattern
         if (-not $newest) { Write-Host "  $($Wls.Home): FMW Platform Bundle $have is installed; MOS's Recommended list has nothing newer, so nothing to download. For the newest, get the number from Doc 2806740.2 and pass -Patch." }
         elseif ([regex]::Match($newest.Abstract, $bundlePattern).Groups[1].Value -gt $have) {

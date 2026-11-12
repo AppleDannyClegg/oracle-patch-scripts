@@ -819,6 +819,13 @@ finally {
       'ohs|/u01/fmw|12.2.1.4.0|12.1.0.2.0') | Set-Content -LiteralPath $coh
     $pc = @(Get-PatchPlan (Read-Manifest $coh) 3>$null)
     Check (@($pc | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'Coherence*' }).Count -eq 0 -and @($pc | Where-Object { $_.Kind -eq 'spb' }).Count -eq 0) "an OHS home with Coherence installed is planned no MOS Coherence patch: $(@($pc | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
+    # ...and no MOS FMW Platform Bundle where one is installed: the set carries fmwbp/ 36789759, and the stage refuses a
+    # second bundle filed under wls/ (T1084 [P2], Quark #15764)
+    $fbp = Join-Path $tmp 'ohsset-fmwbp.txt'
+    @('host|wl9', 'plat|linux|x86_64', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.25|no', 'patch|/u01/fmw|27516009|', 'patch|/u01/fmw|39487427|',
+      'patch|/u01/fmw|36946553|FMW PLATFORM BUNDLE PATCH 12.2.1.4.240812', 'ohs|/u01/fmw|12.2.1.4.0|12.1.0.2.0') | Set-Content -LiteralPath $fbp
+    $pf = @(Get-PatchPlan (Read-Manifest $fbp) 3>$null)
+    Check (@($pf | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'FMW Platform Bundle*' }).Count -eq 0 -and @($pf | Where-Object { $_.Patch -eq '36789759' }).Count -eq 1) "an OHS home with an FMW Platform Bundle installed is planned the set's 36789759 only, no MOS bundle beside it: $(@($pf | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     # the first fixture again: which homes get the set, and the installer where the lookup could not decide
     $set8 = @($p8 | Where-Object { $_.Kind -eq 'ohsset' })
     Check ($set8.Count -eq 13) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
