@@ -72,6 +72,23 @@ r=0; [ ! -e "$T/root-u" ] || r=1; ok $r "a refused run creates no root"
 "$S" run "$T/u" "$T/root-u" --leave-unknown >"$T/lu.out" 2>&1; ok $? "--leave-unknown stages the rest"
 [ -f "$T/u/wls/p28186730_139400_Generic.zip" ] && has "$T/lu.out" "wls/p28186730_139400_Generic.zip"; ok $? "...and the unknown zip stays put and is listed"
 
+# ---- a WLS Stack Patch Bundle (get-patches.ps1's spb/) is not part of this runbook: named, left out, not a refusal ----
+tree "$T/b"; mkdir -p "$T/b/spb"; echo spb >"$T/b/spb/p40129641_122140_Generic.zip"
+"$S" plan "$T/b" "$T/root-b" >"$T/b.out" 2>&1; ok $? "a Stack Patch Bundle under spb/ does not stop the plan: $(grep ERROR "$T/b.out" | head -1)"
+has "$T/b.out" "spb/p40129641_122140_Generic.zip" && has "$T/b.out" "WLS Stack Patch Bundle"; ok $? "...it is named as the Stack Patch Bundle"
+has "$T/b.out" "WLS PSU in wlspsu/"; ok $? "...and the output says the home takes the WLS PSU instead"
+! has "$T/b.out" "Add it with --map"; ok $? "...not the unknown-number error"
+"$S" run "$T/b" "$T/root-b" >"$T/b-run.out" 2>&1; ok $? "run with a Stack Patch Bundle present exits 0"
+r=0; [ -f "$T/b/spb/p40129641_122140_Generic.zip" ] && [ ! -e "$T/root-b/spb" ] || r=1; ok $r "...the bundle stays where it was and the root gets no spb/"
+has "$T/b-run.out" "staged 13 file(s)"; ok $? "...and the 13 runbook sets are staged"
+# a --map line for the bundle's number still files it: the table is asked before the spb/ rule
+mkdir -p "$T/bm/spb"; echo spb >"$T/bm/spb/p40129641_122140_Generic.zip"; printf '40129641 wlspsu\n' >"$T/bmap"
+"$S" run "$T/bm" "$T/root-bm" --map "$T/bmap" >"$T/bm.out" 2>&1; ok $? "--map naming the bundle's number exits 0"
+r=0; [ -f "$T/root-bm/wlspsu/p40129641_122140_Generic.zip" ] || r=1; ok $r "...and files it where the map says"
+# an unknown number OUTSIDE spb/ is still refused: the spb/ case must not become a general pass
+tree "$T/b2"; mkdir -p "$T/b2/spb"; echo spb >"$T/b2/spb/p40129641_122140_Generic.zip"; echo x >"$T/b2/wls/p28186730_139400_Generic.zip"
+refuses "an unknown number beside a Stack Patch Bundle" "no folder for p28186730_139400_Generic.zip" "$T/b2" "$T/root-b2"
+
 tree "$T/j"; echo t2 >"$T/j/jdk/jdk-8u503-linux-x64.tar.gz"
 refuses "two JDK tarballs" "more than one JDK tarball" "$T/j" "$T/root-j"
 

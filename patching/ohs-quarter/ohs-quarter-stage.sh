@@ -30,6 +30,8 @@
 #   - a destination folder that already holds something else (ohs-patch.sh applies every patch in its folder, so
 #     last quarter's zip left there would be applied again)
 # A JDK is the one *.tar.gz (java-patch.sh takes the tarball; the zip get-patches.ps1 unpacked it from is left).
+# A zip under spb/ whose number the table does not name is a WLS Stack Patch Bundle: it is left where it is and
+# named, because the OHS home takes the WLS PSU (wlspsu/) instead. A --map line for its number still files it.
 #
 # It ends by naming the runbook folders that are still empty and the exact --skip list ohs-quarter.sh would need
 # for them. It does not decide that leaving them out is right: that is the operator's call, made by typing --skip.
@@ -105,7 +107,7 @@ EOF
 
 # ---- read the tree: every file gets a destination, is left on purpose, or is a reason to refuse --------------
 PLAN=""        # lines: <source path>|<folder>|<file name>
-UNKNOWN=""; LEFT=""; JDKS=""; problems=0
+UNKNOWN=""; LEFT=""; JDKS=""; SPBS=""; problems=0
 problem() { err "$*"; problems=$((problems + 1)); }
 while IFS= read -r f; do
   [ -n "$f" ] || continue
@@ -122,6 +124,10 @@ while IFS= read -r f; do
 "
       # the zip a JDK tarball came out of: java-patch.sh takes the tarball, so this is not a patch left unfiled
       elif [ "$(basename "$(dirname "$f")")" = jdk ]; then LEFT="${LEFT}${f}
+"
+      # get-patches.ps1's spb/: a WLS Stack Patch Bundle is for a WebLogic home's runbook (wls-patch.sh run), not
+      # this one - the OHS home takes the WLS PSU in wlspsu/. Left out on purpose and named, not refused
+      elif [ "$(basename "$(dirname "$f")")" = spb ]; then SPBS="${SPBS}${f}
 "
       else UNKNOWN="${UNKNOWN}${f}
 "; fi;;
@@ -186,6 +192,12 @@ if [ -n "$LEFT" ]; then
   echo "left where it is (not a patch this runbook applies):"
   while IFS= read -r f; do [ -n "$f" ] && echo "  ${f#"$SRC"/}"; done <<EOF
 $LEFT
+EOF
+fi
+if [ -n "$SPBS" ]; then
+  echo "left where it is (a WLS Stack Patch Bundle - not part of this runbook; the OHS home takes the WLS PSU in wlspsu/):"
+  while IFS= read -r f; do [ -n "$f" ] && echo "  ${f#"$SRC"/}"; done <<EOF
+$SPBS
 EOF
 fi
 [ "$problems" = 0 ] || die "$problems problem(s) above. Nothing changed."
