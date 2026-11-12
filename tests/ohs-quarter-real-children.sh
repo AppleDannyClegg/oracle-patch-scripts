@@ -13,7 +13,7 @@
 # both fixed the composer reaches 7/7. The ohs leg is --skip'd here because its bake needs a different fake home -
 # ohs-patch's own gate covers the same fix on that side (tests/ohs-patch.sh, the --run-dir case).
 #
-# What it cannot prove: the real box. A container or a host is not a-dev-host; this removes the fake-child
+# What it cannot prove: the real box. A container or a fake home is not the field box; this removes the fake-child
 # blindness, not the host blindness.
 #
 # Usage: tests/ohs-quarter-real-children.sh
@@ -58,6 +58,23 @@ grep -q 'backup needs <dir>' "$T/out" && bad "the composer called backup with no
 # and the apply that follows read that state instead of refusing
 grep -qE 'apply refused: (no completed backup|.*has no state)' "$T/out" && bad "the apply refused the shared backup: $(grep -E 'apply refused' "$T/out" | head -2 | tr '\n' ' ')" || ok
 grep -q '=== 4/7 apply' "$T/out" && ok || bad "the composer never reached the apply phase"
+
+# --dry-run over the same real child (T1114, Louie #15840): a dry backup writes no shared state, so the child's own
+# apply refuses "no completed backup" - the composer must not call it, or every dry run ends in recovery with exit 3
+# and "the home may be part-patched" for a home nothing touched
+build; : >"$T/ps.txt"
+OHS_QUARTER_JAVA_PATCH="$T/stub-java" OHS_QUARTER_WLS_PATCH="$T/stub-java" \
+OHS_QUARTER_DBCLIENT=patching/dbclient-upgrade/dbclient-upgrade.sh \
+OHS_QUARTER_OHS_PATCH=patching/ohs-patch/ohs-patch.sh \
+HOME="$T/home" PATH="$T/stub:$PATH" RUN_BASE="$T/runs" START_TIMEOUT=1 POLL=1 OS_RELEASE="$T/os-release" \
+  bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/dry" --yes --dry-run --oracle-home "$OH" --backup-dir "$T/backup" \
+  --skip wlspsu,dbclientru,webgate,oss,ohs,fmwbp,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau,cloningspu,rda >"$T/out" 2>&1
+rc=$?
+[ "$rc" = 0 ] && ok || bad "dry run: rc $rc: $(grep -E '\[ERROR\]' "$T/out" | head -3 | tr '\n' ' ')"
+grep -q '=== 7/7 OHS QUARTER OK' "$T/out" && ok || bad "dry run: no 7/7 OK line: $(tail -2 "$T/out" | tr '\n' ' ')"
+grep -qE 'recovering:|Recovery incomplete' "$T/out" && bad "dry run: the composer went into recovery: $(grep -E 'recover|Recovery' "$T/out" | head -2 | tr '\n' ' ')" || ok
+[ ! -s "$T/actions" ] && ok || bad "dry run: the home was acted on: $(tr '\n' ' ' <"$T/actions")"
+grep -q 'oracle.rdbms.rsf" VER="12.1.0.2.0"' "$OH/inventory/ContentsXML/comps.xml" && ok || bad "dry run: the client level changed"
 
 echo "ohs-quarter real-children gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
