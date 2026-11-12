@@ -48,6 +48,8 @@ build; regnames '<registry><distribution status="installed" name="A"/><distribut
 build; regnames '<distribution status="deinstalled" name="Old"/>\n<distribution status="installed" name="New"/>\n' 'New' "a deinstalled distribution was listed"
 build; regnames "$(for i in 1 2 3 4 5 6 7 8 9 10; do printf '<distribution status="installed" name="P%s"/>\\n' $i; done)" 'P1; P2; P3; P4; P5; P6; P7; P8; ... (2 more)' "more than 8 names"
 build; regnames '<distribution status="installed"\n    name="Wrapped" version="1"/>\n' 'Wrapped' "a tag with name= on the next line"
+build; regnames '<distribution status="installed"\nname="NoIndent" version="1"/>\n' 'NoIndent' "a tag with name= at the start of the next line (the lines are joined with a space)"
+build; regnames '<distribution status="installed" name="Dup"/>\n<distribution status="installed" name="Other"/>\n<distribution status="installed" name="Dup"/>\n' 'Dup; Other' "a name given twice is listed once, at its first place"
 build; regnames '<distribution status="deinstalled" name="Old"/>\n' 'no installed <distribution> entries' "only a deinstalled entry"
 # the field shape (12 Nov 2026): a multi-line registry.xml whose distribution is plain "Oracle HTTP Server", plus OPatch
 field_reg() { printf '<registry>\n   <distributions>\n      <distribution status="installed" name="Oracle HTTP Server" version="12.2.1.4.0">\n         <feature-set name="WebLogic Server"/>\n      </distribution>\n%b      <distribution status="installed" name="OPatch" version="13.9.4.2.25">\n      </distribution>\n   </distributions>\n</registry>\n' "$1" >"$OH/inventory/registry.xml"; }
