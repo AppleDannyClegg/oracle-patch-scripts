@@ -261,6 +261,12 @@ try {
     ) | Set-Content -LiteralPath $current
     $plan2 = @(Get-PatchPlan (Read-Manifest $current))
     Check ($plan2.Count -eq 0) "current host plans nothing, got $(@($plan2 | ForEach-Object { $_.Patch }) -join ',')"
+    # the FMW Platform Bundle is planned only where one is installed: the same host with no bundle line, while MOS lists
+    # one, is planned no bundle (Kara #15776 [P3])
+    $nobp = Join-Path $tmp 'current-nobp.txt'
+    @(Get-Content -LiteralPath $current | Where-Object { $_ -notmatch 'FMW PLATFORM BUNDLE' }) | Set-Content -LiteralPath $nobp
+    $planNb = @(Get-PatchPlan (Read-Manifest $nobp))
+    Check (@($planNb | Where-Object { $_.What -like 'FMW Platform Bundle*' }).Count -eq 0) "a WLS home with no FMW Platform Bundle installed is planned none: $(@($planNb | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
 
     # ---- a client whose OPatch is current gets the RU but no OPatch kit; an 'other' home is tolerated -----
     $cur = Join-Path $tmp 'clientopatch.txt'
