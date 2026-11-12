@@ -26,6 +26,9 @@ sed "s|__T__|$T|g" >"$T/stub-child" <<'STUB'
 #!/bin/sh
 who="$(basename "$0")"; case "$who" in stub-java) who=java;; stub-wls) who=wls;; stub-dbclient) who=dbclient;; stub-ohs) who=ohs;; esac
 printf '%s %s\n' "$who" "$*" >>"__T__/calls.log"
+# SIGNAL_AT='<who> <verb>' sends SIGTERM to ohs-quarter (this stub's parent) from inside that call, as a Ctrl-C or a
+# kill mid-outage would; the call itself then finishes normally
+[ -n "${SIGNAL_AT:-}" ] && [ "$who $1" = "$SIGNAL_AT" ] && kill -TERM "$PPID"
 rd=""; prev=""
 for a in "$@"; do [ "$prev" = "--run-dir" ] && rd="$a"; prev="$a"; done
 case "$1" in
@@ -210,6 +213,30 @@ grep -q 'started again' "$T/out" && ok || bad "a failed 3/7 stop did not say the
 runq "$T/root" FAIL_FIRST_STOP=1 FAIL_START=1; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed 3/7 stop whose start also failed exited $rc (want 3)"
 grep -q 'DOWN' "$T/out" && ok || bad "a failed stop + failed start did not say components are down: $(tail -2 "$T/out" | tr '\n' ' ')"
+
+# ---- a signal mid-run (T1137): before the stop nothing has changed; after it, what was stopped is started again and
+#      what was applied is restored - the same paths a failure takes - and the exit says which
+runq "$T/root" SIGNAL_AT='java preflight'; rc=$?
+[ "$rc" = 1 ] && ok || bad "a signal in preflight exited $rc (want 1)"
+grep -qE '^(java|wls|dbclient|ohs) (backup|stop|apply|start)' "$T/calls.log" && bad "a changing call ran after a signal in preflight" || ok
+grep -q 'interrupted' "$T/out" && grep -q 'nothing changed' "$T/out" && ok || bad "a signal in preflight did not say interrupted, nothing changed: $(tail -1 "$T/out")"
+runq "$T/root" SIGNAL_AT='ohs stop'; rc=$?
+[ "$rc" = 1 ] && ok || bad "a signal during the 3/7 stop exited $rc (want 1)"
+grep -qE '^(java|wls|dbclient|ohs) apply' "$T/calls.log" && bad "an apply ran after a signal during the stop" || ok
+[ -n "$(line '^ohs start')" ] && grep -q 'started again' "$T/out" && ok || bad "a signal during the stop left the components down: $(tail -1 "$T/out")"
+runq "$T/root" SIGNAL_AT='dbclient apply'; rc=$?
+[ "$rc" = 1 ] && ok || bad "a signal during an apply exited $rc (want 1)"
+[ -n "$(line '^dbclient rollback')" ] && [ -n "$(line '^java rollback')" ] && [ -n "$(line '^ohs start')" ] && ok \
+  || bad "a signal during an apply did not restore and start: $(grep -E 'rollback|restore|start' "$T/calls.log" | tr '\n' ' ')"
+grep -qE '^(ohs apply|dbclient verify)' "$T/calls.log" && bad "the run went on applying after the signal" || ok
+grep -q 'interrupted' "$T/out" && ok || bad "a signal during an apply did not say interrupted: $(tail -1 "$T/out")"
+runq "$T/root" SIGNAL_AT='dbclient apply' FAIL_ROLLBACK=1; rc=$?
+[ "$rc" = 3 ] && ok || bad "a signal during an apply whose restore failed exited $rc (want 3)"
+# a signal while a failure is already being recovered does not start a second recovery inside the first
+runq "$T/root" FAIL_DB_APPLY=1 SIGNAL_AT='dbclient rollback'; rc=$?
+[ "$rc" = 1 ] && ok || bad "a signal during recovery exited $rc (want 1: the recovery finishes)"
+[ "$(grep -c '^dbclient rollback' "$T/calls.log")" = 1 ] && [ "$(grep -c '^java rollback' "$T/calls.log")" = 1 ] && ok \
+  || bad "a signal during recovery ran a restore twice: $(grep -E 'rollback|restore' "$T/calls.log" | tr '\n' ' ')"
 
 # ---- the promises the header makes, each tested (Cerebro 23:05:15: a hook defined but never set is a
 #      test that does not run) -----------------------------------------------------------------------------------
