@@ -243,8 +243,9 @@ rsf_version() {
 }
 
 readme_title() { head -5 "$1/README.txt" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]]//g' | grep -m1 -iE 'bundle patch|patch' ; }
+# the minimum is only a version with 'or higher/later/above' after it: a README also names versions it was built with
 readme_min_opatch() {
-  LC_ALL=C grep -aoE 'OPatch version 13\.9(\.[0-9]+)+ or (higher|later)' "$1/README.txt" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
+  LC_ALL=C grep -aoE 'OPatch (utility )?(version )?13\.9(\.[0-9]+)+ or (higher|later|above)' "$1/README.txt" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
 }
 
 # ---- preflight ------------------------------------------------------------------------------------------

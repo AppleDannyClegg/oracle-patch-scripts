@@ -190,6 +190,16 @@ grep -q "meets the README minimum 13.9.4.2.13" "$T/out" && ok || bad "README OPa
 # each blocking problem on its own
 build; echo "OPatch 13.9.4.2.10" >"$T/opv"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: OPatch 13.9.4.2.10 is older than the 13.9.4.2.13' "$T/out" && ok || bad "old OPatch: rc $rc, $(grep BLOCK "$T/out" | head -2)"
+# the README's minimum in the other wordings Oracle uses (wls-patch reads "OPatch (utility )?(version )?N"): each one is
+# read, so an OPatch below it blocks; a miss would only WARN "check the README by hand" (T1161, Louie #16003)
+for w in 'use the OPatch utility version 13.9.4.2.30 or later' 'OPatch 13.9.4.2.30 or higher' 'OPatch version 13.9.4.2.30 or above'; do
+  build; printf 'Oracle OHS (Native) DB19C Bundle Patch README\n\n You must %s. To verify\n' "$w" >"$PD/40005842/README.txt"; rc="$(run)"
+  [ "$rc" = 1 ] && grep -q 'BLOCKING: OPatch 13.9.4.2.23 is older than the 13.9.4.2.30' "$T/out" && ok || bad "README '$w' not read as the OPatch minimum: rc $rc, $(grep -E 'BLOCK|README' "$T/out" | head -2)"
+done
+# an OPatch version named without 'or later/higher/above' is not a minimum (a README also names versions it was built
+# with): only the minimum line counts, so 13.9.4.2.23 still meets 13.9.4.2.13
+build; printf 'Bundle Patch README\n\n tested with OPatch 13.9.4.2.30\n ORACLE_HOME must have OPatch version 13.9.4.2.13 or higher.\n' >"$PD/40005842/README.txt"; rc="$(run)"
+grep -q "meets the README minimum 13.9.4.2.13" "$T/out" && ! grep -q 'BLOCKING: OPatch' "$T/out" && ok || bad "a plain OPatch version mention was read as the minimum: rc $rc, $(grep -E 'BLOCK|README|meets' "$T/out" | head -2)"
 build; echo "36187026;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115" >"$LSP"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*plain OHS bundle line.*KB585169' "$T/out" && ok || bad "plain-line home given a DB19C bundle: rc $rc"
 build; : >"$LSP"; rc="$(run)"
