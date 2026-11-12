@@ -159,7 +159,12 @@ while IFS='|' read -r script verb opts; do
   # the verb must be an arm of the script's own command dispatch (its case "$cmd" block), not any "x)" in the file
   awk '/case "\$cmd" in/ { f = 1 } f { print } f && /^[[:space:]]*esac/ { exit }' "$f" | grep -qE "(^|[[:space:];|])$verb(\||\))" \
     && ok || bad "printed '$script $verb', but $script's command dispatch has no '$verb' arm"
-  for o in $opts; do grep -qE -- "(^|[[:space:];|])$o(\)|\|)" "$f" && ok || bad "printed '$script $verb ... $o', but $script does not parse $o"; done
+  # each option must be an arm of the script's option parser: the case "$1" block that holds --help, not a usage
+  # table or another case elsewhere in the file
+  parser="$(awk 'function flush() { if (b ~ /--help/) printf "%s", b; b = "" }
+    /case "\$1" in/ { f = 1 } f { b = b $0 "\n" } f && /(^|[^a-z])esac/ { f = 0; flush() }' "$f")"
+  [ -n "$parser" ] && ok || bad "$script: no option parser (a case \"\$1\" block with --help) was found"
+  for o in $opts; do grep -qE -- "(^|[[:space:];|])$o(\)|\|)" <<<"$parser" && ok || bad "printed '$script $verb ... $o', but $script's option parser has no $o arm"; done
 done <"$T/cmds"
 # coverage from the run: every script + verb the explain source can print was printed by some fixture, so it was checked
 want_s="$(grep -oE '\$P/[a-z-]+/[a-z-]+\.sh [a-z-]+' "$X" | sed 's#^\$P/##; s/ /|/' | sort -u)"
