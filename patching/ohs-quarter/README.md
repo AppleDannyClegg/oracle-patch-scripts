@@ -143,7 +143,7 @@ rollback. Then it starts once.
 |---|---|
 | 0 | applied and verified (`OHS QUARTER OK`) |
 | 1 | refused or failed. If it failed after the backup, the restore worked and the home is back where it was |
-| 3 | **the restore itself failed.** The components are NOT started and the home may be part-patched: fix it by hand from the backups the run made (the shared one is `<run-dir>/backup`) |
+| 3 | **recovery did not finish**: a restore failed, or the stop before the restores did (then nothing is restored), or the start after them did. The components are NOT started and the home may be part-patched: fix it by hand from the backups the run made (the shared one is `<run-dir>/backup`) |
 
 The shared backup is under the run dir's `backup/`. The run dir's `state` file records the patch root, what was
 applied and what was left out.
