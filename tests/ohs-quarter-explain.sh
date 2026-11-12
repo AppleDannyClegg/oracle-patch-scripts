@@ -160,9 +160,12 @@ while IFS='|' read -r script verb opts; do
   awk '/case "\$cmd" in/ { f = 1 } f { print } f && /^[[:space:]]*esac/ { exit }' "$f" | grep -qE "(^|[[:space:];|])$verb(\||\))" \
     && ok || bad "printed '$script $verb', but $script's command dispatch has no '$verb' arm"
   # each option must be an arm of the script's option parser: the case "$1" block that holds --help, not a usage
-  # table or another case elsewhere in the file
+  # table or another case elsewhere in the file. The block ends at ITS esac: case/esac are counted, so a case nested
+  # inside the parser does not cut it short
   parser="$(awk 'function flush() { if (b ~ /--help/) printf "%s", b; b = "" }
-    /case "\$1" in/ { f = 1 } f { b = b $0 "\n" } f && /(^|[^a-z])esac/ { f = 0; flush() }' "$f")"
+    !f && /case "\$1" in/ { f = 1; d = 0 }
+    f { b = b $0 "\n"; t = $0; d += gsub(/(^|[^[:alnum:]_])case[[:space:]][^;]*[[:space:]]in([[:space:]]|$)/, "", t)
+        t = $0; d -= gsub(/(^|[^[:alnum:]_])esac([^[:alnum:]_]|$)/, "", t); if (d <= 0) { f = 0; flush() } }' "$f")"
   [ -n "$parser" ] && ok || bad "$script: no option parser (a case \"\$1\" block with --help) was found"
   for o in $opts; do grep -qE -- "(^|[[:space:];|])$o(\)|\|)" <<<"$parser" && ok || bad "printed '$script $verb ... $o', but $script's option parser has no $o arm"; done
 done <"$T/cmds"
