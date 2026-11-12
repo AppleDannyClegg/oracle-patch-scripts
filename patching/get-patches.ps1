@@ -24,8 +24,8 @@ What it looks up, for everything in the manifest:
     (oracle.rdbms.rsf) is still below 19 and the current OHS bundle is a DB19C one: that bundle may only go on
     a home whose client was upgraded first (KB585169). 'dbclient-upgrade.sh' runs it; it is an installer, not opatch
   - for a 12.2.1.4 home, the rest of the set 'ohs-quarter.sh' applies in one outage (WLS PSU, DBCLIENT RU, WebGate,
-    OSS, JDBC, LibOVD, FMW third-party, PERL, LIBDMS2, LIBIAU), into ohsset/. These are FIXED patch numbers, the
-    October 2026 row of MOS Doc 2806740.2 - MOS has no query that returns them, so they are not looked up and go
+    OSS, FMW Platform BP, JDBC, LibOVD, FMW third-party, PERL, LIBDMS2, LIBIAU, Cloning SPU, RDA), into ohsset/.
+    These are FIXED patch numbers, the October 2026 row of MOS Doc 2806740.2 - MOS has no query that returns them, so they are not looked up and go
     stale each quarter: pass that quarter's numbers with -OhsSet <file> ("<number> <folder>" per line, the same
     file ohs-quarter-stage.sh --map reads). A number the home already has is not downloaded. On the server,
     'ohs-quarter-stage.sh plan <download dir> <patch root>' files everything into the folders ohs-quarter.sh reads
