@@ -246,15 +246,16 @@ build; comps 12.1.0.2.0; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/ap
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "without --client-19c-pending a 12c client still has to block: rc $rc"
 # the deferral is for the 19c client alone (T1167, Louie #16016): any other missing component, a bare "failed", or no
 # verdict still stops preflight with the flag, or a patch that can never apply is found after the stop
-other="$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)/oracle.webgate.ohs:12.2.1.4.0/')"
-both="$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher),oracle.webgate.ohs:12.2.1.4.0/')"
-bare='Invoking prereq "checkapplicable"
+# blocks19 <label> <CheckApplicable output>: with the flag, that answer must still block and not be deferred
+blocks19() {
+  build; comps 12.1.0.2.0; printf '%s\n' "$2" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+  [ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "--client-19c-pending deferred a CheckApplicable that is not the 19c client alone ($1): rc $rc: $(grep -E 'BLOCK|deferred' "$T/out" | head -2)"
+}
+blocks19 other "$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)/oracle.webgate.ohs:12.2.1.4.0/')"
+blocks19 both "$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher),oracle.webgate.ohs:12.2.1.4.0/')"
+blocks19 bare 'Invoking prereq "checkapplicable"
 Prereq "checkApplicable" for patch 40005842 failed.
 OPatch failed with error code 73'
-for c in other both bare; do
-  build; comps 12.1.0.2.0; eval "printf '%s\n' \"\$$c\"" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
-  [ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "--client-19c-pending deferred a CheckApplicable that is not the 19c client alone ($c): rc $rc: $(grep -E 'BLOCK|deferred' "$T/out" | head -2)"
-done
 build; comps 12.1.0.2.0; printf 'Exception in thread main\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(runp)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: opatch prereq CheckApplicable gave no verdict' "$T/out" && ok || bad "--client-19c-pending turned no verdict into a pass: rc $rc: $(grep -E 'UNKNOWN|deferred' "$T/out" | head -2)"
 build; comps 12.1.0.2.0; rc="$(run)"
