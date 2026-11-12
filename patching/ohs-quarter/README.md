@@ -142,8 +142,8 @@ rollback. Then it starts once.
 | Exit | Meaning |
 |---|---|
 | 0 | applied and verified (`OHS QUARTER OK`) |
-| 1 | refused or failed. If it failed after the backup, the restore worked and the home is back where it was |
-| 3 | **recovery did not finish**: a restore failed, or the stop before the restores did (then nothing is restored), or the start after them did. The components are NOT started and the home may be part-patched: fix it by hand from the backups the run made (the shared one is `<run-dir>/backup`) |
+| 1 | refused or failed. If it failed after the backup, the restore worked and the home is back where it was. If the outage's stop failed, nothing was patched and the components were started again |
+| 3 | **recovery did not finish**: a restore failed, or the stop before the restores did (then nothing is restored), or the start after them did. Also when the outage's stop failed and starting the components again failed too (nothing was patched, but a component is DOWN). The components are NOT started and the home may be part-patched: fix it by hand from the backups the run made (the shared one is `<run-dir>/backup`) |
 
 The shared backup is under the run dir's `backup/`. The run dir's `state` file records the patch root, what was
 applied and what was left out.
