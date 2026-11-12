@@ -109,7 +109,7 @@ cmd_inspect() {
 }
 
 cmd_latest() {
-  setup_env; [ -n "$LOG_FILE" ] || init_run_dir latest   # a --run-dir given still needs its log set up
+  setup_env; [ -n "$RUN_DIR" ] && [ -n "$LOG_FILE" ] || init_run_dir latest   # a --run-dir given still needs its log; an inherited LOG_FILE alone is not a run
   local major="${DB_VERSION%%.*}" found="" rows
   mos_login
   log "Searching MOS for the newest Database Release Update $major"
@@ -138,7 +138,7 @@ cmd_latest() {
 }
 
 cmd_download() {
-  setup_env; [ -n "$LOG_FILE" ] || init_run_dir download   # a --run-dir given still needs its log set up
+  setup_env; [ -n "$RUN_DIR" ] && [ -n "$LOG_FILE" ] || init_run_dir download   # a --run-dir given still needs its log; an inherited LOG_FILE alone is not a run
   local dir="${ARGS[0]:-$PATCH_BASE/db}"; [ -n "$dir" ] || die "download needs a directory"; shift_args=1
   local ids="${ARGS[*]:1}"; [ -z "$ids" ] && ids="${PATCHES//,/ }"; [ -z "$ids" ] && die "no patch ids: run 'latest' first or give them"
   mkdir -p "$dir"; local id todo=""
@@ -180,7 +180,7 @@ patch_is_rolling() { grep -qiE 'rolling="true"|<rolling>true' "$1"/etc/config/in
 # preflight / plan
 # ---------------------------------------------------------------------------
 cmd_preflight() {
-  setup_env; [ -n "$LOG_FILE" ] || init_run_dir preflight   # a --run-dir given still needs its log set up
+  setup_env; [ -n "$RUN_DIR" ] && [ -n "$LOG_FILE" ] || init_run_dir preflight   # a --run-dir given still needs its log; an inherited LOG_FILE alone is not a run
   local dir="${ARGS[0]:-}"; [ -n "$dir" ] || die "preflight needs <patch-dir>"
   prepare_patch_dir "$dir"; local fail=0 p
   log "Preflight for $HOME_DIR ($DB_VERSION, RU ${RU_LEVEL:-none}) with patches: $PATCH_IDS"
