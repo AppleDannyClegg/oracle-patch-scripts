@@ -370,21 +370,43 @@ manual_restore() {
 }
 
 # ---- what this script adds -------------------------------------------------------------------------------
-# how the home was installed: the OHS installer writes its product into registry.xml. standalone / collocated are
-# in KB585169's scope; a registry.xml with neither is an OHS embedded in another FMW product, which is not; no
-# readable registry.xml is unknown. Never guessed from a wlserver/ directory (Gen's standalone home has one).
+# how the home was installed: the OHS installer writes its product into registry.xml as a <distribution>.
+# standalone / collocated are in KB585169's scope; anything else is an OHS embedded in another FMW product, which is
+# not; no readable registry.xml is unknown. Never guessed from a wlserver/ directory (Gen's standalone home has one).
+# A field 12.2.1.4 standalone home (12 Nov 2026) names its distribution plain "Oracle HTTP Server", next to
+# "OPatch" only - the "(Standalone)" / "(Collocated)" labels are not what every installer writes. So a plain
+# "Oracle HTTP Server" distribution is the OHS installer's: collocated when the home also carries the
+# Infrastructure / WebLogic Server distribution it was installed into, standalone when the only other one is OPatch,
+# embedded when any other product's distribution is there too.
 scope_of() {
-  local reg="$1/inventory/registry.xml"
+  local reg="$1/inventory/registry.xml" names n other="" infra=""
   [ -r "$reg" ] || { echo unknown; return; }
-  if grep -q 'name="Oracle HTTP Server (Standalone)"' "$reg"; then echo standalone
-  elif grep -q 'name="Oracle HTTP Server (Collocated)"' "$reg"; then echo collocated
-  else echo embedded; fi
+  if grep -q 'name="Oracle HTTP Server (Standalone)"' "$reg"; then echo standalone; return; fi
+  if grep -q 'name="Oracle HTTP Server (Collocated)"' "$reg"; then echo collocated; return; fi
+  names="$(reg_names "$1")"
+  printf '%s\n' "$names" | grep -qx 'Oracle HTTP Server' || { echo embedded; return; }
+  while IFS= read -r n; do
+    case "$n" in
+      ''|'Oracle HTTP Server'|OPatch) ;;
+      'Fusion Middleware Infrastructure'|'Oracle Fusion Middleware Infrastructure'|'WebLogic Server') infra=1 ;;
+      *) other=1 ;;
+    esac
+  done <<EOF
+$names
+EOF
+  if [ -n "$other" ]; then echo embedded
+  elif [ -n "$infra" ]; then echo collocated
+  else echo standalone; fi
+}
+
+# every <distribution> name in registry.xml, one per line, deduplicated
+reg_names() {
+  sed -n 's/.*<distribution[^>]*[[:space:]]name="\([^"]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null | awk '!seen[$0]++'
 }
 
 # the products registry.xml does name (its <distribution> names, deduplicated), so a refusal shows what is there
 reg_products() {
-  sed -n 's/.*<distribution[^>]*[[:space:]]name="\([^"]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null \
-    | awk '!seen[$0]++' | head -8 | awk 'NR>1{printf "; "} {printf "%s", $0} END{if (NR==0) printf "no <distribution> entries"}'
+  reg_names "$1" | head -8 | awk 'NR>1{printf "; "} {printf "%s", $0} END{if (NR==0) printf "no <distribution> entries"}'
 }
 
 # 'ok <what>' / 'block <what>' / 'unknown <why>': RHEL or Oracle Linux 7.4 or later (the README's only OS)
@@ -451,9 +473,9 @@ cmd_preflight() {
 
   # scope (KB585169): installed by the OHS installer, standalone or collocated
   case "$(scope_of "$OH")" in
-    standalone) log "scope     : standalone OHS (registry.xml 'Oracle HTTP Server (Standalone)') - in KB585169's scope" ;;
-    collocated) log "scope     : collocated OHS (registry.xml 'Oracle HTTP Server (Collocated)') - in KB585169's scope" ;;
-    embedded) block "registry.xml in $OH names neither 'Oracle HTTP Server (Standalone)' nor '(Collocated)': an OHS embedded in another FMW product, or a home not installed by the OHS installer - KB585169 puts it out of scope. registry.xml names: $(reg_products "$OH")" ;;
+    standalone) log "scope     : standalone OHS (registry.xml: $(reg_products "$OH")) - in KB585169's scope" ;;
+    collocated) log "scope     : collocated OHS (registry.xml: $(reg_products "$OH")) - in KB585169's scope" ;;
+    embedded) block "registry.xml in $OH has no OHS installer distribution ('Oracle HTTP Server', '(Standalone)' or '(Collocated)') on its own: an OHS embedded in another FMW product, or a home not installed by the OHS installer - KB585169 puts it out of scope. registry.xml names: $(reg_products "$OH")" ;;
     *) unknown "cannot read $OH/inventory/registry.xml - how the home was installed (KB585169's scope) is unknown" ;;
   esac
 
