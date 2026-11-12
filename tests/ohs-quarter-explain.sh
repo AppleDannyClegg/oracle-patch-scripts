@@ -164,8 +164,9 @@ while IFS='|' read -r script verb opts; do
   # inside the parser does not cut it short
   parser="$(awk 'function flush() { if (b ~ /--help/) printf "%s", b; b = "" }
     !f && /case "\$1" in/ { f = 1; d = 0 }
-    f { b = b $0 "\n"; t = $0; d += gsub(/(^|[^[:alnum:]_])case[[:space:]][^;]*[[:space:]]in([[:space:]]|$)/, "", t)
-        t = $0; d -= gsub(/(^|[^[:alnum:]_])esac([^[:alnum:]_]|$)/, "", t); if (d <= 0) { f = 0; flush() } }' "$f")"
+    f { b = b $0 "\n"; c = $0; sub(/(^|[[:space:]])#.*/, "", c)   # a comment is not code: drop it before counting
+        t = c; d += gsub(/(^|[^[:alnum:]_])case[[:space:]][^;]*[[:space:]]in([[:space:]]|$)/, "", t)
+        t = c; d -= gsub(/(^|[^[:alnum:]_])esac([^[:alnum:]_]|$)/, "", t); if (d <= 0) { f = 0; flush() } }' "$f")"
   [ -n "$parser" ] && ok || bad "$script: no option parser (a case \"\$1\" block with --help) was found"
   for o in $opts; do grep -qE -- "(^|[[:space:];|])$o(\)|\|)" <<<"$parser" && ok || bad "printed '$script $verb ... $o', but $script's option parser has no $o arm"; done
 done <"$T/cmds"
