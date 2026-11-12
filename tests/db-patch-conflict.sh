@@ -66,7 +66,10 @@ Patch : 39000000
 
 rc="$(run 'Prereq "checkConflictAgainstOHWithDetail" for patch  passed.
 ')"
-grep -q 'no conflicts' "$T/out" && bad "'for patch  passed' with no id was taken as no conflicts: rc $rc" || ok
+# with no id the strict match must not fire, so the fallback calls it a CONFLICT (it matches the prereq name):
+# assert that verdict, so the case cannot pass on a cmd_preflight that never ran
+[ "$rc" = 1 ] && grep -q 'CONFLICT: ' "$T/out" && ! grep -q 'no conflicts' "$T/out" && ok \
+  || bad "'for patch  passed' with no id was not a CONFLICT: rc $rc, $(grep -E 'conflict|CONFLICT|ERROR' "$T/out" | head -2)"
 
 echo "db-patch conflict gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
