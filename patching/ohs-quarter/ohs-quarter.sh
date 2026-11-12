@@ -335,7 +335,12 @@ backup_once || die "a backup failed - nothing changed"
 
 # ---- 3. stop (once) --------------------------------------------------------------------------------------
 log "=== 3/7 stop (once for the whole outage)"
-orun stop || die "Could not stop the components cleanly - nothing patched"
+# a stop that cannot prove the home stopped has still stopped some of it: start it again rather than leave it down (T1135)
+if ! orun stop; then
+  err "Could not stop the components cleanly - nothing patched. Starting them again"
+  orun start || { err "the stop failed, nothing was patched, and NOT everything started again: a component with no 'started' line above is DOWN - start it by hand"; exit 3; }
+  die "the stop failed and nothing was patched; the components are started again (see ohs-patch start above)"
+fi
 
 # ---- 4. apply, in the pinned order ----------------------------------------------------------------------
 log "=== 4/7 apply"

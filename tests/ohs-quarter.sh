@@ -40,7 +40,7 @@ case "$1" in
     if { [ "$who" = dbclient ] || [ "$who" = ohs ]; } && [ -n "$rd" ]; then mkdir -p "$rd"; {
       echo "oracle_home=/u01/ohs"; echo "backup=ok"; echo "backup_dir=__T__/bk"; echo "pre_patches=1 2 3"
     } >>"$rd/state"; mkdir -p "__T__/bk"; : >"__T__/bk/home.tgz"; : >"__T__/bk/oraInventory.tgz"; fi ;;
-  stop) [ -n "${FAIL_STOP:-}" ] && [ -e "__T__/stop.ok" ] && exit 1; : >"__T__/stop.ok" ;;
+  stop) [ -n "${FAIL_FIRST_STOP:-}" ] && exit 1; [ -n "${FAIL_STOP:-}" ] && [ -e "__T__/stop.ok" ] && exit 1; : >"__T__/stop.ok" ;;
   apply)
     [ "$who" = java ] && [ -n "${FAIL_JAVA_APPLY:-}" ] && exit 1
     [ "$who" = wls ] && [ -n "${FAIL_WLS_APPLY:-}" ] && exit 1
@@ -198,6 +198,18 @@ runq "$T/root" FAIL_OHS_APPLY=1 FAIL_STOP=1; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed recovery stop exited $rc (want 3)"
 grep -q '^dbclient rollback' "$T/calls.log" && bad "a restore ran although the recovery stop failed" || ok
 grep -q '^ohs start' "$T/calls.log" && bad "components were started although the recovery stop failed" || ok
+
+# ---- the outage's own stop fails (3/7): nothing is applied, and what was stopped is started again (T1135). A stop
+#      that cannot prove the home stopped has already stopped some of it; leaving that down is an outage nobody asked for
+runq "$T/root" FAIL_FIRST_STOP=1; rc=$?
+[ "$rc" = 1 ] && ok || bad "a failed 3/7 stop exited $rc (want 1)"
+grep -qE '^(java|wls|dbclient|ohs) apply' "$T/calls.log" && bad "an apply ran after the 3/7 stop failed" || ok
+[ -n "$(line '^ohs start')" ] && ok || bad "a failed 3/7 stop left the components down: no start was tried"
+grep -q 'started again' "$T/out" && ok || bad "a failed 3/7 stop did not say the components are up again: $(tail -2 "$T/out" | tr '\n' ' ')"
+# ... and when that start fails too, the operator has a down service to fix by hand: exit 3, and say so
+runq "$T/root" FAIL_FIRST_STOP=1 FAIL_START=1; rc=$?
+[ "$rc" = 3 ] && ok || bad "a failed 3/7 stop whose start also failed exited $rc (want 3)"
+grep -q 'DOWN' "$T/out" && ok || bad "a failed stop + failed start did not say components are down: $(tail -2 "$T/out" | tr '\n' ' ')"
 
 # ---- the promises the header makes, each tested (Cerebro 23:05:15: a hook defined but never set is a
 #      test that does not run) -----------------------------------------------------------------------------------
