@@ -807,6 +807,12 @@ finally {
     Check (@($set9 | Where-Object { $_.Release -ne '12.2.1.4.0' -or $_.For -ne '/u01/fmw' }).Count -eq 0) "each set item carries the home and its release, so a record with several releases cannot be picked blind"
     Check (@($p9 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 1 -and @($p9 | Where-Object { $_.Patch -eq '40005842' }).Count -eq 1) "the installer and the OHS bundle are planned once each - the table adds no second copy: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     Check (@($w9 | Where-Object { "$_" -like '*another quarter*' }).Count -eq 0) "no stale-table warning when MOS's bundle is the table's: $(@($w9) -join ' / ')"
+    # the WebLogic inside an OHS home takes the runbook's WLS PSU (ohsset/ 39919567, wlspsu/), never a Stack Patch Bundle:
+    # a field run planned the SPB there and ohs-quarter-stage.sh refused it (T1056, Gort #15642). MOS lists an SPB here
+    # ($script:withSpb is on), so a plan that still looks it up for this home fails
+    Check (@($p9 | Where-Object { $_.Kind -eq 'spb' }).Count -eq 0) "a wls| home that is also an OHS home is planned no Stack Patch Bundle: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
+    Check (@($p9 | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'WLS PSU*' }).Count -eq 0) "...and no MOS-looked-up PSU beside the runbook's 39919567: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
+    Check (@($set9 | Where-Object { $_.Patch -eq '39919567' }).Count -eq 1) "...and the runbook's WLS PSU 39919567 is planned into ohsset/ once"
     # the first fixture again: which homes get the set, and the installer where the lookup could not decide
     $set8 = @($p8 | Where-Object { $_.Kind -eq 'ohsset' })
     Check ($set8.Count -eq 10) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"

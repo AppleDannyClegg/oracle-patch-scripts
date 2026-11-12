@@ -462,7 +462,10 @@ function Get-InstalledLevel($Wls, [string] $Pattern) {
     $levels | Sort-Object { Get-VersionKey $_ } -Descending | Select-Object -First 1
 }
 
-function Get-WlsPlan($Wls) {
+# -OhsHome: the WebLogic inside an Oracle HTTP Server home (a wls| home that Get-OhsHomeList also lists). ohs-quarter.sh
+# patches it with the runbook's WLS PSU (the ohsset/ table, wlspsu/), never a Stack Patch Bundle, so neither the SPB
+# nor a MOS-looked-up PSU is planned for it: a field run planned the SPB there and ohs-quarter-stage.sh refused it (T1056).
+function Get-WlsPlan($Wls, [switch] $OhsHome) {
     $release = $Wls.Release
     if (-not $release) {
         Write-Warning "$($Wls.Home): the manifest has no WebLogic release for this home - fix the wls| line (registry.xml or .product.properties) and run again"
@@ -479,7 +482,7 @@ function Get-WlsPlan($Wls) {
 
     # Stack Patch Bundle first: it carries the PSU and Coherence (and Thirdparty, OSS, JDBC, RDA)
     $spbPattern = "(?i)^WLS STACK PATCH BUNDLE $esc(?:\.0)?\.(\d{6})"
-    $spb = Select-Newest $rows $spbPattern
+    $spb = if ($OhsHome) { $null } else { Select-Newest $rows $spbPattern }
     if ($spb) {
         $have = Get-InstalledLevel $Wls $spbPattern
         if (-not $have -or [regex]::Match($spb.Abstract, $spbPattern).Groups[1].Value -gt $have) {
@@ -490,7 +493,7 @@ function Get-WlsPlan($Wls) {
 
     # no SPB on MOS: the PSU on its own. Exact PSU rows only, not "(BLR)" / MERGE / OVERLAY look-alikes
     $psuPattern = "(?i)^WLS PATCH SET UPDATE $esc(?:\.0)?\.(\d{6})\s*$"
-    if (-not $spb) {
+    if (-not $spb -and -not $OhsHome) {
         $newest = Select-Newest $rows $psuPattern
         $have = Get-InstalledLevel $Wls $psuPattern
         if (-not $newest) { Write-Warning "$($Wls.Home): MOS lists no WLS PSU or Stack Patch Bundle for $short - get the number from Doc 2806740.2 and pass -Patch" }
@@ -792,7 +795,8 @@ function Get-OhsSetPlan($Manifest, $Planned) {
 }
 
 function Get-PatchPlan($Manifest) {
-    foreach ($w in $Manifest.Wls) { Get-WlsPlan $w }
+    $ohsHomes = @(Get-OhsHomeList $Manifest | ForEach-Object { $_.Home })
+    foreach ($w in $Manifest.Wls) { Get-WlsPlan $w -OhsHome:($ohsHomes -contains $w.Home) }
     foreach ($h in ($Manifest.Homes | Where-Object { $_.Kind -eq 'db' })) { Get-DbPlan $h }
     if ($Manifest.Jdks) { Get-JdkPlan $Manifest.Jdks }
     if ($Manifest.Fmw) { Get-FmwPlan $Manifest }
