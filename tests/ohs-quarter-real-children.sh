@@ -13,7 +13,7 @@
 # both fixed the composer reaches 7/7. The ohs leg is --skip'd here because its bake needs a different fake home -
 # ohs-patch's own gate covers the same fix on that side (tests/ohs-patch.sh, the --run-dir case).
 #
-# What it cannot prove: the real box. A container or a host is not a-dev-host; this removes the fake-child
+# What it cannot prove: the real box. A container or a fake home is not the field box; this removes the fake-child
 # blindness, not the host blindness.
 #
 # Usage: tests/ohs-quarter-real-children.sh
