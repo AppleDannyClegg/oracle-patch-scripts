@@ -584,7 +584,7 @@ cmd_preflight() {
   local pdir="$1"
   [ -n "$pdir" ] || die "preflight needs <patch-dir>"
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir preflight
+  [ -n "$LOG_FILE" ] || init_run_dir preflight   # a --run-dir given still needs its log set up
   local problems=0
 
   if [ "$WLS_FAMILY" != opatch ]; then
@@ -798,7 +798,7 @@ cmd_preflight() {
 # ---------------------------------------------------------------------------
 cmd_backup() {
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir backup
+  [ -n "$LOG_FILE" ] || init_run_dir backup   # a --run-dir given still needs its log set up
   local stamp dest
   stamp="$(date '+%Y%m%d-%H%M%S')"
   dest="$BACKUP_DIR/$stamp"
@@ -838,7 +838,7 @@ aside_path() {
 }
 cmd_restore() {
   setup_env
-  [ -n "$RUN_DIR" ] || { RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir restore; }
+  [ -n "$LOG_FILE" ] || { [ -n "$RUN_DIR" ] || RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir restore; }
   local src="${1:-$(state_get backup_dir || readlink "$BACKUP_DIR/latest" 2>/dev/null)}"
   [ -d "$src" ] && [ -f "$src/oracle_home.tar.gz" ] || die "No backup to restore (looked at $src)"
   local oh
@@ -877,7 +877,7 @@ wait_for_gone() { # name pid timeout
 
 cmd_stop() {
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir stop
+  [ -n "$LOG_FILE" ] || init_run_dir stop   # a --run-dir given still needs its log set up
   # an empty list is 'nothing running' only when ps itself answered: a ps that cannot run would otherwise prove the stop here,
   # before the second proof after the waits ever runs (TARS / Multivac, 1 Nov 23:22); nothing is recorded in state then
   local running nm
@@ -952,7 +952,7 @@ port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 cmd_start() {
   setup_env
-  [ -n "$RUN_DIR" ] || { RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir start; }
+  [ -n "$LOG_FILE" ] || { [ -n "$RUN_DIR" ] || RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir start; }
   local want nm_want
   want="$(state_get servers_were_running || true)"
   nm_want="$(state_get nm_was_running || echo 0)"
@@ -1006,7 +1006,7 @@ cmd_apply() {
   local pdir="$1"
   [ -n "$pdir" ] || die "apply needs <patch-dir>"
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir apply
+  [ -n "$LOG_FILE" ] || init_run_dir apply   # a --run-dir given still needs its log set up
   [ "$WLS_FAMILY" = opatch ] || die "Not an OPatch home"
   local up; up="$(running_servers)" || die "$PS_UNREADABLE - apply refused: OPatch must not run under a live JVM"
   if [ -n "$up" ]; then
@@ -1101,7 +1101,7 @@ cmd_apply() {
 cmd_verify() {
   local pdir="${1:-}"
   setup_env
-  [ -n "$RUN_DIR" ] || { RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir verify; }
+  [ -n "$LOG_FILE" ] || { [ -n "$RUN_DIR" ] || RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir verify; }
   if [ "$DRY_RUN" = 1 ]; then log "dry-run: skipping verification"; return 0; fi
   local ok=1
   local expected
@@ -1166,7 +1166,7 @@ cmd_verify() {
 # ---------------------------------------------------------------------------
 cmd_rollback() {
   setup_env
-  [ -n "$RUN_DIR" ] || { RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir rollback; }
+  [ -n "$LOG_FILE" ] || { [ -n "$RUN_DIR" ] || RUN_DIR="$(latest_run_dir)"; [ -n "$RUN_DIR" ] && init_run_dir || init_run_dir rollback; }
   local ids="$*"
   local spb=""; spb="$(state_get spb_applied || true)"
   if [ -z "$ids" ] && [ -n "$spb" ]; then
@@ -1227,7 +1227,7 @@ cmd_rollback() {
 # ---------------------------------------------------------------------------
 cmd_heal() {
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir heal
+  [ -n "$LOG_FILE" ] || init_run_dir heal   # a --run-dir given still needs its log set up
   local fixed=0 found=0
   # T264: a delete that FAILS is an issue heal could not fix. Counting it in neither fixed nor found used to make
   # heal print '0 issue(s) found, 0 fixed' and exit 0, so a stuck lock it could not remove read as nothing to do.
@@ -1444,7 +1444,7 @@ mos_pick_file() {
 # Sets PATCHES; prints what it found. Returns 1 if nothing usable came back.
 cmd_latest() {
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir latest
+  [ -n "$LOG_FILE" ] || init_run_dir latest   # a --run-dir given still needs its log set up
   [ "$WLS_FAMILY" = opatch ] || die "Not an OPatch home"
   local short="${WLS_VERSION%.*}"      # 12.2.1.4.0 -> 12.2.1.4 ; 14.1.2.0.0 -> 14.1.2.0
   case "$WLS_VERSION" in 14.1.*) short="${short%.*}";; esac   # 14.1.2.0 -> 14.1.2 (names use 14.1.2.0.0, both match)
@@ -1514,7 +1514,7 @@ cmd_download() {
   local ids="$*"
   [ -n "$ids" ] || ids="$(printf '%s' "$PATCHES" | tr ',' ' ')"
   setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir download
+  [ -n "$LOG_FILE" ] || init_run_dir download   # a --run-dir given still needs its log set up
   mkdir -p "$pdir" || die "Cannot create $pdir"
 
   # add the OPatch kit when the installed OPatch is older than modern PSUs demand
@@ -1575,7 +1575,7 @@ cmd_download() {
 cmd_plan() {
   local pdir="${1:-}"
   [ -n "$ORACLE_HOME" ] && [ -n "$WLS_FAMILY" ] || setup_env
-  [ -n "$RUN_DIR" ] || init_run_dir plan
+  [ -n "$LOG_FILE" ] || init_run_dir plan   # a --run-dir given still needs its log set up
   echo
   echo "WOULD APPLY (nothing has been changed)"
   echo "  Now        : WebLogic ${WLS_VERSION:-?}  PSU ${PSU_LEVEL:-none}  OPatch ${OPATCH_VERSION:-?}  JDK ${JDK_VERSION:-?}"

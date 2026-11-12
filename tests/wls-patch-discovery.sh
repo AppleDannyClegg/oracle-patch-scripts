@@ -73,5 +73,17 @@ grep -q 'no SPB or patch layout' "$T/out" && grep -q 'junk' "$T/out" && ok || ba
 fresh; plan "$T/pd" >/dev/null
 grep -q 'holds no patch zips' "$T/out" && ok || bad "an empty folder lost its 'holds no patch zips' line"
 
+# --run-dir given (as ohs-quarter.sh and wls-quarter.sh pass it): the log still exists, so the unzip's
+# '>>"$LOG_FILE"' has a file to write to. Field run 12 Nov 2026: 'line 536: : No such file or directory',
+# 'unzip failed ... (corrupt download?)' on a good zip, because the given run dir skipped the log set-up.
+for cmd in plan preflight; do
+  fresh; patch_tree "$T/src" ""; mkzip "$T/pd/p39000002_122140_Generic.zip" "$T/src"
+  HOME="$T" ORACLE_HOME="$OH" JAVA_HOME="$T/jdk" bash "$SCRIPT" "$cmd" "$T/pd" --oracle-home "$OH" --java-home "$T/jdk" \
+    --run-dir "$T/rd-$cmd" --dry-run >"$T/out" 2>&1
+  grep -q 'No such file or directory\|unzip failed' "$T/out" && bad "$cmd --run-dir --dry-run: the unzip had no log: $(grep -E 'No such|unzip failed' "$T/out" | head -2 | tr '\n' ' ')" || ok
+  grep -q 'Patch 39000002 \|39000002' "$T/out" && ok || bad "$cmd --run-dir --dry-run did not see the patch in the zip: $(tail -3 "$T/out" | tr '\n' ' ')"
+  [ -f "$T/rd-$cmd/wls-patch.log" ] && ok || bad "$cmd --run-dir: no wls-patch.log in the given run dir"
+done
+
 echo "wls-patch discovery gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
