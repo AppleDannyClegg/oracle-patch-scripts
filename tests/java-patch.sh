@@ -83,6 +83,24 @@ got_ver="${out#*|}"
 [ -n "$out" ] && ok || bad "pick_tar rejected a './'-prefixed JDK tarball: $(tail -1 "$T/pick.err")"
 [ "$got_ver" = '1.8.0_511' ] && ok || bad "pick_tar read version '$got_ver' from a './'-prefixed tarball, want 1.8.0_511"
 
+# ---- NEW_MAJOR: from the release file, and from the dir name when a repack has no release -------------
+# Louie #15840 [P3] (T1116): with no <top>/release, NEW_VER comes from the dir name as "8u511", and
+# "${NEW_VER%%.*}" kept "8u511", so preflight said "major change 8 -> 8u511" for a same-major update.
+major() { # <tarball>: prints NEW_VER|NEW_MAJOR
+  # shellcheck disable=SC2034  # ARGS/JAVA_BASE are read by the sourced script
+  ( . "$T/tree/patching/java-patch/java-patch.sh"; ARGS=("$1"); TARBALL=""; JAVA_BASE="$T/base"
+    pick_tar >/dev/null 2>"$T/pick.err"; printf '%s|%s\n' "$NEW_VER" "$NEW_MAJOR" )
+}
+for spec in "jdk1.8.0_511|1.8.0_511|1.8.0_511|8" "jdk-17.0.9|17.0.9|17.0.9|17" "jdk-21|21|21|21" \
+            "jdk1.8.0_511||8u511|8" "jdk-17.0.9||17.0.9|17"; do
+  IFS='|' read -r top rel want_ver want_major <<<"$spec"
+  idx=$((idx + 1)); src="$T/maj-$idx"; mkdir -p "$src/$top/bin"; : >"$src/$top/bin/java"
+  [ -n "$rel" ] && printf 'JAVA_VERSION="%s"\n' "$rel" >"$src/$top/release"
+  ( cd "$src" && tar -czf "$T/maj-$idx.tar.gz" "$top" )
+  got="$(major "$T/maj-$idx.tar.gz")"
+  [ "$got" = "$want_ver|$want_major" ] && ok || bad "top '$top', release '${rel:-none}': NEW_VER|NEW_MAJOR is '$got', want '$want_ver|$want_major'"
+done
+
 # ---- die paths ---------------------------------------------------------------------------------------
 mkdir -p "$T/empty"
 out="$(pick "$T/empty")"

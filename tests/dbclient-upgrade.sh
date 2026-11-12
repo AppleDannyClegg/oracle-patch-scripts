@@ -39,6 +39,33 @@ build; echo '<registry><distribution status="installed" name="Oracle HTTP Server
 [ "$rc" = 0 ] && grep -q 'scope     : collocated' "$T/out" && ok || bad "a collocated home: rc $rc"
 build; mkdir -p "$OH/wlserver"; echo '<registry><distribution status="installed" name="WebLogic Server" version="12.2.1.4.0"/></registry>' >"$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*embedded in another FMW product' "$T/out" && ok || bad "an embedded OHS (WebLogic Server, no OHS product) was not refused: rc $rc"
+grep -q 'registry.xml names: WebLogic Server$' "$T/out" && ok || bad "the refusal does not show what registry.xml names: $(grep BLOCKING "$T/out" | head -1)"
+build; printf '<registry>\n <distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n  <feature-set name="ohs"/>\n </distribution>\n <distribution status="installed" name="Oracle HTTP Server Web Tier" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'registry.xml names: Fusion Middleware Infrastructure; Oracle HTTP Server Web Tier$' "$T/out" && ok || bad "two distributions not both named: $(grep BLOCKING "$T/out" | head -1)"
+# the names listed (T1118, Nexus #15849): two tags on one line, a deinstalled entry, more than 8, a wrapped tag
+regnames() { printf "$1" >"$OH/inventory/registry.xml"; rc="$(pre)"; [ "$rc" = 1 ] && grep -q "registry.xml names: $2\$" "$T/out" && ok || bad "$3: rc $rc: $(grep BLOCKING "$T/out" | sed 's/.*registry.xml names: //' | head -1)"; }
+build; regnames '<registry><distribution status="installed" name="A"/><distribution status="installed" name="B"/></registry>\n' 'A; B' "two distributions on one line"
+build; regnames '<distribution status="deinstalled" name="Old"/>\n<distribution status="installed" name="New"/>\n' 'New' "a deinstalled distribution was listed"
+build; regnames "$(for i in 1 2 3 4 5 6 7 8 9 10; do printf '<distribution status="installed" name="P%s"/>\\n' $i; done)" 'P1; P2; P3; P4; P5; P6; P7; P8; ... (2 more)' "more than 8 names"
+build; regnames '<distribution status="installed"\n    name="Wrapped" version="1"/>\n' 'Wrapped' "a tag with name= on the next line"
+build; regnames '<distribution status="deinstalled" name="Old"/>\n' 'no installed <distribution> entries' "only a deinstalled entry"
+# the field shape (12 Nov 2026): a multi-line registry.xml whose distribution is plain "Oracle HTTP Server", plus OPatch
+field_reg() { printf '<registry>\n   <distributions>\n      <distribution status="installed" name="Oracle HTTP Server" version="12.2.1.4.0">\n         <feature-set name="WebLogic Server"/>\n      </distribution>\n%b      <distribution status="installed" name="OPatch" version="13.9.4.2.25">\n      </distribution>\n   </distributions>\n</registry>\n' "$1" >"$OH/inventory/registry.xml"; }
+build; mkdir -p "$OH/wlserver"; field_reg ""; rc="$(pre)"
+[ "$rc" = 0 ] && grep -q 'scope     : standalone OHS (registry.xml: Oracle HTTP Server; OPatch)' "$T/out" && ok || bad "the field standalone shape (plain 'Oracle HTTP Server' + OPatch) was not standalone: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -2)"
+build; field_reg '      <distribution status="installed" name="Fusion Middleware Infrastructure" version="12.2.1.4.0">\n      </distribution>\n'; rc="$(pre)"
+[ "$rc" = 0 ] && grep -q 'scope     : collocated OHS' "$T/out" && ok || bad "plain OHS + Infrastructure was not collocated: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -2)"
+build; field_reg '      <distribution status="installed" name="Oracle Forms and Reports" version="12.2.1.4.0">\n      </distribution>\n'; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*embedded in another FMW product.*Oracle Forms and Reports' "$T/out" && ok || bad "plain OHS inside a Forms home was not refused as embedded: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -2)"
+build; printf '<registry>\n <distribution status="installed" name="Oracle HTTP Server Plugins" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 1 ] && ok || bad "a distribution only starting with 'Oracle HTTP Server' passed as the OHS installer's: rc $rc"
+# scope rests on reg_names (Nexus #15865): a non-OHS tag sharing a line, a lone deinstalled OHS, a wrapped OHS tag
+build; printf '<registry><distribution status="installed" name="Oracle Forms and Reports"/><distribution status="installed" name="Oracle HTTP Server"/></registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*embedded in another FMW product' "$T/out" && ok || bad "Forms then OHS on one line was not embedded: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -1)"
+build; printf '<registry>\n <distribution status="deinstalled" name="Oracle HTTP Server" version="12.2.1.4.0"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*embedded in another FMW product' "$T/out" && ok || bad "a lone deinstalled OHS was not refused: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -1)"
+build; printf '<registry>\n <distribution status="installed"\n    name="Oracle HTTP Server" version="12.2.1.4.0">\n </distribution>\n <distribution status="installed" name="OPatch" version="13.9.4.2.25"/>\n</registry>\n' >"$OH/inventory/registry.xml"; rc="$(pre)"
+[ "$rc" = 0 ] && grep -q 'scope     : standalone OHS (registry.xml: Oracle HTTP Server; OPatch)' "$T/out" && ok || bad "a wrapped OHS tag + OPatch was not standalone: rc $rc: $(grep -E 'scope|BLOCK' "$T/out" | head -1)"
 build; rm -f "$OH/inventory/registry.xml"; rc="$(pre)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*registry.xml' "$T/out" && ! grep -q READY "$T/out" && ok || bad "no registry.xml was not UNKNOWN: rc $rc"
 

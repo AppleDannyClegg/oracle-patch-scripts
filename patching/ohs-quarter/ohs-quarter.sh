@@ -245,6 +245,8 @@ DOpts=(); [ -n "$ORACLE_HOME_ARG" ] && DOpts+=(--oracle-home "$ORACLE_HOME_ARG")
 [ -n "$KEEP_PATCHES" ] && DOpts+=(--keep-patches "$KEEP_PATCHES")
 [ "$DRY" = 1 ] && DOpts+=(--dry-run); [ "$YES" = 1 ] && DOpts+=(--yes)
 OOPTS=(); [ -n "$ORACLE_HOME_ARG" ] && OOPTS+=(--oracle-home "$ORACLE_HOME_ARG")
+# ohs-patch checks free space on its backup dir (default /u01/backup), so it must be told the one given here
+[ -n "$BACKUP_DIR" ] && OOPTS+=(--backup-dir "$BACKUP_DIR")
 [ "$DRY" = 1 ] && OOPTS+=(--dry-run); [ "$YES" = 1 ] && OOPTS+=(--yes)
 
 jrun()    { local cmd="$1"; shift; "$JAVA_PATCH" "$cmd" "$@" "${JOPTS[@]}" --run-dir "$RUN_DIR/java"; }
@@ -339,6 +341,11 @@ orun stop || die "Could not stop the components cleanly - nothing patched"
 log "=== 4/7 apply"
 for entry in "${APPLY[@]}"; do
   owner="${entry%%|*}"; arg="${entry#*|}"
+  # a dry backup writes no shared state, and dbclient-upgrade/ohs-patch apply refuse without one ("no completed
+  # backup"), so a dry run cannot call them: their preflight in 1/7 is the check (T1114)
+  if [ "$DRY" = 1 ] && { [ "$owner" = dc ] || [ "$owner" = ohs ]; }; then
+    log "dry-run: would apply $arg --backup-run $SHARED (its preflight above is what a dry run checks)"; continue
+  fi
   case "$owner" in
     java) java_attempted=1; jrun apply "$arg" || fail_after "java-patch apply failed"; log "jdk: applied $arg";;
     wls)  wls_attempted=1;  wrun apply "$arg" || fail_after "wls-patch apply failed"; log "wlspsu: applied $arg";;
@@ -358,6 +365,9 @@ orun start || fail_after "the patched home does not start"
 log "=== 6/7 verify"
 for entry in "${APPLY[@]}"; do
   owner="${entry%%|*}"; arg="${entry#*|}"
+  # nothing was installed, so the 19c level and the patch id cannot read as applied (dbclient-upgrade verify,
+  # ohs-patch verify <dir>): a dry run would end in recovery here instead (T1114)
+  if [ "$DRY" = 1 ] && { [ "$owner" = dc ] || [ "$owner" = ohs ]; }; then log "dry-run: would verify $arg"; continue; fi
   case "$owner" in
     java) jrun verify || fail_after "java-patch verify failed";;
     wls)  wrun verify || fail_after "wls-patch verify failed";;

@@ -189,7 +189,7 @@ pick_tar() {
   NEW_JH="$JAVA_BASE/$top"
   NEW_VER="$(tar -xzOf "$TARBALL" "$top/release" 2>/dev/null | sed -n 's/^JAVA_VERSION="\([^"]*\)".*/\1/p' | head -1)"
   [ -z "$NEW_VER" ] && NEW_VER="$(printf '%s' "$top" | grep -oE '[0-9][0-9._u]+' | head -1 | sed 's/^1\.8\.0_/8u/')"
-  NEW_MAJOR="${NEW_VER%%.*}"; [ "$NEW_MAJOR" = 1 ] && { NEW_MAJOR="${NEW_VER#1.}"; NEW_MAJOR="${NEW_MAJOR%%.*}"; }
+  NEW_MAJOR="${NEW_VER%%[.u]*}"; [ "$NEW_MAJOR" = 1 ] && { NEW_MAJOR="${NEW_VER#1.}"; NEW_MAJOR="${NEW_MAJOR%%.*}"; }
 }
 
 # ---------------------------------------------------------------------------
