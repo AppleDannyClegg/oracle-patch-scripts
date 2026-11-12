@@ -361,13 +361,13 @@ cmd_preflight() {
   # still 12c fails there with OUI-67073 naming oracle.rdbms.rsf:19.0.0.0.0 (Gen's host, 6 Nov) - ask now instead
   local app arc miss
   app="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckApplicable -ph . -oh "$OH" 2>&1)"; arc=$?
-  if [ "$arc" = 0 ] && printf '%s' "$app" | grep -qi 'Prereq "checkApplicable" passed'; then
+  if [ "$arc" = 0 ] && printf '%s' "$app" | grep -qiE 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
     log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
   elif printf '%s' "$app" | grep -qi 'requires component(s) that are not installed'; then
     miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
     block "$id needs ${miss:-a component} that is not installed in $OH (OUI-67073) - opatch apply would refuse after the stop. For a DB19C bundle that is the Database Client 19c upgrade (KB585169), which comes first"
-  elif printf '%s' "$app" | grep -qi 'Prereq "checkApplicable" failed'; then
-    block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
+  elif printf '%s' "$app" | grep -qiE 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
+    block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" (for patch [0-9]+ )?failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
   else
     unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
   fi
@@ -378,10 +378,10 @@ cmd_preflight() {
   # only the 'passed' line is a pass: OPatch prints the header 'Conflicts/Supersets for each patch are:' for a real
   # conflict too, so a 'superset' word in the output is no proof of anything (a superset of an installed bundle passes)
   # the exit status first (Jocasta P3): non-zero is a conflict whatever the wording says
-  if [ "$prc" = 0 ] && printf '%s' "$pre" | grep -q 'Prereq "checkConflictAgainstOHWithDetail" passed' && ! printf '%s' "$pre" | grep -qi 'Conflict with'; then
+  if [ "$prc" = 0 ] && printf '%s' "$pre" | grep -qE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed' && ! printf '%s' "$pre" | grep -qi 'Conflict with'; then
     log "conflicts: none"
     printf '%s' "$pre" | grep -qiE 'superset|subset' && log "  ($id supersedes an installed patch - OPatch rolls the older one back itself)"
-  elif [ "$prc" = 0 ] && ! printf '%s' "$pre" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" failed|Conflict with' && printf '%s' "$pre" | grep -qiE 'superset|subset'; then
+  elif [ "$prc" = 0 ] && ! printf '%s' "$pre" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?failed|Conflict with' && printf '%s' "$pre" | grep -qiE 'superset|subset'; then
     warn "$id supersedes an installed patch - OPatch rolls the older one back itself"
   else block "conflict check did not pass for $id (rc $prc): $(printf '%s\n' "$pre" | grep -iE 'conflict|error|fail' | head -3 | tr '\n' ' ')"; fi
 

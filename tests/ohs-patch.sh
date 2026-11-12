@@ -242,6 +242,12 @@ build; printf 'Exception in thread main\n' >"$T/applicable"; echo 1 >"$T/applica
 [ "$rc" = 2 ] && ! grep -q READY "$T/out" && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "an unreadable CheckApplicable was not UNKNOWN: rc $rc"
 build; printf 'Invoking prereq "checkapplicable"\nline two\nline three\nPrereq "checkApplicable" is OK.\nOPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
 grep 'UNKNOWN: .*CheckApplicable' "$T/out" | grep -q 'Prereq "checkApplicable" is OK. OPatch succeeded.' && ok || bad "an UNKNOWN CheckApplicable does not quote OPatch's last lines: $(grep 'UNKNOWN' "$T/out")"
+# field wording (12 Nov 2026, OPatch 13.9.4.2.25): 'Prereq "checkApplicable" for patch <id> passed.' is a pass, and
+# 'for patch <id> failed.' a block - the plain 'passed' match read the real pass as no verdict (UNKNOWN)
+build; printf 'Oracle Interim Patch Installer version 13.9.4.2.25\nInvoking prereq "checkapplicable"\n\nPrereq "checkApplicable" for patch 39425385 passed.\n\nOPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
+! grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && grep -q 'components: every component' "$T/out" && ok || bad "OPatch 13.9.4.2.25's 'for patch N passed' was not a pass: rc $rc: $(grep -E 'UNKNOWN|components' "$T/out" | head -2)"
+build; printf 'Prereq "checkApplicable" for patch 40005842 failed.\nPatch 40005842: Platform 46 is not supported\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*not applicable.*Platform 46' "$T/out" && ok || bad "'for patch N failed' was not blocking: rc $rc: $(grep -E 'BLOCK|UNKNOWN' "$T/out" | head -2)"
 build; printf 'OPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "rc 0 without the 'passed' line was taken as a pass: rc $rc"
 build; rc="$(run)"

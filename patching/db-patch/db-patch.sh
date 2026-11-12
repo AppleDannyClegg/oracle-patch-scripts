@@ -198,7 +198,7 @@ cmd_preflight() {
     if printf '%s\n' "$INSTALLED" | grep -q "^$id;"; then log "$id already installed: $(patch_desc "$p")"; continue; fi
     log "$id: $(patch_desc "$p") $(patch_is_rolling "$p" && echo '[rolling]' || echo '[NOT rolling]')"
     local out; out="$(opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
-    if printf '%s' "$out" | grep -q 'Prereq "checkConflictAgainstOHWithDetail" passed'; then log "  no conflicts"
+    if printf '%s' "$out" | grep -qE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed'; then log "  no conflicts"
     elif printf '%s' "$out" | grep -qiE 'conflict'; then err "  CONFLICT: $(printf '%s' "$out" | grep -iE 'conflict|superset|subset' | head -3 | tr '\n' ' ')"; fail=1
     else warn "  prereq check gave no verdict (see log)"; fi
     # release match
