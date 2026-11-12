@@ -61,5 +61,12 @@ rc="$(run)"; [ "$rc" != 0 ] && grep -q 'CONFLICT for 39000002' "$T/out" && ok ||
 printf 'Patch 39000002 is a superset of the patch(es) [  39372515 ] in the Oracle Home\nOPatch succeeded.\n' >"$T/prereq"; echo 0 >"$T/prereq.rc"
 rc="$(run)"; [ "$rc" = 0 ] && grep -q 'supersedes' "$T/out" && ok || bad "a superset with no failure blocked or was silent: rc $rc"
 
+# OPatch 13.9.4.2.25 wording (T1162): 'for patch <id> passed.' is no conflict; 'for patch <id> failed.' with only a superset
+# under exit 0 is a conflict, not the superset warning
+printf 'Invoking prereq "checkconflictagainstohwithdetail"\n\nPrereq "checkConflictAgainstOHWithDetail" for patch 39000002 passed.\n\nOPatch succeeded.\n' >"$T/prereq"; echo 0 >"$T/prereq.rc"
+rc="$(run)"; [ "$rc" = 0 ] && grep -q 'no conflicts' "$T/out" && ok || bad "'for patch N passed': rc $rc, $(grep -iE 'conflict|problem' "$T/out" | head -3)"
+printf 'Prereq "checkConflictAgainstOHWithDetail" for patch 39000002 failed.\nConflicts/Supersets for each patch are:\nPatch : 39000002\n        Bug Superset of 31000001\n' >"$T/prereq"; echo 0 >"$T/prereq.rc"
+rc="$(run)"; [ "$rc" != 0 ] && grep -q 'CONFLICT for 39000002' "$T/out" && ok || bad "'for patch N failed' with only a superset under exit 0 was not blocking: rc $rc, $(grep -iE 'conflict|supersed' "$T/out" | head -3)"
+
 echo "wls-patch conflict gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

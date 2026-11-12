@@ -280,6 +280,12 @@ build; printf 'Prereq "checkConflictAgainstOHWithDetail" passed.\nPatch : 400058
 [ "$rc" = 1 ] && grep -q 'BLOCKING: conflict check did not pass' "$T/out" && ok || bad "a 'Conflict with' under exit 0 was not blocking: rc $rc"
 build; printf 'Patch 40005842 is a superset of the patch(es) [ 39611663 ]\nOPatch succeeded.\n' >"$T/prereq"; rc="$(run)"
 [ "$rc" = 0 ] && grep -q 'supersedes an installed patch' "$T/out" && ok || bad "a superset with exit 0 and no failure should warn, not block: rc $rc"
+# OPatch 13.9.4.2.25 wording for the conflict prereq too (T1162): 'for patch <id> passed.' is no conflict, and
+# 'for patch <id> failed.' with only a superset under exit 0 is still a block, not the superset warning
+build; printf 'Invoking prereq "checkconflictagainstohwithdetail"\n\nPrereq "checkConflictAgainstOHWithDetail" for patch 40005842 passed.\n\nOPatch succeeded.\n' >"$T/prereq"; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'conflicts: none' "$T/out" && ok || bad "the conflict prereq's 'for patch N passed' was not 'conflicts: none': rc $rc: $(grep -E 'BLOCK|conflict' "$T/out" | head -2)"
+build; printf 'Prereq "checkConflictAgainstOHWithDetail" for patch 40005842 failed.\nConflicts/Supersets for each patch are:\nPatch : 40005842\n  Bug Superset of 31000001\n' >"$T/prereq"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: conflict check did not pass for 40005842 (rc 0)' "$T/out" && ok || bad "'for patch N failed' with only a superset under exit 0 was not blocking: rc $rc: $(grep -E 'BLOCK|supersedes' "$T/out" | head -2)"
 
 # running from the home: listed, and WebLogic servers named
 build; printf ' 4242 %s/ohs/bin/httpd -d %s/config/fmwconfig/components/OHS/instances/ohs1 -k start\n 4343 /jdk/bin/java -cp %s/oracle_common/x.jar weblogic.NodeManager\n' "$OH" "$DOM" "$OH" >"$T/ps.txt"; rc="$(run)"
