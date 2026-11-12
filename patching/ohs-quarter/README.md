@@ -75,11 +75,19 @@ Naming a folder in `--skip` that has content is refused too.
    `--dry-run` is passed to every child, so each one does its own dry run.
 7. **The real run, in the change window:**
    ```bash
-   patching/ohs-quarter/ohs-quarter.sh <patch-root> [--skip ...] [--remove-12c IDS] [--keep-patches IDS]
+   patching/ohs-quarter/ohs-quarter.sh <patch-root> [--skip ...] [--remove-12c IDS] [--keep-patches IDS] 2>&1 | tee ohs-quarter.log
    ```
+   It logs to the terminal only, so keep the `tee`: step 8 reads that log.
    It runs every child's preflight first, then asks once for the whole outage (`--yes` skips the question; with
    no terminal and no `--yes` it refuses). Then: backup, stop, apply in the order above, start, verify.
    The last line is `OHS QUARTER OK` (or `OHS QUARTER OK, PARTIAL BY REQUEST` with the `--skip` list).
+8. **If it stopped with exit 1 or 3**, ask what to do next:
+   ```bash
+   patching/ohs-quarter/ohs-quarter-explain.sh ohs-quarter.log <run-dir>
+   ```
+   It reads the log and the run dir, and only reads. It prints which way the run stopped, whether the components
+   are running, the first ERROR (the cause), and the commands to run by hand with this run's own paths in them.
+   With no log, it says so and exits 2 rather than guessing.
 
 ## Staging: what it refuses
 
