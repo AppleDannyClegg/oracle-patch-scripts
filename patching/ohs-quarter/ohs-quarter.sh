@@ -298,13 +298,34 @@ recover() {
     jrun rollback || { err "java-patch rollback failed - restore the JDK by hand"; rec=0; }
   fi
   if [ "$rec" = 1 ]; then
+    trap ':' INT TERM   # handled, not ignored: what this starts gets default INT/TERM, so the next stop can stop it
     orun start || { err "the components did not start after recovery - manual attention needed"; rec=0; }
   else
     err "Recovery incomplete - components NOT started: the home may be part-patched. Fix by hand."
   fi
   [ "$rec" = 1 ]
 }
-fail_after() { err "$1"; if recover; then exit 1; else exit 3; fi; }
+# a signal during a recovery is ignored, so a second recovery never starts inside the first and a Ctrl-C to the
+# process group does not cut a restore short. An ignored signal is inherited, so every start sets ':' instead (T1137)
+fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
+# after a stop that did not lead to any apply: start the components again rather than leave them down (T1135)
+restart_after_stop() {
+  trap ':' INT TERM
+  err "$1 - nothing patched. Starting them again"
+  orun start || { err "nothing was patched, and NOT everything started again: a component with no 'started' line above is DOWN - start it by hand"; exit 3; }
+  die "$1 - nothing was patched; the components are started again (see ohs-patch start above)"
+}
+# INT/TERM: bash runs this once the child in the foreground returns. Before the stop nothing has changed; after it the
+# run takes the path a failure there would take (T1137)
+PHASE=check
+on_signal() {
+  case "$PHASE" in
+    check)   die "interrupted - nothing changed";;
+    stopped) restart_after_stop "interrupted during the stop";;
+    applied) fail_after "interrupted after the stop";;
+  esac
+}
+trap on_signal INT TERM
 
 # ---- 1. preflight everything before any change -----------------------------------------------------------
 log "=== 1/7 preflight (nothing has changed yet)"
@@ -336,14 +357,12 @@ backup_once || die "a backup failed - nothing changed"
 # ---- 3. stop (once) --------------------------------------------------------------------------------------
 log "=== 3/7 stop (once for the whole outage)"
 # a stop that cannot prove the home stopped has still stopped some of it: start it again rather than leave it down (T1135)
-if ! orun stop; then
-  err "Could not stop the components cleanly - nothing patched. Starting them again"
-  orun start || { err "the stop failed, nothing was patched, and NOT everything started again: a component with no 'started' line above is DOWN - start it by hand"; exit 3; }
-  die "the stop failed and nothing was patched; the components are started again (see ohs-patch start above)"
-fi
+PHASE=stopped
+orun stop || restart_after_stop "Could not stop the components cleanly"
 
 # ---- 4. apply, in the pinned order ----------------------------------------------------------------------
 log "=== 4/7 apply"
+PHASE=applied
 for entry in "${APPLY[@]}"; do
   owner="${entry%%|*}"; arg="${entry#*|}"
   # a dry backup writes no shared state, and dbclient-upgrade/ohs-patch apply refuse without one ("no completed

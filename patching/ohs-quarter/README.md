@@ -145,5 +145,7 @@ rollback. Then it starts once.
 | 1 | refused or failed. If it failed after the backup, the restore worked and the home is back where it was. If the outage's stop failed, nothing was patched and the components were started again |
 | 3 | **recovery did not finish**: a restore failed, or the stop before the restores did (then nothing is restored), or the start after them did. Also when the outage's stop failed and starting the components again failed too (nothing was patched, but a component is DOWN). The components are NOT started and the home may be part-patched: fix it by hand from the backups the run made (the shared one is `<run-dir>/backup`) |
 
+A Ctrl-C or a `kill` (INT/TERM) is handled the same way once the child step running at that moment returns. Before 3/7 it exits 1 with nothing changed. During the stop the components are started again. After it, the attempted sets are restored and the components started. The exit is 1 or 3 as above. A second signal during that recovery is ignored, so the restore is not cut short; `kill -9` still stops it, leaving the components stopped and nothing restored.
+
 The shared backup is under the run dir's `backup/`. The run dir's `state` file records the patch root, what was
 applied and what was left out.
