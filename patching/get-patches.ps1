@@ -515,7 +515,7 @@ function Get-WlsPlan($Wls, [switch] $OhsHome) {
 
     # Coherence cumulative patch. lspatches says "Coherence Cumulative Patch 12.2.1.4.30"; MOS can say
     # "Coherence 12.2.1.4 Cumulative Patch 30 (12.2.1.4.30)". Both carry the level as <release>.<N>.
-    if ($Wls.Coherence -and -not $spb) {
+    if ($Wls.Coherence -and -not $spb -and -not $OhsHome) {   # an OHS home: the runbook has no Coherence patch
         $cohRelease = Get-ReleaseId "Oracle Coherence $(Get-FivePart $short)" -Optional
         if (-not $cohRelease) { Write-Warning "$($Wls.Home): MOS has no release 'Oracle Coherence $(Get-FivePart $short)' - skipping the Coherence patch" }
         $cohRows = if ($cohRelease) { @(Get-MosPatchRows $script:ProductCoherence $cohRelease $script:PlatformGeneric -Recommended |

@@ -813,6 +813,12 @@ finally {
     Check (@($p9 | Where-Object { $_.Kind -eq 'spb' }).Count -eq 0) "a wls| home that is also an OHS home is planned no Stack Patch Bundle: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     Check (@($p9 | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'WLS PSU*' }).Count -eq 0) "...and no MOS-looked-up PSU beside the runbook's 39919567: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     Check (@($set9 | Where-Object { $_.Patch -eq '39919567' }).Count -eq 1) "...and the runbook's WLS PSU 39919567 is planned into ohsset/ once"
+    # ...and no MOS Coherence patch where the wls| line says Coherence yes: the runbook has none, and the stage refuses it (Huey #15677)
+    $coh = Join-Path $tmp 'ohsset-coh.txt'
+    @('host|wl9', 'plat|linux|x86_64', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.25|yes', 'patch|/u01/fmw|27516009|', 'patch|/u01/fmw|39487427|',
+      'ohs|/u01/fmw|12.2.1.4.0|12.1.0.2.0') | Set-Content -LiteralPath $coh
+    $pc = @(Get-PatchPlan (Read-Manifest $coh) 3>$null)
+    Check (@($pc | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'Coherence*' }).Count -eq 0 -and @($pc | Where-Object { $_.Kind -eq 'spb' }).Count -eq 0) "an OHS home with Coherence installed is planned no MOS Coherence patch: $(@($pc | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     # the first fixture again: which homes get the set, and the installer where the lookup could not decide
     $set8 = @($p8 | Where-Object { $_.Kind -eq 'ohsset' })
     Check ($set8.Count -eq 10) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
