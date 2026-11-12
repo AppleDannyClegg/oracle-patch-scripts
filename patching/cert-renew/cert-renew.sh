@@ -533,7 +533,7 @@ cmd_csr() {
 }
 
 cmd_plan() {
-  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "plan <target> --cert --key [--chain]"; [ -n "$RUN_DIR" ] || init_run_dir plan; find_tools
+  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "plan <target> --cert --key [--chain]"; [ -n "$LOG_FILE" ] || init_run_dir plan; find_tools
   local one; for one in $(expand_targets "$t"); do
     resolve_target "$one"; check_material
     echo "Target   : $one"; echo "New cert : CN=$NEW_CN issuer=$NEW_ICN serial=$NEW_SERIAL expires $NEW_END ($NEW_DAYS days) SAN=$NEW_SAN"
@@ -562,7 +562,7 @@ cmd_plan() {
 }
 
 cmd_preflight() {
-  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "preflight <target> --cert --key [--chain]"; [ -n "$RUN_DIR" ] || init_run_dir preflight; find_tools
+  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "preflight <target> --cert --key [--chain]"; [ -n "$LOG_FILE" ] || init_run_dir preflight; find_tools
   local fail=0 one; for one in $(expand_targets "$t"); do
     resolve_target "$one"; check_material
     case "$T_KIND" in
@@ -584,7 +584,7 @@ cmd_preflight() {
 }
 
 cmd_backup() {
-  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "backup <target>"; [ -n "$RUN_DIR" ] || init_run_dir backup; find_tools
+  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "backup <target>"; [ -n "$LOG_FILE" ] || init_run_dir backup; find_tools
   local one b; for one in $(expand_targets "$t"); do resolve_target "$one"; b="$RUN_DIR/backup/$(printf '%s' "$one" | tr ':/' '__')"; mkdir -p "$b"
     case "$T_KIND" in
       wls) cp -p "$T_DOMAIN/config/config.xml" "$b/"; [ -n "$T_FILE" ] && [ -f "$T_FILE" ] && cp -p "$T_FILE" "$b/"; [ -n "$T_TRUST" ] && [ -f "$T_TRUST" ] && cp -p "$T_TRUST" "$b/"
@@ -688,7 +688,7 @@ wallet_apply() {
 java_apply() { local pw; pw="$(ks_pass "$T_FILE" JKS)" || die "cacerts password unknown (CACERTS_PASSWORD)"; [ -n "$CHAIN" ] || CHAIN="$CERT"; import_cas "$T_FILE" "$pw" JKS; }
 
 cmd_apply() {
-  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "apply <target> --cert --key [--chain]"; [ -n "$RUN_DIR" ] || init_run_dir apply; find_tools
+  local t="${ARGS[0]:-}"; [ -n "$t" ] || die "apply <target> --cert --key [--chain]"; [ -n "$LOG_FILE" ] || init_run_dir apply; find_tools
   local one rc=0 arc; for one in $(expand_targets "$t"); do   # arc: this target's own apply; rc: the command's (DeepSeek 21:32: one rc made apply_<t2>=partial after t1's restart failed)
     resolve_target "$one"; check_material
     [ -d "$RUN_DIR/backup/$(printf '%s' "$one" | tr ':/' '__')" ] || { ARGS=("$one"); cmd_backup; ARGS=("$t"); }
