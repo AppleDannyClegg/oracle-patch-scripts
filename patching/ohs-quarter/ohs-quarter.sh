@@ -310,7 +310,11 @@ fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3;
 restart_after_stop() {
   trap '' INT TERM
   err "$1 - nothing patched. Starting them again"
-  orun start || { err "nothing was patched, and NOT everything started again: a component with no 'started' line above is DOWN - start it by hand"; exit 3; }
+  if ! orun start; then
+    # a component the stop could not stop is still UP, and a start of it can fail: ask every component's ports (T1145)
+    log "checking which components answer:"; orun verify || true
+    err "nothing was patched, and NOT everything started again: a component the port check above says does not answer is DOWN - start it by hand"; exit 3
+  fi
   die "$1 - nothing was patched; the components are started again (see ohs-patch start above)"
 }
 # INT/TERM: bash runs this once the child in the foreground returns. Before the stop nothing has changed; after it the

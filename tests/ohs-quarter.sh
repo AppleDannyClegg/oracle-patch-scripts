@@ -213,6 +213,11 @@ grep -q 'started again' "$T/out" && ok || bad "a failed 3/7 stop did not say the
 runq "$T/root" FAIL_FIRST_STOP=1 FAIL_START=1; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed 3/7 stop whose start also failed exited $rc (want 3)"
 grep -q 'DOWN' "$T/out" && ok || bad "a failed stop + failed start did not say components are down: $(tail -2 "$T/out" | tr '\n' ' ')"
+# which one is down: a component the stop could not stop is still UP, so the message must come from a port check of
+# every component, not from the failed start alone (T1145, Quark T1142)
+start_n="$(line '^ohs start')"; verify_n="$(grep -n '^ohs verify' "$T/calls.log" | head -1 | cut -d: -f1)"
+[ -n "$verify_n" ] && [ "$verify_n" -gt "${start_n:-0}" ] && ok || bad "a failed restart did not check which components answer: $(grep '^ohs' "$T/calls.log" | tr '\n' ' ')"
+grep -q 'port check above' "$T/out" && ok || bad "the DOWN message does not point at the port check: $(tail -1 "$T/out")"
 
 # ---- a signal mid-run (T1137): before the stop nothing has changed; after it, what was stopped is started again and
 #      what was applied is restored - the same paths a failure takes - and the exit says which
