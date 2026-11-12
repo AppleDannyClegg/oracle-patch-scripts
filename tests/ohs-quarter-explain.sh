@@ -60,7 +60,9 @@ run() {
   [ "${NODC:-}" = 1 ] && { root="$T/rootnodc"; skip=(--skip dbclient); }
   rm -rf "$T/run"; rm -f "$T/stops" "$T/start.failed"
   env "$@" bash "$Q" --patch-root "$root" --run-dir "$T/run" --yes "${skip[@]}" >"$T/$name.log" 2>&1; echo $? >"$T/$name.rc"
-  bash "$X" "$T/$name.log" "$T/run" >"$T/$name.out" 2>&1; echo $? >"$T/$name.xrc"
+  local rd=(); [ -d "$T/run" ] && rd=("$T/run")   # an operator gives the run dir only when the run made one
+  bash "$X" "$T/$name.log" "${rd[@]}" >"$T/$name.out" 2>&1; echo $? >"$T/$name.xrc"
+  bash "$X" --terse "$T/$name.log" "${rd[@]}" >"$T/$name.terse" 2>&1; echo $? >"$T/$name.trc"
 }
 # want <name> <ohs-quarter rc> <path> <text the next steps must hold>
 want() {
@@ -104,6 +106,43 @@ NODC=1 run inte1 SIGNAL_AT='ohs apply' FAIL_STOP_2=1; want inte1 3 E1 'is not in
 grep -qF "CHECK FIRST, home + inventory" "$T/inte1.out" && grep -qF "ohs-patch.sh rollback --oracle-home /u01/app/ohs" "$T/inte1.out" && ok || bad "inte1: the interrupted opatch set is not listed as CHECK FIRST + its restore: $(cat "$T/inte1.out")"
 grep -qE 'CHECK FIRST, (WLS|JDK)' "$T/inte1.out" && bad "inte1: an applied set was marked CHECK FIRST: $(cat "$T/inte1.out")" || ok
 run intd  SIGNAL_AT='ohs apply';                  want intd 1 D 'check every component answers'
+# a Ctrl-C inside the JDK apply (the first set of all), recovery's stop failing: the JDK is CHECK FIRST, and no other
+# set is a plain restore, since none applied
+run intj  SIGNAL_AT='java apply' FAIL_STOP_2=1;   want intj 3 E1 'is not in the log'
+grep -qF "CHECK FIRST, JDK" "$T/intj.out" && grep -qF 'java-patch.sh rollback' "$T/intj.out" && ok || bad "intj: the interrupted JDK set is not CHECK FIRST + its rollback: $(cat "$T/intj.out")"
+# inside the WLS apply: WLS is CHECK FIRST, and the JDK, which applied, is a plain restore
+run intw  SIGNAL_AT='wls apply' FAIL_STOP_2=1;    want intw 3 E1 'is not in the log'
+grep -qF "CHECK FIRST, WLS" "$T/intw.out" && ok || bad "intw: the interrupted WLS set is not CHECK FIRST: $(cat "$T/intw.out")"
+grep -qF "CHECK FIRST, JDK" "$T/intw.out" && bad "intw: the applied JDK was marked CHECK FIRST: $(cat "$T/intw.out")" || ok
+
+# the rollback distance line: restores counted from the 1s, check-firsts from the 2s. Sets apply in a fixed order, so
+# only the set in flight is a check-first; the ones after it never started (intj: not WLS, not the shared home)
+dist() { grep -qxF "TO GET BACK TO THE PRE-RUN HOME: $2" "$T/$1.out" && ok || bad "$1: want distance '$2', got: $(grep 'PRE-RUN' "$T/$1.out")"; }
+dist intj   '0 restore(s), plus up to 1 more to check first (JDK), then start.'
+dist intw   '1 restore(s) (JDK), plus up to 1 more to check first (WLS), then start.'
+dist inte1  '2 restore(s) (WLS, JDK), plus up to 1 more to check first (home + inventory), then start.'
+dist e2java '1 restore(s) (JDK), then start.'
+# recover goes on past a failed restore, so only the ones that failed are left to do: e2wls's home and JDK restores worked
+dist e2wls  '1 restore(s) (WLS), then start.'
+grep -E '^  [0-9]+\. ' "$T/e2wls.out" | grep -qE 'dbclient-upgrade|ohs-patch.sh rollback|java-patch' && bad "e2wls: a restore that worked is in the steps: $(cat "$T/e2wls.out")" || ok
+for n in prefl backup stopup recov intd; do grep -qxF 'TO GET BACK TO THE PRE-RUN HOME: nothing to restore.' "$T/$n.out" && ok || bad "$n: want nothing to restore, got: $(grep 'PRE-RUN' "$T/$n.out")"; done
+grep -qxF 'TO GET BACK TO THE PRE-RUN HOME: nothing to restore; start what is down.' "$T/stopdn.out" && ok || bad "stopdn: $(grep 'PRE-RUN' "$T/stopdn.out")"
+grep -qxF 'TO GET BACK TO THE PRE-RUN HOME: nothing to restore; start it.' "$T/e3.out" && ok || bad "e3: $(grep 'PRE-RUN' "$T/e3.out")"
+
+# --terse is the same steps and nothing else: on every fixture its output is exactly the full output's numbered lines
+nt=0
+for f in "$T"/*.terse; do
+  name="$(basename "$f" .terse)"; nt=$((nt + 1))
+  [ "$(cat "$T/$name.trc")" = 0 ] && [ -s "$f" ] && grep -E '^  [0-9]+\. ' "$T/$name.out" | cmp -s - "$f" && ok \
+    || bad "$name: --terse (rc $(cat "$T/$name.trc")) is not the full output's steps: $(cat "$f")"
+done
+nl="$(find "$T" -maxdepth 1 -name '*.log' -newer "$T/root" | wc -l | tr -d ' ')"
+[ "$nt" -gt 0 ] && [ "$nt" = "$nl" ] && ok || bad "--terse ran on $nt fixtures, but $nl ran"
+# --terse anywhere on the line is the flag, never the run dir; a run dir that is not a directory is refused, not used
+bash "$X" --terse "$T/stopdn.log" >"$T/tfirst.out" 2>&1; bash "$X" "$T/stopdn.log" --terse >"$T/tlast.out" 2>&1; r=$?
+[ "$r" = 0 ] && grep -q '^  1\. ' "$T/tlast.out" && cmp -s "$T/tlast.out" "$T/tfirst.out" && ok || bad "--terse given last (rc $r) is not the terse output: $(cat "$T/tlast.out")"
+bash "$X" "$T/stopdn.log" "$T/no-such-run" >"$T/nord.out" 2>&1; r=$?
+[ "$r" = 2 ] && ! grep -q '^PATH' "$T/nord.out" && grep -qF 'no-such-run' "$T/nord.out" && ok || bad "a run dir that is not a directory (rc $r) was not refused: $(cat "$T/nord.out")"
 
 # no log, an empty one, or one with no stop message: exit 2, the tee line, no PATH
 bash "$X" "$T/nothere.log" >"$T/nolog.out" 2>&1; [ $? = 2 ] && grep -q 'tee' "$T/nolog.out" && ! grep -q '^PATH' "$T/nolog.out" && ok || bad "missing log: $(cat "$T/nolog.out")"

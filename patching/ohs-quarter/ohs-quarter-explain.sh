@@ -2,13 +2,14 @@
 # ohs-quarter-explain: read what a stopped ohs-quarter.sh run printed, and say what state the home is in and the next
 # commands to run by hand, with this run's own paths filled in. It only reads: it writes nothing and runs nothing.
 #
-# Usage: ohs-quarter-explain.sh <console-log> [<run-dir>]
+# Usage: ohs-quarter-explain.sh [--terse] <console-log> [<run-dir>]
+#   --terse        print only the numbered next steps, the same lines the full explanation has, and nothing else
 #   <console-log>  everything ohs-quarter.sh printed. It logs to stderr only, so keep it with
 #                  ohs-quarter.sh <options> 2>&1 | tee ohs-quarter.log
 #   <run-dir>      the run's --run-dir (or the one it made), to fill in the real paths. A run that stopped before it
-#                  made one has none.
+#                  made one has none. One that is not a directory is refused (exit 2).
 #   --keys         print the message fragments it knows, one per line (the test checks them against ohs-quarter.sh)
-# Exit: 0 explained; 2 cannot say (no log, or no ohs-quarter stop message in it). It never guesses a path.
+# Exit: 0 explained; 2 cannot say (no log, no ohs-quarter stop message in it, or a run dir that is not there). It never guesses a path.
 
 set -uo pipefail
 SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,12 +54,18 @@ Non-interactive and --yes not given|A
 aborted - nothing changed|A
 interrupted - nothing changed|A'
 
+# --terse may come anywhere on the line; it is never taken as the log or the run dir
+TERSE=0; args=()
+for a in "$@"; do [ "$a" = --terse ] && TERSE=1 || args+=("$a"); done
+set -- "${args[@]+"${args[@]}"}"
 case "${1:-}" in
   --keys) printf '%s\n' "$ROWS" | cut -d'|' -f1; exit 0;;
   -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
 esac
 [ $# -ge 1 ] && [ $# -le 2 ] || { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 LOG="$1"; RD="${2:-}"
+# a run dir that is not there would put a wrong path in every command printed: refuse it rather than guess
+[ -z "$RD" ] || [ -d "$RD" ] || { echo "No run dir at $RD: give the run's --run-dir as it is, or leave it out." >&2; sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 [ -s "$LOG" ] || { echo "No console log at $LOG, so where the run stopped is unknown, and this will not guess from the run dir alone."; echo "$TEE_HINT"; exit 2; }
 
 has() { grep -qF -- "$1" "$LOG"; }
@@ -79,26 +86,55 @@ cause="$(awk '/recovering: stopping the components first/ { exit } /\[ERROR\]|^E
 
 START="$P/ohs-patch/ohs-patch.sh start --oracle-home $OH --run-dir $RUN/opatch"
 VERIFY="$P/ohs-patch/ohs-patch.sh verify --oracle-home $OH"
-n=0; step() { n=$((n + 1)); printf '  %d. %s\n' "$n" "$*"; }
-restores() { # the by-hand restore for each set recovery tried or should have, newest first (recover's own order)
-  local sh=0 wl=0 jv=0
+# the steps go to fd 3, everything else to stdout; --terse sends stdout away, so both renderings print the same steps
+n=0; step() { n=$((n + 1)); printf '  %d. %s\n' "$n" "$*" >&3; }
+# which sets need a restore: 1 = restore it, 2 = check first (the E1 interrupt case), 0 = not attempted. Set once,
+# so the summary line and the steps are built from the same values and cannot disagree.
+sh=0; wl=0; jv=0; unlogged=0
+pick_sets() {
   if has 'recovering: dbclient-upgrade rollback' || has 'recovering: ohs-patch rollback' || has 'recovering: wls-patch restore' || has 'recovering: java-patch rollback'; then
-    # recover logs one "recovering:" line per set it restores, so when it got that far those lines are the list
-    { has 'recovering: dbclient-upgrade rollback' || has 'recovering: ohs-patch rollback'; } && sh=1
-    has 'recovering: wls-patch restore' && wl=1; has 'recovering: java-patch rollback' && jv=1
+    # recover logs one "recovering:" line per set it restores and goes on past a failed one, so a set still to restore
+    # by hand is one whose own failure line comes after its "recovering:" line and before the next. A restore that
+    # worked is 0: redoing it is not needed, and is not claimed to be harmless.
+    local s
+    for s in $(awk '/recovering: (dbclient-upgrade rollback|ohs-patch rollback)/ { s = "sh" }
+      /recovering: wls-patch restore/ { s = "wl" }; /recovering: java-patch rollback/ { s = "jv" }
+      /the restore failed - restore this home by hand/ && s == "sh" { print s }
+      /wls-patch restore failed/ && s == "wl" { print s }; /java-patch rollback failed/ && s == "jv" { print s }' "$LOG"); do
+      case "$s" in sh) sh=1;; wl) wl=1;; jv) jv=1;; esac
+    done
   else
     # recover stopped before them (E1): the sets that applied, and the one whose apply failed
     { grep -F ': applied ' "$LOG" | grep -vqE 'jdk: applied|wlspsu: applied' || has 'dbclient-upgrade apply failed' || has 'ohs-patch apply failed'; } && sh=1
     { has 'wlspsu: applied' || has 'wls-patch apply failed'; } && wl=1
     { has 'jdk: applied' || has 'java-patch apply failed'; } && jv=1
     if has 'interrupted after the stop'; then
-      # an apply logs nothing until it succeeds, so the set it was in when the signal came is not in the log. Every
-      # other set that passed its preflight is listed as 2: check it, and restore it only if it changed
-      step "the set being applied when the run was interrupted is not in the log, so each set below marked CHECK FIRST may or may not have been touched"
-      [ "$sh" = 0 ] && grep -F ' preflight OK' "$LOG" | grep -vqE 'jdk: |wlspsu: ' && sh=2
-      [ "$wl" = 0 ] && has 'wlspsu: ' && wl=2; [ "$jv" = 0 ] && has 'jdk: ' && jv=2
+      # an apply logs nothing until it succeeds, so the set it was in when the signal came is not in the log. Sets
+      # apply in a fixed order (JDK, WLS, then the shared home: ohs-quarter.sh's APPLY list), so the set in flight is
+      # the FIRST this run had that shows no "applied" line; it is 2 (check it, restore only if it changed). The sets
+      # after it never started, and stay 0.
+      unlogged=1
+      if [ "$jv" = 0 ] && has 'jdk: '; then jv=2
+      elif [ "$wl" = 0 ] && has 'wlspsu: '; then wl=2
+      elif [ "$sh" = 0 ] && grep -F ' preflight OK' "$LOG" | grep -vqE 'jdk: |wlspsu: '; then sh=2
+      fi
     fi
   fi
+}
+# the rollback distance: how many restores stand between this home and its pre-run level, from pick_sets
+distance() {
+  local sure="" check="" ns=0 nc=0 name v
+  for name in "home + inventory:$sh" "WLS:$wl" "JDK:$jv"; do
+    v="${name##*:}"; name="${name%:*}"
+    [ "$v" = 1 ] && { sure="${sure:+$sure, }$name"; ns=$((ns + 1)); }
+    [ "$v" = 2 ] && { check="${check:+$check, }$name"; nc=$((nc + 1)); }
+  done
+  printf 'TO GET BACK TO THE PRE-RUN HOME: %d restore(s)%s' "$ns" "${sure:+ ($sure)}"
+  [ "$nc" -gt 0 ] && printf ', plus up to %d more to check first (%s)' "$nc" "$check"
+  printf ', then start.\n'
+}
+restores() { # the by-hand restore for each set picked, newest first (recover's own order)
+  [ "$unlogged" = 1 ] && step "the set being applied when the run was interrupted is not in the log, so each set below marked CHECK FIRST may or may not have been touched"
   if [ "$sh" != 0 ]; then
     [ "$sh" = 2 ] && step "CHECK FIRST, home + inventory: compare $OH/OPatch/opatch lspatches with pre_patches= in $SHARED/state. Only if they differ:"
     if has 'dbclient: ' || has 'recovering: dbclient-upgrade rollback'; then
@@ -117,46 +153,56 @@ restores() { # the by-hand restore for each set recovery tried or should have, n
   fi
 }
 
+pick_sets
+exec 3>&1; [ "$TERSE" = 1 ] && exec 1>/dev/null
 case "$path" in
   A)  echo "PATH A: stopped before any change. Nothing is stopped, backed up or patched."
-      echo "HOME: unchanged and running."; echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
+      echo "HOME: unchanged and running."; echo "TO GET BACK TO THE PRE-RUN HOME: nothing to restore."
+      echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
       step "fix the cause above (for a preflight failure, the child's own ERROR lines say why)"
       step "rerun with --dry-run first, then for real";;
   B)  echo "PATH B: a backup failed. Nothing is stopped or patched."
-      echo "HOME: unchanged and running."; echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
+      echo "HOME: unchanged and running."; echo "TO GET BACK TO THE PRE-RUN HOME: nothing to restore."
+      echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
       step "free the space or fix what the child's ERROR names (usually disk under --backup-dir), then rerun"
       step "the backups that finished before the failing one ($RUN/java, $RUN/wls, $SHARED) are not reused: remove them once the rerun has its own";;
   C1) echo "PATH C1: the stop could not be proved, so nothing was patched, and the components were started again."
-      echo "HOME: unpatched; started again, but check it."; echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
+      echo "HOME: unpatched; started again, but check it."; echo "TO GET BACK TO THE PRE-RUN HOME: nothing to restore."
+      echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
       step "check every component answers: $VERIFY"
       step "find what would not stop: ps -ef | grep $OH"
       step "fix that, then rerun";;
   C3) echo "PATH C3: nothing was patched, but the components may NOT all be running: the stop or the start again did not finish."
-      echo "HOME: unpatched; some or all of OHS and node manager may be DOWN."; echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
+      echo "HOME: unpatched; some or all of OHS and node manager may be DOWN."
+      echo "TO GET BACK TO THE PRE-RUN HOME: nothing to restore; start what is down."; echo "CAUSE: ${cause:-see the last lines of the log}"; echo "NEXT, by hand:"
       step "see what runs from the home: ps -ef | grep $OH (the port check in the log, if any, says which answer)"
       step "start them: $START (or the domain's startNodeManager.sh, then startComponent.sh <c>)"
       step "check: $VERIFY";;
   D)  echo "PATH D: a step failed after the stop, and recovery restored and started the home."
       echo "HOME: back at its pre-run level and running. (If ohs-quarter exited 3, the log is cut short: treat it as E.)"
+      echo "TO GET BACK TO THE PRE-RUN HOME: nothing to restore."
       echo "CAUSE: ${cause:-see the first ERROR above \"recovering:\" in the log}"; echo "NEXT, by hand:"
       step "check every component answers: $VERIFY (and sqlplus -V if this run had a dbclient/ set)"
       step "fix the cause above, dry-run, then rerun"
       step "keep $RUN and its backups until the rerun is good";;
   E1) echo "PATH E1: a step failed after the stop, and recovery could not stop the components. NOTHING is restored, and they are NOT started."
-      echo "HOME: may be part-patched, and not started."; echo "CAUSE: ${cause:-see the first ERROR in the log}"; echo "NEXT, by hand:"
+      echo "HOME: may be part-patched, and not started."; distance
+      echo "CAUSE: ${cause:-see the first ERROR in the log}"; echo "NEXT, by hand:"
       step "stop everything from the home (stopComponent.sh for each, stopNodeManager.sh) and check: ps -ef | grep $OH"
       restores
       step "start: $START"
       step "check: $VERIFY";;
   E2) echo "PATH E2: a step failed after the stop, and a restore failed. The components are NOT started."
-      echo "HOME: may be part-patched, and not started."; echo "CAUSE: ${cause:-see the first ERROR in the log}"
+      echo "HOME: may be part-patched, and not started."; distance
+      echo "CAUSE: ${cause:-see the first ERROR in the log}"
       echo "FAILED IN RECOVERY:"; grep -E 'the restore failed|wls-patch restore failed|java-patch rollback failed' "$LOG" | sed 's/^/  /'
-      echo "NEXT, by hand (retry each restore; a set already restored is done again harmlessly):"
+      echo "NEXT, by hand (redo only the restores that failed):"
       restores
       step "start: $START"
       step "check: $VERIFY";;
   E3) echo "PATH E3: a step failed after the stop. Every restore worked, but the components did not start."
-      echo "HOME: back at its pre-run level, NOT running."; echo "CAUSE: ${cause:-see the first ERROR in the log}"; echo "NEXT, by hand:"
+      echo "HOME: back at its pre-run level, NOT running."; echo "TO GET BACK TO THE PRE-RUN HOME: nothing to restore; start it."
+      echo "CAUSE: ${cause:-see the first ERROR in the log}"; echo "NEXT, by hand:"
       step "start: $START (or startNodeManager.sh, then startComponent.sh <c>)"
       step "if it will not start, read <domain>/servers/<c>/logs and nodemanager.out"
       step "check: $VERIFY";;
