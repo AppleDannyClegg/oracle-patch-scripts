@@ -138,6 +138,33 @@ for f in "$T"/*.terse; do
 done
 nl="$(find "$T" -maxdepth 1 -name '*.log' -newer "$T/root" | wc -l | tr -d ' ')"
 [ "$nt" -gt 0 ] && [ "$nt" = "$nl" ] && ok || bad "--terse ran on $nt fixtures, but $nl ran"
+
+# every command a step prints names a real script, a verb that script has a case arm for, and options it parses: so a
+# renamed verb or option in a child shows here, not at 02:00. Static: the child is asked for --help, never run for real.
+PR="$ROOT/patching"; : >"$T/cmds"
+grep -hE '^  [0-9]+\. ' "$T"/*.out | while IFS= read -r line; do
+  rest="$line"
+  while [[ "$rest" == *"$PR/"* ]]; do
+    rest="${rest#*"$PR/"}"; script="${rest%%.sh*}.sh"; seg="${rest#*.sh}"; seg="${seg%%, *}"; seg="${seg%%. *}"; seg="${seg%% (*}"
+    read -r verb _ <<<"$seg"
+    printf '%s|%s|%s\n' "$script" "$verb" "$(grep -oE -- '--[a-z][a-z-]*' <<<"$seg" | tr '\n' ' ')" >>"$T/cmds"
+  done
+done
+sort -u "$T/cmds" -o "$T/cmds"
+nc="$(wc -l <"$T/cmds" | tr -d ' ')"; [ "$nc" -gt 0 ] && ok || bad "no printed commands were found to check"
+while IFS='|' read -r script verb opts; do
+  f="$PR/$script"
+  [[ "$script" =~ ^[a-z-]+/[a-z-]+\.sh$ ]] && [ -x "$f" ] || { bad "printed command names $script, which is not an executable script"; continue; }
+  bash "$f" --help >/dev/null 2>&1 && ok || bad "$script --help does not answer rc 0"
+  # the verb must be an arm of the script's own command dispatch (its case "$cmd" block), not any "x)" in the file
+  awk '/case "\$cmd" in/ { f = 1 } f { print } f && /^[[:space:]]*esac/ { exit }' "$f" | grep -qE "(^|[[:space:];|])$verb(\||\))" \
+    && ok || bad "printed '$script $verb', but $script's command dispatch has no '$verb' arm"
+  for o in $opts; do grep -qE -- "(^|[[:space:];|])$o(\)|\|)" "$f" && ok || bad "printed '$script $verb ... $o', but $script does not parse $o"; done
+done <"$T/cmds"
+# coverage from the run: every script + verb the explain source can print was printed by some fixture, so it was checked
+want_s="$(grep -oE '\$P/[a-z-]+/[a-z-]+\.sh [a-z-]+' "$X" | sed 's#^\$P/##; s/ /|/' | sort -u)"
+got_s="$(cut -d'|' -f1,2 "$T/cmds" | sort -u)"
+[ -n "$want_s" ] && [ "$want_s" = "$got_s" ] && ok || bad "commands explain can print: $(echo $want_s); checked: $(echo $got_s)"
 # --terse anywhere on the line is the flag, never the run dir; a run dir that is not a directory is refused, not used
 bash "$X" --terse "$T/stopdn.log" >"$T/tfirst.out" 2>&1; bash "$X" "$T/stopdn.log" --terse >"$T/tlast.out" 2>&1; r=$?
 [ "$r" = 0 ] && grep -q '^  1\. ' "$T/tlast.out" && cmp -s "$T/tlast.out" "$T/tfirst.out" && ok || bad "--terse given last (rc $r) is not the terse output: $(cat "$T/tlast.out")"
