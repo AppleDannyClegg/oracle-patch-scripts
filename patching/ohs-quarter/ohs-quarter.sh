@@ -312,7 +312,11 @@ fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3;
 restart_after_stop() {
   trap ':' INT TERM
   err "$1 - nothing patched. Starting them again"
-  orun start || { err "nothing was patched, and NOT everything started again: a component with no 'started' line above is DOWN - start it by hand"; exit 3; }
+  if ! orun start; then
+    # a component the stop could not stop is still UP, and a start of it can fail: ask every component's ports (T1145)
+    log "checking which components answer:"; orun verify || true
+    err "nothing was patched, and NOT everything started again: a component the port check above says does not answer is DOWN - start it by hand"; exit 3
+  fi
   die "$1 - nothing was patched; the components are started again (see ohs-patch start above)"
 }
 # INT/TERM: bash runs this once the child in the foreground returns. Before the stop nothing has changed; after it the
@@ -337,7 +341,9 @@ for entry in "${APPLY[@]}"; do
     # no --will-stop here: that is java-patch's option. dbclient-upgrade's preflight only REPORTS what runs from the
     # home (its apply is what refuses a running home), and it stops at an option it does not know
     dc)   drun preflight "$arg" || die "dbclient-upgrade preflight failed - nothing changed"; log "dbclient: $arg preflight OK";;
-    ohs)  orun preflight "$arg" || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
+    # the DB Client 19c installer runs before every opatch set in this outage, so a DB19C set on today's 12c client
+    # is checked again by its own apply (field run 12 Nov 2026: 40005842 refused at 1/7 on the 12c client)
+    ohs)  if [ -n "$INSTALLER_DIR" ]; then orun preflight "$arg" --client-19c-pending; else orun preflight "$arg"; fi || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
   esac
 done
 

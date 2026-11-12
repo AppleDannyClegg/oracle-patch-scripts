@@ -214,6 +214,11 @@ grep -q 'started again' "$T/out" && ok || bad "a failed 3/7 stop did not say the
 runq "$T/root" FAIL_FIRST_STOP=1 FAIL_START=1; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed 3/7 stop whose start also failed exited $rc (want 3)"
 grep -q 'DOWN' "$T/out" && ok || bad "a failed stop + failed start did not say components are down: $(tail -2 "$T/out" | tr '\n' ' ')"
+# which one is down: a component the stop could not stop is still UP, so the message must come from a port check of
+# every component, not from the failed start alone (T1145, Quark T1142)
+start_n="$(line '^ohs start')"; verify_n="$(grep -n '^ohs verify' "$T/calls.log" | head -1 | cut -d: -f1)"
+[ -n "$verify_n" ] && [ "$verify_n" -gt "${start_n:-0}" ] && ok || bad "a failed restart did not check which components answer: $(grep '^ohs' "$T/calls.log" | tr '\n' ' ')"
+grep -q 'port check above' "$T/out" && ok || bad "the DOWN message does not point at the port check: $(tail -1 "$T/out")"
 
 # ---- a signal mid-run (T1137): before the stop nothing has changed; after it, what was stopped is started again and
 #      what was applied is restored - the same paths a failure takes - and the exit says which
@@ -320,6 +325,11 @@ grep -q '^dbclient .*--keep-patches 444' "$T/calls.log" && ok || bad "--keep-pat
 # disk, or stops preflight UNKNOWN on a box with no /u01/backup (T1114, Louie #15840)
 grep -q '^ohs preflight ' "$T/calls.log" && ! grep '^ohs preflight ' "$T/calls.log" | grep -qv -- "--backup-dir $T/bkd" && ok \
   || bad "--backup-dir did not reach every ohs-patch preflight: $(grep '^ohs preflight' "$T/calls.log" | head -2)"
+# the installer is staged, so every opatch preflight gets --client-19c-pending (the 19c client comes first in this
+# outage); no opatch apply does - apply re-checks on the 19c home (field run 12 Nov 2026, 40005842 at 1/7)
+grep -q '^ohs preflight ' "$T/calls.log" && ! grep '^ohs preflight ' "$T/calls.log" | grep -qv -- '--client-19c-pending' && ok \
+  || bad "--client-19c-pending did not reach every ohs-patch preflight: $(grep '^ohs preflight' "$T/calls.log" | head -2)"
+! grep -E '^ohs (apply|verify|stop|start|rollback|backup) ' "$T/calls.log" | grep -q -- '--client-19c-pending' && ok || bad "--client-19c-pending leaked past preflight"
 REAL_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 for pair in "java:java-patch/java-patch.sh" "wls:wls-patch/wls-patch.sh" "dbclient:dbclient-upgrade/dbclient-upgrade.sh" "ohs:ohs-patch/ohs-patch.sh"; do
   who="${pair%%:*}"; real="$REAL_DIR/${pair#*:}"

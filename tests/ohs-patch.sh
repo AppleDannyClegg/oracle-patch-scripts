@@ -237,6 +237,16 @@ OPatch failed with error code 73'
 build; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842 needs .*oracle.rdbms.rsf:19.0.0.0.0.*KB585169' "$T/out" && ! grep -q READY "$T/out" && ok || bad "a home missing a required component was not blocking: rc $rc, $(grep -E 'BLOCK|applicable|WARN' "$T/out" | head -3)"
 
+# --client-19c-pending (ohs-quarter.sh passes it when the DB Client 19c installer runs first in the same outage):
+# field run 12 Nov 2026, 40005842 on the 12c client refused at 1/7 although the upgrade was the step before it
+runp() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --client-19c-pending >"$T/out" 2>&1; echo $?; }
+build; comps 12.1.0.2.0; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+[ "$rc" = 0 ] && ! grep -q BLOCKING "$T/out" && grep -q 'series   : 40005842 is a DB19C bundle; oracle.rdbms.rsf is 12.1.0.2.0 now' "$T/out" && grep -q 'WARN .*components: CheckApplicable did not pass on the 12c client.*deferred' "$T/out" && ok || bad "--client-19c-pending: a DB19C set on a 12c client was not deferred: rc $rc: $(grep -E 'BLOCK|series|components' "$T/out" | head -3)"
+build; comps 12.1.0.2.0; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "without --client-19c-pending a 12c client still has to block: rc $rc"
+build; comps 12.1.0.2.0; rc="$(run)"
+grep 'DB client :' "$T/out" | grep -q 'oracle.rdbms.rsf 12.1.0.2.0$' && ok || bad "the client level is printed twice or wrong: $(grep 'DB client' "$T/out")"
+
 # a zip that is not an OPatch patch (no etc/config/inventory.xml inside: an unzip-into-place tool, say) is refused
 # by preflight, before the outage (T1067: ohs-quarter.sh applies RDA 39798204 through this script, unverified)
 if have_zip; then
