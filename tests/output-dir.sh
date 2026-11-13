@@ -43,6 +43,8 @@ while IFS= read -r f; do
     # ohs-quarter-explain.sh only reads a console log and a run dir and prints to stdout: it writes no file,
     # run dir or report, so there is no output to route
     patching/ohs-quarter/ohs-quarter-explain.sh) continue;;
+    # install-screen.sh writes no file, run dir or report: it hands local RPMs to rpm and prints to stdout
+    operations/install-screen/install-screen.sh) continue;;
   esac
   if grep -qE 'output_path|OUTPUT_CONFIGURED' "$f"; then ok
   elif grep -qE '\. .*oracle-lib\.sh' "$f" && grep -qE 'init_run_dir|reuse_or_init|report_init' "$f"; then ok
