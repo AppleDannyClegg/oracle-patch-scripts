@@ -117,9 +117,12 @@ case "\$1" in
 esac
 O
   chmod +x "$OH/OPatch/opatch"
-  # ps: the fake process table, or a failure
+  # ps: the fake process table, or a failure. A PPID query is answered by the REAL ps, so the script's
+  # ancestor walk (T1529) sees the real parent chain while the process table stays fake.
+  REAL_PS="$(command -v ps)"
   cat >"$T/stub/ps" <<P
 #!/bin/sh
+case "\$*" in *ppid*) exec "$REAL_PS" "\$@";; esac
 [ -e "$T/ps.fail" ] && exit 1
 cat "$T/ps.txt" 2>/dev/null; echo "  1 /sbin/launchd"
 P
@@ -312,6 +315,21 @@ build; printf ' 4545 /bin/sh %s/ohs/bin/x\n' "${OH}2" >"$T/ps.txt"; rc="$(run)"
 ! grep -q 'pid 4545' "$T/out" && ok || bad "a process under the sibling ${OH}2 was read as running from $OH"
 build; printf ' 4646 /usr/bin/java -Dhome=%s weblogic.NodeManager\n' "$OH" >"$T/ps.txt"; rc="$(run)"
 grep -q 'pid 4646' "$T/out" && ok || bad "a process naming the home exactly (no trailing slash) was missed"
+# T1529: this script's CALLER holds the home in its args; it is an ancestor, not an occupant. RED before the fix,
+# which skipped only the script's own name. A non-ancestor that holds the home is still listed.
+build
+cat >"$T/caller.sh" <<S
+#!/bin/bash
+echo \$\$ >"$T/caller.pid"
+printf ' %s bash %s %s\n' "\$\$" "\$0" "\$*" >>"$T/ps.txt"
+PATH="$T/stub:\$PATH" HOME="$T/home" ORACLE_HOME="" bash "$PWD/$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" >>"$T/out" 2>&1
+S
+chmod +x "$T/caller.sh"
+printf ' 7777 /usr/bin/tail -f %s/logs/x.log\n' "$OH" >"$T/ps.txt"
+bash "$T/caller.sh" --oracle-home "$OH"; rc=$?
+wid="$(cat "$T/caller.pid")"
+! grep -q "pid $wid" "$T/out" && ok || bad "T1529: the caller (pid $wid), an ancestor holding the home, was listed as an occupant"
+grep -q 'pid 7777' "$T/out" && ok || bad "T1529: a non-ancestor holding the home (pid 7777) was not listed"
 # an unknown OPatch version is never reported as meeting the README minimum
 build; sed -i.bak 's#echo "OPatch Version: .*#echo "OPatch Version: ";;#' "$OH/OPatch/opatch"; rc="$(run)"
 [ "$rc" = 2 ] && ! grep -q 'meets the README minimum' "$T/out" && ok || bad "unknown OPatch version: rc $rc, $(grep -E 'meets|OPatch' "$T/out" | head -2)"
