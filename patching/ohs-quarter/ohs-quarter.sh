@@ -273,6 +273,12 @@ backup_once() {
 
 java_attempted=0; wls_attempted=0; dc_attempted=0; ohs_attempted=0
 # returns 0 when everything attempted is restored and the components are started, 1 otherwise
+# restore the WLS home from its own backup (wls-patch's restore) - the caller decides whether it may run
+restore_wls_home() {
+  local bd; bd="$(sed -n 's/^backup_dir=//p' "$RUN_DIR/wls/state" 2>/dev/null | tail -1)"
+  if [ -n "$bd" ]; then wrun restore "$bd"; else wrun restore; fi
+}
+
 recover() {
   local rec=1
   log "recovering: stopping the components first"
@@ -297,11 +303,13 @@ recover() {
   if [ "$wls_attempted" = 1 ]; then
     if [ "$shared_restored" = 1 ]; then
       log "recovering: the shared restore already put this home back to the pre-outage level - skipping the wls home restore (it would untar over the same home)"
+    elif [ "$OPERATOR_STOPS" = 1 ]; then
+      log "recovering: operator-stops - no stop is run; assuming the home is stopped for the wls restore"
+      restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
+    elif ! orun stop; then
+      err "cannot stop the components before the wls restore - refusing to restore over a running home"; rec=0
     else
-      local bd; bd="$(sed -n 's/^backup_dir=//p' "$RUN_DIR/wls/state" 2>/dev/null | tail -1)"
-      if ! orun stop; then err "cannot stop the components before the wls restore - refusing to restore over a running home"; rec=0
-      elif [ -n "$bd" ]; then wrun restore "$bd" || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
-      else wrun restore || { err "wls-patch restore failed - restore this home by hand"; rec=0; }; fi
+      restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
     fi
   fi
   if [ "$java_attempted" = 1 ]; then
@@ -396,7 +404,7 @@ for entry in "${APPLY[@]}"; do
       # own lspatches before/after pair says moved, as --keep-patches (T1560).
       # A plain PSU goes through wls-patch's opatch-apply loop, which records state applied=<id> and writes NO
       # lspatches files; only the SPB branch writes lspatches.before/after. Read both (T1560, Louie #18228).
-      _new="$(sed -n 's/^applied=//p' "$RUN_DIR/wls/state" 2>/dev/null | sed 's/[^0-9,]//g' | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
+      _new="$(sed -n 's/^applied=//p' "$RUN_DIR/wls/state" 2>/dev/null | tr ' ,' '\n\n' | sed 's/[^0-9]//g;/^$/d' | sort -u | paste -sd, -)"
       _wl_b="$RUN_DIR/wls/lspatches.before"; _wl_a="$RUN_DIR/wls/lspatches.after"
       if [ -r "$_wl_b" ] && [ -r "$_wl_a" ]; then
         _spb="$(comm -13 <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_b" | sort -u) <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_a" | sort -u) | sort -u | paste -sd, -)"

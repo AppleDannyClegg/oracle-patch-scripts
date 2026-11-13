@@ -47,7 +47,9 @@ case "$1" in
     if { [ "$who" = dbclient ] || [ "$who" = ohs ]; } && [ -n "$rd" ]; then mkdir -p "$rd"; {
       echo "oracle_home=/u01/ohs"; echo "backup=ok"; echo "backup_dir=__T__/bk"; echo "pre_patches=1 2 3"
     } >>"$rd/state"; mkdir -p "__T__/bk"; : >"__T__/bk/home.tgz"; : >"__T__/bk/oraInventory.tgz"; fi ;;
-  stop) [ -n "${FAIL_FIRST_STOP:-}" ] && exit 1; [ -n "${FAIL_STOP:-}" ] && [ -e "__T__/stop.ok" ] && exit 1; : >"__T__/stop.ok" ;;
+  stop) n=$(cat "__T__/stops.n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" >"__T__/stops.n"
+    [ -n "${STOP_FAIL_AT:-}" ] && [ "$n" = "${STOP_FAIL_AT}" ] && exit 1
+    [ -n "${FAIL_FIRST_STOP:-}" ] && exit 1; [ -n "${FAIL_STOP:-}" ] && [ -e "__T__/stop.ok" ] && exit 1; : >"__T__/stop.ok" ;;
   apply)
     [ "$who" = java ] && [ -n "${FAIL_JAVA_APPLY:-}" ] && exit 1
     [ "$who" = wls ] && [ -n "${FAIL_WLS_APPLY:-}" ] && exit 1
@@ -55,7 +57,7 @@ case "$1" in
     # the WLS PSU lands in the inventory at this call: write wls-patch's before/after pair, so ohs-quarter can
     # hand the new id to the dbclient apply (T1560)
     if [ "$who" = wls ] && [ -n "$rd" ]; then mkdir -p "$rd"
-      echo "applied=39919567" >>"$rd/state"
+      echo "applied=39919567 38000001" >>"$rd/state"
     fi
     case "$2" in
       */dbclientru) [ -n "${FAIL_DBCLIENTRU:-}" ] && exit 1;;
@@ -86,7 +88,7 @@ mkroot() { # <dir> [jdk] [wlspsu] [dbclient] [dbclientru] [webgate] [oss] [ohs] 
 }
 runq() { # <root> [env assignments...]
   local root="$1"; shift
-  : >"$T/calls.log"; : >"$T/start-traps"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
+  : >"$T/calls.log"; : >"$T/start-traps"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed" "$T/stops.n"
   env "$@" bash "$SCRIPT" --patch-root "$root" --run-dir "$T/run" --yes >"$T/out" 2>&1
 }
 line() { grep -n "$1" "$T/calls.log" | head -1 | cut -d: -f1; }
@@ -110,7 +112,7 @@ grep -q 'the home is left STOPPED for the operator to start, and ports were not 
 grep -q '^java apply .*--will-stop' "$T/calls.log" && bad "apply was given --will-stop (it must not be)" || ok
 # T1560: the WebLogic PSU applied in 4/7 must reach the dbclient apply as --keep-patches, or its re-run
 # preflight blocks it as "neither rolled back nor kept" - a dry run skips that apply, so no earlier check sees it
-grep -q '^dbclient apply .*--keep-patches 39919567' "$T/calls.log" && ok || bad "the dbclient apply did not get the WLS PSU id as --keep-patches: [$(grep '^dbclient apply' "$T/calls.log" | head -1)]"
+grep -q '^dbclient apply .*--keep-patches 38000001,39919567' "$T/calls.log" && ok || bad "the dbclient apply did not get BOTH WLS ids (space-separated applied=) as --keep-patches: [$(grep '^dbclient apply' "$T/calls.log" | head -1)]"
 stop="$(line 'ohs stop')"; [ -n "$stop" ] && ok || bad "no ohs stop"
 # every preflight before the stop; every apply after it
 lastpre="$(grep -n ' preflight' "$T/calls.log" | tail -1 | cut -d: -f1)"
@@ -142,7 +144,7 @@ shared="$(sed -n 's/.*--backup-run \([^ ]*\).*/\1/p' "$T/calls.log" | sort -u)"
 # reported success over an outage that did two of sixteen sets.
 runskip() { # <root> <skip list> [env...]: runq with --skip
   local root="$1" skip="$2"; shift 2
-  : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed"
+  : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"; rm -f "$T/stop.ok" "$T/start.ok" "$T/start.failed" "$T/stops.n"
   env "$@" bash "$SCRIPT" --patch-root "$root" --run-dir "$T/run" --yes --skip "$skip" >"$T/out" 2>&1
 }
 nochild() { [ ! -s "$T/calls.log" ] && ok || bad "$1: a child was called ($(head -2 "$T/calls.log" | tr '\n' ';'))"; }
@@ -197,6 +199,11 @@ runq "$T/root" FAIL_WLS_APPLY=1; rc=$?
 [ "$rc" = 1 ] && ok || bad "a WLS apply failure exited $rc (want 1)"
 [ -n "$(line '^wls restore')" ] && [ -n "$(line '^java rollback')" ] && ok || bad "a WLS failure did not restore wls and roll back java"
 [ "$(line '^wls restore')" -lt "$(line '^java rollback')" ] && ok || bad "recovery is not in reverse order (wls restore then java rollback)"
+# T1562 [P3]: before a WLS-only restore, stop first; if the stop cannot prove it, refuse rather than untar over
+# a running home. Stop call 1 = the outage 3/7 stop, 2 = recover's first stop, 3 = the guard before the restore
+runq "$T/root" FAIL_WLS_APPLY=1 STOP_FAIL_AT=3; rc=$?
+[ "$rc" = 3 ] && ok || bad "a failed guard stop exited $rc (want 3)"
+[ -z "$(line '^wls restore')" ] && grep -q 'refusing to restore over a running home' "$T/out" && ok || bad "the wls restore ran although the guard stop could not prove the home stopped"
 
 # ---- dbclient apply failure: shared restore (covers the WLS home too), NO wls restore, java rollback -----------
 runq "$T/root" FAIL_DB_APPLY=1; rc=$?
