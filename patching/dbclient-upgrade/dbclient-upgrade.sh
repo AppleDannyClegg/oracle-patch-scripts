@@ -211,6 +211,7 @@ from_home() {
   anc="$(ancestor_pids)"
   printf '%s\n' "$l" | awk -v oh="$1" -v anc="$anc" '
     /(ohs-patch|dbclient-upgrade|ohs-db19c)\.sh/ {next}
+    /\/startNodeManager\.sh([[:space:]]|$)/ {next}   # the launcher, not the Node Manager (T1541)
     { pid=$1; if (index(anc, " " pid " ") > 0) next }
     { n = split($0, f, /[[:space:]=:]+/)
       for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next } }'

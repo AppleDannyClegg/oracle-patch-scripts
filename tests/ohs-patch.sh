@@ -311,6 +311,10 @@ grep -q 'pid 4242  OHS ohs1' "$T/out" && grep -q 'pid 4343  node manager' "$T/ou
 [ "$rc" = 0 ] && ok || bad "running processes are listed, not blocking (they are stopped in the window): rc $rc"
 
 # the home as a path boundary: a process whose argument IS the home is running from it; a sibling <home>2 is not
+# T1541: a startNodeManager.sh launcher left by a failed restart holds the home in its argv but is only the
+# supervisor; the Node Manager java is still listed, so the stop proof does not block forever on the wrapper
+build; printf ' 4545 /bin/sh %s/bin/startNodeManager.sh\n 4546 /jdk/bin/java -cp %s/oracle_common/x.jar weblogic.NodeManager\n' "$OH" "$OH" >"$T/ps.txt"; rc="$(run)"
+! grep -q 'pid 4545' "$T/out" && grep -q 'pid 4546' "$T/out" && ok || bad "the startNodeManager.sh launcher is treated as an occupant, or the Node Manager java is missed (T1541)"
 build; printf ' 4545 /bin/sh %s/ohs/bin/x\n' "${OH}2" >"$T/ps.txt"; rc="$(run)"
 ! grep -q 'pid 4545' "$T/out" && ok || bad "a process under the sibling ${OH}2 was read as running from $OH"
 build; printf ' 4646 /usr/bin/java -Dhome=%s weblogic.NodeManager\n' "$OH" >"$T/ps.txt"; rc="$(run)"
