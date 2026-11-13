@@ -264,8 +264,9 @@ running=()
 for g in "${GATES[@]}"; do
     case "$g" in
         get-patches) launch "$g" pwsh -NoProfile -File tests/get-patches.ps1 ;;
-        # pipefail: outside a git checkout git ls-files fails and lists nothing, and shellcheck on no files passes
-        shellcheck)  launch "$g" bash -c 'set -o pipefail; git ls-files -z "*.sh" | xargs -0 shellcheck -S warning && echo "shellcheck clean (tree)"' ;;
+        # git ls-files lists nothing for a copy that is not this repo's own checkout (no .git, or inside another
+        # checkout), and shellcheck on no files passes, so the row first requires git's top level to be this root
+        shellcheck)  launch "$g" bash -c '[ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || { echo "shellcheck row needs this repo'"'"'s git checkout"; exit 1; }; git ls-files -z "*.sh" | xargs -0 shellcheck -S warning && echo "shellcheck clean (tree)"' ;;
         *)           launch "$g" bash "tests/$g.sh" ;;
     esac
 done
