@@ -38,3 +38,7 @@ Then: `screen -S patch` to start a session, `Ctrl-a d` to detach, `screen -r pat
 `install-screen.sh` in an Oracle Linux 9 x86_64 container with `--network none`, with and without
 `libutempter` present, and on a second run. `tests/install-screen.sh` covers its refusals with a fake `rpm`.
 Not run on a real server yet.
+
+**Not covered by a test:** `Get-ScreenRpm.ps1` itself. `tests/install-screen.sh` exercises only the shell
+installer, so nothing pins the download script's choice of SHA-1 (EL7 repos) or SHA-256 (EL9). A wrong choice
+fails loudly, with "checksum mismatch" and no file kept, rather than passing a bad file.
