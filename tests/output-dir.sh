@@ -8,6 +8,9 @@
 # Usage: tests/output-dir.sh
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the file lists below come from git ls-files and git grep, which list nothing outside a git checkout, so a copy
+# without .git would pass on fewer files rather than fail
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "FAIL output-dir gate needs a git checkout: it lists the scripts with git ls-files"; exit 1; }
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
