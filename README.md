@@ -191,7 +191,8 @@ inside its folder as the Oracle software owner. Every command prints what it fou
 `dbclient-upgrade.sh`, and `ohs-quarter.sh` which drives them) also take **`--operator-stops`** when the operator,
 not the script, owns every start and stop: no stop or start script runs and no node manager is started, the commands
 to run are printed at each step, and the stop still has to be proved by the same fail-closed process check before
-anything is patched. Default behaviour is unchanged. The four most used are spelled out
+anything is patched. Default behaviour is unchanged. Run `ohs-quarter.sh` inside screen or tmux (or under `nohup`): a dropped ssh sends
+SIGHUP to the whole process group, and a half-restored home is the worst state to leave behind. The four most used are spelled out
 below; the others follow the same `inspect`, `plan`, `preflight`, `run` pattern and their folder
 README has the exact lines.
 

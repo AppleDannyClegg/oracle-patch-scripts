@@ -4,6 +4,9 @@
 # wls-patch.sh, dbclient-upgrade.sh and ohs-patch.sh - it holds no patch logic of its own, exactly as
 # wls-quarter.sh holds none.
 #
+# Run it inside screen/tmux or under nohup: a dropped ssh sends SIGHUP to the whole process group. The script
+# ignores HUP once it starts, but a terminal that dies can still cut output; screen keeps the run out of it.
+#
 # The set, in the order this script applies it. A/H are the advisor's standalone "Oracle HTTP Server 12.2.1.4
 # (with a DB Client 19c)" page (FMW CPU Patch Advisor KA1182 / Doc 2806740.2); the installer and its scope are
 # KB585169 + the 34761383 README:
@@ -328,7 +331,7 @@ recover() {
 # process group does not cut a child restore short: an IGNORED signal is inherited by the children, while a HANDLED
 # one is reset to its default in them, so bashes's handler runs only after the child has died (T1137, Louie #18269).
 # The partial-home line is recover()'s first log instead, so it is on the record even for a SIGKILL.
-fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
+fail_after() { trap '' INT TERM HUP; err "$1"; if recover; then exit 1; else exit 3; fi; }
 # after a stop that did not lead to any apply: start the components again rather than leave them down (T1135)
 restart_after_stop() {
   trap ':' INT TERM
@@ -351,6 +354,7 @@ on_signal() {
   esac
 }
 trap on_signal INT TERM
+trap '' HUP   # a dropped ssh (SIGHUP) must not leave a half-restored home; run inside screen/tmux or nohup
 
 # ---- 1. preflight everything before any change -----------------------------------------------------------
 log "=== 1/7 preflight (nothing has changed yet)"
