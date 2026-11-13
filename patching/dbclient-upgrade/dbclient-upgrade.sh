@@ -742,7 +742,11 @@ cmd_run() {
   step_verify
   step_start
   state outcome upgraded
-  log "upgraded and verified: $OH has the Database Client 19c and every component answers. Backup kept at $BK."
+  if [ "$OPERATOR_STOPS" = 1 ]; then
+    log "upgraded: $OH has the Database Client 19c. The home is left STOPPED for the operator to start; nothing was checked as answering. Backup kept at $BK."
+  else
+    log "upgraded and verified: $OH has the Database Client 19c and every component answers. Backup kept at $BK."
+  fi
   log "next (KB585169): the DB19c bundles - 39425385 (DB client 19.31), 39114058 (WebGate), 39567777 (OSS), 40005842 (OHS)"
   exit 0
 }

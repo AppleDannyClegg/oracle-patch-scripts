@@ -128,6 +128,7 @@ rc="$(dbc run "$PD" --operator-stops --yes)"
 [ "$rc" = 0 ] && ok || bad "operator-stops run: rc $rc: $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
 case "$(acts)" in *stop*|*start*) bad "operator-stops ran a stop/start script: [$(acts)]";; *) ok;; esac
 grep -q 'the operator starts node manager and the components now' "$T/out" && ok || bad "operator-stops does not hand the start to the operator"
+grep -q 'left STOPPED for the operator to start' "$T/out" && ! grep -q 'every component answers' "$T/out" && ok || bad "operator-stops dbclient still claims every component answers"
 grep -q 'bin/stopComponent.sh' "$T/out" && grep -q 'bin/startComponent.sh' "$T/out" && ok || bad "operator-stops did not print the stop and start commands"
 [ "$(find "$T"/backup -name '*.tgz' | wc -l | tr -d ' ')" = 3 ] && ok || bad "backup is not home + domain + inventory: $(find "$T"/backup -name '*.tgz')"
 st | grep -q '^outcome=upgraded$' && st | grep -q '^pre_rsf=12.1.0.2.0$' && st | grep -q '^backup=ok$' && ok || bad "state: $(st | tr '\n' ' ')"

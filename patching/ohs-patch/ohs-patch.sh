@@ -939,7 +939,11 @@ cmd_verify() {
     [ -n "$PID" ] || die "no patch found in $pdir"
     if printf ' %s ' "$now" | grep -q " $PID "; then log "$PID is installed"; else err "$PID is NOT installed in $OH"; rc=1; fi
   fi
-  while IFS='|' read -r d c; do [ -n "$c" ] || continue; ports_answer "$d" "$c" 0 || rc=1; done <<<"$COMPS"
+  if [ "$OPERATOR_STOPS" = 1 ]; then
+    log "ports not checked: the operator starts the components (--operator-stops)"
+  else
+    while IFS='|' read -r d c; do [ -n "$c" ] || continue; ports_answer "$d" "$c" 0 || rc=1; done <<<"$COMPS"
+  fi
   exit "$rc"
 }
 

@@ -381,7 +381,22 @@ for entry in "${APPLY[@]}"; do
   fi
   case "$owner" in
     java) java_attempted=1; jrun apply "$arg" || fail_after "java-patch apply failed"; log "jdk: applied $arg";;
-    wls)  wls_attempted=1;  wrun apply "$arg" || fail_after "wls-patch apply failed"; log "wlspsu: applied $arg";;
+    wls)  wls_attempted=1;  wrun apply "$arg" || fail_after "wls-patch apply failed"; log "wlspsu: applied $arg"
+      # The PSU just applied is a WebLogic patch, not a 12c Database Client patch. dbclient-upgrade's apply
+      # re-runs its preflight in this same outage and would block the new id as "neither rolled back nor kept",
+      # which no pre-outage check can see (the PSU is not installed when 1/7 runs). Hand it the ids wls-patch's
+      # own lspatches before/after pair says moved, as --keep-patches (T1560).
+      _wl_b="$RUN_DIR/wls/lspatches.before"; _wl_a="$RUN_DIR/wls/lspatches.after"
+      if [ -r "$_wl_b" ] && [ -r "$_wl_a" ]; then
+        _new="$(comm -13 <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_b" | sort -u) <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_a" | sort -u) | paste -sd, -)"
+        if [ -n "$_new" ]; then
+          KEEP_PATCHES="${KEEP_PATCHES:+$KEEP_PATCHES,}$_new"; DOpts+=(--keep-patches "$KEEP_PATCHES")
+          log "dbclient: keep-patches += $_new (the WebLogic PSU applied above is not a 12c client patch)"
+        fi
+      else
+        warn "cannot read wls-patch's lspatches before/after - dbclient may block the PSU id; pass --keep-patches <the PSU id>"
+      fi ;;
+
     dc)   dc_attempted=1;   drun apply "$arg" --backup-run "$SHARED" || fail_after "dbclient-upgrade apply failed"; log "dbclient: applied $arg";;
     ohs)  ohs_attempted=1;  orun apply "$arg" --backup-run "$SHARED" || fail_after "ohs-patch apply failed on $arg"; log "$(basename "$arg"): applied $arg";;
   esac
@@ -412,5 +427,9 @@ done
 if [ -n "$LEFT_OUT" ]; then
   log "=== 7/7 OHS QUARTER OK, PARTIAL BY REQUEST: $APPLIED_N of ${#SETS[@]} sets applied in one outage ($what). LEFT OUT (--skip): $LEFT_OUT. The shared backup is under $SHARED"
 else
-  log "=== 7/7 OHS QUARTER OK: all ${#SETS[@]} sets applied in one outage ($what); the shared backup is under $SHARED"
+  if [ "$OPERATOR_STOPS" = 1 ]; then
+    log "=== 7/7 OHS QUARTER OK (operator-stops): all ${#SETS[@]} sets applied in one outage ($what); the home is left STOPPED for the operator to start, and ports were not checked. The shared backup is under $SHARED"
+  else
+    log "=== 7/7 OHS QUARTER OK: all ${#SETS[@]} sets applied in one outage ($what); the shared backup is under $SHARED"
+  fi
 fi

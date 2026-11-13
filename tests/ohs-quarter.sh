@@ -52,6 +52,12 @@ case "$1" in
     [ "$who" = java ] && [ -n "${FAIL_JAVA_APPLY:-}" ] && exit 1
     [ "$who" = wls ] && [ -n "${FAIL_WLS_APPLY:-}" ] && exit 1
     [ "$who" = dbclient ] && [ -n "${FAIL_DB_APPLY:-}" ] && exit 1
+    # the WLS PSU lands in the inventory at this call: write wls-patch's before/after pair, so ohs-quarter can
+    # hand the new id to the dbclient apply (T1560)
+    if [ "$who" = wls ] && [ -n "$rd" ]; then mkdir -p "$rd"
+      : >"$rd/lspatches.before"
+      printf '  39919567;WLS PATCH SET UPDATE 12.2.1.4.260823\n' >"$rd/lspatches.after"
+    fi
     case "$2" in
       */dbclientru) [ -n "${FAIL_DBCLIENTRU:-}" ] && exit 1;;
       */webgate) [ -n "${FAIL_WEBGATE:-}" ] && exit 1;;
@@ -100,8 +106,12 @@ grep -q 'dbclient preflight' "$T/calls.log" && ! grep -q 'dbclient preflight .*-
 env OHS_QUARTER_JAVA_PATCH="$T/stub-java" OHS_QUARTER_WLS_PATCH="$T/stub-wls" OHS_QUARTER_DBCLIENT="$T/stub-dbclient" OHS_QUARTER_OHS_PATCH="$T/stub-ohs" \
   bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --operator-stops >"$T/out" 2>&1
 missing="$(grep -E '^(dbclient|ohs) ' "$T/calls.log" | grep -vc -- '--operator-stops')"
+grep -q 'the home is left STOPPED for the operator to start, and ports were not checked' "$T/out" && ok || bad "quarter 7/7 with operator-stops does not say the home is left stopped: $(grep '7/7' "$T/out" | head -1)"
 [ -n "$(grep -E '^(dbclient|ohs) ' "$T/calls.log")" ] && [ "$missing" = 0 ] && ok || bad "$missing dbclient/ohs call(s) did not get --operator-stops: [$(grep -E '^(dbclient|ohs) ' "$T/calls.log" | grep -v -- '--operator-stops' | head -2)]"
 grep -q '^java apply .*--will-stop' "$T/calls.log" && bad "apply was given --will-stop (it must not be)" || ok
+# T1560: the WebLogic PSU applied in 4/7 must reach the dbclient apply as --keep-patches, or its re-run
+# preflight blocks it as "neither rolled back nor kept" - a dry run skips that apply, so no earlier check sees it
+grep -q '^dbclient apply .*--keep-patches 39919567' "$T/calls.log" && ok || bad "the dbclient apply did not get the WLS PSU id as --keep-patches: [$(grep '^dbclient apply' "$T/calls.log" | head -1)]"
 stop="$(line 'ohs stop')"; [ -n "$stop" ] && ok || bad "no ohs stop"
 # every preflight before the stop; every apply after it
 lastpre="$(grep -n ' preflight' "$T/calls.log" | tail -1 | cut -d: -f1)"
