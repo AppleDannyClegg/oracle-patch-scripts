@@ -253,6 +253,7 @@ blocks19() {
 }
 blocks19 other "$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)/oracle.webgate.ohs:12.2.1.4.0/')"
 blocks19 both "$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher)/oracle.rdbms.rsf:19.0.0.0.0:patchlevel-(or higher),oracle.webgate.ohs:12.2.1.4.0/')"
+blocks19 rsf21 "$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:/oracle.rdbms.rsf:21.0.0.0.0:/')"
 blocks19 bare 'Invoking prereq "checkapplicable"
 Prereq "checkApplicable" for patch 40005842 failed.
 OPatch failed with error code 73'
