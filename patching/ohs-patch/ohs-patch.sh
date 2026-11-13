@@ -367,11 +367,14 @@ cmd_preflight() {
   # still 12c fails there with OUI-67073 naming oracle.rdbms.rsf:19.0.0.0.0 (Gen's host, 6 Nov) - ask now instead
   local app arc miss
   app="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckApplicable -ph . -oh "$OH" 2>&1)"; arc=$?
+  # every oracle.<component>:<version> OPatch names in its answer (an empty list is not "the 19c client alone")
+  local need; need="$(printf '%s\n' "$app" | grep -oE 'oracle\.[A-Za-z0-9_.]+:[0-9][0-9.]*' | sort -u)"
   if [ "$arc" = 0 ] && printf '%s' "$app" | grep -qiE 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
     log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
-  elif [ "$CLIENT19_PENDING" = 1 ]; then
+  elif [ "$CLIENT19_PENDING" = 1 ] && ! printf '%s\n' "$need" | grep -qv '^oracle\.rdbms\.rsf:19\.'; then
     # on a 12c client a DB19C patch cannot pass CheckApplicable yet (it needs oracle.rdbms.rsf 19); apply's own
-    # preflight asks again once the upgrade earlier in the outage has run, and a failure there restores
+    # preflight asks again once the upgrade earlier in the outage has run, and a failure there restores. Only when
+    # the 19c client is ALL OPatch says is missing: anything else still stops here, before the stop (T1167)
     warn "components: CheckApplicable did not pass on the 12c client (rc $arc) - deferred: the DB Client 19c upgrade runs first in this outage and apply checks again. OPatch said: $(printf '%s\n' "$app" | grep -viE '^(oracle interim patch installer|copyright|invoking prereq|opatch (failed|succeeded))' | grep . | head -3 | tr '\n' ' ')"
   elif printf '%s' "$app" | grep -qi 'requires component(s) that are not installed'; then
     miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
