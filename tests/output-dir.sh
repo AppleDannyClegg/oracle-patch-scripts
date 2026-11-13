@@ -37,6 +37,9 @@ while IFS= read -r f; do
     # output through OUTPUT_DIR would put the staged patches where the runbook does not look, so it is exempt
     # by design, with the reason, rather than wired in (T217, #12927).
     patching/ohs-quarter/ohs-quarter-stage.sh) continue;;
+    # ohs-quarter-explain.sh only reads a console log and a run dir and prints to stdout: it writes no file,
+    # run dir or report, so there is no output to route
+    patching/ohs-quarter/ohs-quarter-explain.sh) continue;;
   esac
   if grep -qE 'output_path|OUTPUT_CONFIGURED' "$f"; then ok
   elif grep -qE '\. .*oracle-lib\.sh' "$f" && grep -qE 'init_run_dir|reuse_or_init|report_init' "$f"; then ok
