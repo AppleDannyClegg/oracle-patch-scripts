@@ -123,7 +123,7 @@ die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; SKIP=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
+PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; SKIP=""; NO_CACERTS=0; OPERATOR_STOPS=0; FORCE=0; DRY=0; YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --patch-root)  optchk "$@"; PATCH_ROOT="$2"; shift 2;;
@@ -138,6 +138,7 @@ while [ $# -gt 0 ]; do
     --force)       FORCE=1; shift;;
     --yes)         YES=1; shift;;
     --dry-run)     DRY=1; shift;;
+    --operator-stops) OPERATOR_STOPS=1; shift;;
     -h|--help|help) usage; exit 0;;
     -*) die "Unknown option: $1";;
     *) [ -z "$PATCH_ROOT" ] || die "Unknown argument: $1"; PATCH_ROOT="$1"; shift;;
@@ -244,10 +245,12 @@ DOpts=(); [ -n "$ORACLE_HOME_ARG" ] && DOpts+=(--oracle-home "$ORACLE_HOME_ARG")
 [ -n "$REMOVE_12C" ] && DOpts+=(--remove-patches "$REMOVE_12C")
 [ -n "$KEEP_PATCHES" ] && DOpts+=(--keep-patches "$KEEP_PATCHES")
 [ "$DRY" = 1 ] && DOpts+=(--dry-run); [ "$YES" = 1 ] && DOpts+=(--yes)
+[ "$OPERATOR_STOPS" = 1 ] && DOpts+=(--operator-stops)
 OOPTS=(); [ -n "$ORACLE_HOME_ARG" ] && OOPTS+=(--oracle-home "$ORACLE_HOME_ARG")
 # ohs-patch checks free space on its backup dir (default /u01/backup), so it must be told the one given here
 [ -n "$BACKUP_DIR" ] && OOPTS+=(--backup-dir "$BACKUP_DIR")
 [ "$DRY" = 1 ] && OOPTS+=(--dry-run); [ "$YES" = 1 ] && OOPTS+=(--yes)
+[ "$OPERATOR_STOPS" = 1 ] && OOPTS+=(--operator-stops)
 
 jrun()    { local cmd="$1"; shift; "$JAVA_PATCH" "$cmd" "$@" "${JOPTS[@]}" --run-dir "$RUN_DIR/java"; }
 wrun()    { local cmd="$1"; shift; "$WLS_PATCH" "$cmd" "$@" "${WOPTS[@]}" --run-dir "$RUN_DIR/wls"; }

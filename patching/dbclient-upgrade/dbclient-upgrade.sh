@@ -32,6 +32,7 @@
 #   --backup-run DIR        apply: restore from this run's backup (a composer's one backup) instead of the latest
 #   --keep-patches ID,ID    patches you have checked are NOT 12c Database Client patches; every other installed
 #                           patch must be rolled back first (README). The script cannot check this for you
+#   --operator-stops        never stop or start a component or the node manager: print the commands instead
 #   --remove-patches ID,ID  opt in: run rolls these back itself, after the backup and the stop and before the
 #                           installer (the README's 12c client patches). Only the ids named; a failure restores
 #   --dry-run  --yes
@@ -91,7 +92,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""
-DRY_RUN=0; ASSUME_YES=0
+DRY_RUN=0; ASSUME_YES=0; OPERATOR_STOPS=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path dbclient-upgrade)/runs}"
 OS_RELEASE="${OS_RELEASE:-}"
 problems=0; unknowns=0
@@ -271,7 +272,26 @@ confirm() {
   local a; read -r -p "$1 Type yes to go on: " a; [ "$a" = yes ]
 }
 
+operator_stop_commands() {
+  local d c
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue; printf '%s/bin/stopComponent.sh %s\n' "$d" "$c"; done <<<"$COMPS"
+  while IFS= read -r d; do [ -n "$d" ] || continue; printf '%s/bin/stopNodeManager.sh\n' "$d"; done <<<"$DOMS"
+}
+
+operator_start_commands() {
+  local d c
+  while IFS= read -r d; do [ -n "$d" ] || continue; printf 'nohup %s/bin/startNodeManager.sh &\n' "$d"; done <<<"$DOMS"
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue; printf '%s/bin/startComponent.sh %s\n' "$d" "$c"; done <<<"$COMPS"
+}
+
+operator_stops_note() {
+  local l
+  log "operator-stops: not running any start or stop script; the operator does that:"
+  "$1" | while IFS= read -r l; do [ -n "$l" ] && log "  $l"; done
+}
+
 stop_all() {
+  if [ "$OPERATOR_STOPS" = 1 ]; then operator_stops_note operator_stop_commands; return 0; fi
   local d c r rc=0; STOP_FAILED=""
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
     if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"
@@ -295,6 +315,7 @@ stopped_proved() {
 # node manager, then every component (retried until START_TIMEOUT: startComponent fails until node manager listens),
 # then every Listen port answers HTTP. 0 = all up.
 start_all() {
+  if [ "$OPERATOR_STOPS" = 1 ]; then operator_stops_note operator_start_commands; return 0; fi
   local d c t rc=0 havecurl=1
   # no curl on the host: the ports cannot be checked, so they are not - a missing tool must never roll back a good apply
   command -v curl >/dev/null || { havecurl=0; warn "curl not available - skipping the port check; startComponent.sh's own status is the only start check"; }
@@ -811,6 +832,7 @@ main() {
       --remove-patches) optchk "$@"; REMOVE_PATCHES="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
+      --operator-stops) OPERATOR_STOPS=1; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown option $1" ;;
       *) if [ -z "$cmd" ]; then cmd="$1"; else args+=("$1"); fi; shift ;;

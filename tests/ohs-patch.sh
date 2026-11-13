@@ -378,6 +378,20 @@ _open=""; for _f in "$_bk"/*.tgz; do [ "$(pm "$_f")" = "-rw-------" ] || _open="
 [ "$rc" = 0 ] && [ ! -e "$OH/ohs/PATCHED" ] && ! grep -q 40005842 "$LSP" && ok || bad "rollback of a good run: rc $rc, PATCHED $([ -e "$OH/ohs/PATCHED" ] && echo present): $(grep ERROR "$T/out" | head -2)"
 case "$(acts)" in *"stop ohs1"*"start ohs1"*) ok;; *) bad "rollback did not stop then start: [$(acts)]";; esac
 
+# T1550 operator-stops: the operator owns every start and stop. No stop/start script may run (normal run and
+# rollback), the node manager is not started, and the stop and start commands are printed for the operator.
+build; : >"$T/actions"
+rc="$(runr --operator-stops --yes)"
+[ "$rc" = 0 ] && ok || bad "operator-stops run: rc $rc: $(grep -E 'ERROR|BLOCK|UNKNOWN' "$T/out" | head -2)"
+case "$(acts)" in *stop*|*start*) bad "operator-stops ran a start/stop script: [$(acts)]";; *) ok;; esac
+! grep -q 'weblogic.NodeManager' "$T/ps.txt" && ok || bad "operator-stops started the node manager"
+grep -q 'operator-stops: not running any start or stop script' "$T/out" && ok || bad "operator-stops note missing from the run output"
+grep -q 'bin/stopComponent.sh' "$T/out" && grep -q 'bin/startComponent.sh' "$T/out" && ok || bad "operator-stops did not print the stop and start commands"
+: >"$T/actions"
+rc="$(HOME="$T/home" PATH="$T/stub:$PATH" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" rollback --operator-stops --yes >"$T/out" 2>&1 </dev/null; echo $?; settle)"
+[ "$rc" = 0 ] && ok || bad "operator-stops rollback: rc $rc: $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
+case "$(acts)" in *stop*|*start*) bad "operator-stops rollback ran a start/stop script: [$(acts)]";; *) ok;; esac
+
 # refused before anything changes: nothing stopped, no backup
 build; running; echo "OPatch 13.9.4.2.10" >"$T/opv"; rc="$(runr --yes)"
 [ "$rc" = 1 ] && [ -z "$(acts)" ] && nobackup && ok || bad "preflight blocking: rc $rc, actions [$(acts)]"

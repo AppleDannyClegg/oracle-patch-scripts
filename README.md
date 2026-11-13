@@ -187,7 +187,11 @@ Not moved: `~/.mos-token` (a credential), short-lived `mktemp` files, the OHS an
 
 Copy the whole tree to the server (the folders need `lib/` next to them), then run each script from
 inside its folder as the Oracle software owner. Every command prints what it found or did, and
-`run` asks before it changes anything unless you add `--yes`. The four most used are spelled out
+`run` asks before it changes anything unless you add `--yes`. The OHS scripts (`ohs-patch.sh` and
+`dbclient-upgrade.sh`, and `ohs-quarter.sh` which drives them) also take **`--operator-stops`** when the operator,
+not the script, owns every start and stop: no stop or start script runs and no node manager is started, the commands
+to run are printed at each step, and the stop still has to be proved by the same fail-closed process check before
+anything is patched. Default behaviour is unchanged. The four most used are spelled out
 below; the others follow the same `inspect`, `plan`, `preflight`, `run` pattern and their folder
 README has the exact lines.
 

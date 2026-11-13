@@ -35,6 +35,8 @@
 #                           <output dir>/ohs-patch/runs)
 #   --backup-run DIR        apply: use this run's backup as the restore point (a composer's one backup, taken before
 #                           its first patch) instead of the latest one taken for this patch; the home must match
+#   --operator-stops        never stop or start a component or the node manager: print the commands
+#                           instead (the operator stops/starts, then re-runs the step). Default unchanged
 #   --no-backup             refused: the backup is the README's rollback
 #   --client-19c-pending    preflight only: the DB Client 19c upgrade (34761383) runs BEFORE this patch in the same
 #                           outage (ohs-quarter.sh passes it), so a 12c client and a CheckApplicable that cannot pass
@@ -101,7 +103,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
-DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""
+DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""; OPERATOR_STOPS=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
 problems=0; unknowns=0
 # what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
@@ -550,7 +552,27 @@ confirm() {
 # returned 0. A non-zero stop is evidence, not the verdict: the callers judge on nothing_running, once, after this
 # (a node manager that was already down returns non-zero with nothing to stop). STOP_FAILED names each one.
 STOP_FAILED=""
+operator_stop_commands() {
+  local d c
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue; printf '%s/bin/stopComponent.sh %s\n' "$d" "$c"; done <<<"$COMPS"
+  while IFS= read -r d; do [ -n "$d" ] || continue; printf '%s/bin/stopNodeManager.sh\n' "$d"; done <<<"$DOMS"
+}
+
+operator_start_commands() {
+  local d c
+  while IFS= read -r d; do [ -n "$d" ] || continue; printf 'nohup %s/bin/startNodeManager.sh &\n' "$d"; done <<<"$DOMS"
+  while IFS='|' read -r d c; do [ -n "$c" ] || continue; printf '%s/bin/startComponent.sh %s\n' "$d" "$c"; done <<<"$COMPS"
+}
+
+# --operator-stops: the operator owns every start and stop. Print the commands and change no process.
+operator_stops_note() {
+  local l
+  log "operator-stops: not running any start or stop script; the operator does that:"
+  "$1" | while IFS= read -r l; do [ -n "$l" ] && log "  $l"; done
+}
+
 stop_all() {
+  if [ "$OPERATOR_STOPS" = 1 ]; then operator_stops_note operator_stop_commands; return 0; fi
   local d c r rc=0; STOP_FAILED=""
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
     if do_cmd "$d/bin/stopComponent.sh" "$c"; then [ "$DRY_RUN" = 1 ] || log "  stopped $c"
@@ -574,6 +596,7 @@ stopped_proved() {
 # node manager, then every component (retried until START_TIMEOUT: startComponent fails until node manager listens),
 # then every Listen port answers HTTP. 0 = all up.
 start_all() {
+  if [ "$OPERATOR_STOPS" = 1 ]; then operator_stops_note operator_start_commands; return 0; fi
   local d c t rc=0 havecurl=1
   # no curl on the host: the ports cannot be checked, so they are not - a missing tool must never roll back a good apply
   command -v curl >/dev/null || { havecurl=0; warn "curl not available - skipping the port check; startComponent.sh's own status is the only start check"; }
@@ -944,6 +967,7 @@ main() {
       --client-19c-pending) CLIENT19_PENDING=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --no-backup) NO_BACKUP=1; shift ;;
+      --operator-stops) OPERATOR_STOPS=1; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown option $1" ;;
       *) if [ -z "$cmd" ]; then cmd="$1"; else args+=("$1"); fi; shift ;;
