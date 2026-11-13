@@ -189,11 +189,30 @@ instance_ports() {
 # -Dx=path); a sibling such as <home>2 is not the home. Status 1 = ps could not be read (never 'nothing running').
 # Fail-closed by design: any process holding a path in the home is listed, a 'tail -f' on its log included.
 from_home() {
-  local l
+  local l chain
   l="$(ps -eo pid,args 2>/dev/null)" && [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] || return 1
-  printf '%s\n' "$l" | awk -v oh="$1" '
-    /(ohs-patch|dbclient-upgrade|ohs-db19c)\.sh/ {next}
-    { n = split($0, f, /[[:space:]=:]+/)
+  # A caller (a wrapper's argv holding the home) is not running from it: drop SELF, its ancestors, this
+  # script's own path (a fork keeps the script's argv), and the patch scripts by name (T1529/T1530).
+  chain="$(ps -e -o pid=,ppid= 2>/dev/null)"
+  printf '%s\n' "$l" | awk -v oh="$1" -v self="$$" -v me="$0" -v chain="${chain//$'\n'/;}" '
+    BEGIN {
+      n = split(chain, c, ";")
+      for (i = 1; i <= n; i++) {
+        line = c[i]; sub(/^[[:space:]]+/, "", line)
+        if (line == "") continue
+        split(line, g, /[[:space:]]+/)
+        if (g[1] != "") ppid[g[1]] = g[2]
+      }
+      p = self
+      while (p != "" && p != "0" && !(p in seen)) { seen[p] = 1; p = ppid[p] }
+      seen[self] = 1
+    }
+    {
+      pid = $1; sub(/^[[:space:]]+/, "", pid)
+      if (pid in seen) next
+      if (me != "" && index($0, me) > 0) next
+      if ($0 ~ /(ohs-patch|dbclient-upgrade|ohs-db19c)\.sh/) next
+      n = split($0, f, /[[:space:]=:]+/)
       for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next } }'
 }
 

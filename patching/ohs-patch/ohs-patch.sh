@@ -206,13 +206,39 @@ instance_ports() {
 # every process with an argument that is the home or a path under it (also after '=' or ':', as in -cp a:b or
 # -Dx=path); a sibling such as <home>2 is not the home. Status 1 = ps could not be read (never 'nothing running').
 # Fail-closed by design: any process holding a path in the home is listed, a 'tail -f' on its log included.
+# from_home_in LIST CHAIN SELF HOME [ME]: the lines of LIST (ps -eo pid,args) whose arguments name HOME or a
+# path under it, minus SELF, every ancestor of SELF in CHAIN (ps -e -o pid=,ppid=), and any process whose argv
+# carries ME (this script's own path: a fork for $(...) briefly keeps the script's argv). A caller
+# (ohs-quarter.sh), a sudo, a screen or a bash -c whose own args carry the home is NOT running from it (T1530).
+from_home_in() {
+  local chain="${2//$'\n'/;}"
+  printf '%s\n' "$1" | awk -v oh="$4" -v self="$3" -v chain="$chain" -v me="${5:-}" '
+    BEGIN {
+      n = split(chain, c, ";")
+      for (i = 1; i <= n; i++) {
+        line = c[i]; sub(/^[[:space:]]+/, "", line)
+        if (line == "") continue
+        split(line, g, /[[:space:]]+/)
+        if (g[1] != "") ppid[g[1]] = g[2]
+      }
+      p = self
+      while (p != "" && p != "0" && !(p in seen)) { seen[p] = 1; p = ppid[p] }
+      seen[self] = 1
+    }
+    {
+      pid = $1; sub(/^[[:space:]]+/, "", pid)
+      if (pid in seen) next
+      if (me != "" && index($0, me) > 0) next
+      n = split($0, f, /[[:space:]=:]+/)
+      for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next }
+    }'
+}
+
 from_home() {
-  local l
+  local l chain
   l="$(ps -eo pid,args 2>/dev/null)" && [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] || return 1
-  printf '%s\n' "$l" | awk -v oh="$1" '
-    /ohs-patch\.sh/ {next}
-    { n = split($0, f, /[[:space:]=:]+/)
-      for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next } }'
+  chain="$(ps -e -o pid=,ppid= 2>/dev/null)"
+  from_home_in "$l" "$chain" "$$" "$1" "$0"
 }
 
 kind_of_proc() {

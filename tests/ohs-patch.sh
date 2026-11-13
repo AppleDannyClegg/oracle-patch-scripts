@@ -312,6 +312,23 @@ build; printf ' 4545 /bin/sh %s/ohs/bin/x\n' "${OH}2" >"$T/ps.txt"; rc="$(run)"
 ! grep -q 'pid 4545' "$T/out" && ok || bad "a process under the sibling ${OH}2 was read as running from $OH"
 build; printf ' 4646 /usr/bin/java -Dhome=%s weblogic.NodeManager\n' "$OH" >"$T/ps.txt"; rc="$(run)"
 grep -q 'pid 4646' "$T/out" && ok || bad "a process naming the home exactly (no trailing slash) was missed"
+
+# T1530: the script's own caller is not "still running from the home"; a process that names the home but is
+# not an ancestor still is. The caller here is a real parent whose argv carries the home and the caller name.
+build
+printf ' 7777 /bin/sh %s/ohs/bin/x\n' "$OH" >"$T/ps.txt"
+mkdir -p "$T/stub1530"
+cat >"$T/stub1530/ps" <<P
+#!/bin/sh
+case "\$*" in
+  *pid=,ppid=*) /bin/ps -e -o pid=,ppid= ;;
+  *) cat "$T/ps.txt"; /bin/ps -eo pid,args | grep -F "$OH" ;;
+esac
+P
+chmod +x "$T/stub1530/ps"
+rc="$(HOME="$T/home" PATH="$T/stub1530:$T/stub:$PATH" ORACLE_HOME="" SCRIPT_PATH="$SCRIPT" CALLER_PID="$T/caller.pid" bash -c 'echo $$ >"$CALLER_PID"; bash "$SCRIPT_PATH" preflight "$1" --oracle-home "$2" --backup-dir "$3"; rc=$?; exit "$rc"' ohs-quarter.sh "$PD" "$OH" "$T/backup" >"$T/out" 2>&1; echo $?)"
+grep -q 'pid 7777' "$T/out" && ok || bad "a non-ancestor process holding the home was not listed"
+[ -s "$T/caller.pid" ] && ! grep -q "pid $(cat "$T/caller.pid")" "$T/out" && ok || bad "the caller (pid $(cat "$T/caller.pid" 2>/dev/null)) was listed as still running from the home"
 # an unknown OPatch version is never reported as meeting the README minimum
 build; sed -i.bak 's#echo "OPatch Version: .*#echo "OPatch Version: ";;#' "$OH/OPatch/opatch"; rc="$(run)"
 [ "$rc" = 2 ] && ! grep -q 'meets the README minimum' "$T/out" && ok || bad "unknown OPatch version: rc $rc, $(grep -E 'meets|OPatch' "$T/out" | head -2)"
