@@ -122,6 +122,13 @@ build; rc="$(dbc backup "$PD" --run-dir "$SH" --yes)"; : >"$T/ps.txt"; rc2="$(db
 build; rc="$(dbc run "$PD" --yes)"
 [ "$rc" = 0 ] && [ "$(rsf)" = 19.0.0.0.0 ] && [ "$(cat "$OH/.sqlv")" = 19.14.0.0.0 ] && ok || bad "run on a ready home: rc $rc, rsf $(rsf): $(grep -E 'ERROR|BLOCK' "$T/out" | head -3)"
 case "$(acts)" in "stop ohs1 stop ohs2 stopNM changePerm $OH install -invPtrLoc $OH/oraInst.loc -silent ORACLE_HOME=$OH start ohs1 start ohs2 ") ok;; *) bad "run order wrong: [$(acts)]";; esac
+# T1550 operator-stops: the operator owns every start and stop; no stop/start script runs and the commands print
+build; : >"$T/ps.txt"; : >"$T/actions"
+rc="$(dbc run "$PD" --operator-stops --yes)"
+[ "$rc" = 0 ] && ok || bad "operator-stops run: rc $rc: $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
+case "$(acts)" in *stop*|*start*) bad "operator-stops ran a stop/start script: [$(acts)]";; *) ok;; esac
+grep -q 'the operator starts node manager and the components now' "$T/out" && ok || bad "operator-stops does not hand the start to the operator"
+grep -q 'bin/stopComponent.sh' "$T/out" && grep -q 'bin/startComponent.sh' "$T/out" && ok || bad "operator-stops did not print the stop and start commands"
 [ "$(find "$T"/backup -name '*.tgz' | wc -l | tr -d ' ')" = 3 ] && ok || bad "backup is not home + domain + inventory: $(find "$T"/backup -name '*.tgz')"
 st | grep -q '^outcome=upgraded$' && st | grep -q '^pre_rsf=12.1.0.2.0$' && st | grep -q '^backup=ok$' && ok || bad "state: $(st | tr '\n' ' ')"
 [ "$(grep -n '1/5 backup' "$T/out" | cut -d: -f1)" -lt "$(grep -n '2/5 stop' "$T/out" | cut -d: -f1)" ] && ok || bad "the backup is not taken before the stop"

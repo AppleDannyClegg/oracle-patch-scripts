@@ -387,10 +387,15 @@ case "$(acts)" in *stop*|*start*) bad "operator-stops ran a start/stop script: [
 ! grep -q 'weblogic.NodeManager' "$T/ps.txt" && ok || bad "operator-stops started the node manager"
 grep -q 'operator-stops: not running any start or stop script' "$T/out" && ok || bad "operator-stops note missing from the run output"
 grep -q 'bin/stopComponent.sh' "$T/out" && grep -q 'bin/startComponent.sh' "$T/out" && ok || bad "operator-stops did not print the stop and start commands"
+grep -q 'left STOPPED for the operator to start' "$T/out" && ! grep -q 'every component answers' "$T/out" && ok || bad "operator-stops verify still claims the components answer"
 : >"$T/actions"
 rc="$(HOME="$T/home" PATH="$T/stub:$PATH" START_TIMEOUT=1 POLL=1 RUN_BASE="$T/runs" bash "$SCRIPT" rollback --operator-stops --yes >"$T/out" 2>&1 </dev/null; echo $?; settle)"
 [ "$rc" = 0 ] && ok || bad "operator-stops rollback: rc $rc: $(grep -E 'ERROR|BLOCK' "$T/out" | head -2)"
 case "$(acts)" in *stop*|*start*) bad "operator-stops rollback ran a start/stop script: [$(acts)]";; *) ok;; esac
+# a refused stop with the option says nothing changed and prints no start commands (T1550 P3)
+build; running; : >"$T/actions"; rc="$(runr --operator-stops --yes)"
+[ "$rc" != 0 ] && case "$(acts)" in *stop*|*start*) bad "operator-stops refused stop ran a script: [$(acts)]";; *) ok;; esac
+grep -q 'nothing was changed, it is still running' "$T/out" && ! grep -qE '\[INFO \]   .*startComponent\.sh' "$T/out" && ok || bad "operator-stops refused stop wrong: $(grep -E 'still running|startComponent' "$T/out" | head -2)"
 
 # refused before anything changes: nothing stopped, no backup
 build; running; echo "OPatch 13.9.4.2.10" >"$T/opv"; rc="$(runr --yes)"

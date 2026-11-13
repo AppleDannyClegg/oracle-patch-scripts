@@ -654,9 +654,14 @@ step_stop() {
   local nr; stop_all; stopped_proved; nr=$?
   if [ "$nr" != 0 ]; then
     state outcome refused-stop
-    err "the home could not be proved stopped - NOT installing; starting the components again"
-    start_all || err "and they did not all start again - check them by hand"
-    where_logs
+    if [ "$OPERATOR_STOPS" = 1 ]; then
+      err "the home could not be proved stopped - NOT installing; nothing was changed, it is still running"
+      where_logs
+    else
+      err "the home could not be proved stopped - NOT installing; starting the components again"
+      start_all || err "and they did not all start again - check them by hand"
+      where_logs
+    fi
     exit "$([ "$nr" = 2 ] && echo 2 || echo 1)"
   fi
 }
@@ -698,7 +703,8 @@ step_verify() {
 
 step_start() {
   state stage start
-  log "5/5 start node manager and the components"
+  if [ "$OPERATOR_STOPS" = 1 ]; then log "5/5 the operator starts node manager and the components now"
+  else log "5/5 start node manager and the components"; fi
   start_all || recover "the upgraded home does not start"
 }
 

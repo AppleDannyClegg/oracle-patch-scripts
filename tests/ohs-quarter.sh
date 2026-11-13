@@ -95,6 +95,12 @@ grep -q 'java preflight .*--will-stop' "$T/calls.log" && ok || bad "java preflig
 # --will-stop is java-patch's option; dbclient-upgrade.sh has none and stops at "unknown option" (this line used to
 # assert the opposite, against a stub that accepts anything)
 grep -q 'dbclient preflight' "$T/calls.log" && ! grep -q 'dbclient preflight .*--will-stop' "$T/calls.log" && ok || bad "dbclient preflight missing, or handed --will-stop, which the real script rejects"
+# T1550: --operator-stops must reach BOTH children, or the real scripts stop and start again
+: >"$T/calls.log"
+env OHS_QUARTER_JAVA_PATCH="$T/stub-java" OHS_QUARTER_WLS_PATCH="$T/stub-wls" OHS_QUARTER_DBCLIENT="$T/stub-dbclient" OHS_QUARTER_OHS_PATCH="$T/stub-ohs" \
+  bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --operator-stops >"$T/out" 2>&1
+missing="$(grep -E '^(dbclient|ohs) ' "$T/calls.log" | grep -vc -- '--operator-stops')"
+[ -n "$(grep -E '^(dbclient|ohs) ' "$T/calls.log")" ] && [ "$missing" = 0 ] && ok || bad "$missing dbclient/ohs call(s) did not get --operator-stops: [$(grep -E '^(dbclient|ohs) ' "$T/calls.log" | grep -v -- '--operator-stops' | head -2)]"
 grep -q '^java apply .*--will-stop' "$T/calls.log" && bad "apply was given --will-stop (it must not be)" || ok
 stop="$(line 'ohs stop')"; [ -n "$stop" ] && ok || bad "no ohs stop"
 # every preflight before the stop; every apply after it

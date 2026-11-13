@@ -769,9 +769,14 @@ step_stop() {
   stop_all; stopped_proved; nr=$?
   if [ "$nr" != 0 ]; then
     state outcome refused-stop
-    err "the home could not be proved stopped - NOT applying; starting the components again"
-    start_all || err "and they did not all start again - check them by hand"
-    where_logs
+    if [ "$OPERATOR_STOPS" = 1 ]; then
+      err "the home could not be proved stopped - NOT applying; nothing was changed, it is still running"
+      where_logs
+    else
+      err "the home could not be proved stopped - NOT applying; starting the components again"
+      start_all || err "and they did not all start again - check them by hand"
+      where_logs
+    fi
     exit "$([ "$nr" = 2 ] && echo 2 || echo 1)"
   fi
 }
@@ -788,7 +793,8 @@ step_apply() {
 # 4 start
 step_start() {
   state stage start
-  log "4/5 start node manager and the components"
+  if [ "$OPERATOR_STOPS" = 1 ]; then log "4/5 the operator starts node manager and the components now"
+  else log "4/5 start node manager and the components"; fi
   start_all || recover "the patched home does not start"
 }
 
@@ -797,7 +803,11 @@ step_verify() {
   local now; now="$(installed_ids)" || recover "lspatches cannot be read after the start"
   printf ' %s ' "$now" | grep -q " $PID " || recover "lspatches does not show $PID after the start"
   state applied "$PID"; state outcome applied
-  log "5/5 applied and verified: $PID is installed in $OH and every component answers. Backup kept at $BK."
+  if [ "$OPERATOR_STOPS" = 1 ]; then
+    log "5/5 applied: $PID is installed in $OH. The home is left STOPPED for the operator to start; nothing was checked as answering. Backup kept at $BK."
+  else
+    log "5/5 applied and verified: $PID is installed in $OH and every component answers. Backup kept at $BK."
+  fi
   log "post-install: check KB187736 for collaborative patches this bundle needs"
 }
 
