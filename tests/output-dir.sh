@@ -8,6 +8,9 @@
 # Usage: tests/output-dir.sh
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+# the file lists below come from git ls-files and git grep, which list nothing for a copy that is not this repo's
+# own checkout (no .git, or a copy inside some other checkout), so such a copy would pass on fewer files
+[ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ] || { echo "FAIL output-dir gate needs this repo's git checkout: it lists the scripts with git ls-files"; exit 1; }
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
