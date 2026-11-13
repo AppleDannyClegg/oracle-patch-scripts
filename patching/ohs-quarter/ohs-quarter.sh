@@ -281,7 +281,7 @@ restore_wls_home() {
 
 recover() {
   local rec=1
-  log "recovering: stopping the components first"
+  log "recovering: stopping the components first. If this is killed mid-restore, ${ORACLE_HOME_ARG:-the Oracle home} may be part-patched: the previous copy is moved aside as ${ORACLE_HOME_ARG:-<home>}.broken-*, and the shared backup is $SHARED (run dir $RUN_DIR) - restore by hand from that copy, not the half-restored home"
   if ! orun stop; then
     err "Could not stop the components to recover - nothing is restored, and they are NOT started. Fix by hand."
     return 1
@@ -324,9 +324,13 @@ recover() {
   fi
   [ "$rec" = 1 ]
 }
-# a signal during a recovery is ignored, so a second recovery never starts inside the first and a Ctrl-C to the
-# process group does not cut a restore short. An ignored signal is inherited, so every start sets ':' instead (T1137)
-fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
+# a signal during a recovery is NOT allowed to cut a restore short (a half-restored home is the T1562 bug), but it
+# must leave a line saying the home may be partial and where the moved-aside copy is (T1563): the handler records it
+# and returns, so the restore finishes. An ignored signal is inherited, so every start still sets ':' instead (T1137)
+recover_interrupted() {
+  err "INTERRUPT during recovery noted - the restore is NOT cut short. If this run is then killed, ${ORACLE_HOME_ARG:-the Oracle home} may be part-patched: the previous copy is moved aside as ${ORACLE_HOME_ARG:-<home>}.broken-*, and the shared backup is $SHARED (run dir ${RUN_DIR:-?}) - restore by hand from that copy."
+}
+fail_after() { trap 'recover_interrupted' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
 # after a stop that did not lead to any apply: start the components again rather than leave them down (T1135)
 restart_after_stop() {
   trap ':' INT TERM

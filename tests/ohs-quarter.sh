@@ -214,6 +214,11 @@ grep -q "^dbclient rollback .*--run-dir $T/run/backup" "$T/calls.log" && ok || b
 [ -z "$(line '^wls restore')" ] && grep -q 'skipping the wls home restore' "$T/out" && ok || bad "after the shared restore the recovery still ran a wls home restore: [$(grep -E 'wls restore|skipping the wls' "$T/out" "$T/calls.log" | head -2)]"
 [ -n "$(line '^java rollback')" ] && ok || bad "a dbclient failure did not roll back java"
 [ "$(line 'ohs stop')" -lt "$(line 'dbclient rollback')" ] && ok || bad "recovery did not stop before the restore"
+grep -q 'may be part-patched' "$T/out" && grep -q 'broken-' "$T/out" && ok || bad "recovery does not name the partial-home signature or the moved-aside copy (T1563)"
+# T1563: a signal during a recovery is recorded and does NOT cut the restore short
+runq "$T/root" FAIL_DB_APPLY=1 SIGNAL_AT='dbclient rollback'; rc=$?
+grep -q 'INTERRUPT during recovery noted' "$T/out" && ok || bad "a signal during recovery left no line (T1563)"
+grep -q '^java rollback' "$T/calls.log" && ok || bad "the signal cut the restore short (no java rollback after it)"
 
 # ---- an opatch apply failure after everything else: same shared restore ---------------------------------------
 runq "$T/root" FAIL_WEBGATE=1; rc=$?
