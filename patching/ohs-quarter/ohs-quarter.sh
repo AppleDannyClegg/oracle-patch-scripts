@@ -280,21 +280,29 @@ recover() {
     err "Could not stop the components to recover - nothing is restored, and they are NOT started. Fix by hand."
     return 1
   fi
-  # reverse of the apply order: opatch/installer share the one backup, then the WLS home, then the JDK
+  # reverse of the apply order: opatch/installer share the one backup, then the WLS home, then the JDK.
+  # shared_restored: the shared backup covers this home, so after it the WLS home restore is redundant -
+  # the WLS PSU patched the same home. Restoring it over a home a child's rollback has STARTED is also the
+  # bug that left the server with no OPatch (T1562, Gort #18227): never untar a home over a running one.
+  local shared_restored=0
   if [ "$ohs_attempted" = 1 ] || [ "$dc_attempted" = 1 ]; then
     if [ -n "$INSTALLER_DIR" ]; then
       log "recovering: dbclient-upgrade rollback from $SHARED (the installer's restore_all - not opatch rollback)"
-      dshared rollback || { err "the restore failed - restore this home by hand from the backup"; rec=0; }
+      if dshared rollback; then shared_restored=1; else err "the restore failed - restore this home by hand from the backup"; rec=0; fi
     else
       log "recovering: ohs-patch rollback from $SHARED"
-      oshared rollback || { err "the restore failed - restore this home by hand from the backup"; rec=0; }
+      if oshared rollback; then shared_restored=1; else err "the restore failed - restore this home by hand from the backup"; rec=0; fi
     fi
   fi
   if [ "$wls_attempted" = 1 ]; then
-    log "recovering: wls-patch restore (its own home+domains backup)"
-    local bd; bd="$(sed -n 's/^backup_dir=//p' "$RUN_DIR/wls/state" 2>/dev/null | tail -1)"
-    if [ -n "$bd" ]; then wrun restore "$bd" || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
-    else wrun restore || { err "wls-patch restore failed - restore this home by hand"; rec=0; }; fi
+    if [ "$shared_restored" = 1 ]; then
+      log "recovering: the shared restore already put this home back to the pre-outage level - skipping the wls home restore (it would untar over the same home)"
+    else
+      local bd; bd="$(sed -n 's/^backup_dir=//p' "$RUN_DIR/wls/state" 2>/dev/null | tail -1)"
+      if ! orun stop; then err "cannot stop the components before the wls restore - refusing to restore over a running home"; rec=0
+      elif [ -n "$bd" ]; then wrun restore "$bd" || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
+      else wrun restore || { err "wls-patch restore failed - restore this home by hand"; rec=0; }; fi
+    fi
   fi
   if [ "$java_attempted" = 1 ]; then
     log "recovering: java-patch rollback"
@@ -386,15 +394,19 @@ for entry in "${APPLY[@]}"; do
       # re-runs its preflight in this same outage and would block the new id as "neither rolled back nor kept",
       # which no pre-outage check can see (the PSU is not installed when 1/7 runs). Hand it the ids wls-patch's
       # own lspatches before/after pair says moved, as --keep-patches (T1560).
+      # A plain PSU goes through wls-patch's opatch-apply loop, which records state applied=<id> and writes NO
+      # lspatches files; only the SPB branch writes lspatches.before/after. Read both (T1560, Louie #18228).
+      _new="$(sed -n 's/^applied=//p' "$RUN_DIR/wls/state" 2>/dev/null | sed 's/[^0-9,]//g' | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
       _wl_b="$RUN_DIR/wls/lspatches.before"; _wl_a="$RUN_DIR/wls/lspatches.after"
       if [ -r "$_wl_b" ] && [ -r "$_wl_a" ]; then
-        _new="$(comm -13 <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_b" | sort -u) <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_a" | sort -u) | paste -sd, -)"
-        if [ -n "$_new" ]; then
-          KEEP_PATCHES="${KEEP_PATCHES:+$KEEP_PATCHES,}$_new"; DOpts+=(--keep-patches "$KEEP_PATCHES")
-          log "dbclient: keep-patches += $_new (the WebLogic PSU applied above is not a 12c client patch)"
-        fi
+        _spb="$(comm -13 <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_b" | sort -u) <(sed -n 's/^[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$_wl_a" | sort -u) | sort -u | paste -sd, -)"
+        [ -n "$_spb" ] && _new="${_new:+$_new,}$_spb"
+      fi
+      if [ -n "$_new" ]; then
+        KEEP_PATCHES="${KEEP_PATCHES:+$KEEP_PATCHES,}$_new"; DOpts+=(--keep-patches "$KEEP_PATCHES")
+        log "dbclient: keep-patches += $_new (the WebLogic PSU applied above is not a 12c client patch)"
       else
-        warn "cannot read wls-patch's lspatches before/after - dbclient may block the PSU id; pass --keep-patches <the PSU id>"
+        warn "cannot read the ids the WLS patch applied - dbclient may block the PSU id; pass --keep-patches <the PSU id>"
       fi ;;
 
     dc)   dc_attempted=1;   drun apply "$arg" --backup-run "$SHARED" || fail_after "dbclient-upgrade apply failed"; log "dbclient: applied $arg";;

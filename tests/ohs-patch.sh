@@ -388,6 +388,11 @@ case "$(acts)" in *stop*|*start*) bad "operator-stops ran a start/stop script: [
 grep -q 'operator-stops: not running any start or stop script' "$T/out" && ok || bad "operator-stops note missing from the run output"
 grep -q 'bin/stopComponent.sh' "$T/out" && grep -q 'bin/startComponent.sh' "$T/out" && ok || bad "operator-stops did not print the stop and start commands"
 grep -q 'left STOPPED for the operator to start' "$T/out" && ! grep -q 'every component answers' "$T/out" && ok || bad "operator-stops verify still claims the components answer"
+# the standalone start with the option must not claim it started anything (T1550 P2, Louie #18228)
+: >"$T/actions"
+rc="$(HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" start --oracle-home "$OH" --backup-dir "$T/backup" --operator-stops --yes >"$T/out" 2>&1 </dev/null; echo $?)"
+[ "$rc" = 0 ] && ! grep -q 'started: node manager and every component, ports answering' "$T/out" && grep -q 'nothing was started here' "$T/out" && ok || bad "operator-stops start claims it started: rc $rc: $(grep -E 'started:|nothing was started' "$T/out" | head -2)"
+case "$(acts)" in *start*) bad "operator-stops start ran a start script: [$(acts)]";; *) ok;; esac
 # the quarter verifies through 'ohs-patch verify <dir>': with the option it must check the patch level only, or a
 # GOOD run fails on stopped ports and the composer rolls the whole outage back (Talos [P1] #18210)
 touch "$T/curl.fail"

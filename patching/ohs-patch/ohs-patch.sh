@@ -878,7 +878,9 @@ cmd_start() {
   confirm "This starts node manager and OHS ($(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ' | sed 's/ $//')) on this box." || { err "not confirmed - nothing was changed"; exit 1; }
   open_log start
   start_all || { err "not everything started - see above"; exit 1; }
-  [ "$DRY_RUN" = 1 ] || log "started: node manager and every component, ports answering"
+  if [ "$DRY_RUN" = 1 ]; then :
+  elif [ "$OPERATOR_STOPS" = 1 ]; then log "the operator starts node manager and the components; nothing was started here"
+  else log "started: node manager and every component, ports answering"; fi
   exit 0
 }
 

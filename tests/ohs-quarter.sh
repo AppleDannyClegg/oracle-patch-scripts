@@ -55,8 +55,7 @@ case "$1" in
     # the WLS PSU lands in the inventory at this call: write wls-patch's before/after pair, so ohs-quarter can
     # hand the new id to the dbclient apply (T1560)
     if [ "$who" = wls ] && [ -n "$rd" ]; then mkdir -p "$rd"
-      : >"$rd/lspatches.before"
-      printf '  39919567;WLS PATCH SET UPDATE 12.2.1.4.260823\n' >"$rd/lspatches.after"
+      echo "applied=39919567" >>"$rd/state"
     fi
     case "$2" in
       */dbclientru) [ -n "${FAIL_DBCLIENTRU:-}" ] && exit 1;;
@@ -199,11 +198,14 @@ runq "$T/root" FAIL_WLS_APPLY=1; rc=$?
 [ -n "$(line '^wls restore')" ] && [ -n "$(line '^java rollback')" ] && ok || bad "a WLS failure did not restore wls and roll back java"
 [ "$(line '^wls restore')" -lt "$(line '^java rollback')" ] && ok || bad "recovery is not in reverse order (wls restore then java rollback)"
 
-# ---- dbclient apply failure: shared restore + wls restore + java rollback, then start --------------------------
+# ---- dbclient apply failure: shared restore (covers the WLS home too), NO wls restore, java rollback -----------
 runq "$T/root" FAIL_DB_APPLY=1; rc=$?
 [ "$rc" = 1 ] && ok || bad "a dbclient apply failure exited $rc (want 1)"
 grep -q "^dbclient rollback .*--run-dir $T/run/backup" "$T/calls.log" && ok || bad "recovery did not run dbclient rollback from the shared backup"
-[ -n "$(line '^wls restore')" ] && [ -n "$(line '^java rollback')" ] && ok || bad "a dbclient failure did not restore wls and roll back java"
+# T1562: the WLS PSU went into the same home the shared backup covers, and a child's rollback can have STARTED
+# the components - a wls home restore over that is the bug that left the server with no OPatch
+[ -z "$(line '^wls restore')" ] && grep -q 'skipping the wls home restore' "$T/out" && ok || bad "after the shared restore the recovery still ran a wls home restore: [$(grep -E 'wls restore|skipping the wls' "$T/out" "$T/calls.log" | head -2)]"
+[ -n "$(line '^java rollback')" ] && ok || bad "a dbclient failure did not roll back java"
 [ "$(line 'ohs stop')" -lt "$(line 'dbclient rollback')" ] && ok || bad "recovery did not stop before the restore"
 
 # ---- an opatch apply failure after everything else: same shared restore ---------------------------------------
@@ -310,9 +312,10 @@ for hook in FAIL_DBCLIENTRU FAIL_OSS; do
   grep -q "^dbclient rollback .*--run-dir $T/run/backup" "$T/calls.log" && ok || bad "a $hook failure did not restore from the shared backup"
 done
 
-# a recovery that cannot restore exits 3 and does not start
-runq "$T/root" FAIL_DB_APPLY=1 FAIL_WLS_RESTORE=1; rc=$?
-[ "$rc" = 3 ] && ok || bad "a failed wls restore exited $rc (want 3)"
+# a recovery that cannot restore exits 3 and does not start. The restore that runs after a dc failure is the
+# SHARED one (the wls home restore is skipped, T1562), so fail that one
+runq "$T/root" FAIL_DB_APPLY=1 FAIL_ROLLBACK=1; rc=$?
+[ "$rc" = 3 ] && ok || bad "a failed shared restore exited $rc (want 3)"
 grep -q '^ohs start' "$T/calls.log" && bad "components were started although a recovery step failed" || ok
 
 # ---- not a single folder present: refuse, no run dir, no child call -------------------------------------------
