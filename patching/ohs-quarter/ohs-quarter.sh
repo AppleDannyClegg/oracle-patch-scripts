@@ -324,13 +324,11 @@ recover() {
   fi
   [ "$rec" = 1 ]
 }
-# a signal during a recovery is NOT allowed to cut a restore short (a half-restored home is the T1562 bug), but it
-# must leave a line saying the home may be partial and where the moved-aside copy is (T1563): the handler records it
-# and returns, so the restore finishes. An ignored signal is inherited, so every start still sets ':' instead (T1137)
-recover_interrupted() {
-  err "INTERRUPT during recovery noted - the restore is NOT cut short. If this run is then killed, ${ORACLE_HOME_ARG:-the Oracle home} may be part-patched: the previous copy is moved aside as ${ORACLE_HOME_ARG:-<home>}.broken-*, and the shared backup is $SHARED (run dir ${RUN_DIR:-?}) - restore by hand from that copy."
-}
-fail_after() { trap 'recover_interrupted' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
+# a signal during a recovery is IGNORED, so a second recovery never starts inside the first AND a Ctrl-C to the
+# process group does not cut a child restore short: an IGNORED signal is inherited by the children, while a HANDLED
+# one is reset to its default in them, so bashes's handler runs only after the child has died (T1137, Louie #18269).
+# The partial-home line is recover()'s first log instead, so it is on the record even for a SIGKILL.
+fail_after() { trap '' INT TERM; err "$1"; if recover; then exit 1; else exit 3; fi; }
 # after a stop that did not lead to any apply: start the components again rather than leave them down (T1135)
 restart_after_stop() {
   trap ':' INT TERM

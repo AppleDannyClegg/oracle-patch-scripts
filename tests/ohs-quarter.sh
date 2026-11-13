@@ -68,7 +68,7 @@ case "$1" in
   start) bash -c 'trap -p TERM INT' >>"__T__/start-traps"   # what a daemon started now would inherit (T1137)
     if [ -n "${FAIL_START:-}" ] && [ ! -e "__T__/start.failed" ]; then : >"__T__/start.failed"; exit 1; fi; : >"__T__/start.ok" ;;
   verify) [ -n "${FAIL_VERIFY:-}" ] && exit 1; [ "$who" = ohs ] && [ -n "${FAIL_OHS_VERIFY:-}" ] && exit 1 ;;
-  rollback) [ -n "${FAIL_ROLLBACK:-}" ] && exit 1 ;;
+  rollback) [ -n "${FAIL_ROLLBACK:-}" ] && exit 1; [ -n "${SLOW_ROLLBACK:-}" ] && sleep 2 ;;
   restore) [ -n "${FAIL_WLS_RESTORE:-}" ] && exit 1 ;;
 esac
 exit 0
@@ -215,10 +215,14 @@ grep -q "^dbclient rollback .*--run-dir $T/run/backup" "$T/calls.log" && ok || b
 [ -n "$(line '^java rollback')" ] && ok || bad "a dbclient failure did not roll back java"
 [ "$(line 'ohs stop')" -lt "$(line 'dbclient rollback')" ] && ok || bad "recovery did not stop before the restore"
 grep -q 'may be part-patched' "$T/out" && grep -q 'broken-' "$T/out" && ok || bad "recovery does not name the partial-home signature or the moved-aside copy (T1563)"
-# T1563: a signal during a recovery is recorded and does NOT cut the restore short
+# T1563: a TERM to the quarter during a recovery is IGNORED and does NOT cut the restore; the partial-home line is
+# on the record up front. NOT-EXERCISED here: the process-GROUP case (a terminal Ctrl-C hits every child). This
+# harness cannot put the composer in its own process group (perl setpgrp/setsid fail here), and SIGNAL_AT signals
+# the quarter only - the protection for the children is the inherited 'trap ""', shown by Louie's probe #18269.
 runq "$T/root" FAIL_DB_APPLY=1 SIGNAL_AT='dbclient rollback'; rc=$?
-grep -q 'INTERRUPT during recovery noted' "$T/out" && ok || bad "a signal during recovery left no line (T1563)"
-grep -q '^java rollback' "$T/calls.log" && ok || bad "the signal cut the restore short (no java rollback after it)"
+[ "$rc" = 1 ] && ok || bad "a TERM during a recovery exited $rc (want 1: the recovery finishes)"
+grep -q '^java rollback' "$T/calls.log" && ok || bad "a TERM during recovery cut the restore short (no java rollback)"
+grep -q 'may be part-patched' "$T/out" && grep -q 'broken-' "$T/out" && ok || bad "a recovery does not leave the partial-home line (T1563)"
 
 # ---- an opatch apply failure after everything else: same shared restore ---------------------------------------
 runq "$T/root" FAIL_WEBGATE=1; rc=$?
