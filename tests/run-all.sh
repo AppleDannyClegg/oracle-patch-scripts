@@ -264,7 +264,8 @@ running=()
 for g in "${GATES[@]}"; do
     case "$g" in
         get-patches) launch "$g" pwsh -NoProfile -File tests/get-patches.ps1 ;;
-        shellcheck)  launch "$g" bash -c 'git ls-files -z "*.sh" | xargs -0 shellcheck -S warning && echo "shellcheck clean (tree)"' ;;
+        # pipefail: outside a git checkout git ls-files fails and lists nothing, and shellcheck on no files passes
+        shellcheck)  launch "$g" bash -c 'set -o pipefail; git ls-files -z "*.sh" | xargs -0 shellcheck -S warning && echo "shellcheck clean (tree)"' ;;
         *)           launch "$g" bash "tests/$g.sh" ;;
     esac
 done
