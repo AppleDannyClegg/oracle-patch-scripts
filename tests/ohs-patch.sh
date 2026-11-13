@@ -325,11 +325,12 @@ printf ' %s bash %s %s\n' "\$\$" "\$0" "\$*" >>"$T/ps.txt"
 PATH="$T/stub:\$PATH" HOME="$T/home" ORACLE_HOME="" bash "$PWD/$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" >>"$T/out" 2>&1
 S
 chmod +x "$T/caller.sh"
-printf ' 7777 /usr/bin/tail -f %s/logs/x.log\n' "$OH" >"$T/ps.txt"
+printf ' 7777 /usr/bin/tail -f %s/logs/x.log\n 8888 bash %s inspect --oracle-home %s\n' "$OH" "$SCRIPT" "$OH" >"$T/ps.txt"
 bash "$T/caller.sh" --oracle-home "$OH"; rc=$?
 wid="$(cat "$T/caller.pid")"
 ! grep -q "pid $wid" "$T/out" && ok || bad "T1529: the caller (pid $wid), an ancestor holding the home, was listed as an occupant"
 grep -q 'pid 7777' "$T/out" && ok || bad "T1529: a non-ancestor holding the home (pid 7777) was not listed"
+! grep -q 'pid 8888' "$T/out" && ok || bad "T1529: this script's own command-substitution subshell (pid 8888) was listed as an occupant"
 # an unknown OPatch version is never reported as meeting the README minimum
 build; sed -i.bak 's#echo "OPatch Version: .*#echo "OPatch Version: ";;#' "$OH/OPatch/opatch"; rc="$(run)"
 [ "$rc" = 2 ] && ! grep -q 'meets the README minimum' "$T/out" && ok || bad "unknown OPatch version: rc $rc, $(grep -E 'meets|OPatch' "$T/out" | head -2)"

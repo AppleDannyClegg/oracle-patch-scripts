@@ -207,10 +207,11 @@ instance_ports() {
 # -Dx=path); a sibling such as <home>2 is not the home. Status 1 = ps could not be read (never 'nothing running').
 # Fail-closed by design: any process holding a path in the home is listed, a 'tail -f' on its log included.
 # this shell ($$) and every ancestor of it, space-padded so awk can match a whole pid. A caller such as
-# ohs-quarter.sh runs this script, so its own args carry the home and it must not be listed as an occupant
-# (T1529). Not a name match: any wrapper (sudo, screen, bash -c) that holds the home in its args is an ancestor
-# of this process and is dropped the same way. An unreadable ppid walk returns a blank string, so nothing is
-# dropped - fail-closed, the caller may then be listed.
+# ohs-quarter.sh runs this script, so its argv carries the home and it was listed as an occupant, which made the
+# stop unprovable (T1529). Two skips together: the name match below still drops THIS script and its
+# command-substitution subshells (forked copies whose argv carries the home), and this ancestor walk drops the
+# callers (ohs-quarter.sh, sudo, screen, bash -c) that hold the home. An unreadable ppid walk returns a blank
+# string, so nothing is dropped - fail-closed, the caller may then be listed.
 ancestor_pids() {
   local pid="$$" out=" $$ " ppid
   while [ "$pid" -gt 1 ]; do
@@ -228,6 +229,7 @@ from_home() {
   l="$(ps -eo pid,args 2>/dev/null)" && [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] || return 1
   anc="$(ancestor_pids)"
   printf '%s\n' "$l" | awk -v oh="$1" -v anc="$anc" '
+    /ohs-patch\.sh/ {next}
     { pid=$1; if (index(anc, " " pid " ") > 0) next }
     { n = split($0, f, /[[:space:]=:]+/)
       for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next } }'

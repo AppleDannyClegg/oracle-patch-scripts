@@ -188,10 +188,10 @@ instance_ports() {
 # every process with an argument that is the home or a path under it (also after '=' or ':', as in -cp a:b or
 # -Dx=path); a sibling such as <home>2 is not the home. Status 1 = ps could not be read (never 'nothing running').
 # Fail-closed by design: any process holding a path in the home is listed, a 'tail -f' on its log included.
-# this shell ($$) and every ancestor of it, space-padded so awk can match a whole pid. A caller that runs
-# this script holds the home in its args and must not be listed as an occupant (T1529); the old name-match
-# skipped only the script's own name, so a wrapper (ohs-quarter.sh, sudo, screen, bash -c) was listed.
-# An unreadable ppid walk returns blank, so nothing is dropped (fail-closed).
+# this shell ($$) and every ancestor of it, space-padded so awk can match a whole pid. The name match
+# below drops this script, its command-substitution subshells and the sibling scripts; this walk drops the
+# CALLERS (ohs-quarter.sh, sudo, screen, bash -c) whose argv holds the home, so they are not listed as
+# occupants (T1529). An unreadable ppid walk returns blank, so nothing is dropped (fail-closed).
 ancestor_pids() {
   local pid="$$" out=" $$ " ppid
   while [ "$pid" -gt 1 ]; do
@@ -209,6 +209,7 @@ from_home() {
   l="$(ps -eo pid,args 2>/dev/null)" && [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] || return 1
   anc="$(ancestor_pids)"
   printf '%s\n' "$l" | awk -v oh="$1" -v anc="$anc" '
+    /(ohs-patch|dbclient-upgrade|ohs-db19c)\.sh/ {next}
     { pid=$1; if (index(anc, " " pid " ") > 0) next }
     { n = split($0, f, /[[:space:]=:]+/)
       for (i = 2; i <= n; i++) if (f[i] == oh || index(f[i], oh "/") == 1) { print; next } }'
