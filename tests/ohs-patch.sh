@@ -260,6 +260,54 @@ blocks19 rsf21 "$(printf '%s\n' "$miss" | sed 's/oracle.rdbms.rsf:19.0.0.0.0:/or
 blocks19 bare 'Invoking prereq "checkapplicable"
 Prereq "checkApplicable" for patch 40005842 failed.
 OPatch failed with error code 73'
+# T1808 (16 Nov field answer, OPatch 13.9.4.2.25): a DB19C set on the 12c client refuses CheckApplicable with
+# ZOP-45 + "Version Mismatch of Component" and names NO oracle.<component>:<version>. That is deferred like the
+# rsf:19 case: the DB Client 19c upgrade runs first and apply checks again. Byte copy of
+# ~/plans/t1808-gen-checkapplicable-40005842.txt (CRLF preserved, strip nothing).
+cat >"$T/zop45.lf" <<'ZOP'
+Oracle Interim Patch Installer version 13.9.4.2.25
+Copyright (c) 2026, Oracle Corporation.  All rights reserved.
+
+PREREQ session
+
+Oracle Home       : /u01/app/oracle/product/12.2.1.4
+Central Inventory : /u01/app/oraInventory
+   from           : /u01/app/oracle/product/12.2.1.4/oraInst.loc
+OPatch version    : 13.9.4.2.25
+OUI version       : 13.9.4.0.0
+Log file location : /u01/app/oracle/product/12.2.1.4/cfgtoollogs/opatch/opatch2026-11-16_10-25-49AM_1.log
+
+
+OPatch detects the Middleware Home as "/u01/app/oracle/product/12.2.1.4"
+
+Invoking prereq "checkapplicable"
+
+ZOP-45: The patch(es) are not applicable on the Oracle Home because some required components are not installed (or) languages not supported.
+
+Prereq "checkApplicable" for patch 40005842 failed.
+
+The details are:
+Version Mismatch of Component occured. This Patch cannot be applied
+
+OPatch succeeded.
+ZOP
+zop45="$T/zop45.txt"; sed 's/$/\r/' "$T/zop45.lf" >"$zop45"
+[ "$(wc -c <"$zop45" | tr -d ' ')" = 894 ] && grep -q $'\r' "$zop45" && ok || bad "T1808 fixture 1 is not the CRLF byte copy of the field answer ($(wc -c <"$zop45" | tr -d ' ') bytes, want 894)"
+# fixture 1: deferred with the flag, and the operator sees the mismatch in the warn line
+build; comps 12.1.0.2.0; cat "$zop45" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+[ "$rc" = 0 ] && ! grep -q BLOCKING "$T/out" && grep -q 'WARN .*components: CheckApplicable did not pass on the 12c client.*deferred' "$T/out" && grep -q 'Version Mismatch of Component occured' "$T/out" && ok || bad "T1808 fixture 1: a ZOP-45 version mismatch naming no component was not deferred: rc $rc: $(grep -E 'BLOCK|WARN|components' "$T/out" | head -3)"
+# fixture 1 without the flag still blocks
+build; comps 12.1.0.2.0; cat "$zop45" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "T1808 fixture 1 without the flag: not blocking: rc $rc"
+# fixture 2: the same answer naming another component (oracle.ohs2:99.0) still blocks
+build; comps 12.1.0.2.0; { cat "$zop45"; printf 'oracle.ohs2:99.0\n'; } >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "T1808 fixture 2: a named oracle.ohs2 was deferred: rc $rc"
+# fixture 3: the same answer on a non-DB19C title blocks even with the flag
+build; comps 12.1.0.2.0; printf 'Oracle OHS (Native) Bundle Patch 12.2.1.4.240115 README\n\n ORACLE_HOME must have OPatch version 13.9.4.2.13 or higher. To verify\n' >"$PD/40005842/README.txt"; cat "$zop45" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "T1808 fixture 3: a non-DB19C title was deferred: rc $rc"
+# fixture 4: rsf already 19.x - the mismatch is real, so it blocks even with the flag
+build; comps 19.0.0.0.0; cat "$zop45" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "T1808 fixture 4: a 19c client was deferred: rc $rc"
 build; comps 12.1.0.2.0; printf 'Exception in thread main\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(runp)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: opatch prereq CheckApplicable gave no verdict' "$T/out" && ok || bad "--client-19c-pending turned no verdict into a pass: rc $rc: $(grep -E 'UNKNOWN|deferred' "$T/out" | head -2)"
 build; comps 12.1.0.2.0; rc="$(run)"

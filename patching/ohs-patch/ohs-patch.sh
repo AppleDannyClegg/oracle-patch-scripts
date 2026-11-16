@@ -399,6 +399,16 @@ cmd_preflight() {
     # preflight asks again once the upgrade earlier in the outage has run, and a failure there restores. Only when
     # the 19c client is ALL OPatch says is missing: anything else still stops here, before the stop (T1167)
     warn "components: CheckApplicable did not pass on the 12c client (rc $arc) - deferred: the DB Client 19c upgrade runs first in this outage and apply checks again. OPatch said: $(printf '%s\n' "$app" | grep -viE '^(oracle interim patch installer|copyright|invoking prereq|opatch (failed|succeeded))' | grep . | head -3 | tr '\n' ' ')"
+  elif [ "$CLIENT19_PENDING" = 1 ] \
+       && printf '%s' "$title" | grep -qi 'DB19C' \
+       && [ -n "$rsf" ] && ! printf '%s' "$rsf" | grep -q '^19\.' \
+       && [ -z "$need" ] \
+       && printf '%s' "$app" | grep -qiE 'ZOP-45|Version Mismatch of Component'; then
+    # 16 Nov field answer, OPatch 13.9.4.2.25 on the 12c client (T1808): ZOP-45 + "Version Mismatch of Component"
+    # with NO oracle.<component>:<version> named at all. Deferred like the rsf:19 case above - the DB Client 19c
+    # upgrade runs first in this outage and apply's own preflight asks again (a failure there restores). If rsf is
+    # already 19.* the mismatch is real, and any component other than rsf:19 is still named, so both block here
+    warn "components: CheckApplicable did not pass on the 12c client (rc $arc) - deferred: the DB Client 19c upgrade runs first in this outage and apply checks again. OPatch said: $(printf '%s\n' "$app" | grep -iE 'ZOP-45|Version Mismatch of Component|The details are|Prereq "checkApplicable" (for patch [0-9]+ )?failed' | tr '\n' ' ')"
   elif printf '%s' "$app" | grep -qi 'requires component(s) that are not installed'; then
     miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
     block "$id needs ${miss:-a component} that is not installed in $OH (OUI-67073) - opatch apply would refuse after the stop. For a DB19C bundle that is the Database Client 19c upgrade (KB585169), which comes first"
