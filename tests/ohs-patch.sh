@@ -122,6 +122,11 @@ O
   REAL_PS="$(command -v ps)"
   cat >"$T/stub/ps" <<P
 #!/bin/sh
+REALPS="$REAL_PS"
+# T1843: prune-failed's own listing (pid,ppid,args). With ps.real (the test shell's pid) it is the REAL ps, cut to
+# that shell's descendants, so the script's own subshells show up as on a host; else ps.txt with a ppid column
+case "\$*" in *pid,ppid,args*) [ -e "$T/ps.fail" ] && exit 1; if [ -e "$T/ps.real" ]; then "\$REALPS" -eo pid,ppid,args | awk -v root="\$(cat "$T/ps.real")" '{ pp[\$1] = \$2; row[\$1] = \$0; ord[++n] = \$1 } END { for (i = 1; i <= n; i++) { q = ord[i] + 0; while (q > 1) { if (q == root + 0) { print row[ord[i]]; break }; q = pp[q] + 0 } } }'; exit 0; fi
+  { cat "$T/ps.txt" 2>/dev/null; echo "  1 /sbin/launchd"; } | awk '{ \$1 = \$1 " 1"; print }'; exit 0;; esac
 case "\$*" in *ppid*) exec "$REAL_PS" "\$@";; esac
 [ -e "$T/ps.fail" ] && exit 1
 cat "$T/ps.txt" 2>/dev/null; echo "  1 /sbin/launchd"
@@ -739,6 +744,10 @@ dbuild; mkdir -p "$T/decoy" "$OH.failed-20261116-113104"; : >"$T/decoy/keep"; ln
 rc="$(prune --yes --all)"
 [ "$rc" = 1 ] && grep -q "refused: .*is a symlink" "$T/out" && [ -e "$T/decoy/keep" ] && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune over a symlinked copy: rc $rc (want 1, nothing removed): $(tail -3 "$T/out")"
 rm -f "$OH.failed-20261116-1131"
+# the REAL ps (cut to this test's process tree): the script's own $(...) subshell and its forks carry its argv, and
+# must not read as "a patch script is running" (T1843, Quark #19854)
+dbuild; mkdir -p "$OH.failed-20261116-1131" "$OH.failed-20261116-113104"; echo $$ >"$T/ps.real"; rc="$(prune --yes)"; rm -f "$T/ps.real"
+[ "$rc" = 0 ] && [ ! -e "$OH.failed-20261116-1131" ] && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune with the real ps refused itself: rc $rc: $(tail -3 "$T/out")"
 # a patch script running on the box: nothing is deleted
 echo " 4242 bash /u01/scripts/ohs-quarter.sh --patch-root /u01/stage" >>"$T/ps.txt"; rc="$(prune --yes --all)"
 [ "$rc" = 1 ] && grep -q "a patch script is running" "$T/out" && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune while ohs-quarter runs: rc $rc (want 1): $(tail -2 "$T/out")"

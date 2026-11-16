@@ -887,7 +887,13 @@ cmd_prune_failed() {
   INV="$(sed -n 's/^inventory_loc=//p' "$OH/oraInst.loc" /etc/oraInst.loc 2>/dev/null | head -1)"
   local me busy p c r run ohr invr="" bad=0 keep="" list="" first
   me="$(id -un)"
-  busy="$(ps -eo pid,args 2>/dev/null | awk -v anc=" $(ancestor_pids) " '/(ohs-patch|ohs-quarter|dbclient-upgrade|wls-patch|java-patch)\.sh/ && !/ awk / { if (index(anc, " " $1 " ") == 0) print }')"
+  # this script's own forks carry its argv too: the $(...) subshell (ppid $$) and its children before they exec
+  # (ppid = that subshell), so both are dropped with the ancestors (T1843, Quark #19854)
+  local anc; anc="$(ancestor_pids)"
+  busy="$(spid="${BASHPID:-$$}"; set -o pipefail; ps -eo pid,ppid,args 2>/dev/null | awk -v anc=" $anc " -v me="$$" -v spid="$spid" '
+    /(ohs-patch|ohs-quarter|dbclient-upgrade|wls-patch|java-patch)\.sh/ && !/ awk / {
+      if (index(anc, " " $1 " ") == 0 && $2 != me && $2 != spid && $1 != spid) print }')" \
+    || { err "cannot read the process list, so cannot say no patch script is running - prune-failed removed nothing"; exit 1; }
   [ -z "$busy" ] || { err "a patch script is running on this box - prune-failed removed nothing:"; printf '  %s\n' "$busy" >&2; exit 1; }
   ohr="$(cd -P "$OH" && pwd -P)"; [ -n "$INV" ] && invr="$(cd -P "$INV" 2>/dev/null && pwd -P)"
   for p in "$OH" ${INV:+"$INV"}; do

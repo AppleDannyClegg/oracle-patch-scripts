@@ -60,6 +60,12 @@ S
   (cd "$T/zipsrc" && zip -q "$PD/p34761383_122140_Linux-x86-64.zip" changePerm.sh fmw_12.2.1.19.0_dbclient_linux64.bin)
   cat >"$T/stub/ps" <<P
 #!/bin/sh
+REALPS="$(command -v ps)"
+# T1843: prune-failed's own listing (pid,ppid,args); with ps.real, the real ps cut to that pid's descendants (and
+# the real ancestor walk), else ps.txt with a ppid column
+case "\$*" in *pid,ppid,args*) [ -e "$T/ps.fail" ] && exit 1; if [ -e "$T/ps.real" ]; then "\$REALPS" -eo pid,ppid,args | awk -v root="\$(cat "$T/ps.real")" '{ pp[\$1] = \$2; row[\$1] = \$0; ord[++n] = \$1 } END { for (i = 1; i <= n; i++) { q = ord[i] + 0; while (q > 1) { if (q == root + 0) { print row[ord[i]]; break }; q = pp[q] + 0 } } }'; exit 0; fi
+  { cat "$T/ps.txt" 2>/dev/null; echo "  1 /sbin/launchd"; } | awk '{ \$1 = \$1 " 1"; print }'; exit 0;; esac
+case "\$*" in *ppid=*) [ -e "$T/ps.real" ] && exec "\$REALPS" "\$@";; esac
 [ -e "$T/ps.fail" ] && exit 1
 cat "$T/ps.txt" 2>/dev/null; echo "  1 /sbin/launchd"
 P
