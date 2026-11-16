@@ -140,7 +140,7 @@ restores() { # the by-hand restore for each set picked, newest first (recover's 
     if has 'dbclient: ' || has 'recovering: dbclient-upgrade rollback'; then
       step "home + inventory (DB Client installer): $P/dbclient-upgrade/dbclient-upgrade.sh rollback --oracle-home $OH --run-dir $SHARED (add the --backup-dir you gave ohs-quarter, if any). If that fails too: mv $OH $OH.failed-\$(date +%Y%m%d%H%M%S), then untar home.tgz, oraInventory.tgz and each domain-<name>.tgz from $ARCH into their parent dirs."
     else
-      step "home + inventory (opatch): $P/ohs-patch/ohs-patch.sh rollback --oracle-home $OH --run-dir $SHARED. If that fails too, run the tar restore its preflight printed under \"ROLLBACK (complete)\": opatch rollback -id alone does not bring back a bundle a patch replaced."
+      step "home + inventory (opatch): $P/ohs-patch/ohs-patch.sh rollback --oracle-home $OH --run-dir $SHARED. If that fails too: mv $OH $OH.failed-\$(date +%Y%m%d%H%M%S), then untar home.tgz and oraInventory.tgz from $ARCH into their parent dirs (opatch rollback -id alone does not bring back a bundle a patch replaced)."
     fi
   fi
   if [ "$wl" != 0 ]; then

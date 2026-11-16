@@ -88,6 +88,8 @@ grep -q '^CAUSE: .*stub ohs: apply failed' "$T/e1.out" && ok || bad "e1: CAUSE i
 run e2dc    FAIL_OHS_APPLY=1 FAIL_ROLLBACK=1; want e2dc 3 E2 'dbclient-upgrade.sh rollback'
 NODC=1 run e2oh FAIL_OHS_APPLY=1 FAIL_ROLLBACK=1; want e2oh 3 E2 "ohs-patch.sh rollback --oracle-home /u01/app/ohs --run-dir $T/run/backup"
 grep -q 'dbclient-upgrade' "$T/e2oh.out" && bad "e2oh: printed the installer's restore on a run with no dbclient/" || ok
+# T1842: the by-hand fallback is this run's own backup, not a preflight's stamped tar that no run made
+grep -qF "untar home.tgz and oraInventory.tgz from /backups/dbclient-20261112" "$T/e2oh.out" && ! grep -q 'ROLLBACK (complete)' "$T/e2oh.out" && ok || bad "e2oh: the by-hand restore does not name this run's backup: $(grep -F 'If that fails' "$T/e2oh.out")"
 run e2wls   FAIL_OHS_APPLY=1 FAIL_WLS_RESTORE=1; want e2wls 3 E2 "wls-patch.sh restore /backups/wls-20261112 --oracle-home /u01/app/ohs --run-dir $T/run/wls"
 run e3      FAIL_OHS_VERIFY=1 FAIL_START_ALL=1; want e3 3 E3 'nodemanager.out'
 # a JDK apply that failed first: only the JDK is restored (nothing else was attempted)
@@ -202,5 +204,7 @@ grep '^FAIL' "$T/cover" | while IFS= read -r l; do echo "$l"; done
 cf="$(grep -c '^FAIL' "$T/cover")"; [ "$cf" = 0 ] && ok || fail=$((fail + cf))
 grep -q 'nothing was patched; the components are started again' "$T/cover" && bad "the interpolated C1 message is not covered" || ok
 
+# T1842: no path's output points at a preflight's stamped tar (only a hand-run backup step ever made one)
+! grep -l 'ohs-home-' "$T"/*.out >/dev/null 2>&1 && ok || bad "an explain output names a preflight's stamped ohs-home-<stamp>.tgz: $(grep -l 'ohs-home-' "$T"/*.out | head -3)"
 echo "ohs-quarter-explain gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
