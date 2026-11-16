@@ -195,6 +195,9 @@ anything is patched. Default behaviour is unchanged. Run `ohs-quarter.sh` inside
 SIGHUP to the whole process group, and a half-restored home is the worst state to leave behind. The four most used are spelled out
 below; the others follow the same `inspect`, `plan`, `preflight`, `run` pattern and their folder
 README has the exact lines.
+`ohs-patch.sh preflight` prints no commands to run by hand, because `ohs-quarter.sh --dry-run` shows it, and a dry run's
+printed `opatch apply` was once run by hand, out of order. `ohs-patch.sh commands <patch-dir>` prints them for a window where
+`run` cannot be used: only when the home is READY, and never under `--client-19c-pending`.
 
 ```bash
 scp -r $PATCH_BASE/scripts oracle@server:/u01/patches/scripts
