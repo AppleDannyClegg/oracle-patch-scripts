@@ -199,8 +199,10 @@ ohs_version() {
   sed -n 's/.*name="Oracle HTTP Server[^"]*"[^>]*version="\([0-9.]*\)".*/\1/p' "$1/inventory/registry.xml" 2>/dev/null | head -1
 }
 # the home's Database Client level: oracle.rdbms.rsf VER in its comps.xml (KB585169 / Doc 2921245.1); empty if absent
+# T1845 field run 16 Nov 2026: after the 19c installer, comps.xml keeps the 12.1.0.2.0 oracle.rdbms.rsf entry
+# beside the new 19.x one; the FIRST match read 12c and the verify restored a good upgrade. Take the HIGHEST VER.
 rsf_version() {
-  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | head -1 | sed -n 's/.* VER="\([^"]*\)".*/\1/p'
+  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | sed -n 's/.* VER="\([^"]*\)".*/\1/p' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | tail -1
 }
 # say when an OHS home's client level cannot be read: get-patches.ps1 then cannot tell whether 34761383 is needed
 rsf_or_warn() {

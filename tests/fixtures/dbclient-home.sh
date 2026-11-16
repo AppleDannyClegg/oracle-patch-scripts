@@ -50,6 +50,8 @@ echo "install \$*" >>"$T/actions"
 [ -e "$T/inst.corrupt" ] && for b in "$T"/backup/*/home.tgz; do echo x >"\$b"; done
 [ -e "$T/inst.fail" ] && { : >"$OH/ohs/HALF"; echo "INS-0001 failed"; exit 1; }
 [ -e "$T/inst.noop" ] && exit 0
+# T1845: the field 19c installer ADDS a 19.x oracle.rdbms.rsf entry and keeps the 12.1.0.2.0 one before it
+[ -e "$T/inst.append" ] && { awk '/<\/PRD_LIST>/{print "<COMP NAME=\"oracle.rdbms.rsf\" VER=\"19.0.0.0.0\"/>"} {print}' "$OH/inventory/ContentsXML/comps.xml" >"$OH/c.new" && mv "$OH/c.new" "$OH/inventory/ContentsXML/comps.xml"; [ -e "$T/inst.halfway" ] || echo 19.14.0.0.0 >"$OH/.sqlv"; exit 0; }
 sed 's/oracle.rdbms.rsf" VER="[^"]*"/oracle.rdbms.rsf" VER="19.0.0.0.0"/' "$OH/inventory/ContentsXML/comps.xml" >"$OH/c.new" && mv "$OH/c.new" "$OH/inventory/ContentsXML/comps.xml"
 [ -e "$T/inst.halfway" ] || echo 19.14.0.0.0 >"$OH/.sqlv"
 exit 0

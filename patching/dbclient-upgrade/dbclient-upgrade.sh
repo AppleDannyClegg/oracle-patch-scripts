@@ -232,8 +232,10 @@ kind_of_proc() {
 
 # the Database Client level in the home: oracle.rdbms.rsf's VER in the home's inventory (the check KB585169 gives);
 # empty when it cannot be read. A DB19C bundle needs 19.x - the upgrade is patch 34761383, an installer, not opatch
+# T1845 field run 16 Nov 2026: after the 19c installer, comps.xml keeps the 12.1.0.2.0 oracle.rdbms.rsf entry
+# beside the new 19.x one; the FIRST match read 12c and the verify restored a good upgrade. Take the HIGHEST VER.
 rsf_version() {
-  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | head -1 | sed -n 's/.* VER="\([^"]*\)".*/\1/p'
+  grep -o '<COMP [^>]*NAME="oracle\.rdbms\.rsf"[^>]*>' "$1/inventory/ContentsXML/comps.xml" 2>/dev/null | sed -n 's/.* VER="\([^"]*\)".*/\1/p' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n | tail -1
 }
 
 state() { [ -n "$STATE" ] && printf '%s=%s\n' "$1" "$2" >>"$STATE"; return 0; }

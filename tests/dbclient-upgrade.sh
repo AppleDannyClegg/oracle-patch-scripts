@@ -134,6 +134,11 @@ grep -q 'dry-run: would .*-silent -ignoreSysPrereqs ORACLE_HOME=' "$T/out" && ok
 # a failed installer names where its own output went (the field log did not, so the cause took a second email)
 build; touch "$T/inst.fail"; rc="$(dbc run "$PD" --yes)"
 [ "$rc" = 1 ] && grep -q 'installer failed - its own output is in .*/run.log' "$T/out" && ok || bad "a failed installer does not point at run.log: rc $rc: $(grep 'installer failed' "$T/out" | head -1)"
+# T1845 field run 16 Nov 2026: the installer keeps the 12.1.0.2.0 rsf entry and adds a 19.x one after it; verify must
+# read the highest, not the first (the first read 12c and restored a good upgrade)
+build; touch "$T/inst.append"; rc="$(dbc run "$PD" --yes)"
+[ "$rc" = 0 ] && grep -q 'oracle.rdbms.rsf 19.0.0.0.0' "$T/out" && ok || bad "two rsf entries (12.1 then 19.0): rc $rc: $(grep -E 'rsf|ERROR' "$T/out" | head -3)"
+[ "$(grep -c 'NAME="oracle.rdbms.rsf"' "$OH/inventory/ContentsXML/comps.xml")" = 2 ] && ok || bad "the inst.append fixture did not leave two rsf entries"
 # T1550 operator-stops: the operator owns every start and stop; no stop/start script runs and the commands print
 build; : >"$T/ps.txt"; : >"$T/actions"
 rc="$(dbc run "$PD" --operator-stops --yes)"
