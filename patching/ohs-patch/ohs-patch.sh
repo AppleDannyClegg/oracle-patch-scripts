@@ -25,6 +25,9 @@
 #                           the backup is taken before the outage (a backup failure stops nothing). Any failure after
 #                           the backup restores the home and central inventory from it and starts them again
 #   rollback [run-dir]      restore the home and central inventory from a run's backup (default: the latest run)
+#   prune-failed            delete the stamped failed copies a restore leaves (<home>.failed-<stamp>, and the
+#                           inventory's): the newest of each is kept unless --all; nothing is deleted while a patch
+#                           script runs, or if any copy is a symlink, another user's, or the live home. Asks unless --yes
 #
 # Options
 #   --oracle-home DIR       the OHS (or WebLogic) home; default: $ORACLE_HOME, then the central inventory
@@ -42,6 +45,7 @@
 #                           outage (ohs-quarter.sh passes it), so a 12c client and a CheckApplicable that cannot pass
 #                           on 12c are reported, not blocking; apply runs its own preflight without it, on the 19c home
 #   --dry-run               the changing commands: say what would be done, change nothing (the zip goes to a scratch dir)
+#   --all                   prune-failed: remove the newest failed copy too
 #   --yes                   the changing commands: do not ask for confirmation (without it a terminal must answer 'yes')
 #
 # Environment: START_TIMEOUT (seconds to wait for node manager, each component and its ports; default 300),
@@ -103,7 +107,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
-DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; DRY_EXT=""; OPERATOR_STOPS=0
+DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; PRUNE_ALL=0; DRY_EXT=""; OPERATOR_STOPS=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
 problems=0; unknowns=0
 # what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
@@ -337,6 +341,53 @@ cmd_inspect() {
   return 0
 }
 
+# ---- disk on each filesystem, and the failed copies a restore leaves (T1843) ------------------------------
+# DISK is one "mount|free KB|need KB|what" line per need; disk_verdict sums the needs that share a mount, because a
+# backup dir and a home on one filesystem (the default /u01/backup and a home under /u01) fill it together
+DISK=""
+disk_need() { # <path> <need KB, +10% already in> <what>
+  local l f m; l="$(df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4 "|" $NF}')"; f="${l%%|*}"; m="${l#*|}"
+  case "$f" in ''|*[!0-9]*) unknown "cannot read free space on $1 (does it exist?)"; return 0 ;; esac
+  DISK="$DISK$m|$f|$2|$3"$'\n'
+}
+disk_verdict() { # <homes...>: one line per mount; a short one names the failed copies of these homes
+  local m f n what held
+  held="$(failed_held "$@")"
+  while IFS='|' read -r m f n what; do
+    [ -n "$m" ] || continue
+    if [ "$f" -lt "$n" ]; then block "$m has $((f / 1024)) MB free; $what need about $((n / 1024)) MB (+10%)${held:+ - $held}"
+    else log "disk     : $m has $((f / 1024)) MB free; $what need about $((n / 1024)) MB"; fi
+  done < <(printf '%s' "$DISK" | awk -F'|' 'NF >= 4 { if (!($1 in f)) { o[++k] = $1; f[$1] = $2 }
+      n[$1] += $3; w[$1] = (w[$1] == "" ? $4 : w[$1] " and " $4) }
+    END { for (i = 1; i <= k; i++) print o[i] "|" f[o[i]] "|" n[o[i]] "|" w[o[i]] }')
+  failed_report "$@"
+}
+# the stamped copies of each home: <home>.failed-<stamp> in the three forms the scripts write (restore_all's
+# %Y%m%d-%H%M%S, the old printed line's %Y%m%d-%H%M, explain's %Y%m%d%H%M%S), nothing else
+failed_copies() {
+  local p c
+  for p in "$@"; do
+    for c in "$p".failed-*; do
+      [ -e "$c" ] || [ -L "$c" ] || continue
+      printf '%s\n' "${c#"$p"}" | grep -qE '^\.failed-[0-9]{8}-?[0-9]{4,6}$' && printf '%s\n' "$c"
+    done
+  done
+  return 0
+}
+failed_held() { # "N MB is held by K failed copies (...)", or nothing
+  local c k=0 t=0 s
+  while IFS= read -r c; do [ -n "$c" ] || continue; s="$(du -sk "$c" 2>/dev/null | awk '{print $1}')"; k=$((k + 1)); t=$((t + ${s:-0})); done \
+    < <(failed_copies "$@"; for c in "$@"; do [ -e "$c.bad" ] && printf '%s\n' "$c.bad"; done)
+  [ "$k" -gt 0 ] && printf '%s MB is held by %s failed cop%s (prune-failed removes the stamped ones)' "$((t / 1024))" "$k" "$([ "$k" = 1 ] && echo y || echo ies)"
+  return 0
+}
+failed_report() {
+  local c
+  while IFS= read -r c; do [ -n "$c" ] && warn "failed copy: $c ($(( $(du -sk "$c" 2>/dev/null | awk '{print $1}') / 1024 )) MB) - prune-failed removes it"; done < <(failed_copies "$@")
+  for c in "$@"; do [ -e "$c.bad" ] && warn "failed copy: $c.bad, from a by-hand restore ($(( $(du -sk "$c.bad" 2>/dev/null | awk '{print $1}') / 1024 )) MB) - it has no stamp, so prune-failed leaves it: remove it by hand once $c is good"; done
+  return 0
+}
+
 cmd_preflight() {
   local pdir="${1:-}"
   [ -n "$pdir" ] || die "preflight needs <patch-dir> (the folder holding the OHS bundle zip)"
@@ -470,18 +521,22 @@ cmd_preflight() {
     else log "running  : nothing from $OH"; fi
   else unknown "cannot read the process list (ps failed) - cannot say what runs from $OH"; fi
 
-  # disk for the backup: the home + the domains + the central inventory
-  local inv need=0 k free
+  # disk (T1843): the backup (home + domains + inventory) on $BACKUP_DIR, and a restore - the home and the inventory
+  # untarred beside their failed copies, the home plus the patch's growth (.patch_storage) - on their own filesystems.
+  # Needs on one filesystem are summed: in a failed run the backup and the restored home are there together
+  local inv need=0 k s hk="" ik="" pk
   inv="$(sed -n 's/^inventory_loc=//p' "$OH/oraInst.loc" /etc/oraInst.loc 2>/dev/null | head -1)"; INV="$inv"
   for k in "$OH" $doms ${inv:+"$inv"}; do
-    local s; s="$(du -sk "$k" 2>/dev/null | awk '{print $1}')"
+    s="$(du -sk "$k" 2>/dev/null | awk '{print $1}')"
     [ -n "$s" ] || { unknown "cannot size $k for the backup"; continue; }
-    need=$((need + s))
+    need=$((need + s)); [ "$k" = "$OH" ] && hk="$s"; [ "$k" = "$inv" ] && ik="$s"
   done
-  free="$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
-  if [ -z "$free" ]; then unknown "cannot read free space on $BACKUP_DIR (does it exist?) - pass --backup-dir"
-  elif [ "$free" -lt $((need + need / 10)) ]; then block "$BACKUP_DIR has $((free / 1024)) MB free, the backup needs about $((need / 1024)) MB (+10%)"
-  else log "backup   : $((need / 1024)) MB needed, $((free / 1024)) MB free on $BACKUP_DIR"; fi
+  pk="$(du -sk "$pd" 2>/dev/null | awk '{print $1}')"; pk="${pk:-0}"
+  DISK=""
+  disk_need "$BACKUP_DIR" $((need + need / 10)) "the backup"
+  [ -n "$hk" ] && disk_need "$(dirname "$OH")" $(( (hk + pk) + (hk + pk) / 10 )) "a restore of the home, plus the patch"
+  [ -n "$ik" ] && disk_need "$(dirname "$inv")" $((ik + ik / 10)) "a restore of the inventory"
+  disk_verdict "$OH" ${inv:+"$inv"}
 
   # ---- the commands for this box ----------------------------------------------------------------------
   local stamp; stamp="$(date '+%Y%m%d-%H%M')"
@@ -962,6 +1017,48 @@ cmd_verify() {
   exit "$rc"
 }
 
+# prune-failed: delete the stamped failed copies of the home and the central inventory (T1843). Each is listed with
+# its size. The newest of each is kept unless --all (it may be the evidence for the last failure); it asks unless
+# --yes; --dry-run lists only. It deletes NOTHING when a patch script runs on this box, or when any candidate is a
+# symlink, is not owned by the user running it, resolves to the live home or inventory (or under one), or has a
+# process running from it. <home>.bad (manual_restore) has no stamp and is never touched
+cmd_prune_failed() {
+  OH="$(find_home)"; [ -n "$OH" ] || die "no Oracle HTTP Server home found - pass --oracle-home"
+  INV="$(sed -n 's/^inventory_loc=//p' "$OH/oraInst.loc" /etc/oraInst.loc 2>/dev/null | head -1)"
+  local me busy p c r run ohr invr="" bad=0 keep="" list="" first
+  me="$(id -un)"
+  busy="$(ps -eo pid,args 2>/dev/null | awk -v anc=" $(ancestor_pids) " '/(ohs-patch|ohs-quarter|dbclient-upgrade|wls-patch|java-patch)\.sh/ && !/ awk / { if (index(anc, " " $1 " ") == 0) print }')"
+  [ -z "$busy" ] || { err "a patch script is running on this box - prune-failed removed nothing:"; printf '  %s\n' "$busy" >&2; exit 1; }
+  ohr="$(cd -P "$OH" && pwd -P)"; [ -n "$INV" ] && invr="$(cd -P "$INV" 2>/dev/null && pwd -P)"
+  for p in "$OH" ${INV:+"$INV"}; do
+    first=1
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      if [ -L "$c" ]; then err "refused: $c is a symlink"; bad=1; continue; fi
+      [ -O "$c" ] || { err "refused: $c is not owned by $me"; bad=1; continue; }
+      r="$(cd -P "$c" 2>/dev/null && pwd -P)" || { err "refused: cannot resolve $c"; bad=1; continue; }
+      case "$r/" in "$ohr/"*) err "refused: $c resolves to $r, the live home"; bad=1; continue ;; esac
+      if [ -n "$invr" ]; then case "$r/" in "$invr/"*) err "refused: $c resolves to $r, the live inventory"; bad=1; continue ;; esac; fi
+      run="$(from_home "$c")" || { err "refused: cannot read the process list, so cannot say nothing runs from $c"; bad=1; continue; }
+      [ -z "$run" ] || { err "refused: something runs from $c"; bad=1; continue; }
+      if [ "$first" = 1 ] && [ "$PRUNE_ALL" != 1 ]; then keep="$keep$c"$'\n'; first=0; continue; fi
+      first=0; list="$list$c"$'\n'
+    done < <(failed_copies "$p" | awk -v n="$(( ${#p} + 9 ))" '{ k = substr($0, n); gsub(/-/, "", k); while (length(k) < 14) k = k "0"; print k "\t" $0 }' | sort -r | cut -f2-)
+  done
+  [ "$bad" = 0 ] || { err "prune-failed removed nothing: fix the refusals above"; exit 1; }
+  while IFS= read -r c; do [ -n "$c" ] && log "keep     : $c (the newest; --all removes it too)"; done <<<"$keep"
+  [ -n "$list" ] || { log "nothing to remove"; exit 0; }
+  while IFS= read -r c; do [ -n "$c" ] && log "remove   : $c ($(( $(du -sk "$c" 2>/dev/null | awk '{print $1}') / 1024 )) MB)"; done <<<"$list"
+  [ "$DRY_RUN" = 1 ] && { log "dry-run: nothing removed"; exit 0; }
+  confirm "This deletes the failed copies listed above." || { err "not confirmed - nothing removed"; exit 1; }
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    rm -rf -- "$c" || { err "could not remove $c"; exit 1; }
+    log "removed  : $c"
+  done <<<"$list"
+  exit 0
+}
+
 cmd_rollback() {
   require_detached rollback
   local rd="${RUN_DIR_ARG:-${1:-}}"
@@ -993,6 +1090,7 @@ main() {
       --run-dir)     optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
       --backup-run)  optchk "$@"; BACKUP_RUN_ARG="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
+      --all)       PRUNE_ALL=1; shift ;;
       --client-19c-pending) CLIENT19_PENDING=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --no-backup) NO_BACKUP=1; shift ;;
@@ -1014,7 +1112,8 @@ main() {
     verify)    cmd_verify "${args[@]+"${args[@]}"}" ;;
     run)       cmd_run "${args[@]+"${args[@]}"}" ;;
     rollback)  cmd_rollback "${args[@]+"${args[@]}"}" ;;
-    *) die "unknown command $cmd (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)" ;;
+    prune-failed) cmd_prune_failed ;;
+    *) die "unknown command $cmd (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run, prune-failed)" ;;
   esac
 }
 

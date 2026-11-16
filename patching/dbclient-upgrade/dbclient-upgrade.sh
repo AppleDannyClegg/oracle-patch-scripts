@@ -20,6 +20,9 @@
 #   verify                  read-only: sqlplus -V is 19.14 or later AND oracle.rdbms.rsf is 19.x - two sources
 #   run <dir>               backup, stop, apply, start, verify, in that order, in one go
 #   rollback [run-dir]      restore the home and central inventory from a run's backup (default: the latest run)
+#   prune-failed            delete the stamped failed copies a restore leaves (<home>.failed-<stamp>, and the
+#                           inventory's): the newest of each is kept unless --all; nothing is deleted while a patch
+#                           script runs, or if any copy is a symlink, another user's, or the live home. Asks unless --yes
 #
 # <dir> holds p34761383_122140_Linux-x86-64.zip (or any p34761383_*.zip).
 #
@@ -39,7 +42,7 @@
 #                           redhat-lsb, redhat-lsb-core and libXtst-devel, which Oracle Linux 9 does not ship
 #                           (field run 16 Nov 2026: OL 9.4, every other prereq passed, "Prereq failed. Aborting
 #                           Install"). Only after you have read the installer's prereq output and accepted it
-#   --dry-run  --yes
+#   --dry-run  --yes  --all (prune-failed: the newest failed copy too)
 #
 # Environment: START_TIMEOUT, POLL, RUN_BASE (default <output dir>/dbclient-upgrade/runs), OS_RELEASE (default
 # /etc/os-release, then /etc/redhat-release).
@@ -96,7 +99,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""; IGNORE_SYS_PREREQS=0
-DRY_RUN=0; ASSUME_YES=0; OPERATOR_STOPS=0
+DRY_RUN=0; ASSUME_YES=0; OPERATOR_STOPS=0; PRUNE_ALL=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path dbclient-upgrade)/runs}"
 OS_RELEASE="${OS_RELEASE:-}"
 problems=0; unknowns=0
@@ -521,6 +524,53 @@ cmd_inspect() {
 }
 
 ALREADY=0
+# ---- disk on each filesystem, and the failed copies a restore leaves (T1843) ------------------------------
+# DISK is one "mount|free KB|need KB|what" line per need; disk_verdict sums the needs that share a mount, because a
+# backup dir and a home on one filesystem (the default /u01/backup and a home under /u01) fill it together
+DISK=""
+disk_need() { # <path> <need KB, +10% already in> <what>
+  local l f m; l="$(df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4 "|" $NF}')"; f="${l%%|*}"; m="${l#*|}"
+  case "$f" in ''|*[!0-9]*) unknown "cannot read free space on $1 (does it exist?)"; return 0 ;; esac
+  DISK="$DISK$m|$f|$2|$3"$'\n'
+}
+disk_verdict() { # <homes...>: one line per mount; a short one names the failed copies of these homes
+  local m f n what held
+  held="$(failed_held "$@")"
+  while IFS='|' read -r m f n what; do
+    [ -n "$m" ] || continue
+    if [ "$f" -lt "$n" ]; then block "$m has $((f / 1024)) MB free; $what need about $((n / 1024)) MB (+10%)${held:+ - $held}"
+    else log "disk     : $m has $((f / 1024)) MB free; $what need about $((n / 1024)) MB"; fi
+  done < <(printf '%s' "$DISK" | awk -F'|' 'NF >= 4 { if (!($1 in f)) { o[++k] = $1; f[$1] = $2 }
+      n[$1] += $3; w[$1] = (w[$1] == "" ? $4 : w[$1] " and " $4) }
+    END { for (i = 1; i <= k; i++) print o[i] "|" f[o[i]] "|" n[o[i]] "|" w[o[i]] }')
+  failed_report "$@"
+}
+# the stamped copies of each home: <home>.failed-<stamp> in the three forms the scripts write (restore_all's
+# %Y%m%d-%H%M%S, the old printed line's %Y%m%d-%H%M, explain's %Y%m%d%H%M%S), nothing else
+failed_copies() {
+  local p c
+  for p in "$@"; do
+    for c in "$p".failed-*; do
+      [ -e "$c" ] || [ -L "$c" ] || continue
+      printf '%s\n' "${c#"$p"}" | grep -qE '^\.failed-[0-9]{8}-?[0-9]{4,6}$' && printf '%s\n' "$c"
+    done
+  done
+  return 0
+}
+failed_held() { # "N MB is held by K failed copies (...)", or nothing
+  local c k=0 t=0 s
+  while IFS= read -r c; do [ -n "$c" ] || continue; s="$(du -sk "$c" 2>/dev/null | awk '{print $1}')"; k=$((k + 1)); t=$((t + ${s:-0})); done \
+    < <(failed_copies "$@"; for c in "$@"; do [ -e "$c.bad" ] && printf '%s\n' "$c.bad"; done)
+  [ "$k" -gt 0 ] && printf '%s MB is held by %s failed cop%s (prune-failed removes the stamped ones)' "$((t / 1024))" "$k" "$([ "$k" = 1 ] && echo y || echo ies)"
+  return 0
+}
+failed_report() {
+  local c
+  while IFS= read -r c; do [ -n "$c" ] && warn "failed copy: $c ($(( $(du -sk "$c" 2>/dev/null | awk '{print $1}') / 1024 )) MB) - prune-failed removes it"; done < <(failed_copies "$@")
+  for c in "$@"; do [ -e "$c.bad" ] && warn "failed copy: $c.bad, from a by-hand restore ($(( $(du -sk "$c.bad" 2>/dev/null | awk '{print $1}') / 1024 )) MB) - it has no stamp, so prune-failed leaves it: remove it by hand once $c is good"; done
+  return 0
+}
+
 cmd_preflight() {
   local dir="${1:-}"
   [ -n "$dir" ] || die "preflight needs <dir> (the folder holding p34761383_*.zip)"
@@ -591,11 +641,18 @@ cmd_preflight() {
 
   # the backup: the only rollback
   [ -n "$INV" ] && [ -d "$INV" ] || block "no central inventory (inventory_loc in $OH/oraInst.loc) - the README's rollback restores it"
+  # disk (T1843): the backup on $BACKUP_DIR, and a restore - the home and the inventory untarred beside their failed
+  # copies - in their parent dirs; needs that share a filesystem are summed (the installer checks its own space)
   if [ -d "$BACKUP_DIR" ] && [ -w "$BACKUP_DIR" ]; then
-    local need free; need="$(du -sk "$OH" ${INV:+"$INV"} 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')"; free="$(df -Pk "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')"
-    if [ -n "$need" ] && [ -n "$free" ]; then
-      [ "$free" -gt "$need" ] && log "backup    : $need MB needed, $free MB free on $BACKUP_DIR" || block "backup needs $need MB, $BACKUP_DIR has $free MB free"
-    else unknown "cannot measure the backup size or the free space on $BACKUP_DIR"; fi
+    local hk ik=""; hk="$(du -sk "$OH" 2>/dev/null | awk '{print $1}')"
+    [ -n "$INV" ] && ik="$(du -sk "$INV" 2>/dev/null | awk '{print $1}')"
+    if [ -n "$hk" ] && { [ -z "$INV" ] || [ -n "$ik" ]; }; then
+      local need=$((hk + ${ik:-0})); DISK=""
+      disk_need "$BACKUP_DIR" $((need + need / 10)) "the backup"
+      disk_need "$(dirname "$OH")" $((hk + hk / 10)) "a restore of the home"
+      [ -n "$ik" ] && disk_need "$(dirname "$INV")" $((ik + ik / 10)) "a restore of the inventory"
+      disk_verdict "$OH" ${INV:+"$INV"}
+    else unknown "cannot measure the backup size of $OH${INV:+ and $INV}"; fi
   else block "backup dir $BACKUP_DIR is missing or not writable"; fi
 
   # the stop: node manager credentials (the component scripts prompt without them), and what runs now
@@ -820,6 +877,48 @@ cmd_verify() {
   exit 1
 }
 
+# prune-failed: delete the stamped failed copies of the home and the central inventory (T1843). Each is listed with
+# its size. The newest of each is kept unless --all (it may be the evidence for the last failure); it asks unless
+# --yes; --dry-run lists only. It deletes NOTHING when a patch script runs on this box, or when any candidate is a
+# symlink, is not owned by the user running it, resolves to the live home or inventory (or under one), or has a
+# process running from it. <home>.bad (manual_restore) has no stamp and is never touched
+cmd_prune_failed() {
+  OH="$(find_home)"; [ -n "$OH" ] || die "no OHS home found - pass --oracle-home"
+  INV="$(sed -n 's/^inventory_loc=//p' "$OH/oraInst.loc" /etc/oraInst.loc 2>/dev/null | head -1)"
+  local me busy p c r run ohr invr="" bad=0 keep="" list="" first
+  me="$(id -un)"
+  busy="$(ps -eo pid,args 2>/dev/null | awk -v anc=" $(ancestor_pids) " '/(ohs-patch|ohs-quarter|dbclient-upgrade|wls-patch|java-patch)\.sh/ && !/ awk / { if (index(anc, " " $1 " ") == 0) print }')"
+  [ -z "$busy" ] || { err "a patch script is running on this box - prune-failed removed nothing:"; printf '  %s\n' "$busy" >&2; exit 1; }
+  ohr="$(cd -P "$OH" && pwd -P)"; [ -n "$INV" ] && invr="$(cd -P "$INV" 2>/dev/null && pwd -P)"
+  for p in "$OH" ${INV:+"$INV"}; do
+    first=1
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      if [ -L "$c" ]; then err "refused: $c is a symlink"; bad=1; continue; fi
+      [ -O "$c" ] || { err "refused: $c is not owned by $me"; bad=1; continue; }
+      r="$(cd -P "$c" 2>/dev/null && pwd -P)" || { err "refused: cannot resolve $c"; bad=1; continue; }
+      case "$r/" in "$ohr/"*) err "refused: $c resolves to $r, the live home"; bad=1; continue ;; esac
+      if [ -n "$invr" ]; then case "$r/" in "$invr/"*) err "refused: $c resolves to $r, the live inventory"; bad=1; continue ;; esac; fi
+      run="$(from_home "$c")" || { err "refused: cannot read the process list, so cannot say nothing runs from $c"; bad=1; continue; }
+      [ -z "$run" ] || { err "refused: something runs from $c"; bad=1; continue; }
+      if [ "$first" = 1 ] && [ "$PRUNE_ALL" != 1 ]; then keep="$keep$c"$'\n'; first=0; continue; fi
+      first=0; list="$list$c"$'\n'
+    done < <(failed_copies "$p" | awk -v n="$(( ${#p} + 9 ))" '{ k = substr($0, n); gsub(/-/, "", k); while (length(k) < 14) k = k "0"; print k "\t" $0 }' | sort -r | cut -f2-)
+  done
+  [ "$bad" = 0 ] || { err "prune-failed removed nothing: fix the refusals above"; exit 1; }
+  while IFS= read -r c; do [ -n "$c" ] && log "keep     : $c (the newest; --all removes it too)"; done <<<"$keep"
+  [ -n "$list" ] || { log "nothing to remove"; exit 0; }
+  while IFS= read -r c; do [ -n "$c" ] && log "remove   : $c ($(( $(du -sk "$c" 2>/dev/null | awk '{print $1}') / 1024 )) MB)"; done <<<"$list"
+  [ "$DRY_RUN" = 1 ] && { log "dry-run: nothing removed"; exit 0; }
+  confirm "This deletes the failed copies listed above." || { err "not confirmed - nothing removed"; exit 1; }
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    rm -rf -- "$c" || { err "could not remove $c"; exit 1; }
+    log "removed  : $c"
+  done <<<"$list"
+  exit 0
+}
+
 cmd_rollback() {
   require_detached rollback
   local rd="${RUN_DIR_ARG:-${1:-}}"
@@ -854,6 +953,7 @@ main() {
       --remove-patches) optchk "$@"; REMOVE_PATCHES="$2"; shift 2 ;;
       --ignore-sys-prereqs) IGNORE_SYS_PREREQS=1; shift ;;
       --dry-run)   DRY_RUN=1; shift ;;
+      --all)       PRUNE_ALL=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --operator-stops) OPERATOR_STOPS=1; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -869,8 +969,9 @@ main() {
     verify)    cmd_verify ;;
     run)       cmd_run "${args[@]+"${args[@]}"}" ;;
     rollback)  cmd_rollback "${args[@]+"${args[@]}"}" ;;
+    prune-failed) cmd_prune_failed ;;
     "") usage; exit 2 ;;
-    *) die "unknown command $cmd (inspect, preflight, backup, apply, verify, run, rollback)" ;;
+    *) die "unknown command $cmd (inspect, preflight, backup, apply, verify, run, rollback, prune-failed)" ;;
   esac
 }
 

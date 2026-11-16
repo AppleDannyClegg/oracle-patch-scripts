@@ -195,6 +195,9 @@ anything is patched. Default behaviour is unchanged. Run `ohs-quarter.sh` inside
 SIGHUP to the whole process group, and a half-restored home is the worst state to leave behind. The four most used are spelled out
 below; the others follow the same `inspect`, `plan`, `preflight`, `run` pattern and their folder
 README has the exact lines.
+`ohs-patch.sh` and `dbclient-upgrade.sh` preflight also check the filesystem a restore writes to (the home's and the
+inventory's parent dirs, summed with the backup when they share one), and list the `<home>.failed-<stamp>` copies
+each restore leaves behind. `prune-failed` deletes those, keeping the newest unless `--all`.
 
 ```bash
 scp -r $PATCH_BASE/scripts oracle@server:/u01/patches/scripts

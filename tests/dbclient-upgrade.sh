@@ -233,9 +233,41 @@ build; echo 19.14.0.0.0 >"$OH/.sqlv"; rc="$(dbc verify)"
 [ "$rc" = 1 ] && grep -q 'NOT 19c' "$T/out" && ok || bad "verify with sqlplus 19.14 but rsf 12.1 (the other source only): rc $rc (want 1)"
 
 build; rc="$(dbc frobnicate)"
-grep -q 'unknown command frobnicate (inspect, preflight, backup, apply, verify, run, rollback)' "$T/out" && ok || bad "unknown command message: $(head -2 "$T/out")"
+grep -q 'unknown command frobnicate (inspect, preflight, backup, apply, verify, run, rollback, prune-failed)' "$T/out" && ok || bad "unknown command message: $(head -2 "$T/out")"
 build; rc="$(dbc inspect)"
 [ "$rc" = 0 ] && grep -q 'installed as: standalone' "$T/out" && grep -q 'oracle.rdbms.rsf 12.1.0.2.0; sqlplus -V 12.1.0.2.0' "$T/out" && ok || bad "inspect: rc $rc: $(head -5 "$T/out")"
+
+# ---- T1843: disk on each filesystem, and the failed copies a restore leaves (the code is ohs-patch's) -------
+mkdf() {
+  cat >"$T/stub/df" <<D
+#!/bin/sh
+p=""; for a in "\$@"; do p="\$a"; done
+awk -v p="\$p" 'index(p "/", \$1 "/") == 1 && length(\$1) > best { best = length(\$1); m = \$2; f = \$3 }
+  END { if (m == "") exit 1; print "Filesystem 1024-blocks Used Available Capacity Mounted"; print "stub 0 0 " f " 0% " m }' "$T/df.map"
+D
+  chmod +x "$T/stub/df"
+}
+kb() { du -sk "$1" | awk '{print $1}'; }
+dbuild() { build; dd if=/dev/zero of="$OH/big" bs=1024 count=2048 2>/dev/null; mkdf; }
+big=1000000000
+dbuild; h=$(kb "$OH"); i=$(kb "$T/inv"); R=$(( h + h / 10 + i + i / 10 ))
+printf '%s /mB %s\n%s /mH %s\n' "$T/backup" $big "$T" $((R - 1)) >"$T/df.map"; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: /mH has .* MB free; a restore of the home and a restore of the inventory need about' "$T/out" && ok || bad "dbclient: a home filesystem short of the restore did not block: rc $rc: $(grep -E 'BLOCK|disk' "$T/out" | head -3)"
+printf '%s /mB %s\n%s /mH %s\n' "$T/backup" $big "$T" $R >"$T/df.map"; rc="$(pre)"
+grep -q 'disk     : /mH has' "$T/out" && ! grep -q 'BLOCKING: /mH' "$T/out" && ok || bad "dbclient: a home filesystem with room did not pass: $(grep -E 'BLOCK|disk' "$T/out" | head -3)"
+need=$(( h + i )); B=$(( need + need / 10 ))
+printf '%s /m1 %s\n%s /m1 %s\n' "$T/backup" $((B + R - 1)) "$T" $((B + R - 1)) >"$T/df.map"; rc="$(pre)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: /m1 has .* MB free; the backup and a restore of the home and a restore of the inventory need' "$T/out" && ok || bad "dbclient: a backup and a restore on one filesystem were not summed: rc $rc: $(grep -E 'BLOCK|disk' "$T/out" | head -3)"
+dbuild; printf '%s /mB %s\n%s /mH %s\n' "$T/backup" $big "$T" $big >"$T/df.map"
+mkdir -p "$OH.failed-20261116-113104" "$OH.failed-20261116-1131" "$T/inv.failed-20261116113104" "$OH.bad" "$OH.failedX"
+rc="$(pre)"
+grep -qF "failed copy: $OH.failed-20261116-1131 (" "$T/out" && grep -qF "failed copy: $T/inv.failed-20261116113104 (" "$T/out" && grep -qF "failed copy: $OH.bad, from a by-hand restore" "$T/out" && ! grep -q 'failedX' "$T/out" && ok || bad "dbclient: preflight's failed-copy report: $(grep 'failed copy' "$T/out" | head -4)"
+rc="$(dbc prune-failed --oracle-home "$OH" --yes)"
+[ "$rc" = 0 ] && [ ! -e "$OH.failed-20261116-1131" ] && [ -d "$OH.failed-20261116-113104" ] && [ -d "$T/inv.failed-20261116113104" ] && [ -d "$OH" ] && [ -d "$OH.bad" ] && [ -d "$OH.failedX" ] && ok || bad "dbclient prune --yes: rc $rc: $(tail -3 "$T/out")"
+mkdir -p "$T/decoy"; : >"$T/decoy/keep"; ln -s "$T/decoy" "$OH.failed-20261116-0900"
+rc="$(dbc prune-failed --oracle-home "$OH" --yes --all)"
+[ "$rc" = 1 ] && [ -e "$T/decoy/keep" ] && [ -d "$OH.failed-20261116-113104" ] && ok || bad "dbclient prune over a symlinked copy: rc $rc (want 1, nothing removed): $(tail -2 "$T/out")"
+rm -rf "$T/decoy" "${OH:?}".failed-* "${OH:?}".bad "${OH:?}".failedX "$T"/inv.failed-*
 
 echo "dbclient-upgrade gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

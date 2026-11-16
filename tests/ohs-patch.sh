@@ -683,10 +683,66 @@ grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! gre
 
 # the unknown-command message names every command the dispatcher has
 build; rc="$(runc frobnicate)"
-grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
+grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run, prune-failed)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
 
 # the tail is printed only when something WAS skipped: ${skipped:+...} expands for the string "0" too, so a clean run
 # used to say "0 skipped (0 assertions not run: ...)" - a summary claiming a gap it did not have (T316)
 skiptail=""; [ "$skipped" -gt 0 ] && skiptail=", $skipped skipped ($skipped_asserts assertions not run: a case this host cannot run - not a pass, not a failure)"
+# ---- T1843: disk on each filesystem, and the failed copies a restore leaves -------------------------------
+# df is stubbed by a map "<path prefix> <mount> <free KB>": the longest prefix of df's argument wins
+mkdf() {
+  cat >"$T/stub/df" <<D
+#!/bin/sh
+p=""; for a in "\$@"; do p="\$a"; done
+awk -v p="\$p" 'index(p "/", \$1 "/") == 1 && length(\$1) > best { best = length(\$1); m = \$2; f = \$3 }
+  END { if (m == "") exit 1; print "Filesystem 1024-blocks Used Available Capacity Mounted"; print "stub 0 0 " f " 0% " m }' "$T/df.map"
+D
+  chmod +x "$T/stub/df"
+}
+kb() { du -sk "$1" | awk '{print $1}'; }
+dbuild() { build; dd if=/dev/zero of="$OH/big" bs=1024 count=2048 2>/dev/null; mkdf; }
+big=1000000000
+# a restore untars the home (+ the patch's growth) and the inventory beside their failed copies, in their parent dirs:
+# both parents are $T here, so the two needs (+10% each) are summed on /mH
+dbuild; h=$(( $(kb "$OH") + $(kb "$PD/40005842") )); i=$(kb "$T/inv"); R=$(( h + h / 10 + i + i / 10 ))
+printf '%s /mB %s\n%s /mH %s\n' "$T/backup" $big "$T" $((R - 1)) >"$T/df.map"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: /mH has .* MB free; a restore of the home, plus the patch and a restore of the inventory need about' "$T/out" && ok || bad "a home filesystem short of the restore did not block: rc $rc: $(grep -E 'BLOCK|disk' "$T/out" | head -3)"
+printf '%s /mB %s\n%s /mH %s\n' "$T/backup" $big "$T" $R >"$T/df.map"; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'disk     : /mH has' "$T/out" && ok || bad "a home filesystem with room for the restore did not pass: rc $rc: $(grep -E 'BLOCK|disk' "$T/out" | head -3)"
+# one filesystem for the backup dir and the home: each need fits alone, their sum does not
+need=$(( $(kb "$OH") + $(kb "$DOM") + $(kb "$T/inv") )); B=$(( need + need / 10 ))
+printf '%s /m1 %s\n%s /m1 %s\n' "$T/backup" $((B + R - 1)) "$T" $((B + R - 1)) >"$T/df.map"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: /m1 has .* MB free; the backup and a restore of the home, plus the patch and a restore of the inventory need' "$T/out" && ok || bad "a backup and a restore on one filesystem were not summed: rc $rc: $(grep -E 'BLOCK|disk' "$T/out" | head -3)"
+# the failed copies: the three stamp forms, and .bad, are reported; names that are not a stamp are not
+dbuild; printf '%s /mB %s\n%s /mH %s\n' "$T/backup" $big "$T" $big >"$T/df.map"
+mkdir -p "$OH.failed-20261116-113104" "$OH.failed-20261116-1131" "$T/inv.failed-20261116113104" "$OH.bad" "$OH.failedX" "$OH.failed-2026"
+rc="$(run)"
+for c in "$OH.failed-20261116-113104" "$OH.failed-20261116-1131" "$T/inv.failed-20261116113104"; do
+  grep -qF "failed copy: $c (" "$T/out" && ok || bad "preflight did not report the failed copy $c: $(grep 'failed copy' "$T/out" | head -4)"; done
+grep -qF "failed copy: $OH.bad, from a by-hand restore" "$T/out" && ok || bad "preflight did not report $OH.bad"
+grep -qE "failed copy: .*(failedX|failed-2026 )" "$T/out" && bad "preflight reported a name that is not a stamp" || ok
+prune() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" prune-failed --oracle-home "$OH" "$@" >"$T/out" 2>&1; echo $?; }
+rc="$(prune --dry-run)"
+[ "$rc" = 0 ] && [ -d "$OH.failed-20261116-1131" ] && grep -qF "remove   : $OH.failed-20261116-1131 (" "$T/out" && ok || bad "prune --dry-run: rc $rc, or it removed something: $(tail -3 "$T/out")"
+rc="$(prune --yes)"
+[ "$rc" = 0 ] && [ ! -e "$OH.failed-20261116-1131" ] && [ -d "$OH.failed-20261116-113104" ] && [ -d "$T/inv.failed-20261116113104" ] && ok || bad "prune --yes did not remove only the older copy of each: rc $rc: $(tail -4 "$T/out")"
+[ -d "$OH" ] && [ -d "$OH.bad" ] && [ -d "$OH.failedX" ] && [ -d "$OH.failed-2026" ] && [ -d "$T/inv" ] && ok || bad "prune touched the live home, the inventory, .bad or a name that is not a stamp"
+rc="$(prune --yes --all)"
+[ "$rc" = 0 ] && [ ! -e "$OH.failed-20261116-113104" ] && [ ! -e "$T/inv.failed-20261116113104" ] && [ -d "$OH" ] && [ -d "$OH.bad" ] && ok || bad "prune --all: rc $rc: $(tail -3 "$T/out")"
+# "newest" is by the stamp's digits, not the name: a bare 08:00 copy sorts after a hyphenated 09:00 one by name
+dbuild; mkdir -p "$OH.failed-20261116080000" "$OH.failed-20261116-0900"; touch -t 202601010000 "$OH.failed-20261116-0900"
+rc="$(prune --yes)"
+[ "$rc" = 0 ] && [ -d "$OH.failed-20261116-0900" ] && [ ! -e "$OH.failed-20261116080000" ] && ok || bad "prune kept the wrong copy (newest is 09:00 by its stamp): rc $rc: $(grep -E 'keep|remove' "$T/out" | head -3)"
+rm -rf "${OH:?}".failed-*
+# a symlink among the copies: nothing is deleted, and the link's target survives
+dbuild; mkdir -p "$T/decoy" "$OH.failed-20261116-113104"; : >"$T/decoy/keep"; ln -s "$T/decoy" "$OH.failed-20261116-1131"
+rc="$(prune --yes --all)"
+[ "$rc" = 1 ] && grep -q "refused: .*is a symlink" "$T/out" && [ -e "$T/decoy/keep" ] && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune over a symlinked copy: rc $rc (want 1, nothing removed): $(tail -3 "$T/out")"
+rm -f "$OH.failed-20261116-1131"
+# a patch script running on the box: nothing is deleted
+echo " 4242 bash /u01/scripts/ohs-quarter.sh --patch-root /u01/stage" >>"$T/ps.txt"; rc="$(prune --yes --all)"
+[ "$rc" = 1 ] && grep -q "a patch script is running" "$T/out" && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune while ohs-quarter runs: rc $rc (want 1): $(tail -2 "$T/out")"
+: >"$T/ps.txt"; rm -rf "$T/decoy" "${OH:?}".failed-* "${OH:?}".bad "${OH:?}".failedX "$T"/inv.failed-*
+
 echo "ohs-patch gate: $pass passed, $fail failed$skiptail"
 [ "$fail" = 0 ]
