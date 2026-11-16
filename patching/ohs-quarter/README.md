@@ -75,7 +75,7 @@ Naming a folder in `--skip` that has content is refused too.
    `--dry-run` is passed to every child, so each one does its own dry run.
 7. **The real run, in the change window:**
    ```bash
-   patching/ohs-quarter/ohs-quarter.sh <patch-root> [--skip ...] [--remove-12c IDS] [--keep-patches IDS] 2>&1 | tee ohs-quarter.log
+   patching/ohs-quarter/ohs-quarter.sh <patch-root> [--skip ...] [--remove-12c IDS] [--keep-patches IDS] [--ignore-sys-prereqs] 2>&1 | tee ohs-quarter.log
    ```
    It logs to the terminal only, so keep the `tee`: step 8 reads that log.
    It runs every child's preflight first, then asks once for the whole outage (`--yes` skips the question; with
@@ -113,6 +113,17 @@ The 19c installer step refuses while any installed patch is neither removed nor 
   and the stop, proves each gone, and restores on failure. Default: none.
 - `--keep-patches IDS` (comma list): patches in the home that you have checked are **not** 12c Database
   Client patches. Passed to `dbclient-upgrade.sh`, which takes them on your word.
+
+## Oracle Linux 9: `--ignore-sys-prereqs`
+
+On Oracle Linux 9 the 19c installer's own package check ("Check:Packages") asks for `redhat-lsb`,
+`redhat-lsb-core` and `libXtst-devel`. OL9 does not ship `redhat-lsb`, so the installer stops with
+"Prereq failed. Aborting Install" and the run restores the home to 12c (field run, 16 Nov 2026, OL 9.4).
+- Read the installer's output first: it is in the dbclient-upgrade run dir's `run.log`. Use this option only
+  when the package check is the ONLY failed prereq.
+- `--ignore-sys-prereqs` is passed to `dbclient-upgrade.sh`, which runs the installer with `-ignoreSysPrereqs`
+  and logs a WARN saying so. The dry run shows `-ignoreSysPrereqs` on its "would run" line.
+- Default: off.
 
 ## Other options
 
