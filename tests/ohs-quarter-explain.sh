@@ -13,9 +13,7 @@ set -uo pipefail
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 Q="$ROOT/patching/ohs-quarter/ohs-quarter.sh"
 X="$ROOT/patching/ohs-quarter/ohs-quarter-explain.sh"
-[ -f "$Q" ] && [ -f "$X" ] || { # T1842: no path's output points at a preflight's stamped tar (only a hand-run backup step ever made one)
-! grep -l 'ohs-home-' "$T"/*.out >/dev/null 2>&1 && ok || bad "an explain output names a preflight's stamped ohs-home-<stamp>.tgz: $(grep -l 'ohs-home-' "$T"/*.out | head -3)"
-echo "ohs-quarter-explain gate: $Q or $X not found"; exit 2; }
+[ -f "$Q" ] && [ -f "$X" ] || { echo "ohs-quarter-explain gate: $Q or $X not found"; exit 2; }
 
 T="$(cd "$(mktemp -d /tmp/oqx.XXXXXX)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
@@ -206,5 +204,7 @@ grep '^FAIL' "$T/cover" | while IFS= read -r l; do echo "$l"; done
 cf="$(grep -c '^FAIL' "$T/cover")"; [ "$cf" = 0 ] && ok || fail=$((fail + cf))
 grep -q 'nothing was patched; the components are started again' "$T/cover" && bad "the interpolated C1 message is not covered" || ok
 
+# T1842: no path's output points at a preflight's stamped tar (only a hand-run backup step ever made one)
+! grep -l 'ohs-home-' "$T"/*.out >/dev/null 2>&1 && ok || bad "an explain output names a preflight's stamped ohs-home-<stamp>.tgz: $(grep -l 'ohs-home-' "$T"/*.out | head -3)"
 echo "ohs-quarter-explain gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

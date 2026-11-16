@@ -842,7 +842,6 @@ cmd_run() {
   exit 0
 }
 
-# read-only: what run would do, in run's order, from the same checks run makes
 # commands: preflight, then the hand-run block for a window run cannot be used in (T1842). Read-only; ohs-quarter
 # never calls it. A home waiting on the 19c client upgrade gets no block: the upgrade comes first in the same outage
 cmd_commands() {
@@ -851,6 +850,7 @@ cmd_commands() {
   cmd_preflight "$@"; exit $?
 }
 
+# read-only: what run would do, in run's order, from the same checks run makes
 cmd_plan() {
   DRY_RUN=1
   run_gate plan "${1:-}"
