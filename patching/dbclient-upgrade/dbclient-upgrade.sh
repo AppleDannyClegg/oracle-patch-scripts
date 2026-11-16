@@ -888,7 +888,8 @@ cmd_prune_failed() {
   local me busy p c r run ohr invr="" bad=0 keep="" list="" first
   me="$(id -un)"
   # this script's own forks carry its argv too: the $(...) subshell (ppid $$) and its children before they exec
-  # (ppid = that subshell), so both are dropped with the ancestors (T1843, Quark #19854)
+  # (ppid = that subshell), so both are dropped with the ancestors (T1843, Quark #19854). BASHPID needs bash 4+
+  # (RHEL/OL); on 3.2 the $$ fallback misses the pre-exec forks, and prune may refuse itself - never the reverse
   local anc; anc="$(ancestor_pids)"
   busy="$(spid="${BASHPID:-$$}"; set -o pipefail; ps -eo pid,ppid,args 2>/dev/null | awk -v anc=" $anc " -v me="$$" -v spid="$spid" '
     /(ohs-patch|ohs-quarter|dbclient-upgrade|wls-patch|java-patch)\.sh/ && !/ awk / {

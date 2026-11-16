@@ -748,6 +748,9 @@ rm -f "$OH.failed-20261116-1131"
 # must not read as "a patch script is running" (T1843, Quark #19854)
 dbuild; mkdir -p "$OH.failed-20261116-1131" "$OH.failed-20261116-113104"; echo $$ >"$T/ps.real"; rc="$(prune --yes)"; rm -f "$T/ps.real"
 [ "$rc" = 0 ] && [ ! -e "$OH.failed-20261116-1131" ] && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune with the real ps refused itself: rc $rc: $(tail -3 "$T/out")"
+# ps fails: prune cannot say no patch script runs, so it deletes nothing (fail-closed; Quark #19865)
+dbuild; mkdir -p "$OH.failed-20261116-1131" "$OH.failed-20261116-113104"; touch "$T/ps.fail"; rc="$(prune --yes)"; rm -f "$T/ps.fail"
+[ "$rc" = 1 ] && grep -q "cannot say no patch script is running" "$T/out" && [ -d "$OH.failed-20261116-1131" ] && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune with a failing ps: rc $rc (want 1, nothing removed): $(tail -2 "$T/out")"
 # a patch script running on the box: nothing is deleted
 echo " 4242 bash /u01/scripts/ohs-quarter.sh --patch-root /u01/stage" >>"$T/ps.txt"; rc="$(prune --yes --all)"
 [ "$rc" = 1 ] && grep -q "a patch script is running" "$T/out" && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune while ohs-quarter runs: rc $rc (want 1): $(tail -2 "$T/out")"
