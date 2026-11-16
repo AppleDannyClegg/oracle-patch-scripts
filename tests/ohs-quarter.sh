@@ -358,9 +358,11 @@ miss="$(grep -E '^(java|wls|dbclient|ohs) (stop|apply|start|backup|rollback|rest
 # look each '--flag' a stub was called with up in the REAL script's own option parser.
 : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk" "$T/stop.ok" "$T/start.ok" "$T/start.failed"
 bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run --force --no-cacerts --java-home /j --oracle-home /o \
-  --backup-dir "$T/bkd" --remove-12c 111,222,333 --keep-patches 444 >"$T/out" 2>&1 && ok || bad "run with every option set failed: $(tail -3 "$T/out")"
+  --backup-dir "$T/bkd" --remove-12c 111,222,333 --keep-patches 444 --ignore-sys-prereqs >"$T/out" 2>&1 && ok || bad "run with every option set failed: $(tail -3 "$T/out")"
 grep -q '^dbclient .*--remove-patches 111,222,333' "$T/calls.log" && ok || bad "--remove-12c did not reach the installer as --remove-patches 111,222,333: $(grep '^dbclient' "$T/calls.log" | head -2)"
 grep -q '^dbclient .*--keep-patches 444' "$T/calls.log" && ok || bad "--keep-patches did not reach the installer"
+grep -q '^dbclient .*--ignore-sys-prereqs' "$T/calls.log" && ok || bad "--ignore-sys-prereqs did not reach dbclient-upgrade.sh"
+! grep -E '^(java|wls|ohs) ' "$T/calls.log" | grep -q -- '--ignore-sys-prereqs' && ok || bad "--ignore-sys-prereqs reached a child that has no such option"
 # ohs-patch checks free space on its backup dir and defaults to /u01/backup: without --backup-dir it reads the wrong
 # disk, or stops preflight UNKNOWN on a box with no /u01/backup (T1114, Louie #15840)
 grep -q '^ohs preflight ' "$T/calls.log" && ! grep '^ohs preflight ' "$T/calls.log" | grep -qv -- "--backup-dir $T/bkd" && ok \

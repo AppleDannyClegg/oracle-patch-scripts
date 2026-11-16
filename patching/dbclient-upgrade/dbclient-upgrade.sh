@@ -35,6 +35,10 @@
 #   --operator-stops        never stop or start a component or the node manager: print the commands instead
 #   --remove-patches ID,ID  opt in: run rolls these back itself, after the backup and the stop and before the
 #                           installer (the README's 12c client patches). Only the ids named; a failure restores
+#   --ignore-sys-prereqs    opt in: run the installer with -ignoreSysPrereqs. Its OUI "Check:Packages" asks for
+#                           redhat-lsb, redhat-lsb-core and libXtst-devel, which Oracle Linux 9 does not ship
+#                           (field run 16 Nov 2026: OL 9.4, every other prereq passed, "Prereq failed. Aborting
+#                           Install"). Only after you have read the installer's prereq output and accepted it
 #   --dry-run  --yes
 #
 # Environment: START_TIMEOUT, POLL, RUN_BASE (default <output dir>/dbclient-upgrade/runs), OS_RELEASE (default
@@ -91,7 +95,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 }
 # <<< output-location
 
-ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""
+ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""; IGNORE_SYS_PREREQS=0
 DRY_RUN=0; ASSUME_YES=0; OPERATOR_STOPS=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path dbclient-upgrade)/runs}"
 OS_RELEASE="${OS_RELEASE:-}"
@@ -685,7 +689,12 @@ step_install() {
   bin="$(find "$pt" -name fmw_12.2.1.19.0_dbclient_linux64.bin -type f 2>/dev/null | head -1)"
   [ -n "$bin" ] || recover "the installer is not in $pt after the unzip"
   ( cd "$(dirname "$bin")" && do_cmd ./changePerm.sh "$OH" ) || recover "changePerm.sh $OH failed"
-  ( cd "$(dirname "$bin")" && do_cmd env ORACLE_HOME="$OH" "./$(basename "$bin")" -invPtrLoc "$OH/oraInst.loc" -silent ORACLE_HOME="$OH" ) || recover "the Database Client 19c installer failed"
+  local iargs=(-invPtrLoc "$OH/oraInst.loc" -silent)
+  if [ "$IGNORE_SYS_PREREQS" = 1 ]; then
+    warn "  --ignore-sys-prereqs: the installer runs with -ignoreSysPrereqs (its package check wants redhat-lsb, which OL9 does not ship)"
+    iargs+=(-ignoreSysPrereqs)
+  fi
+  ( cd "$(dirname "$bin")" && do_cmd env ORACLE_HOME="$OH" "./$(basename "$bin")" "${iargs[@]}" ORACLE_HOME="$OH" ) || recover "the Database Client 19c installer failed - its own output is in $RUN_DIR/run.log (a 'Check:Packages failed' on OL9 is what --ignore-sys-prereqs is for)"
 }
 
 # both sources (README: sqlplus -V; KB585169: oracle.rdbms.rsf); 0 = 19c by both
@@ -726,7 +735,7 @@ plan_steps() {
   log "dry-run: would back up $OH, $(printf '%s ' $DOMS)and $INV to $BK (tar, each read back)"
   log "dry-run: would stop $(printf '%s\n' "$COMPS" | cut -d'|' -f2 | tr '\n' ' ')and node manager, and prove nothing runs from $OH"
   [ -n "$REMOVE_IDS" ] && log "dry-run: would roll back${REMOVE_IDS} (--remove-patches) and prove each gone, before the installer"
-  log "dry-run: would unzip $ZIP into <run dir>/patch_top, run ./changePerm.sh $OH and ./fmw_12.2.1.19.0_dbclient_linux64.bin -invPtrLoc $OH/oraInst.loc -silent ORACLE_HOME=$OH"
+  log "dry-run: would unzip $ZIP into <run dir>/patch_top, run ./changePerm.sh $OH and ./fmw_12.2.1.19.0_dbclient_linux64.bin -invPtrLoc $OH/oraInst.loc -silent$([ "$IGNORE_SYS_PREREQS" = 1 ] && echo ' -ignoreSysPrereqs') ORACLE_HOME=$OH"
   log "dry-run: would check sqlplus -V >= $MIN_SQLPLUS and oracle.rdbms.rsf 19.x, then start node manager and the components"
   log "dry-run: on any failure after the backup, would restore $OH and $INV from $BK"
 }
@@ -841,6 +850,7 @@ main() {
       --backup-run)   optchk "$@"; BACKUP_RUN="$2"; shift 2 ;;
       --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2 ;;
       --remove-patches) optchk "$@"; REMOVE_PATCHES="$2"; shift 2 ;;
+      --ignore-sys-prereqs) IGNORE_SYS_PREREQS=1; shift ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --yes)       ASSUME_YES=1; shift ;;
       --operator-stops) OPERATOR_STOPS=1; shift ;;

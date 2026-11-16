@@ -122,6 +122,18 @@ build; rc="$(dbc backup "$PD" --run-dir "$SH" --yes)"; : >"$T/ps.txt"; rc2="$(db
 build; rc="$(dbc run "$PD" --yes)"
 [ "$rc" = 0 ] && [ "$(rsf)" = 19.0.0.0.0 ] && [ "$(cat "$OH/.sqlv")" = 19.14.0.0.0 ] && ok || bad "run on a ready home: rc $rc, rsf $(rsf): $(grep -E 'ERROR|BLOCK' "$T/out" | head -3)"
 case "$(acts)" in "stop ohs1 stop ohs2 stopNM changePerm $OH install -invPtrLoc $OH/oraInst.loc -silent ORACLE_HOME=$OH start ohs1 start ohs2 ") ok;; *) bad "run order wrong: [$(acts)]";; esac
+# T1827 field run 16 Nov 2026 (OL 9.4): OUI "Check:Packages" wants redhat-lsb, which OL9 does not ship, and aborts the
+# install. --ignore-sys-prereqs is opt-in: it adds -ignoreSysPrereqs to the installer and says so; without it the argv
+# above is unchanged
+build; rc="$(dbc run "$PD" --yes --ignore-sys-prereqs)"
+[ "$rc" = 0 ] && [ "$(rsf)" = 19.0.0.0.0 ] && ok || bad "run with --ignore-sys-prereqs: rc $rc: $(grep -E 'ERROR|BLOCK' "$T/out" | head -3)"
+case "$(acts)" in *"install -invPtrLoc $OH/oraInst.loc -silent -ignoreSysPrereqs ORACLE_HOME=$OH "*) ok;; *) bad "--ignore-sys-prereqs did not reach the installer: [$(acts)]";; esac
+grep -q 'WARN .*--ignore-sys-prereqs: the installer runs with -ignoreSysPrereqs' "$T/out" && ok || bad "--ignore-sys-prereqs ran without its WARN"
+build; rc="$(dbc run "$PD" --yes --dry-run --ignore-sys-prereqs)"
+grep -q 'dry-run: would .*-silent -ignoreSysPrereqs ORACLE_HOME=' "$T/out" && ok || bad "dry-run does not show -ignoreSysPrereqs: rc $rc: $(grep 'would unzip' "$T/out")"
+# a failed installer names where its own output went (the field log did not, so the cause took a second email)
+build; touch "$T/inst.fail"; rc="$(dbc run "$PD" --yes)"
+[ "$rc" = 1 ] && grep -q 'installer failed - its own output is in .*/run.log' "$T/out" && ok || bad "a failed installer does not point at run.log: rc $rc: $(grep 'installer failed' "$T/out" | head -1)"
 # T1550 operator-stops: the operator owns every start and stop; no stop/start script runs and the commands print
 build; : >"$T/ps.txt"; : >"$T/actions"
 rc="$(dbc run "$PD" --operator-stops --yes)"

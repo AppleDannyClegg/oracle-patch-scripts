@@ -67,6 +67,8 @@
 #   --keep-patches IDS patches in the home you have checked are NOT 12c Database Client patches (comma list). The
 #                      installer step refuses while any installed patch is neither removed nor kept; passed to
 #                      dbclient-upgrade.sh as --keep-patches, which takes it on your word
+#   --ignore-sys-prereqs  passed to dbclient-upgrade.sh: the 19c installer runs with -ignoreSysPrereqs (its package
+#                      check wants redhat-lsb, which Oracle Linux 9 does not ship)
 #   --skip LIST        folders this outage deliberately leaves out (comma list, e.g. --skip wlspsu,jdbc). Required
 #                      for every folder above that is missing or empty; naming a folder that has content is refused
 #   --no-cacerts       do not carry CA aliases across (java-patch)
@@ -126,7 +128,7 @@ die()  { err "$*"; exit 1; }
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; SKIP=""; NO_CACERTS=0; OPERATOR_STOPS=0; FORCE=0; DRY=0; YES=0
+PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; IGNORE_SYS_PREREQS=0; SKIP=""; NO_CACERTS=0; OPERATOR_STOPS=0; FORCE=0; DRY=0; YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --patch-root)  optchk "$@"; PATCH_ROOT="$2"; shift 2;;
@@ -136,6 +138,7 @@ while [ $# -gt 0 ]; do
     --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2;;
     --remove-12c)  optchk "$@"; REMOVE_12C="$2"; shift 2;;
     --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2;;
+    --ignore-sys-prereqs) IGNORE_SYS_PREREQS=1; shift;;
     --skip)        optchk "$@"; SKIP="$2"; shift 2;;
     --no-cacerts)  NO_CACERTS=1; shift;;
     --force)       FORCE=1; shift;;
@@ -247,6 +250,7 @@ DOpts=(); [ -n "$ORACLE_HOME_ARG" ] && DOpts+=(--oracle-home "$ORACLE_HOME_ARG")
 # dbclient-upgrade.sh calls the removal --remove-patches; it and ohs-patch.sh have no --force
 [ -n "$REMOVE_12C" ] && DOpts+=(--remove-patches "$REMOVE_12C")
 [ -n "$KEEP_PATCHES" ] && DOpts+=(--keep-patches "$KEEP_PATCHES")
+[ "$IGNORE_SYS_PREREQS" = 1 ] && DOpts+=(--ignore-sys-prereqs)
 [ "$DRY" = 1 ] && DOpts+=(--dry-run); [ "$YES" = 1 ] && DOpts+=(--yes)
 [ "$OPERATOR_STOPS" = 1 ] && DOpts+=(--operator-stops)
 OOPTS=(); [ -n "$ORACLE_HOME_ARG" ] && OOPTS+=(--oracle-home "$ORACLE_HOME_ARG")
