@@ -87,6 +87,13 @@ echo '<distribution status="installed" name="Oracle HTTP Server (Standalone)" ve
 # its Database Client is 12c (oracle.rdbms.rsf in comps.xml, the KB585169 check), as on Gen's home
 mkdir -p "$O/inventory/ContentsXML"
 printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="12.1.0.2.0" BUILD_NUMBER="0"/>\n</PRD_LIST>\n' >"$O/inventory/ContentsXML/comps.xml"
+# O2: the shape after the 19c client installer (T1845's field run) - comps.xml keeps the 12.1.0.2.0
+# oracle.rdbms.rsf entry beside the new 19.x one. The manifest's client field must be the HIGHEST VER, not the
+# first line (T1848). Reading the first match wrote 12.1.0.2.0 for a home whose client is 19c.
+O2="$T/ohs2/fmw"
+mkdir -p "$O2/ohs/bin" "$O2/oracle_common" "$O2/inventory/ContentsXML"
+echo '<distribution status="installed" name="Oracle HTTP Server (Standalone)" version="12.2.1.4.0"/>' >"$O2/inventory/registry.xml"
+printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="12.1.0.2.0" BUILD_NUMBER="0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="19.0.0.0.0" BUILD_NUMBER="0"/>\n</PRD_LIST>\n' >"$O2/inventory/ContentsXML/comps.xml"
 # the collocated shape: OHS installed into the WebLogic home itself
 mkdir -p "$H/ohs/bin"
 echo '<component name="WebLogic Server" version="12.2.1.4.0"/><component name="Oracle Coherence" version="12.2.1.4.0"/><distribution status="installed" name="Oracle HTTP Server (Collocated)" version="12.2.1.4.0"/>' >"$H/inventory/registry.xml"
@@ -101,6 +108,7 @@ cat >"$T/oraInventory/ContentsXML/inventory.xml" <<EOF2
 <HOME NAME="OraClient19Home3" LOC="$C3" TYPE="O" IDX="4"/>
 <HOME NAME="OraDbHome1" LOC="$C4" TYPE="O" IDX="5"/>
 <HOME NAME="OraOhsHome1" LOC="$O" TYPE="O" IDX="6"/>
+<HOME NAME="OraOhsHome2" LOC="$O2" TYPE="O" IDX="7"/>
 </HOME_LIST>
 EOF2
 cat >"$C/bin/sqlplus" <<'EOF2'
@@ -121,6 +129,7 @@ mk_opatch "$C3" 12.2.0.1.44 "37642901;Database Release Update : 19.27.0.0.250415
 # C4: nothing reads its version
 mk_opatch "$C4" 12.2.0.1.44 "37642901;Database Release Update : 19.27.0.0.250415 (37642901)"
 mk_opatch "$O" 13.9.4.2.23 "38000222;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501"
+mk_opatch "$O2" 13.9.4.2.23 "38000223;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260601"
 chmod +x "$C/bin/sqlplus" "$C2/bin/sqlplus"
 export ORAINST_LOC="$T/oraInst.loc"
 
@@ -168,6 +177,9 @@ if [ -f "$OUT" ]; then
   # ...with its Database Client level as a 6th field (back-compatible: readers check a minimum count)
   has "$OUT" "home|$O|ohs|12.2.1.4.0|13.9.4.2.23|12.1.0.2.0"
   has "$OUT" "patch|$O|38000222|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.260501"
+  # two oracle.rdbms.rsf entries (12c then 19c): the client field is the highest VER, not the first (T1848)
+  has "$OUT" "home|$O2|ohs|12.2.1.4.0|13.9.4.2.23|19.0.0.0.0"
+  grep -q "warning: could not read the Database Client level.* of $O2" "$T/run.log" && bad "warned although $O2's client level was read (two entries)" || ok
   # the collocated home has no comps.xml: the client field is empty and the run says so
   has "$OUT" "ohs|$H|12.2.1.4.0|"
   grep -q "warning: could not read the Database Client level (oracle.rdbms.rsf) of $H" "$T/run.log" && ok || bad "no warning for an OHS home whose client level is unreadable"

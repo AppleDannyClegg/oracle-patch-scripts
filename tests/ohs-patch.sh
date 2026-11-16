@@ -239,6 +239,15 @@ build; comps 12.1.0.2.0; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*Database Client.*oracle.rdbms.rsf is 12.1.0.2.0.*34761383.*KB585169' "$T/out" && ok || bad "a 12c client home given a DB19C bundle was not blocking on the client level: rc $rc, $(grep -E 'BLOCK|WARN.*KB585169|client' "$T/out" | head -3)"
 build; comps 19.0.0.0.0; rc="$(run)"
 [ "$rc" = 0 ] && grep -q 'DB client : oracle.rdbms.rsf 19.0.0.0.0' "$T/out" && ! grep -q 'WARN .*confirm .*KB585169' "$T/out" && ok || bad "a 19c client home with no bundle: rc $rc (want 0, the client level printed, no 'confirm' warning)"
+# after the 19c client installer the home keeps the old 12.1.0.2.0 oracle.rdbms.rsf entry beside the new 19.x one
+# (T1845's field run: step_verify read 12c and restored a good upgrade). The client level is the HIGHEST VER, so
+# reading the FIRST match is wrong (T1848). The second case is the same file in the other order, so a reader that
+# takes the LAST match is wrong too: only the highest survives both.
+comps2() { mkdir -p "$OH/inventory/ContentsXML"; printf '<PRD_LIST>\n<COMP NAME="oracle.ohs2" VER="12.2.1.4.0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="%s" BUILD_NUMBER="0"/>\n<COMP NAME="oracle.rdbms.rsf" VER="%s" BUILD_NUMBER="0"/>\n</PRD_LIST>\n' "$1" "$2" >"$OH/inventory/ContentsXML/comps.xml"; }
+build; comps2 12.1.0.2.0 19.0.0.0.0; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'DB client : oracle.rdbms.rsf 19.0.0.0.0' "$T/out" && ! grep -q 'BLOCKING: .*Database Client' "$T/out" && ok || bad "two rsf entries, 12c first: rc $rc (want 0 - the highest VER, not the first), $(grep 'DB client' "$T/out")"
+build; comps2 19.0.0.0.0 12.1.0.2.0; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'DB client : oracle.rdbms.rsf 19.0.0.0.0' "$T/out" && ! grep -q 'BLOCKING: .*Database Client' "$T/out" && ok || bad "two rsf entries, 19c first: rc $rc (want 0 - the highest VER, not the last), $(grep 'DB client' "$T/out")"
 build; echo "34567890;OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115" >"$LSP"; comps 12.1.0.2.0; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "plain-line home with a 12c client: rc $rc"
 build; comps 12.1.0.2.0; rc="$(HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" RUN_BASE="$T/runs" bash "$SCRIPT" inspect --oracle-home "$OH" >"$T/out" 2>&1; echo $?)"
