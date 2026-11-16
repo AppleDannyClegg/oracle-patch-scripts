@@ -282,6 +282,8 @@ java_attempted=0; wls_attempted=0; dc_attempted=0; ohs_attempted=0
 # returns 0 when everything attempted is restored and the components are started, 1 otherwise
 # restore the WLS home from its own backup (wls-patch's restore) - the caller decides whether it may run
 restore_wls_home() {
+  # ohs-quarter-explain.sh reads this line to know a WLS restore was tried (dropped in 2ce280f; T1845)
+  log "recovering: wls-patch restore (its own home+domains backup)"
   local bd; bd="$(sed -n 's/^backup_dir=//p' "$RUN_DIR/wls/state" 2>/dev/null | tail -1)"
   if [ -n "$bd" ]; then wrun restore "$bd"; else wrun restore; fi
 }
