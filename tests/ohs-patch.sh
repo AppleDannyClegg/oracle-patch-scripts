@@ -165,6 +165,8 @@ S
   : >"$T/ps.txt"; rm -f "$T/nm.down" "$T"/*.fail "$T"/*.fail-patched "$T"/apply.* "$T"/stop.* "$T/ps.fail.after-stop" "$T/nm.down" "$T/changed" "$T/opatch.log" "$T/actions"
 }
 run() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" >"$T/out" 2>&1; echo $?; }
+# commands: the hand-run block, printed only when asked for (T1842)
+runc() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" commands "$PD" --oracle-home "$OH" --backup-dir "$T/backup" "$@" >"$T/out" 2>&1; echo $?; }
 
 # inspect: read-only, no patch dir needed, and it must not create a run dir or a backup
 build
@@ -186,6 +188,12 @@ rc="$(run)"
 grep -q 'READY: nothing blocking' "$T/out" && ok || bad "no READY line on a ready home"
 grep -q 'OHS components: ohs1 ohs2$' "$T/out" && ok || bad "components not read as 'ohs1 ohs2' (OTD must be skipped): $(grep components "$T/out")"
 grep -q "standalone" "$T/out" && ok || bad "layout not read as standalone"
+# T1842: preflight is what ohs-quarter's dry run prints, so it carries no hand-run block - Gen ran a dry run's printed
+# opatch apply by hand on 16 Nov, out of the composer's order and outside its backup and restore
+! grep -qE "COMMANDS for|apply -silent|ROLLBACK" "$T/out" && ok || bad "preflight printed the hand-run commands: $(grep -E 'COMMANDS|apply -silent|ROLLBACK' "$T/out" | head -2)"
+grep -q "READY: nothing blocking. Apply with: .*ohs-patch.sh run" "$T/out" && ok || bad "preflight's READY line does not name the gated route: $(grep READY "$T/out")"
+rc="$(runc)"
+[ "$rc" = 0 ] && grep -q "COMMANDS for $OH" "$T/out" && grep -q "bypass" "$T/out" && ok || bad "commands on a ready home: rc $rc, no block or no bypass warning: $(tail -3 "$T/out")"
 grep -q "stopComponent.sh ohs1" "$T/out" && grep -q "stopComponent.sh ohs2" "$T/out" && ok || bad "stop commands missing for a component"
 grep -q "startComponent.sh ohs2" "$T/out" && ok || bad "start command missing for ohs2"
 grep -q "stopNodeManager.sh" "$T/out" && grep -q "startNodeManager.sh" "$T/out" && ok || bad "node manager stop/start not in the commands"
@@ -194,6 +202,11 @@ grep -q "opatch' apply -silent -oh '$OH'" "$T/out" && ok || bad "the apply comma
 grep -q "oraInventory-" "$T/out" && ok || bad "the central inventory is not in the backup commands"
 grep -q "meets the README minimum 13.9.4.2.13" "$T/out" && ok || bad "README OPatch minimum not read"
 [ ! -e "$T/changed" ] && ok || bad "preflight called a changing opatch verb: $(cat "$T/changed")"
+# commands refuses a home that is not ready, and a 12c home waiting on the 19c client upgrade (T1842)
+build; echo "OPatch 13.9.4.2.10" >"$T/opv"; rc="$(runc)"
+[ "$rc" = 1 ] && ! grep -qE "COMMANDS for|apply -silent" "$T/out" && ok || bad "commands on a blocking home: rc $rc (want 1, no block): $(tail -2 "$T/out")"
+build; rc="$(runc --client-19c-pending)"
+[ "$rc" = 1 ] && grep -q "19c client upgrade must run first" "$T/out" && ! grep -qE "COMMANDS for|apply -silent|ROLLBACK" "$T/out" && ok || bad "commands --client-19c-pending: rc $rc (want 1, refused, no block): $(tail -2 "$T/out")"
 
 # each blocking problem on its own
 build; echo "OPatch 13.9.4.2.10" >"$T/opv"; rc="$(run)"
@@ -250,6 +263,10 @@ build; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="
 runp() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --client-19c-pending >"$T/out" 2>&1; echo $?; }
 build; comps 12.1.0.2.0; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
 [ "$rc" = 0 ] && ! grep -q BLOCKING "$T/out" && grep -q 'series   : 40005842 is a DB19C bundle; oracle.rdbms.rsf is 12.1.0.2.0 now' "$T/out" && grep -q 'WARN .*components: CheckApplicable did not pass on the 12c client.*deferred' "$T/out" && ok || bad "--client-19c-pending: a DB19C set on a 12c client was not deferred: rc $rc: $(grep -E 'BLOCK|series|components' "$T/out" | head -3)"
+# T1842: this READY is what ohs-quarter's dry run shows on a 12c home (ohs-quarter.sh:375). It must hand over no
+# paste-ready apply, since the 19c client upgrade runs before it in the composer's order
+build; comps 12.1.0.2.0; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(runp)"
+[ "$rc" = 0 ] && ! grep -qE "COMMANDS for|apply -silent|ROLLBACK" "$T/out" && ok || bad "--client-19c-pending preflight printed hand-run commands: rc $rc: $(grep -E 'COMMANDS|apply -silent' "$T/out" | head -2)"
 build; comps 12.1.0.2.0; printf '%s\n' "$miss" >"$T/applicable"; echo 73 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*oracle.rdbms.rsf is 12.1.0.2.0' "$T/out" && ok || bad "without --client-19c-pending a 12c client still has to block: rc $rc"
 # the deferral is for the 19c client alone (T1167, Louie #16016): any other missing component, a bare "failed", or no
@@ -688,7 +705,7 @@ grep -q 'run.log' "$T/out" && grep -q "$OH/cfgtoollogs/opatch" "$T/out" && ! gre
 
 # the unknown-command message names every command the dispatcher has
 build; rc="$(runc frobnicate)"
-grep -q 'unknown command frobnicate (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run, prune-failed)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
+grep -q 'unknown command frobnicate (inspect, plan, preflight, commands, backup, stop, apply, start, verify, rollback, run, prune-failed)' "$T/out" && ok || bad "unknown command message: $(grep unknown "$T/out")"
 
 # the tail is printed only when something WAS skipped: ${skipped:+...} expands for the string "0" too, so a clean run
 # used to say "0 skipped (0 assertions not run: ...)" - a summary claiming a gap it did not have (T316)

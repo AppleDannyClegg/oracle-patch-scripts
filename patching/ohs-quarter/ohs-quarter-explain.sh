@@ -21,6 +21,7 @@ TEE_HINT='Next time keep the log: ohs-quarter.sh <options> 2>&1 | tee ohs-quarte
 ROWS='Could not stop the components to recover|E1
 the restore failed - restore this home by hand from the backup|E2
 wls-patch restore failed|E2
+cannot stop the components before the wls restore|E2
 java-patch rollback failed|E2
 Recovery incomplete - components NOT started|E2
 the components did not start after recovery|E3
@@ -100,6 +101,7 @@ pick_sets() {
     for s in $(awk '/recovering: (dbclient-upgrade rollback|ohs-patch rollback)/ { s = "sh" }
       /recovering: wls-patch restore/ { s = "wl" }; /recovering: java-patch rollback/ { s = "jv" }
       /the restore failed - restore this home by hand/ && s == "sh" { print s }
+      /cannot stop the components before the wls restore/ { print "wl" }
       /wls-patch restore failed/ && s == "wl" { print s }; /java-patch rollback failed/ && s == "jv" { print s }' "$LOG"); do
       case "$s" in sh) sh=1;; wl) wl=1;; jv) jv=1;; esac
     done
@@ -140,10 +142,12 @@ restores() { # the by-hand restore for each set picked, newest first (recover's 
     if has 'dbclient: ' || has 'recovering: dbclient-upgrade rollback'; then
       step "home + inventory (DB Client installer): $P/dbclient-upgrade/dbclient-upgrade.sh rollback --oracle-home $OH --run-dir $SHARED (add the --backup-dir you gave ohs-quarter, if any). If that fails too: mv $OH $OH.failed-\$(date +%Y%m%d%H%M%S), then untar home.tgz, oraInventory.tgz and each domain-<name>.tgz from $ARCH into their parent dirs."
     else
-      step "home + inventory (opatch): $P/ohs-patch/ohs-patch.sh rollback --oracle-home $OH --run-dir $SHARED. If that fails too, run the tar restore its preflight printed under \"ROLLBACK (complete)\": opatch rollback -id alone does not bring back a bundle a patch replaced."
+      step "home + inventory (opatch): $P/ohs-patch/ohs-patch.sh rollback --oracle-home $OH --run-dir $SHARED. If that fails too: mv $OH $OH.failed-\$(date +%Y%m%d%H%M%S), then untar home.tgz and oraInventory.tgz from $ARCH into their parent dirs (opatch rollback -id alone does not bring back a bundle a patch replaced)."
     fi
   fi
   if [ "$wl" != 0 ]; then
+    # recover refused the WLS restore because the stop before it failed (T1845): the home may still be running
+    has 'cannot stop the components before the wls restore' && step "stop everything from the home first (stopComponent.sh for each, stopNodeManager.sh) and check: ps -ef | grep $OH - the WLS restore was refused because they would not stop"
     [ "$wl" = 2 ] && step "CHECK FIRST, WLS: compare $OH/OPatch/opatch lspatches with the WLS level before the run. Only if it changed:"
     step "WLS home + domains: $P/wls-patch/wls-patch.sh restore $WLSBK --oracle-home $OH --run-dir $RUN/wls"
   fi
@@ -195,7 +199,7 @@ case "$path" in
   E2) echo "PATH E2: a step failed after the stop, and a restore failed. The components are NOT started."
       echo "HOME: may be part-patched, and not started."; distance
       echo "CAUSE: ${cause:-see the first ERROR in the log}"
-      echo "FAILED IN RECOVERY:"; grep -E 'the restore failed|wls-patch restore failed|java-patch rollback failed' "$LOG" | sed 's/^/  /'
+      echo "FAILED IN RECOVERY:"; grep -E 'the restore failed|wls-patch restore failed|cannot stop the components before the wls restore|java-patch rollback failed' "$LOG" | sed 's/^/  /'
       echo "NEXT, by hand (redo only the restores that failed):"
       restores
       step "start: $START"

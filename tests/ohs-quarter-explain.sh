@@ -21,6 +21,7 @@ ok() { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 
 # a stub child: a FAIL_<WHO>_<VERB> or FAIL_<VERB> names the call that fails. FAIL_STOP_2 fails only the second stop
+# (FAIL_STOP_3 only the third: the stop recover runs before the WLS restore)
 # (recovery's), FAIL_START_ALL every start (FAIL_START only the first). A backup writes the state keys the real one does.
 sed "s|__T__|$T|g" >"$T/stub" <<'STUB'
 #!/bin/sh
@@ -32,7 +33,8 @@ eval "f1=\${FAIL_${W}_${V}:-}; f2=\${FAIL_${V}:-}"
 [ -n "${SIGNAL_AT:-}" ] && [ "$who $verb" = "$SIGNAL_AT" ] && kill -TERM "$PPID"
 case "$verb" in
   stop)  n=$(cat "__T__/stops" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"__T__/stops"
-         [ -n "${FAIL_STOP_2:-}" ] && [ "$n" = 2 ] && { echo "$(date '+%F %T') [ERROR] stub: stop timed out" >&2; exit 1; };;
+         [ -n "${FAIL_STOP_2:-}" ] && [ "$n" = 2 ] && { echo "$(date '+%F %T') [ERROR] stub: stop timed out" >&2; exit 1; }
+         [ -n "${FAIL_STOP_3:-}" ] && [ "$n" = 3 ] && { echo "$(date '+%F %T') [ERROR] stub: stop timed out" >&2; exit 1; };;
   start) [ -n "${FAIL_START_ALL:-}" ] && exit 1
          [ -n "${FAIL_START:-}" ] && [ ! -e "__T__/start.failed" ] && { : >"__T__/start.failed"; exit 1; };;
   backup) [ -n "$rd" ] && mkdir -p "$rd" && case "$who" in
@@ -88,7 +90,11 @@ grep -q '^CAUSE: .*stub ohs: apply failed' "$T/e1.out" && ok || bad "e1: CAUSE i
 run e2dc    FAIL_OHS_APPLY=1 FAIL_ROLLBACK=1; want e2dc 3 E2 'dbclient-upgrade.sh rollback'
 NODC=1 run e2oh FAIL_OHS_APPLY=1 FAIL_ROLLBACK=1; want e2oh 3 E2 "ohs-patch.sh rollback --oracle-home /u01/app/ohs --run-dir $T/run/backup"
 grep -q 'dbclient-upgrade' "$T/e2oh.out" && bad "e2oh: printed the installer's restore on a run with no dbclient/" || ok
-run e2wls   FAIL_OHS_APPLY=1 FAIL_WLS_RESTORE=1; want e2wls 3 E2 "wls-patch.sh restore /backups/wls-20261112 --oracle-home /u01/app/ohs --run-dir $T/run/wls"
+# T1842: the by-hand fallback is this run's own backup, not a preflight's stamped tar that no run made
+grep -qF "untar home.tgz and oraInventory.tgz from /backups/dbclient-20261112" "$T/e2oh.out" && ! grep -q 'ROLLBACK (complete)' "$T/e2oh.out" && ok || bad "e2oh: the by-hand restore does not name this run's backup: $(grep -F 'If that fails' "$T/e2oh.out")"
+# a WLS apply that fails: the shared home was never attempted, so recover does restore WLS - an OHS apply failure
+# would not reach it, since the shared restore already put the home back (ohs-quarter.sh:311, T1562; T1845)
+run e2wls   FAIL_WLS_APPLY=1 FAIL_WLS_RESTORE=1; want e2wls 3 E2 "wls-patch.sh restore /backups/wls-20261112 --oracle-home /u01/app/ohs --run-dir $T/run/wls"
 run e3      FAIL_OHS_VERIFY=1 FAIL_START_ALL=1; want e3 3 E3 'nodemanager.out'
 # a JDK apply that failed first: only the JDK is restored (nothing else was attempted)
 run e2java  FAIL_JAVA_APPLY=1 FAIL_ROLLBACK=1; want e2java 3 E2 'java-patch.sh rollback'
@@ -122,8 +128,12 @@ dist intj   '0 restore(s), plus up to 1 more to check first (JDK), then start.'
 dist intw   '1 restore(s) (JDK), plus up to 1 more to check first (WLS), then start.'
 dist inte1  '2 restore(s) (WLS, JDK), plus up to 1 more to check first (home + inventory), then start.'
 dist e2java '1 restore(s) (JDK), then start.'
-# recover goes on past a failed restore, so only the ones that failed are left to do: e2wls's home and JDK restores worked
+# recover goes on past a failed restore, so only the ones that failed are left to do: e2wls's JDK rollback worked
 dist e2wls  '1 restore(s) (WLS), then start.'
+# the stop before the WLS restore fails: recover refuses that restore (T1845), so it is still to do, after a stop
+run e2wstop FAIL_WLS_APPLY=1 FAIL_STOP_3=1; want e2wstop 3 E2 "wls-patch.sh restore /backups/wls-20261112 --oracle-home /u01/app/ohs --run-dir $T/run/wls"
+grep -qF 'the WLS restore was refused because they would not stop' "$T/e2wstop.out" && grep -qF 'cannot stop the components before the wls restore' "$T/e2wstop.out" && ok || bad "e2wstop: no stop-first step or no FAILED IN RECOVERY line: $(cat "$T/e2wstop.out")"
+dist e2wstop '1 restore(s) (WLS), then start.'
 grep -E '^  [0-9]+\. ' "$T/e2wls.out" | grep -qE 'dbclient-upgrade|ohs-patch.sh rollback|java-patch' && bad "e2wls: a restore that worked is in the steps: $(cat "$T/e2wls.out")" || ok
 for n in prefl backup stopup recov intd; do grep -qxF 'TO GET BACK TO THE PRE-RUN HOME: nothing to restore.' "$T/$n.out" && ok || bad "$n: want nothing to restore, got: $(grep 'PRE-RUN' "$T/$n.out")"; done
 grep -qxF 'TO GET BACK TO THE PRE-RUN HOME: nothing to restore; start what is down.' "$T/stopdn.out" && ok || bad "stopdn: $(grep 'PRE-RUN' "$T/stopdn.out")"
@@ -202,5 +212,12 @@ grep '^FAIL' "$T/cover" | while IFS= read -r l; do echo "$l"; done
 cf="$(grep -c '^FAIL' "$T/cover")"; [ "$cf" = 0 ] && ok || fail=$((fail + cf))
 grep -q 'nothing was patched; the components are started again' "$T/cover" && bad "the interpolated C1 message is not covered" || ok
 
+# T1845: every "recovering: ..." line explain keys on is still one ohs-quarter.sh logs (2ce280f dropped the wls one,
+# and three cases here went red with no message naming why)
+for f in $(grep -oE "recovering: (dbclient-upgrade rollback|ohs-patch rollback|wls-patch restore|java-patch rollback)" "$X" | sort -u | sed 's/ /_/g'); do
+  grep -qF "${f//_/ }" "$Q" && ok || bad "explain keys on '${f//_/ }', which ohs-quarter.sh no longer logs"
+done
+# T1842: no path's output points at a preflight's stamped tar (only a hand-run backup step ever made one)
+! grep -l 'ohs-home-' "$T"/*.out >/dev/null 2>&1 && ok || bad "an explain output names a preflight's stamped ohs-home-<stamp>.tgz: $(grep -l 'ohs-home-' "$T"/*.out | head -3)"
 echo "ohs-quarter-explain gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

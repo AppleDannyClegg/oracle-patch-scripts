@@ -9,8 +9,11 @@
 #                           OHS components and ports, and what runs from the home. No patch dir, no run dir, no change
 #   plan <patch-dir>        read-only: preflight, then the steps run would take, in run's order. No run dir, no backup
 #   preflight <patch-dir>   home, layout, domains and OHS components, what runs from the home, OPatch and series
-#                           checks, a conflict check, disk for the backup, the node manager credentials; then the
-#                           stop / backup / apply / start / verify / rollback commands for this box
+#                           checks, a conflict check, disk for the backup, the node manager credentials. It prints
+#                           no commands to run by hand (ohs-quarter's dry run shows it - T1842)
+#   commands <patch-dir>    read-only: preflight, then, only when READY, the stop / backup / apply / start / verify /
+#                           rollback commands for this box, for a window where run cannot be used. Refused under
+#                           --client-19c-pending
 #   backup <patch-dir>      preflight must be READY; back up the home, the domains and the central inventory (tar,
 #                           each read back) into a new run dir, stopping nothing. apply and rollback use it
 #   stop                    stop the OHS components, then each domain's node manager, and prove nothing runs from the
@@ -107,7 +110,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
-DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; QUIET_CMDS=0; PRUNE_ALL=0; DRY_EXT=""; OPERATOR_STOPS=0
+DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; PRINT_CMDS=0; PRUNE_ALL=0; DRY_EXT=""; OPERATOR_STOPS=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
 problems=0; unknowns=0
 # what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
@@ -539,10 +542,13 @@ cmd_preflight() {
   disk_verdict "$OH" ${inv:+"$inv"}
 
   # ---- the commands for this box ----------------------------------------------------------------------
-  local stamp; stamp="$(date '+%Y%m%d-%H%M')"
-  [ "$QUIET_CMDS" = 1 ] || {
+  # Printed only by `commands`, and only when READY (T1842): preflight is what ohs-quarter's dry run shows, and on
+  # 16 Nov 2026 a dry run's printed opatch apply was run by hand, out of the composer's order and its backup
+  local stamp hand=""; stamp="$(date '+%Y%m%d-%H%M')"
+  [ "$PRINT_CMDS" = 1 ] && hand="$({
     echo
-    echo "COMMANDS for $OH (as the user that owns it). Run them in order; stop at the first that fails."
+    echo "COMMANDS for $OH (as the user that owns it). These bypass run's gates: its backup check, and its restore"
+    echo "when a step fails. Prefer: $0 run $pdir. Run them in order; stop at the first that fails."
     echo "1. stop the OHS components, then the node manager"
     printf '%s' "$cmds_stop"
     while IFS= read -r d; do [ -n "$d" ] && echo "  $d/bin/stopNodeManager.sh"; done <<<"$doms"
@@ -568,12 +574,13 @@ cmd_preflight() {
     echo "  mv '$OH' '$OH.failed-$stamp' && tar -C '$(dirname "$OH")' -xzf '$BACKUP_DIR/ohs-home-$stamp.tgz'"
     [ -n "$inv" ] && echo "  mv '$inv' '$inv.failed-$stamp' && tar -C '$(dirname "$inv")' -xzf '$BACKUP_DIR/oraInventory-$stamp.tgz'"
     echo "  then start as in 5. (opatch rollback -id $id alone does not bring back the bundle it replaced)"
-  } >&2
+  })"
 
   echo >&2
   if [ "$unknowns" -gt 0 ]; then err "preflight could not complete: $unknowns check(s) unreadable, $problems blocking - NOT ready"; return 2; fi
   if [ "$problems" -gt 0 ]; then err "$problems blocking problem(s) - NOT ready"; return 1; fi
-  if [ "$QUIET_CMDS" = 1 ]; then log "READY: nothing blocking."; else log "READY: nothing blocking. Run the commands above in the window."; fi
+  if [ -n "$hand" ]; then printf '%s\n\n' "$hand" >&2; log "READY: nothing blocking. The commands above are for a window without run."
+  else log "READY: nothing blocking. Apply with: $0 run $pdir (or ohs-quarter.sh for the quarter)"; fi
   return 0
 }
 
@@ -757,7 +764,7 @@ manual_restore() {
   err "MANUAL RESTORE (the servers are DOWN):"
   err "  mv '$OH' '$OH.bad' && tar -C '$(dirname "$OH")' -xzf '$BK/home.tgz'"
   err "  mv '$INV' '$INV.bad' && tar -C '$(dirname "$INV")' -xzf '$BK/oraInventory.tgz'"
-  err "  then start node manager and the components (see 'preflight' for the commands)"
+  err "  then: $0 start --oracle-home $OH"
 }
 
 # after a change failed: restore, prove the level, start. Never opatch rollback (README). exit 1 or 3.
@@ -780,7 +787,6 @@ run_gate() {
   [ -n "$pdir" ] || die "$what needs <patch-dir>"
   [ "$NO_BACKUP" = 1 ] && { err "--no-backup refused: the README's rollback is the backup of ORACLE_HOME and the central inventory"; exit 1; }
   [ "$DRY_RUN" = 1 ] && { DRY_EXT="$(mktemp -d)"; trap 'rm -rf "$DRY_EXT"' EXIT; }
-  QUIET_CMDS=1
   local prc; cmd_preflight "$pdir"; prc=$?
   [ "$prc" = 0 ] || { err "$what refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
   if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
@@ -893,6 +899,14 @@ cmd_run() {
   exit 0
 }
 
+# commands: preflight, then the hand-run block for a window run cannot be used in (T1842). Read-only; ohs-quarter
+# never calls it. A home waiting on the 19c client upgrade gets no block: the upgrade comes first in the same outage
+cmd_commands() {
+  [ "$CLIENT19_PENDING" = 1 ] && { err "commands refused under --client-19c-pending: the 19c client upgrade must run first, so hand commands for this 12c home would patch it out of order - use ohs-quarter.sh"; exit 1; }
+  PRINT_CMDS=1
+  cmd_preflight "$@"; exit $?
+}
+
 # read-only: what run would do, in run's order, from the same checks run makes
 cmd_plan() {
   DRY_RUN=1
@@ -969,7 +983,6 @@ cmd_apply() {
   local pdir="${1:-}"
   [ -n "$pdir" ] || die "apply needs <patch-dir>"
   [ "$DRY_RUN" = 1 ] && { DRY_EXT="$(mktemp -d)"; trap 'rm -rf "$DRY_EXT"' EXIT; }
-  QUIET_CMDS=1
   local prc; cmd_preflight "$pdir"; prc=$?
   [ "$prc" = 0 ] || { err "apply refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
   if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
@@ -1075,7 +1088,7 @@ cmd_rollback() {
   OH="$(sv oracle_home)"; INV="$(sv inventory)"; BK="$(sv backup_dir)"; PID="$(sv patch)"; PRE_IDS="$(sv pre_patches)"
   [ -n "$OH" ] && [ -n "$INV" ] && [ -n "$BK" ] || die "$rd/state does not name the home, inventory and backup"
   [ "$(sv backup)" = ok ] || die "run $rd never completed its backup - nothing to roll back from"
-  ORACLE_HOME_ARG="$OH"; QUIET_CMDS=1
+  ORACLE_HOME_ARG="$OH"
   local d c; DOMS="$(domains_of "$OH")"; COMPS=""
   while IFS= read -r d; do [ -n "$d" ] || continue; for c in $(ohs_components "$d"); do COMPS="$COMPS$d|$c"$'\n'; done; done <<<"$DOMS"
   if [ "$DRY_RUN" = 1 ]; then log "dry-run: would stop the components, restore $OH and $INV from $BK, check the patches are [$PRE_IDS], start them"; exit 0; fi
@@ -1110,6 +1123,7 @@ main() {
   case "$cmd" in
     inspect)   cmd_inspect ;;
     preflight) cmd_preflight "${args[@]+"${args[@]}"}" ;;
+    commands)  cmd_commands "${args[@]+"${args[@]}"}" ;;
     "") usage; exit 2 ;;
     plan)      cmd_plan "${args[@]+"${args[@]}"}" ;;
     backup)    cmd_backup "${args[@]+"${args[@]}"}" ;;
@@ -1120,7 +1134,7 @@ main() {
     run)       cmd_run "${args[@]+"${args[@]}"}" ;;
     rollback)  cmd_rollback "${args[@]+"${args[@]}"}" ;;
     prune-failed) cmd_prune_failed ;;
-    *) die "unknown command $cmd (inspect, plan, preflight, backup, stop, apply, start, verify, rollback, run, prune-failed)" ;;
+    *) die "unknown command $cmd (inspect, plan, preflight, commands, backup, stop, apply, start, verify, rollback, run, prune-failed)" ;;
   esac
 }
 
