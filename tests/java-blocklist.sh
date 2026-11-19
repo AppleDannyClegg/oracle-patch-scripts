@@ -66,6 +66,12 @@ mkdir -p "$T/copy"; cp "$S" "$T/copy/"
 cp "$j17" "$T/j17.now"; out="$("$T/copy/java-blocklist.sh" "$T/j17" --apply 2>&1)"; rc=$?
 [ $rc = 1 ] && cmp -s "$j17" "$T/j17.now" && case "$out" in *"fingerprint list"*) true;; *) false;; esac && ok || bad "missing list: rc=$rc, want 1 with a named refusal: $out"
 
+# CRLF lists (git on Windows) still add all 16, uppercase, with no carriage return written into the JDK's file
+mkdir -p "$T/crlf" "$T/jc/lib/security"; cp "$S" "$T/crlf/"; for f in "$(dirname "$S")"/*.sha256; do sed 's/$/\r/' "$f" >"$T/crlf/$(basename "$f")"; done
+printf 'Algorithm=SHA-256\n' >"$T/jc/lib/security/blocked.certs"
+"$T/crlf/java-blocklist.sh" "$T/jc" --apply >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && [ "$(keys "$T/jc/lib/security/blocked.certs" | grep -c .)" = 16 ] && ! grep -q $'\r' "$T/jc/lib/security/blocked.certs" && ok || bad "CRLF lists: rc=$rc, $(keys "$T/jc/lib/security/blocked.certs" | grep -c .) keys (want 16, no CR written)"
+
 # refusals: wrong header, no file, unknown option - exit non-zero, file untouched
 cp "$T/bad/lib/security/blocked.certs" "$T/bad.orig"
 "$S" "$T/bad" --apply >/dev/null 2>&1; rc=$?

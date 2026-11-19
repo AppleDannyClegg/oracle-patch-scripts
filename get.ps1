@@ -22,7 +22,8 @@ library; to actually RUN the scripts on Windows you need Git Bash or WSL (bash o
 
 Copy to the server and make the scripts executable there in one step. Windows has no Unix exec
 bit, so a plain scp (or a git pull on Windows and then scp) leaves every script non-executable;
--Server copies the tree over one ssh session and runs chmod +x on every *.sh there:
+-Server packs the tree, copies it with scp, unpacks it over ssh and runs chmod +x on every *.sh
+there (ssh may ask for the password twice):
 
   .\get.ps1 -Server oracle@dbhost                    # download the newest, then copy to ~/scripts there
   .\get.ps1 -Server oracle@dbhost -PushOnly          # copy THIS tree as it is (e.g. your git checkout)
@@ -30,7 +31,7 @@ bit, so a plain scp (or a git pull on Windows and then scp) leaves every script 
 
 The tree lands as <RemoteParent>/<folder name> (default: the oracle user's home). .git, *.conf and
 downloaded patches (patches-*) are not copied, so the server keeps its own oracle.conf. It fails,
-rather than saying done, if any script on the server is still not executable afterwards.
+rather than saying done, if tar, scp or ssh fails or any script on the server is still not executable.
 
 Custom destination (the pipe form cannot take arguments; build a script block instead):
 
@@ -117,46 +118,65 @@ if (-not $Dest) {
     $Dest = Join-Path $base 'scripts'
 }
 
-# Push-Tree: copy the tree to $Server in ONE ssh session (one password prompt) and set the exec bit there.
-# tar, not scp: tar can leave out .git, *.conf and downloaded patches. *.conf is left out on purpose so a
-# push never overwrites the server's own oracle.conf or tool confs; set those up on the server. The remote
-# side checks that no *.sh is left without +x and fails if one is.
+# Push-Tree: copy the tree to $Server and set the exec bit there. Three steps, each checked: (1) tar the tree
+# into a local archive - called directly, no shell, so a path holding $ or spaces is passed as it is; (2) scp
+# that one archive to the server; (3) ssh: unpack it, chmod +x every *.sh, count the scripts still not
+# executable and all of them. Done only when tar, scp and ssh all exit 0 AND the counts are 0 and >0.
+# .git, *.conf and downloaded patches-* are left out, so a push never overwrites the server's own oracle.conf.
 function Test-PushArg([string] $Value, [string] $Pattern, [string] $What) {
-    if ($Value -notmatch $Pattern) { throw "$What '$Value' has characters this copy does not accept (letters, digits, . _ - / @ only)" }
+    if ($Value -notmatch $Pattern) { throw "$What '$Value' is not accepted here (letters, digits and . _ - / @ only, and it may not start with '-')" }
 }
 function Get-PushCommand([string] $Local, [string] $Target, [string] $Parent) {
     $Local = (Resolve-Path -LiteralPath $Local).Path.TrimEnd('\', '/')
     $leaf = Split-Path -Leaf $Local
-    $localParent = Split-Path -Parent $Local
-    Test-PushArg $Target '^[A-Za-z0-9._-]+(@[A-Za-z0-9._-]+)?$' 'server'
-    Test-PushArg $leaf '^[A-Za-z0-9._-]+$' 'folder name'
+    Test-PushArg $Target '^[A-Za-z0-9._][A-Za-z0-9._-]*(@[A-Za-z0-9._][A-Za-z0-9._-]*)?$' 'server'
+    Test-PushArg $leaf '^[A-Za-z0-9._][A-Za-z0-9._-]*$' 'folder name'
     $p = if ($Parent) { $Parent.TrimEnd('/') } else { '.' }
-    Test-PushArg $p '^[A-Za-z0-9._/-]+$' 'remote folder'
+    Test-PushArg $p '^[A-Za-z0-9._/][A-Za-z0-9._/-]*$' 'remote folder'
     $tree = "$p/$leaf"
-    # the remote command: unpack, chmod every script, then count the scripts still not executable and all of
-    # them. No $(...) or $VAR in it: the local shell (bash off Windows) would expand those on THIS machine
-    $remote = "mkdir -p '$p' && tar -xf - -C '$p' && find '$tree' -name '*.sh' -exec chmod +x {} + && echo pushed-ok && find '$tree' -name '*.sh' ! -perm -u+x | wc -l && find '$tree' -name '*.sh' | wc -l"
-    $tarArgs = "-cf - -C `"$localParent`" --exclude=.git --exclude=*.conf --exclude=*.old --exclude=patches-* `"$leaf`""
-    [pscustomobject]@{ Tree = $tree; Tar = $tarArgs; Ssh = "ssh $Target `"$remote`"" }
+    $archive = '.oracle-push-' + [guid]::NewGuid().ToString('N') + '.tar'
+    # every value in it passed the patterns above. Under set -e each step, both scans included, must succeed
+    # before pushed-ok is printed: a scan writes to a file and is counted after, so a pipe cannot hide its
+    # status. No $ and no double quote: Windows PowerShell 5.1 mangles a double quote in a native argument
+    $scan = "$archive.scan"
+    $remote = "set -e; mkdir -p '$p'; tar -xf '$archive' -C '$p'; rm -f '$archive'; find '$tree' -name '*.sh' -exec chmod +x {} +; find '$tree' -name '*.sh' ! -perm -u+x > '$scan.n'; find '$tree' -name '*.sh' > '$scan.a'; echo pushed-ok; wc -l < '$scan.n'; wc -l < '$scan.a'; rm -f '$scan.n' '$scan.a'"
+    $tarArgs = @('-cf', '<archive>', '-C', (Split-Path -Parent $Local), '--exclude=.git', '--exclude=*.conf', '--exclude=*.old', '--exclude=patches-*', '--', $leaf)
+    [pscustomobject]@{ Tree = $tree; Leaf = $leaf; Archive = $archive; TarArgs = $tarArgs; Remote = $remote }
 }
 function Push-Tree([string] $Local, [string] $Target, [string] $Parent) {
-    foreach ($tool in 'tar', 'ssh') {
-        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool not found: Windows 10/11 ship both (OpenSSH Client and tar.exe); install the OpenSSH Client optional feature" }
+    foreach ($tool in 'tar', 'scp', 'ssh') {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool not found: Windows 10/11 ship all three (the OpenSSH Client optional feature and tar.exe)" }
     }
     $c = Get-PushCommand $Local $Target $Parent
-    Write-Host "copying $Local to ${Target}:$($c.Tree) (one ssh session; .git, *.conf and downloaded patches are left out)"
-    # cmd's pipe carries tar's bytes unchanged; a PowerShell 5.1 pipe between two programs re-encodes them
-    $line = "tar $($c.Tar) | $($c.Ssh)"
-    $out = if ($env:OS -eq 'Windows_NT') { cmd /c $line 2>&1 } else { bash -c $line 2>&1 }
-    $out | ForEach-Object { Write-Host "  $_" }
-    $lines = @($out | ForEach-Object { "$_".Trim() })
-    $i = [array]::LastIndexOf($lines, 'pushed-ok')
-    if ($i -lt 0 -or $lines.Count -lt $i + 3 -or $lines[$i + 1] -notmatch '^\d+$' -or $lines[$i + 2] -notmatch '^\d+$') {
-        throw "the copy to $Target did not finish (see above) - nothing was confirmed on the server"
+    $tmpTar = Join-Path ([IO.Path]::GetTempPath()) $c.Archive
+    try {
+        $tarArgs = $c.TarArgs | ForEach-Object { if ($_ -eq '<archive>') { $tmpTar } else { $_ } }
+        # native stderr must never stop this: on Windows PowerShell 5.1 with 'Stop', a program writing to stderr
+        # (an ssh login banner, a tar warning) throws before its exit status is read. Exit codes decide instead.
+        $ErrorActionPreference = 'Continue'
+        & tar @tarArgs
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tmpTar)) { throw "tar could not pack $Local (exit $LASTEXITCODE) - nothing was copied" }
+        $listed = @(& tar -tf $tmpTar | Where-Object { $_ -like '*.sh' })
+        if ($LASTEXITCODE -ne 0 -or $listed.Count -eq 0) { throw "the archive of $Local holds no scripts (tar exit $LASTEXITCODE) - nothing was copied" }
+        Write-Host "copying $Local to ${Target}:$($c.Tree) ($($listed.Count) scripts; .git, *.conf and downloaded patches are left out). ssh may ask for the password twice: once to copy, once to unpack"
+        & scp -q $tmpTar "${Target}:$($c.Archive)"
+        if ($LASTEXITCODE -ne 0) { throw "scp to $Target failed (exit $LASTEXITCODE) - nothing was copied" }
+        # stdout only: stderr (banners, warnings) goes to the console, never into the parsed counts
+        $out = @(& ssh $Target $c.Remote)
+        $sshRc = $LASTEXITCODE
+        $out | ForEach-Object { Write-Host "  $_" }
+        if ($sshRc -ne 0) { throw "on $Target the unpack/chmod step failed (ssh exit $sshRc) - not confirmed; see above. If it never ran, the copied archive ~/$($c.Archive) is still on the server: delete it, or re-run" }
+        $lines = @($out | ForEach-Object { "$_".Trim() })
+        $i = [array]::LastIndexOf($lines, 'pushed-ok')
+        if ($i -lt 0 -or $lines.Count -lt $i + 3 -or $lines[$i + 1] -notmatch '^\d+$' -or $lines[$i + 2] -notmatch '^\d+$') {
+            throw "the copy to $Target did not report back (see above) - not confirmed"
+        }
+        $notExec = [int]$lines[$i + 1]; $scripts = [int]$lines[$i + 2]
+        if ($notExec -ne 0 -or $scripts -lt $listed.Count) { throw "on $Target, $notExec of $scripts scripts are not executable after the copy (sent $($listed.Count))" }
+        Write-Host "done on ${Target}: $scripts scripts at $($c.Tree), all executable"
+    } finally {
+        Remove-Item -LiteralPath $tmpTar -Force -ErrorAction SilentlyContinue
     }
-    $notExec = [int]$lines[$i + 1]; $scripts = [int]$lines[$i + 2]
-    if ($notExec -ne 0 -or $scripts -eq 0) { throw "on $Target, $notExec of $scripts scripts are not executable after the copy" }
-    Write-Host "done on ${Target}: $scripts scripts copied to $($c.Tree), all executable"
 }
 
 # -SelfTest covers this copy of the resolver before any network: it cannot be dot-sourced by the other gate
@@ -183,10 +203,12 @@ if ($SelfTest) {
         $null = New-Item -ItemType Directory -Force -Path (Join-Path $pt 'scripts')
         $c = Get-PushCommand (Join-Path $pt 'scripts') 'oracle@db-1' '/u01/app'
         if ($c.Tree -ne '/u01/app/scripts') { $fail++; Write-Host "FAIL push lands at <parent>/<folder> ($($c.Tree))" }
-        foreach ($x in '--exclude=.git', '--exclude=*.conf', '--exclude=patches-*') { if ($c.Tar -notlike "*$x*") { $fail++; Write-Host "FAIL push tar lacks $x" } }
-        if ($c.Ssh -notlike "*-exec chmod +x*" -or $c.Ssh -notlike "*! -perm -u+x*") { $fail++; Write-Host 'FAIL push does not chmod and re-check the exec bit' }
+        foreach ($x in '--exclude=.git', '--exclude=*.conf', '--exclude=patches-*') { if ($c.TarArgs -notcontains $x) { $fail++; Write-Host "FAIL push tar lacks $x" } }
+        if ($c.Remote -notlike "*-exec chmod +x*" -or $c.Remote -notlike "*! -perm -u+x*" -or $c.Remote -notlike 'set -e;*') { $fail++; Write-Host 'FAIL push does not chmod and re-check the exec bit under set -e' }
+        if ($c.Remote -match '[$"]') { $fail++; Write-Host 'FAIL the remote command holds a $ or a double quote' }
+        if ($c.Remote -match '\|') { $fail++; Write-Host 'FAIL the remote command pipes a scan (its status would be lost)' }
         if ((Get-PushCommand (Join-Path $pt 'scripts') 'oracle@db-1' '').Tree -ne './scripts') { $fail++; Write-Host 'FAIL push defaults to the home folder' }
-        foreach ($bad in @(@('oracle@db-1;rm -rf /', '/u01'), @('oracle@db-1', "/u01'x"), @('oracle@db-1', '/u01 x'))) {
+        foreach ($bad in @(@('oracle@db-1;rm -rf /', '/u01'), @('oracle@db-1', "/u01'x"), @('oracle@db-1', '/u01 x'), @('-oProxyCommand=x', '/u01'), @('oracle@db-1', '-x'))) {
             $threw = $false; try { $null = Get-PushCommand (Join-Path $pt 'scripts') $bad[0] $bad[1] } catch { $threw = $true }
             if (-not $threw) { $fail++; Write-Host "FAIL push accepted '$($bad[0])' '$($bad[1])'" }
         }
