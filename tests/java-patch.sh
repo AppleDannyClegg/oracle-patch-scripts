@@ -146,10 +146,11 @@ esac
 grep -Fxq "print 'WLST_OK'" "$2" || exit 31
 [ "$JAVA_HOME" = "$WLST_TEST_JAVA_HOME" ] || exit 32
 case "$WLST_TEST_MODE" in
-  success) printf '%s\n' 'WLST_OK';;
+  success) printf '%s\r\n' 'wls:/offline> WLST_OK  ';;
   error)
     printf '%s\n' 'java.lang.IllegalStateException: fixture startup failure'
     printf '%s\n' 'ERROR: secondary detail' >&2
+    printf '%s\n' 'WLST_OK'
     exit 33;;
   no-marker) printf '%s\n' 'WLST exited without running the script';;
 esac
@@ -180,7 +181,7 @@ verify_with_wlst() (
   cmd_verify
 )
 verify_with_wlst success >"$T/wlst-success" 2>&1 && ok || bad "WLST probe success changed verify status"
-grep -q 'WLST starts on the new JDK' "$T/wlst-success" && ok || bad "WLST did not receive a real probe script under RUN_DIR with the installed JDK"
+grep -q 'WLST starts on the new JDK' "$T/wlst-success" && ok || bad "WLST did not accept a real probe script and formatted marker on the installed JDK"
 verify_with_wlst error >"$T/wlst-error" 2>&1 && ok || bad "WLST probe failure should stay a warning"
 grep -q 'WLST did not start cleanly.*IllegalStateException: fixture startup failure' "$T/wlst-error" &&
   ! grep -q 'WLST did not start cleanly.*secondary detail' "$T/wlst-error" && ok || bad "WLST warning did not include the first diagnostic"

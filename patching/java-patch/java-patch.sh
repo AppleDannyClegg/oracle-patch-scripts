@@ -487,7 +487,7 @@ verify_wlst() {
   JAVA_HOME="$java_home" to 120 "$home/oracle_common/common/bin/wlst.sh" -skipWLSModuleScanning "$probe" \
     </dev/null >"$output" 2>&1 || status=$?
   cat "$output" >>"$LOG_FILE"
-  if [ "$status" = 0 ] && grep -Fxq WLST_OK "$output"; then
+  if [ "$status" = 0 ] && grep -Fq WLST_OK "$output"; then
     log "WLST starts on the new JDK ($home)"
     return
   fi
