@@ -134,7 +134,8 @@ server:
 .\get.ps1 -Server oracle@dbhost -PushOnly    # copy this tree as it is (e.g. your git checkout), same chmod
 ```
 
-It uses one ssh session (Windows 10/11's built-in OpenSSH and tar), leaves out `.git`, `*.conf` and
+It packs the tree with tar, copies the one archive with scp and unpacks it over ssh (Windows 10/11's built-in
+OpenSSH and tar; ssh may ask for the password twice), and says done only when all three succeed. It leaves out `.git`, `*.conf` and
 downloaded `patches-*` folders (so the server keeps its own `oracle.conf`), and fails if any script on the
 server is still not executable afterwards. `-RemoteParent /u01/app` puts the tree somewhere other than the
 home folder. If you copied by hand, run `find . -name '*.sh' -exec chmod +x {} +` on the server, at the top
