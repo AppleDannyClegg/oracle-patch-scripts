@@ -22,8 +22,12 @@ cat >"$T/stub-child" <<EOF
 #!/bin/sh
 who="\$(basename "\$0")"; case "\$who" in stub-java) who=java;; stub-wls) who=wls;; esac
 printf '%s %s\n' "\$who" "\$*" >>"$T/calls.log"
-rd=""; prev=""
-for a in "\$@"; do [ "\$prev" = "--run-dir" ] && rd="\$a"; prev="\$a"; done
+rd=""; bd="$T/bk-quarter"; prev=""
+for a in "\$@"; do
+  [ "\$prev" = "--run-dir" ] && rd="\$a"
+  [ "\$prev" = "--backup-dir" ] && bd="\$a/quarter-backup"
+  prev="\$a"
+done
 case "\$1" in
   apply)
     case "\$2" in
@@ -32,7 +36,7 @@ case "\$1" in
     esac
     [ "\$who" = java ] && [ -n "\${FAIL_JAVA_APPLY:-}" ] && { [ -n "\$rd" ] && echo "old_jdk=/tmp/x.old-1" >>"\$rd/state"; exit 1; }
     [ -n "\$rd" ] && echo "apply=ok" >>"\$rd/state" ;;
-  backup) [ "\$who" = wls ] && [ -n "\$rd" ] && [ -z "\${NO_BACKUP_STATE:-}" ] && echo "backup_dir=$T/bk-quarter" >>"\$rd/state" ;;
+  backup) [ "\$who" = wls ] && [ -n "\$rd" ] && [ -z "\${NO_BACKUP_STATE:-}" ] && echo "backup_dir=\$bd" >>"\$rd/state" ;;
   restore) [ -n "\${FAIL_WLS_RESTORE:-}" ] && exit 1 ;;
   rollback) [ -n "\${FAIL_JAVA_ROLLBACK:-}" ] && exit 1 ;;
   verify) [ "\$who" = java ] && [ -n "\${FAIL_JAVA_VERIFY:-}" ] && exit 1 ;;
@@ -141,6 +145,15 @@ grep -q "^wls restore $T/bk-quarter " "$T/calls.log" && ok || bad "recovery did 
 runq "$T/rootbk" FAIL_WLS_SPB=1 NO_BACKUP_STATE=1
 grep -q '^wls restore' "$T/calls.log" && bad "with no backup_dir recorded, recovery still ran a bare restore" || ok
 grep -q '^wls start' "$T/calls.log" && bad "with no backup to restore, the servers were started" || ok
+
+# ---- optional WLS backup location, including spaces and recovery ----
+backup_dir="$T/quarter backups"
+: >"$T/calls.log"; rm -rf "$T/run"; rm -f "$T/stop.ok"
+FAIL_WLS_SPB=1 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --backup-dir "$backup_dir" --yes >"$T/out" 2>&1
+rc=$?
+[ "$rc" != 0 ] && grep -Fqx "backup_dir=$backup_dir/quarter-backup" "$T/run/wls/state" && ok || bad "WebLogic backup did not get the custom directory"
+grep -Fq "wls restore $backup_dir/quarter-backup " "$T/calls.log" && ok || bad "restore did not use the recorded custom backup"
+grep '^java ' "$T/calls.log" | grep -q -- '--backup-dir' && bad "Java child received the WebLogic backup directory" || ok
 
 echo "wls-quarter gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
