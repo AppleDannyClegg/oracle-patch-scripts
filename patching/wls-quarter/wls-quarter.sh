@@ -23,6 +23,7 @@
 #   --patch-root DIR   the staging root (default OUTPUT_DIR if set, else /u01/patches; or the positional argument)
 #   --java-home DIR    the JDK to replace (passed to both children)
 #   --oracle-home DIR  the WebLogic home (passed to wls-patch)
+#   --backup-dir DIR   override the WebLogic backup directory (passed to wls-patch)
 #   --run-dir DIR      the quarter's run dir (default: $RUN_BASE/<stamp>-wls-quarter)
 #   --no-cacerts       do not carry CA aliases (java-patch)
 #   --force            passed to both children (it does NOT waive the in-place JVM stop)
@@ -79,12 +80,13 @@ optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PATCH_ROOT=""; JAVA_HOME_ARG=""; ORACLE_HOME_ARG=""; RUN_DIR=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
+PATCH_ROOT=""; JAVA_HOME_ARG=""; ORACLE_HOME_ARG=""; BACKUP_DIR_ARG=""; RUN_DIR=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --patch-root) optchk "$@"; PATCH_ROOT="$2"; shift 2;;
     --java-home)  optchk "$@"; JAVA_HOME_ARG="$2"; shift 2;;
     --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2;;
+    --backup-dir) optchk "$@"; BACKUP_DIR_ARG="$2"; shift 2;;
     --run-dir)    optchk "$@"; RUN_DIR="$2"; shift 2;;
     --no-cacerts) NO_CACERTS=1; shift;;
     --force)      FORCE=1; shift;;
@@ -136,6 +138,7 @@ mkdir -p "$JAVA_RUN" "$WLS_RUN" || die "Cannot create the run dir $RUN_DIR: $OUT
 JOPTS=(); [ -n "$JAVA_HOME_ARG" ] && JOPTS+=(--java-home "$JAVA_HOME_ARG"); [ "$NO_CACERTS" = 1 ] && JOPTS+=(--no-cacerts)
 [ "$FORCE" = 1 ] && JOPTS+=(--force); [ "$DRY" = 1 ] && JOPTS+=(--dry-run); [ "$YES" = 1 ] && JOPTS+=(--yes)
 WOPTS=(); [ -n "$ORACLE_HOME_ARG" ] && WOPTS+=(--oracle-home "$ORACLE_HOME_ARG"); [ -n "$JAVA_HOME_ARG" ] && WOPTS+=(--java-home "$JAVA_HOME_ARG")
+[ -n "$BACKUP_DIR_ARG" ] && WOPTS+=(--backup-dir "$BACKUP_DIR_ARG")
 [ "$FORCE" = 1 ] && WOPTS+=(--force); [ "$DRY" = 1 ] && WOPTS+=(--dry-run); [ "$YES" = 1 ] && WOPTS+=(--yes)
 
 jrun() { # <java-patch command and args...>
