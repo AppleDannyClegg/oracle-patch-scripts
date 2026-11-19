@@ -469,6 +469,39 @@ cmd_restart() {
   state_set restart "$([ "$fail" = 0 ] && echo ok || echo failed)"; return "$fail"
 }
 
+verify_wlst() {
+  local home="$1" java_home="$2" probe_dir probe output status=0 detail
+  # WLST script mode takes a regular .py file. Keep each invocation's diagnostics
+  # separate so a warning never quotes a previous home or an earlier verify.
+  probe_dir="$(CDPATH='' cd -- "$RUN_DIR" && mktemp -d "$PWD/wlst-verify.XXXXXX")" || {
+    warn "WLST did not start cleanly in $home: cannot create a probe directory in $RUN_DIR"
+    return
+  }
+  probe="$probe_dir/probe.py"
+  output="$probe_dir/wlst.log"
+  printf '%s\n' "print 'WLST_OK'" >"$probe" || {
+    warn "WLST did not start cleanly in $home: cannot write $probe"
+    return
+  }
+
+  JAVA_HOME="$java_home" to 120 "$home/oracle_common/common/bin/wlst.sh" -skipWLSModuleScanning "$probe" \
+    </dev/null >"$output" 2>&1 || status=$?
+  cat "$output" >>"$LOG_FILE"
+  if [ "$status" = 0 ] && grep -Fxq WLST_OK "$output"; then
+    log "WLST starts on the new JDK ($home)"
+    return
+  fi
+
+  detail="$(grep -m 1 -E '(^|[^[:alnum:]_])(ERROR|[[:alnum:]_]*Exception)([^[:alnum:]_]|$)' "$output" || true)"
+  if [ -z "$detail" ]; then
+    case "$status" in
+      0) detail="WLST_OK marker missing";;
+      *) detail="exit status $status";;
+    esac
+  fi
+  warn "WLST did not start cleanly in $home: $detail (see $output)"
+}
+
 cmd_verify() {
   discover; reuse_or_init verify; local fail=0
   # a dry run installed nothing, so asserting on it would always fail; a separate 'verify --dry-run' after a
@@ -493,7 +526,12 @@ cmd_verify() {
   elif [ -n "$oldrun" ]; then warn "still running on the OLD JDK (restart them): $(printf '%s\n' "$oldrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"; else log "no JVM runs on the old JDK"; fi
   local newrun; newrun="$(running_on "$(readlink -f "$newjh")" 2>/dev/null)" || newrun=""; [ -n "$newrun" ] && log "running on the new JDK: $(printf '%s\n' "$newrun" | awk '{print $2"("$1")"}' | tr '\n' ' ')"
   local u; for u in ${CHECK_URLS//,/ } ${USER_ORDS_URL:-}; do local c; c="$(url_code "$u" 15)"; [[ "$c" =~ ^(200|30[0-9]|401|403)$ ]] && log "$u: HTTP $c" || { err "$u: HTTP ${c:-none}"; fail=1; }; done
-  local h; for h in $(wls_homes); do [ -x "$h/oracle_common/common/bin/wlst.sh" ] && [ "$DRY_RUN" = 0 ] && { echo "print 'WLST_OK'" | to 120 "$h/oracle_common/common/bin/wlst.sh" -skipWLSModuleScanning /dev/stdin 2>>"$LOG_FILE" | grep -q WLST_OK && log "WLST starts on the new JDK ($h)" || warn "WLST did not start cleanly in $h (see log)"; }; done
+  if [ "$DRY_RUN" = 0 ]; then
+    local h
+    while IFS= read -r h; do
+      [ ! -x "$h/oracle_common/common/bin/wlst.sh" ] || verify_wlst "$h" "$newjh"
+    done < <(wls_homes)
+  fi
   state_set verify "$([ "$fail" = 0 ] && echo ok || echo failed)"; [ "$fail" = 0 ] && log "Verify OK" || err "Verify FAILED"; return "$fail"
 }
 

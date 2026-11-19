@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# java-patch.sh gate: the tarball picker accepts every JDK naming shape Oracle ships.
+# java-patch.sh gate: Oracle JDK tarball selection and the WLST startup probe.
 #
 # java-patch gets its tarball from get-patches, which keeps Oracle's own name: a Java 8 download is
 # 'server-jre-8u511-linux-x64.tar.gz', a JDK update is 'jdk-17.0.9_linux-x64_bin.tar.gz', a plain JRE
@@ -130,6 +130,65 @@ mk_java_tar "$T/mixed" 'server-jre-8u471-linux-x64.tar.gz' 'jdk8u471' '1.8.0_471
 out="$(pick "$T/mixed")"
 [ -z "$out" ] && ok || bad "pick_tar silently picked '$out' from a mixed jdk/server-jre dir (want a die)"
 grep -qi 'more than one kind' "$T/pick.err" && ok || bad "a mixed-kind dir did not name the 'more than one kind' error"
+
+# ---- WLST verify uses a real script and reports the first diagnostic from this invocation ----------------
+mkdir -p "$T/wls/oracle_common/common/bin" "$T/installed/bin" "$T/run with spaces"
+touch "$T/installed/bin/java"
+chmod +x "$T/installed/bin/java"
+cat >"$T/wls/oracle_common/common/bin/wlst.sh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+cd / || exit 29
+case "$2" in
+  "$WLST_TEST_RUN_DIR"/*.py) ;;
+  *) echo "ERROR: WLST requires a script file" >&2; exit 30 ;;
+esac
+grep -Fxq "print 'WLST_OK'" "$2" || exit 31
+[ "$JAVA_HOME" = "$WLST_TEST_JAVA_HOME" ] || exit 32
+case "$WLST_TEST_MODE" in
+  success) printf '%s\n' 'WLST_OK';;
+  error)
+    printf '%s\n' 'java.lang.IllegalStateException: fixture startup failure'
+    printf '%s\n' 'ERROR: secondary detail' >&2
+    exit 33;;
+  no-marker) printf '%s\n' 'WLST exited without running the script';;
+esac
+EOF
+chmod +x "$T/wls/oracle_common/common/bin/wlst.sh"
+# Isolate the verify entry point from host discovery and the separate certificate/process gates.
+# The generated source reads the fixture variables below.
+# shellcheck disable=SC1091,SC2034
+verify_with_wlst() (
+  . "$T/tree/patching/java-patch/java-patch.sh"
+  cd "$T" || return 1
+  RUN_DIR='run with spaces'
+  LOG_FILE="$RUN_DIR/verify.log"
+  IN_PLACE=1
+  DRY_RUN="${2:-0}"
+  CHECK_URLS=""
+  export WLST_TEST_MODE="$1" WLST_TEST_RUN_DIR="$T/$RUN_DIR" WLST_TEST_JAVA_HOME="$T/installed"
+  discover() { :; }
+  reuse_or_init() { :; }
+  state_get() {
+    case "$1" in new_jh) printf '%s\n' "$T/installed";; new_ver) echo 17.0.21.1;; apply) echo ok;; esac
+  }
+  state_set() { :; }
+  jdk_version() { echo 17.0.21.1; }
+  cve_tree_check() { :; }
+  running_on() { :; }
+  wls_homes() { printf '%s\n' "$T/wls"; }
+  cmd_verify
+)
+verify_with_wlst success >"$T/wlst-success" 2>&1 && ok || bad "WLST probe success changed verify status"
+grep -q 'WLST starts on the new JDK' "$T/wlst-success" && ok || bad "WLST did not receive a real probe script under RUN_DIR with the installed JDK"
+verify_with_wlst error >"$T/wlst-error" 2>&1 && ok || bad "WLST probe failure should stay a warning"
+grep -q 'WLST did not start cleanly.*IllegalStateException: fixture startup failure' "$T/wlst-error" &&
+  ! grep -q 'WLST did not start cleanly.*secondary detail' "$T/wlst-error" && ok || bad "WLST warning did not include the first diagnostic"
+grep -q 'ERROR: secondary detail' "$T/run with spaces/verify.log" && ok || bad "WLST log did not retain its stderr"
+verify_with_wlst no-marker >"$T/wlst-no-marker" 2>&1
+grep -q 'WLST did not start cleanly.*WLST_OK marker missing' "$T/wlst-no-marker" && ok || bad "WLST without a marker was not diagnosed"
+verify_with_wlst error 1 >"$T/wlst-dry-run" 2>&1
+! grep -q 'WLST did not start cleanly\|WLST starts' "$T/wlst-dry-run" && ok || bad "dry-run verify invoked WLST"
 
 echo "java-patch gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
