@@ -205,7 +205,15 @@ init_run_dir() {
   LOG_FILE="$RUN_DIR/$TOOL.log"; STATE_FILE="$RUN_DIR/state"
   # 'latest' is how the next command (verify, rollback, cleanup) finds this run: a link that could not be moved would send
   # it to the PREVIOUS run's state and material, so the failure is said out loud and the --run-dir to pass is named
-  [ "$RUN_DIR" = "$RUN_BASE/latest" ] || [ "$RUN_DIR" = "$RUN_BASE/latest/" ] || { ln -sfn "$RUN_DIR" "$RUN_BASE/latest" 2>/dev/null && [ "$(readlink "$RUN_BASE/latest" 2>/dev/null)" = "$RUN_DIR" ]; } \
+  # A run dir handed over from outside RUN_BASE (wls-quarter passes <quarter run>/java) is the caller's, and the caller
+  # passes the same --run-dir to every later step: the link is left alone, as wls-patch.sh does. Linking it failed on a
+  # fresh OUTPUT_DIR (no RUN_BASE) and would point the tool's own 'latest' into the quarter's tree (T2294)
+  # Strictly inside RUN_BASE (not RUN_BASE itself, not a <base>-archive sibling, trailing slashes ignored; a relative
+  # RUN_DIR never is). Outside, the note and the --run-dir go to the run's log, not the console (Loki #29433)
+  local own=1; case "${RUN_DIR%/}/" in "${RUN_BASE%/}"/?*) ;; *) own=0
+    printf '%s [INFO ] %s/latest not moved: run dir %s is outside it, so a later command needs --run-dir %s\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "${RUN_BASE%/}" "$RUN_DIR" "$RUN_DIR" >>"$LOG_FILE";; esac
+  [ "$own" = 0 ] || [ "$RUN_DIR" = "$RUN_BASE/latest" ] || [ "$RUN_DIR" = "$RUN_BASE/latest/" ] || { ln -sfn "$RUN_DIR" "$RUN_BASE/latest" 2>/dev/null && [ "$(readlink "$RUN_BASE/latest" 2>/dev/null)" = "$RUN_DIR" ]; } \
     || warn "could not point $RUN_BASE/latest at this run (it points at '$(readlink "$RUN_BASE/latest" 2>/dev/null || echo nothing)'): later commands must be given --run-dir $RUN_DIR or they will act on that other run"
   log "$TOOL $VERSION (lib $ORACLE_LIB_VERSION)  run dir: $RUN_DIR  dry-run=$DRY_RUN"
 }

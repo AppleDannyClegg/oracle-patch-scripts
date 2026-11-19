@@ -229,7 +229,18 @@ init_run_dir() {
   LOG_FILE="$RUN_DIR/wls-patch.log"
   ( umask 077; : >>"$LOG_FILE" ); chmod 600 "$LOG_FILE" 2>/dev/null || die "cannot make $LOG_FILE private (chmod 600 failed)"
   STATE_FILE="$RUN_DIR/state"
-  ln -sfn "$RUN_DIR" "$RUN_BASE/latest"
+  # runs/latest means this tool's own last run. A run dir handed over from outside RUN_BASE (wls-quarter passes
+  # <quarter run>/wls) is the caller's, and the caller passes the same --run-dir to every later step, so the link is
+  # left alone: linking failed with "No such file or directory" on a fresh OUTPUT_DIR, and would point into the
+  # quarter's tree where it did not (T2294)
+  # Under RUN_BASE means strictly inside it: not RUN_BASE itself, not a sibling sharing its prefix (<base>-archive),
+  # trailing slashes on either ignored. A relative RUN_DIR is never under it. The note goes to the run's log only:
+  # the caller already passes --run-dir to every step, so the console does not need it at every step (Loki #29433)
+  case "${RUN_DIR%/}/" in
+    "${RUN_BASE%/}"/?*) ln -sfn "$RUN_DIR" "$RUN_BASE/latest" ;;
+    *) printf '%s [INFO ] %s/latest not moved: run dir %s is outside it, so a later command needs --run-dir %s\n' \
+         "$(date '+%Y-%m-%d %H:%M:%S')" "${RUN_BASE%/}" "$RUN_DIR" "$RUN_DIR" >>"$LOG_FILE" ;;
+  esac
   log "wls-patch $VERSION  run dir: $RUN_DIR  dry-run=$DRY_RUN"
 }
 
@@ -567,8 +578,16 @@ prepare_patch_dir() {
 }
 
 patch_description() {
-  local p="$1"
-  [ -f "$p/README.txt" ] && grep -m1 -iE 'Patch [0-9]+|BUNDLE|PATCH SET UPDATE' "$p/README.txt" | sed 's/^ *//'
+  # The README's line that names THIS patch, then a bundle/PSU title line. Not any "Patch <n>": READMEs cite other
+  # patches ("The latest OPatch version can be downloaded using Patch 28186730"), and that sentence became the title
+  # of 38063775 in a 14.1.2 SPB (T2294). No title is better than another patch's sentence.
+  local p="$1" id; id="$(basename "$p")"
+  [ -f "$p/README.txt" ] || return 0
+  # the title is the first non-blank line when it names the id; a prose line naming it ("Download patch <id> from MOS")
+  # comes only after that, then the bundle/PSU line
+  local re="(^|[^0-9])$id([^0-9]|\$)" first; first="$(grep -m1 -v '^[[:space:]]*$' "$p/README.txt")"
+  { if printf '%s\n' "$first" | grep -qE "$re"; then printf '%s\n' "$first"; else
+      grep -m1 -E "$re" "$p/README.txt" || grep -m1 -iE 'BUNDLE|PATCH SET UPDATE' "$p/README.txt"; fi; } | sed 's/^ *//'
 }
 
 patch_min_opatch() {
