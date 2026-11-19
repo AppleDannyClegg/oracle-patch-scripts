@@ -39,7 +39,8 @@ cp java-patch.conf.example java-patch.conf      # JAVA_HOME if auto-detection is
 1. **preflight**: tarball contains `<top>/bin/java`; `release` gives the version; not the same
    build; same major unless `--force`; WebLogic/ORDS matrix for the new major; disk in
    `JAVA_BASE` (3× the tarball); `JAVA_BASE`, the symlink's parent and every reference file
-   writable; who is running on the old JDK; the old `cacerts` opens with `CACERTS_PASSWORD`.
+   writable; who is running on the old JDK; the old `cacerts` opens with `CACERTS_PASSWORD`; and the
+   new JDK fixes **CVE-2026-91403** (below), or preflight refuses it.
 2. **backup**: every file to be edited copied to the run dir; the old JDK is left alone (a symlink target)
    or moved into the run dir as `old-jdk` (an in-place target, below).
 3. **apply**: `tar -xzf` into `JAVA_BASE` (skipped when already unpacked); `keytool` export +
@@ -80,8 +81,22 @@ every later update is an atomic link flip with a one-command rollback.
 Tested against a fake JDK tree and WebLogic home (symlink flip, rollback, re-run, file-edit
 variant, same-build refusal); not yet on a real host. Run `inspect` and `preflight` first.
 
+## CVE-2026-91403 (eMudhra CAs): the new JDK must carry the fix
+
+Preflight reads the new JDK's own blocklist out of the tarball (`jre/lib/security/blacklisted.certs` on
+Java 8, `lib/security/blocked.certs` on 11+) and refuses the JDK unless it blocks all 16 compromised eMudhra
+intermediates in `blocklist/emudhra-16.sha256`, as uppercase keys, which is how the JVM looks them up.
+`verify` checks the installed JDK the same way. A version number is not enough: Oracle's first fix
+(8u511-b32, 17.0.21.0.2) was still affected (CVE-2026-114820). Take the newest build of your major from MOS,
+the 17 Nov 2026 release or later. `--no-cve-check` installs an unfixed JDK anyway, with a warning, for
+example a vendor build that distrusts the CAs another way. It needs no network: it reads the tarball. Until
+the JDK is in, `blocklist/java-blocklist.sh` is the stopgap.
+
 ## Without internet
 
-Download the JDK tarball on a machine with MOS access and give it to the script:
+On the Windows laptop with internet: `patching/patch-manifest.sh` on the server writes the manifest (it lists
+each JDK in use), and `patching/get-patches.ps1 -Manifest <file>` downloads the newest update of each JDK
+major in use and unpacks Oracle's zip to the `.tar.gz`. Copy that to the server's `$PATCH_BASE/jdk/`. Or
+download the JDK tarball from MOS by hand and give it to the script:
 `java-patch.sh run /path/jdk-17.0.13_linux-x64_bin.tar.gz`. `latest`/`download` are the only
 commands that need the internet; with `OFFLINE=1` in `oracle.conf` they refuse at once.

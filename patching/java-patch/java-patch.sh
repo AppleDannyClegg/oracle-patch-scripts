@@ -30,6 +30,8 @@
 #                      the same build, or a preflight that already failed in this run dir. It does NOT waive the
 #                      in-place running-JVM stop (stop them, or --keep-old).
 #   --no-cacerts       do not copy extra CA aliases into the new cacerts
+#   --no-cve-check     install a JDK whose own blocklist does not block the CVE-2026-91403 eMudhra CAs (preflight
+#                      refuses one by default: that build does not fix the vulnerability)
 #   --will-stop        the caller stops the JVMs before apply: in-place preflight only WARNs about running JVMs
 #                      (apply still refuses to move under a live one). wls-quarter passes this.
 #   --in-place         put the new JDK at --java-home itself, replacing it (the default when --java-home is a
@@ -50,6 +52,7 @@ TOOL="java-patch"; VERSION="1.0.0"
 
 OLD_JH="${JAVA_HOME:-}"; JAVA_BASE="${JAVA_BASE:-}"; TARBALL=""; DO_RESTART=0; NO_CACERTS=0; CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"
 RESTART_CMDS="${RESTART_CMDS:-}"; CHECK_URLS="${CHECK_URLS:-}"; EXTRA_REF_FILES="${EXTRA_REF_FILES:-}"
+NO_CVE_CHECK=0; NEW_TOP=""
 OLD_REAL=""; OLD_VER=""; OLD_MAJOR=""; NEW_JH=""; NEW_VER=""; NEW_MAJOR=""; REFS=""; LINKED=0; IN_PLACE=0; KEEP_OLD=0; WILL_STOP=0
 USER_ORDS_URL="${ORDS_URL:-}"   # only a URL the operator gave (ords_detect invents a default we must not verify against)
 
@@ -58,7 +61,7 @@ parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
     --java-home) optchk "$@"; OLD_JH="$2"; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$2"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
-    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --will-stop) WILL_STOP=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --no-cve-check) NO_CVE_CHECK=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --will-stop) WILL_STOP=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -190,6 +193,32 @@ pick_tar() {
   NEW_VER="$(tar -xzOf "$TARBALL" "$top/release" 2>/dev/null | sed -n 's/^JAVA_VERSION="\([^"]*\)".*/\1/p' | head -1)"
   [ -z "$NEW_VER" ] && NEW_VER="$(printf '%s' "$top" | grep -oE '[0-9][0-9._u]+' | head -1 | sed 's/^1\.8\.0_/8u/')"
   NEW_MAJOR="${NEW_VER%%[.u]*}"; [ "$NEW_MAJOR" = 1 ] && { NEW_MAJOR="${NEW_VER#1.}"; NEW_MAJOR="${NEW_MAJOR%%.*}"; }
+  NEW_TOP="$top"
+}
+
+# cve_blocked <blocklist text on stdin>: how many of the CVE-2026-91403 eMudhra fingerprints it blocks. The JDK
+# reads blacklisted.certs / blocked.certs as java.util.Properties and looks a certificate up by its UPPERCASE
+# SHA-256, so only an exact uppercase key counts. The list is blocklist/emudhra-16.sha256 beside this script.
+CVE_LIST="$SCRIPT_DIR/blocklist/emudhra-16.sha256"
+cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(grep -E '^[0-9A-F]{64}$' "$CVE_LIST" | sort -u) | grep -c . || true; }
+# cve_check_tar: the new JDK must carry Oracle's fix for CVE-2026-91403 (CVSS 9.1, the eMudhra CA distrust of
+# 21 Oct 2026): its own blocklist must block all 16 compromised intermediates. Version numbers cannot be trusted
+# for this - Oracle shipped a first fix (8u511-b32, 17.0.21.0.2) that was still affected (CVE-2026-114820) - so
+# the proof is the file the JVM reads. A JDK that fails it does not beat the vulnerability: refused, unless
+# --no-cve-check (a vendor build that distrusts the CAs some other way; say so in the change record).
+cve_check_tar() {
+  local want got f txt=""
+  [ -r "$CVE_LIST" ] && want="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST")" && [ "$want" -gt 0 ] || { err "CVE-2026-91403 check: $CVE_LIST is missing - copy the whole tree (get.sh), not a single script"; return 1; }
+  for f in "$NEW_TOP/jre/lib/security/blacklisted.certs" "$NEW_TOP/lib/security/blacklisted.certs" "$NEW_TOP/lib/security/blocked.certs"; do
+    txt="$(tar -xzOf "$TARBALL" "$f" 2>/dev/null || tar -xzOf "$TARBALL" "./$f" 2>/dev/null)" && [ -n "$txt" ] && break; txt=""
+  done
+  if [ -z "$txt" ]; then got=0; else got="$(printf '%s\n' "$txt" | cve_blocked)"; fi
+  state_set cve_blocked "$got/$want"
+  if [ "$got" = "$want" ]; then log "CVE-2026-91403: the new JDK blocks all $want compromised eMudhra intermediates - it carries the fix"; return 0; fi
+  local why; [ -z "$txt" ] && why="it has no blacklisted.certs / blocked.certs" || why="its blocklist blocks $got of the $want compromised eMudhra intermediates"
+  if [ "$NO_CVE_CHECK" = 1 ]; then warn "CVE-2026-91403: $why - going on because of --no-cve-check: this JDK does NOT carry Oracle's fix"; return 0; fi
+  err "CVE-2026-91403: $why, so this build does NOT fix the vulnerability (Java 8 needs 8u511-b33 or later, Java 17 17.0.21.0.3 or later; take the newest from MOS). --no-cve-check to install it anyway"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -259,6 +288,7 @@ cmd_preflight() {
   [ "$IN_PLACE" = 1 ] && [ -n "$run" ] && { if [ "$WILL_STOP" = 1 ]; then warn "in-place: JVMs run on $OLD_JH - they must be stopped before apply (--will-stop: the caller stops them; apply still refuses to move under a live JVM)"; else err "in-place: JVMs run on $OLD_JH and would be fed the new build's files (cacerts, native libs) while still running the old one - stop them first, or --keep-old (which leaves the old JDK in place and only re-points the references)"; fail=1; fi; }
   [ "$NO_CACERTS" = 0 ] && { local pf; pf="$(cacerts_pw_file)" && { cacerts_aliases "$OLD_JH/bin/keytool" "$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)" "$pf" >/dev/null 2>&1 || { err "cannot open the old cacerts with CACERTS_PASSWORD: apply will refuse to continue without the CA carry-over (fix the password, or --no-cacerts)"; fail=1; }; rm -f "$pf"; }; }
   [ -f "$OLD_JH/jre/lib/security/local_policy.jar" ] && [ "$NEW_MAJOR" = 8 ] && log "JDK 8: unlimited crypto policy files - JDK 8u161+ has them unlimited by default (crypto.policy=unlimited)"
+  cve_check_tar || fail=1
   state_set preflight "$([ "$fail" = 0 ] && echo ok || echo failed)"; state_set tarball "$TARBALL"; state_set old_jh "$OLD_JH"; state_set old_real "$OLD_REAL"; state_set new_jh "$NEW_JH"
   [ "$fail" = 0 ] && { log "Preflight OK"; return 0; } || { err "Preflight FAILED - see $LOG_FILE"; return 1; }
 }
@@ -380,6 +410,13 @@ cmd_verify() {
   if [ "$DRY_RUN" = 1 ] && [ "$(state_get apply || true)" != ok ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK, no JVM is still on it, and the WLST homes and URLs answer"; return 0; fi
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
+  # CVE-2026-91403: the JDK now in place must block every compromised eMudhra intermediate (see cve_check_tar)
+  local bf b n w; bf=""; for b in "$newjh/jre/lib/security/blacklisted.certs" "$newjh/lib/security/blacklisted.certs" "$newjh/lib/security/blocked.certs"; do [ -f "$b" ] && { bf="$b"; break; }; done
+  w="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST" 2>/dev/null || true)"
+  if [ -z "$bf" ]; then n=0; else n="$(cve_blocked <"$bf")"; fi
+  if [ -n "$w" ] && [ "$w" -gt 0 ] && [ "$n" = "$w" ]; then log "CVE-2026-91403: $newjh blocks all $w compromised eMudhra intermediates"
+  elif [ "$NO_CVE_CHECK" = 1 ]; then warn "CVE-2026-91403: $newjh blocks $n of ${w:-?} eMudhra intermediates (--no-cve-check): NOT fixed"
+  else err "CVE-2026-91403: $newjh blocks $n of ${w:-?} compromised eMudhra intermediates - the vulnerability is NOT fixed"; fail=1; fi
   if [ "$IN_PLACE" = 1 ]; then
     # the path did not change, so there is nothing to re-point: the new build must simply be there. Read the
     # build from state - a separate 'verify' invocation has not run pick_tar, so $NEW_VER is empty there.
