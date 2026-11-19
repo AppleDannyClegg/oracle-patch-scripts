@@ -50,9 +50,10 @@ head1="$(head -1 "$target")"
 lists=("$HERE/emudhra-16.sha256")
 (( ALTS )) && lists+=("$HERE/emudhra-32-alternates.sha256")
 for l in "${lists[@]}"; do
-  grep -qE '^[0-9A-F]{64}$' "$l" 2>/dev/null || { echo "STOP: fingerprint list $l is missing or holds no fingerprint; copy the whole blocklist folder" >&2; exit 1; }
+  tr -d '\r' <"$l" 2>/dev/null | grep -qE '^[0-9A-F]{64}$' || { echo "STOP: fingerprint list $l is missing or holds no fingerprint; copy the whole blocklist folder" >&2; exit 1; }
 done
-want="$(grep -hE '^[0-9A-F]{64}$' "${lists[@]}")"
+# a carriage return is dropped first: git on Windows (core.autocrlf) checks the lists out as CRLF
+want="$(cat "${lists[@]}" | tr -d '\r' | grep -E '^[0-9A-F]{64}$')"
 # The JDK reads this file as java.util.Properties and looks a certificate up by its UPPERCASE SHA-256
 # (X509CertImpl), so only an exact uppercase line blocks anything: a lowercase copy already in the file does
 # not count as present, and every line written here is uppercase.

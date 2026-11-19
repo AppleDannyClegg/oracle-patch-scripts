@@ -210,14 +210,17 @@ pick_tar() {
 # reads blacklisted.certs / blocked.certs as java.util.Properties and looks a certificate up by its UPPERCASE
 # SHA-256, so only an exact uppercase key counts. The list is blocklist/emudhra-16.sha256 beside this script.
 CVE_LIST="$SCRIPT_DIR/blocklist/emudhra-16.sha256"
-cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(grep -E '^[0-9A-F]{64}$' "$CVE_LIST" | sort -u) | grep -c . || true; }
+# list_fps <file...>: the fingerprints in our lists, one per line. A carriage return is dropped first: a tree
+# checked out by git on Windows (core.autocrlf) has CRLF lists, and '^...$' then matches no line (Gen, 19 Nov)
+list_fps() { cat "$@" 2>/dev/null | tr -d '\r' | grep -E '^[0-9A-F]{64}$' || true; }
+cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(list_fps "$CVE_LIST" | sort -u) | grep -c . || true; }
 # cert_is_distrusted <keytool> <pem>: rc 0 = the certificate's SHA-256 is a distrusted root or compromised
 # intermediate; 1 = read and clean; 2 = its fingerprint could not be read (the caller must not import it)
 cert_is_distrusted() {
   local out fp; out="$("$1" -printcert -file "$2" 2>/dev/null)" || return 2
   fp="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | head -1)"
   printf '%s' "$fp" | grep -qE '^[0-9A-F]{64}$' || return 2
-  grep -qxF "$fp" <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" 2>/dev/null) && return 0
+  grep -qxF "$fp" <(list_fps "$CVE_ROOTS" "$CVE_LIST") && return 0
   return 1
 }
 # cve_distrusted_aliases <aliases on stdin>: the ones naming a root Oracle's final fix (CVE-2026-114820) removed
@@ -232,7 +235,7 @@ cert_sha256s() {
   printf '%s\n' "$out" | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | grep -E '^[0-9A-F]{64}$' | sort -u || true
 }
 # cve_bad_fps <fingerprints on stdin>: those that are a distrusted root or a compromised intermediate
-cve_bad_fps() { comm -12 - <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" | sort -u) || true; }
+cve_bad_fps() { comm -12 - <(list_fps "$CVE_ROOTS" "$CVE_LIST" | sort -u) || true; }
 # cve_tree_check <jdk dir> <keytool>: does this JDK tree fix CVE-2026-91403 AND CVE-2026-114820? Both must hold:
 #   - its own blocklist (jre/lib/security/blacklisted.certs on 8, lib/security/blocked.certs on 11+, read by the
 #     JVM as java.util.Properties, uppercase SHA-256 keys) blocks all 16 compromised eMudhra intermediates;
@@ -242,8 +245,8 @@ cve_bad_fps() { comm -12 - <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" 
 # blocklist and still shipped the roots (CVE-2026-114820). Refused unless --no-cve-check (warned). rc 0 = fixed.
 cve_tree_check() {
   local jh="$1" kt="$2" want got bf="" cf="" why="" fps bad pf
-  [ -r "$CVE_LIST" ] && [ -r "$CVE_ROOTS" ] && want="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST")" && [ "$want" -gt 0 ] \
-    && [ "$(grep -cE '^[0-9A-F]{64}$' "$CVE_ROOTS")" -gt 0 ] || {
+  [ -r "$CVE_LIST" ] && [ -r "$CVE_ROOTS" ] && want="$(list_fps "$CVE_LIST" | grep -c .)" && [ "$want" -gt 0 ] \
+    && [ "$(list_fps "$CVE_ROOTS" | grep -c .)" -gt 0 ] || {
       [ "$NO_CVE_CHECK" = 1 ] && { warn "CVE-2026-91403: $CVE_LIST or $CVE_ROOTS is missing, so $jh is NOT checked (--no-cve-check)"; return 0; }
       err "CVE-2026-91403 check: $CVE_LIST or $CVE_ROOTS is missing - copy the whole tree (get.sh), not a single script"; return 1; }
   local f; for f in "$jh/jre/lib/security/blacklisted.certs" "$jh/lib/security/blacklisted.certs" "$jh/lib/security/blocked.certs"; do [ -s "$f" ] && { bf="$f"; break; }; done

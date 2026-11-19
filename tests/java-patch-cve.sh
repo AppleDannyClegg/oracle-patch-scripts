@@ -131,8 +131,15 @@ in_script "carry_cacerts '$T/kt' '$T/kt' '$T/old.ks' '$T/new.ks' '$T/pw'"; rc=$?
 got="$( . "$T/tree/patching/java-patch/java-patch.sh" 2>/dev/null; printf '%s\n' 'emsigneccrootcag3' 'EmSignRootCAG1' 'emsignrootcag2 [jdk]' 'comodoaaaca' 'corp-root-ca' 'comodoaaaca-old' 'myemsignrootcag1' | cve_distrusted_aliases | tr '\n' ',')"
 [ "$got" = "emsigneccrootcag3,EmSignRootCAG1,emsignrootcag2 [jdk],comodoaaaca," ] && ok || bad "distrusted aliases matched '$got'"
 
+# CRLF lists (a git checkout on Windows, core.autocrlf) still hold their fingerprints (Gen, 19 Nov)
+rm "$T/tree/patching/java-patch/blocklist"; mkdir "$T/tree/patching/java-patch/blocklist"
+for f in "$BL"/*.sha256; do sed 's/$/\r/' "$f" >"$T/tree/patching/java-patch/blocklist/$(basename "$f")"; done
+grep -q $'\r' "$T/tree/patching/java-patch/blocklist/emudhra-16.sha256" || bad "the CRLF fixture has no CR"
+check "$T/j17.tar.gz"; [ $? = 0 ] && grep -q 'carries the fix' "$T/out" && ok || bad "CRLF lists were read as missing or empty: $(cat "$T/out")"
+check "$T/first.tar.gz"; [ $? = 1 ] && grep -q 'still trusts 1 ' "$T/out" && ok || bad "with CRLF lists the first fix was not refused: $(cat "$T/out")"
+
 # a missing list (a single script copied) is refused, not read as zero-of-zero
-rm "$T/tree/patching/java-patch/blocklist"
+rm -rf "$T/tree/patching/java-patch/blocklist"
 check "$T/j17.tar.gz"; [ $? = 1 ] && grep -q 'is missing' "$T/out" && ok || bad "a missing fingerprint list not refused: $(cat "$T/out")"
 
 # ---- wired in: preflight fails on it, apply dies on it before the switch, verify fails on it ---------------
