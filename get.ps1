@@ -135,8 +135,11 @@ function Get-PushCommand([string] $Local, [string] $Target, [string] $Parent) {
     Test-PushArg $p '^[A-Za-z0-9._/][A-Za-z0-9._/-]*$' 'remote folder'
     $tree = "$p/$leaf"
     $archive = '.oracle-push-' + [guid]::NewGuid().ToString('N') + '.tar'
-    # no $(...) or $VAR in the remote command; every value in it passed the patterns above
-    $remote = "set -e; mkdir -p '$p'; tar -xf '$archive' -C '$p'; rm -f '$archive'; find '$tree' -name '*.sh' -exec chmod +x {} +; echo pushed-ok; find '$tree' -name '*.sh' ! -perm -u+x | wc -l; find '$tree' -name '*.sh' | wc -l"
+    # every value in it passed the patterns above. Under set -e each step, both scans included, must succeed
+    # before pushed-ok is printed: a scan writes to a file and is counted after, so a pipe cannot hide its
+    # status. No $ and no double quote: Windows PowerShell 5.1 mangles a double quote in a native argument
+    $scan = "$archive.scan"
+    $remote = "set -e; mkdir -p '$p'; tar -xf '$archive' -C '$p'; rm -f '$archive'; find '$tree' -name '*.sh' -exec chmod +x {} +; find '$tree' -name '*.sh' ! -perm -u+x > '$scan.n'; find '$tree' -name '*.sh' > '$scan.a'; echo pushed-ok; wc -l < '$scan.n'; wc -l < '$scan.a'; rm -f '$scan.n' '$scan.a'"
     $tarArgs = @('-cf', '<archive>', '-C', (Split-Path -Parent $Local), '--exclude=.git', '--exclude=*.conf', '--exclude=*.old', '--exclude=patches-*', '--', $leaf)
     [pscustomobject]@{ Tree = $tree; Leaf = $leaf; Archive = $archive; TarArgs = $tarArgs; Remote = $remote }
 }
@@ -148,6 +151,9 @@ function Push-Tree([string] $Local, [string] $Target, [string] $Parent) {
     $tmpTar = Join-Path ([IO.Path]::GetTempPath()) $c.Archive
     try {
         $tarArgs = $c.TarArgs | ForEach-Object { if ($_ -eq '<archive>') { $tmpTar } else { $_ } }
+        # native stderr must never stop this: on Windows PowerShell 5.1 with 'Stop', a program writing to stderr
+        # (an ssh login banner, a tar warning) throws before its exit status is read. Exit codes decide instead.
+        $ErrorActionPreference = 'Continue'
         & tar @tarArgs
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tmpTar)) { throw "tar could not pack $Local (exit $LASTEXITCODE) - nothing was copied" }
         $listed = @(& tar -tf $tmpTar | Where-Object { $_ -like '*.sh' })
@@ -155,7 +161,8 @@ function Push-Tree([string] $Local, [string] $Target, [string] $Parent) {
         Write-Host "copying $Local to ${Target}:$($c.Tree) ($($listed.Count) scripts; .git, *.conf and downloaded patches are left out). ssh may ask for the password twice: once to copy, once to unpack"
         & scp -q $tmpTar "${Target}:$($c.Archive)"
         if ($LASTEXITCODE -ne 0) { throw "scp to $Target failed (exit $LASTEXITCODE) - nothing was copied" }
-        $out = @(& ssh $Target $c.Remote 2>&1)
+        # stdout only: stderr (banners, warnings) goes to the console, never into the parsed counts
+        $out = @(& ssh $Target $c.Remote)
         $sshRc = $LASTEXITCODE
         $out | ForEach-Object { Write-Host "  $_" }
         if ($sshRc -ne 0) { throw "on $Target the unpack/chmod step failed (ssh exit $sshRc) - not confirmed; see above. If it never ran, the copied archive ~/$($c.Archive) is still on the server: delete it, or re-run" }
@@ -198,7 +205,8 @@ if ($SelfTest) {
         if ($c.Tree -ne '/u01/app/scripts') { $fail++; Write-Host "FAIL push lands at <parent>/<folder> ($($c.Tree))" }
         foreach ($x in '--exclude=.git', '--exclude=*.conf', '--exclude=patches-*') { if ($c.TarArgs -notcontains $x) { $fail++; Write-Host "FAIL push tar lacks $x" } }
         if ($c.Remote -notlike "*-exec chmod +x*" -or $c.Remote -notlike "*! -perm -u+x*" -or $c.Remote -notlike 'set -e;*') { $fail++; Write-Host 'FAIL push does not chmod and re-check the exec bit under set -e' }
-        if ($c.Remote -match '\$') { $fail++; Write-Host 'FAIL the remote command holds a $ the local side could expand' }
+        if ($c.Remote -match '[$"]') { $fail++; Write-Host 'FAIL the remote command holds a $ or a double quote' }
+        if ($c.Remote -match '\|') { $fail++; Write-Host 'FAIL the remote command pipes a scan (its status would be lost)' }
         if ((Get-PushCommand (Join-Path $pt 'scripts') 'oracle@db-1' '').Tree -ne './scripts') { $fail++; Write-Host 'FAIL push defaults to the home folder' }
         foreach ($bad in @(@('oracle@db-1;rm -rf /', '/u01'), @('oracle@db-1', "/u01'x"), @('oracle@db-1', '/u01 x'), @('-oProxyCommand=x', '/u01'), @('oracle@db-1', '-x'))) {
             $threw = $false; try { $null = Get-PushCommand (Join-Path $pt 'scripts') $bad[0] $bad[1] } catch { $threw = $true }

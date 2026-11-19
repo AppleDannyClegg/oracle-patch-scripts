@@ -48,6 +48,8 @@ case "\${FAKE_MODE:-}" in
   down) echo "ssh: connect to host db1 port 22: Connection refused" >&2; exit 255;;
   nochmod) cmd="\${cmd//-exec chmod +x \{\} +/-exec true \{\} +}";;
   rc7) cd "$H" && bash -c "\$cmd"; exit 7;;
+  findfail) mkdir -p "$T/ff"; printf '#!/bin/bash\nfor a in "\$@"; do [ "\$a" = "!" ] && exit 1; done\nexec /usr/bin/find "\$@"\n' >"$T/ff/find"; chmod +x "$T/ff/find"; export PATH="$T/ff:\$PATH";;
+  banner) echo "Authorized use only - this system is monitored" >&2;;
 esac
 cd "$H" && exec bash -c "\$cmd"
 EOF
@@ -80,6 +82,11 @@ FAKE_MODE=scpdown push; rc=$?
 # Vesper #29425: ssh exiting non-zero AFTER a valid trailer, and tar failing after writing its archive
 FAKE_MODE=rc7 push; rc=$?
 [ $rc != 0 ] && grep -q 'ssh exit 7' "$T/out" && ! grep -q '^done on' "$T/out" && ok || bad "ssh rc 7 after a valid trailer was reported done (rc=$rc): $(cat "$T/out")"
+# Vesper #29431: the not-executable scan exits 1 with no output; a login banner on stderr
+FAKE_MODE=findfail push; rc=$?
+[ $rc != 0 ] && grep -q 'ssh exit 1' "$T/out" && ! grep -q '^done on' "$T/out" && ok || bad "a failing verification scan was reported done (rc=$rc): $(cat "$T/out")"
+FAKE_MODE=banner push; rc=$?
+[ $rc = 0 ] && grep -q '^done on oracle@db1' "$T/out" && ok || bad "an ssh login banner on stderr broke a good push (rc=$rc): $(cat "$T/out")"
 FAKE_MODE=tarfail push; rc=$?
 [ $rc != 0 ] && grep -q 'tar could not pack' "$T/out" && ! grep -q '^done on' "$T/out" && ok || bad "a failed tar was reported done (rc=$rc): $(cat "$T/out")"
 # a local parent holding a literal $ (legal on Windows and Unix): copied as it is, not expanded by a shell
