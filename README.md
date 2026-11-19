@@ -38,6 +38,7 @@ Report scripts have no commands: run them, read `REPORT.md`, or hand it to Claud
 | `patching/ords-patch/ords-patch.sh` | ORDS, standalone or deployed inside WebLogic: schema upgrade per pool, symlink or war switch | [README](patching/ords-patch/README.md) |
 | `patching/db-patch/db-patch.sh` | Oracle Database Release Updates: OPatch + datapatch, standby-first on Data Guard, out-of-place option, Grid with `--grid` | [README](patching/db-patch/README.md) |
 | `patching/java-patch/java-patch.sh` | The JDK under WebLogic and ORDS: finds every JDK and who uses it, checks the support matrix, carries cacerts across, flips the references, verifies the JVMs | [README](patching/java-patch/README.md) |
+| `patching/java-patch/blocklist/java-blocklist.sh` | Stopgap for CVE-2026-91403 until the patched JDK is in: adds the compromised eMudhra intermediate CAs to a JDK's own blocklist (dry run, backup, rollback) | [README](patching/java-patch/blocklist/README.md) |
 | `patching/cert-renew/cert-renew.sh` | TLS certificates: every cert on the host by days left (WebLogic, NodeManager, ORDS, listener/OHS wallets, cacerts, OKV, GoldenGate), CSR, renewal of one target with rollback | [README](patching/cert-renew/README.md) |
 | `patching/patch-status/patch-status.sh` | Nothing: every Oracle home on the host against the current quarter (RU/PSU level, datapatch, ORDS/APEX versions, JDKs), how many CPUs behind | [README](patching/patch-status/README.md) |
 

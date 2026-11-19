@@ -1,0 +1,52 @@
+# java-blocklist: stopgap for the eMudhra CA compromise (CVE-2026-91403)
+
+Oracle's Java Security Alert of 21 Oct 2026 (CVE-2026-91403, CVSS 9.1) distrusts eMudhra intermediate CA
+certificates whose private keys were compromised. The real fix is a patched JDK, applied with
+`../java-patch.sh`:
+
+| Line | Fixed in |
+|---|---|
+| Java 8 | 8u511-b33 or later (8u511-b32 and earlier are still affected, CVE-2026-114820) |
+| Java 17 | the build after 17.0.21 named in the alert's MOS document |
+
+Until that JDK is in, this script adds the certificates' SHA-256 fingerprints to the JDK's **own** blocklist,
+so TLS chains through them are refused. It changes one text file per JDK and nothing else.
+
+| JDK | File |
+|---|---|
+| Java 8 JDK | `<jdk>/jre/lib/security/blacklisted.certs` |
+| Java 8 JRE | `<jre>/lib/security/blacklisted.certs` |
+| Java 11 and later | `<jdk>/lib/security/blocked.certs` |
+
+## Use
+
+```bash
+./java-blocklist.sh /path/to/jdk                              # dry run: what it would add, changes nothing
+./java-blocklist.sh /path/to/jdk --apply                      # backup beside the file, then append
+./java-blocklist.sh /path/to/jdk --apply --with-alternates    # also the 32 alternate encodings
+./java-blocklist.sh /path/to/jdk --rollback                   # restore the newest backup
+```
+
+Then **restart every JVM that runs from that JDK** (WebLogic servers, Node Manager, ORDS). The list is read at
+start-up; a running JVM keeps trusting the certificates until it restarts. `../java-patch.sh inspect` lists
+every JDK on the host and who uses it.
+
+The script refuses (exit 1, file untouched) if the file's first line is not `Algorithm=SHA-256` or no
+blocklist file is found. It adds only fingerprints the file lacks, so a second run adds nothing. If the
+fingerprint count after the append is not what it expected, it restores the backup.
+
+## The lists
+
+- `emudhra-16.sha256`: the 16 intermediates (DV, OV, EV TLS and OV code-signing CA, each G3B and G3C, each
+  issued by emSign's G3 root and cross-signed by Sectigo's AAA Certificate Services). The same 16 values are
+  published by two independent write-ups.
+- `emudhra-32-alternates.sha256`: 32 alternate DER and malleable ECDSA encodings of the same certificates.
+  Published by one source only, so it is opt-in.
+
+Neither list was copied from Oracle's own file. Before relying on it, compare with the `blacklisted.certs` /
+`blocked.certs` inside a patched Oracle JDK (8u511-b33 or later): every line here should be in it.
+
+Do **not** delete roots from `cacerts` instead. Removing `comodoaaaca` (AAA Certificate Services) breaks
+ordinary sites that chain through Sectigo.
+
+Tested against fake JDK layouts only (`tests/java-blocklist.sh`), not a real JDK.
