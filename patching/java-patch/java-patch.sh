@@ -114,10 +114,11 @@ carry_cacerts() {
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     pem="$RUN_DIR/ca_$n.pem"   # by counter: an alias may contain '/' or a path, which a file name must not
-    local dr=1
+    local dr=3   # 3 = the export failed: nothing it wrote is trusted, whatever bytes it left
     if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$pem"; then
       cert_is_distrusted "$oldjh/bin/keytool" "$pem"; dr=$?
     fi
+    if [ "$dr" = 3 ]; then nf=$((nf+1)); err "cacerts: alias $a NOT carried over - keytool could not export it (see $LOG_FILE)"; rm -f "$pem"; continue; fi
     if [ "$dr" = 0 ]; then log "cacerts: $a not carried - its certificate is distrusted by CVE-2026-91403/114820 (fingerprint match)"; rm -f "$pem"; continue; fi
     if [ "$dr" = 2 ]; then nf=$((nf+1)); err "cacerts: alias $a NOT carried over - its fingerprint could not be read, so whether it is a distrusted CA is not known"; rm -f "$pem"; continue; fi
     if [ -s "$pem" ] && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then

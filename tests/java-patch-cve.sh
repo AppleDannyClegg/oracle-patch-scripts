@@ -46,7 +46,8 @@ case "$mode" in
          [ "$(head -1 "$ks")" = UNREADABLE ] && { echo "keytool error: Keystore was tampered with, or password was incorrect" >&2; exit 1; }
          case " $* " in *" -v "*) while IFS='|' read -r a f; do printf 'Alias name: %s\nEntry type: trustedCertEntry\nCertificate fingerprints:\n\t SHA1: 00\n\t SHA256: %s\n' "$a" "$(colon "$f")"; done <"$ks";;
                         *) while IFS='|' read -r a f; do printf '%s, 2024-01-01, trustedCertEntry,\n' "$a"; done <"$ks";; esac;;
-  -exportcert) grep "^$al|" "$ks" | head -1 | cut -d'|' -f2;;
+  -exportcert) grep "^$al|" "$ks" | head -1 | grep -q '|EXPORTFAIL$' && { echo '-----BEGIN CERTIFICATE-----'; exit 9; }
+               grep "^$al|" "$ks" | head -1 | cut -d'|' -f2;;
   -printcert) [ "$(head -1 "$file")" = NOPRINT ] && { echo "keytool error: java.lang.Exception: Failed to parse input" >&2; exit 1; }
               printf 'Owner: CN=x\nCertificate fingerprints:\n\t SHA256: %s\n' "$(colon "$(head -1 "$file")")";;
   -importcert) printf '%s\n' "$al" >>"$IMPORTS";;
@@ -120,6 +121,11 @@ grep -q 'renamed-root not carried - its certificate is distrusted' "$T/out" && o
 printf 'corp-ca|%s\nodd-ca|NOPRINT\n' "$OK1" >"$T/old.ks"; printf 'other|%s\n' "$OK2" >"$T/new.ks"; : >"$IMPORTS"
 in_script "carry_cacerts '$T/kt' '$T/kt' '$T/old.ks' '$T/new.ks' '$T/pw'"; rc=$?
 [ $rc != 0 ] && ! grep -qx 'odd-ca' "$IMPORTS" && grep -q 'odd-ca NOT carried over - its fingerprint could not be read' "$T/out" && ok || bad "an unreadable fingerprint was imported or not reported: rc=$rc imports [$(tr '\n' '|' <"$IMPORTS")]: $(cat "$T/out")"
+
+# an export that fails but leaves bytes is NOT imported; the carry reports it
+printf 'corp-ca|%s\nhalf-ca|EXPORTFAIL\n' "$OK1" >"$T/old.ks"; printf 'other|%s\n' "$OK2" >"$T/new.ks"; : >"$IMPORTS"
+in_script "carry_cacerts '$T/kt' '$T/kt' '$T/old.ks' '$T/new.ks' '$T/pw'"; rc=$?
+[ $rc != 0 ] && ! grep -qx 'half-ca' "$IMPORTS" && grep -q 'half-ca NOT carried over - keytool could not export' "$T/out" && ok || bad "a failed export was imported or not reported: rc=$rc imports [$(tr '\n' '|' <"$IMPORTS")]: $(cat "$T/out")"
 
 # the four alias spellings, and only those
 got="$( . "$T/tree/patching/java-patch/java-patch.sh" 2>/dev/null; printf '%s\n' 'emsigneccrootcag3' 'EmSignRootCAG1' 'emsignrootcag2 [jdk]' 'comodoaaaca' 'corp-root-ca' 'comodoaaaca-old' 'myemsignrootcag1' | cve_distrusted_aliases | tr '\n' ',')"
