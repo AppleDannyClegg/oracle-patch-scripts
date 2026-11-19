@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # java-blocklist gate: patching/java-patch/blocklist/java-blocklist.sh against fake Java 8, JRE and Java 17 layouts.
-# A dry run changes nothing; --apply adds exactly the fingerprints the file lacks (case-insensitive) with a backup;
+# A dry run changes nothing; --apply adds exactly the uppercase fingerprints the file lacks, with a backup;
 # a second --apply adds none; --with-alternates adds the 32 more; a file whose first line is not Algorithm=SHA-256,
 # or a home with no blocklist file, is refused (exit 1) and left byte-identical; --rollback restores the backup.
 #
@@ -16,6 +16,17 @@ pass=0; fail=0
 ok() { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 fp() { grep -cE '^[0-9A-Fa-f]{64}' "$1"; }
+# keys <file>: the fingerprints the JDK would block - the file read as java.util.Properties (comments skipped,
+# key up to '=' / ':' / whitespace), kept only where the key is an UPPERCASE SHA-256, which is how the JDK looks
+# a certificate up. Case-sensitive on purpose: a lowercase line blocks nothing.
+keys() { python3 -c '
+import re, sys
+for line in open(sys.argv[1]):
+    s = line.strip()
+    if not s or s[0] in "#!": continue
+    k = re.split(r"[=:\s]", s, maxsplit=1)[0]
+    if re.fullmatch(r"[0-9A-F]{64}", k): print(k)
+' "$1" | sort -u; }
 ONE=42C4ACCD12C4F59597925E1A08A7A90102608543809308D50EC427E118BA1493
 
 j8="$T/j8/jre/lib/security/blacklisted.certs"; jre="$T/jre/lib/security/blacklisted.certs"; j17="$T/j17/lib/security/blocked.certs"
@@ -29,14 +40,17 @@ printf 'Algorithm=MD5\n' >"$T/bad/lib/security/blocked.certs"
 cp "$j8" "$T/j8.orig"
 out="$("$S" "$T/j8" 2>&1)"; rc=$?
 [ $rc = 0 ] && cmp -s "$j8" "$T/j8.orig" && ! ls "$j8".bak.* >/dev/null 2>&1 && ok || bad "dry run changed the file or made a backup (rc=$rc)"
-case "$out" in *"15 to add"*) ok;; *) bad "dry run did not count 15 to add: $out";; esac
+case "$out" in *"16 to add"*) ok;; *) bad "dry run did not count 16 to add (a lowercase copy blocks nothing): $out";; esac
 
-# apply: +15, backup equals the original, the 16 are all present once
+# apply: +16 (the lowercase copy blocks nothing, so it does not count as present), backup equals the original
 "$S" "$T/j8" --apply >/dev/null 2>&1; rc=$?
-[ $rc = 0 ] && [ "$(fp "$j8")" = 17 ] && ok || bad "apply on Java 8: rc=$rc, $(fp "$j8") fingerprints, want 17"
+[ $rc = 0 ] && [ "$(fp "$j8")" = 18 ] && ok || bad "apply on Java 8: rc=$rc, $(fp "$j8") fingerprints, want 18"
 b="$(ls "$j8".bak.* 2>/dev/null | head -1)"; [ -n "$b" ] && cmp -s "$b" "$T/j8.orig" && ok || bad "no backup equal to the original"
-[ "$(tr 'a-f' 'A-F' <"$j8" | grep -c "^$ONE")" = 1 ] && ok || bad "a fingerprint already present (lower case) was added again"
+[ "$(grep -c "^$ONE\$" "$j8")" = 1 ] && ok || bad "the uppercase fingerprint is not in the file exactly once"
 [ "$(head -1 "$j8")" = "Algorithm=SHA-256" ] && ok || bad "header line moved"
+# what the JDK sees: every listed fingerprint is a Properties key, and nothing the script wrote is lowercase
+[ "$(comm -23 <(grep -hE '^[0-9A-F]{64}$' "$(dirname "$S")/emudhra-16.sha256" | sort -u) <(keys "$j8") | grep -c .)" = 0 ] && ok || bad "a listed fingerprint is not an uppercase Properties key in the file"
+[ -z "$(diff "$T/j8.orig" "$j8" | sed -n 's/^> //p' | grep -E '^[0-9a-f]*[a-f][0-9a-f]*$' | grep -E '^.{64}$')" ] && ok || bad "the script wrote a lowercase fingerprint (the JDK would never match it)"
 
 # a second apply adds nothing
 before="$(cksum <"$j8")"; "$S" "$T/j8" --apply >/dev/null 2>&1; rc=$?
@@ -45,6 +59,12 @@ before="$(cksum <"$j8")"; "$S" "$T/j8" --apply >/dev/null 2>&1; rc=$?
 # a bare JRE home and Java 17 are found; --with-alternates adds 48
 "$S" "$T/jre" --apply >/dev/null 2>&1 && [ "$(fp "$jre")" = 16 ] && ok || bad "JRE home: $(fp "$jre") fingerprints, want 16"
 "$S" "$T/j17" --apply --with-alternates >/dev/null 2>&1 && [ "$(fp "$j17")" = 48 ] && ok || bad "Java 17 with alternates: $(fp "$j17"), want 48"
+[ "$(keys "$j17" | grep -c .)" = 48 ] && ok || bad "Java 17: $(keys "$j17" | grep -c .) uppercase Properties keys, want 48"
+
+# a missing fingerprint list is refused by name (exit 1), the target untouched
+mkdir -p "$T/copy"; cp "$S" "$T/copy/"
+cp "$j17" "$T/j17.now"; out="$("$T/copy/java-blocklist.sh" "$T/j17" --apply 2>&1)"; rc=$?
+[ $rc = 1 ] && cmp -s "$j17" "$T/j17.now" && case "$out" in *"fingerprint list"*) true;; *) false;; esac && ok || bad "missing list: rc=$rc, want 1 with a named refusal: $out"
 
 # refusals: wrong header, no file, unknown option - exit non-zero, file untouched
 cp "$T/bad/lib/security/blocked.certs" "$T/bad.orig"

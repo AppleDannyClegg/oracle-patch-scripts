@@ -31,8 +31,11 @@ Then **restart every JVM that runs from that JDK** (WebLogic servers, Node Manag
 start-up; a running JVM keeps trusting the certificates until it restarts. `../java-patch.sh inspect` lists
 every JDK on the host and who uses it.
 
-The script refuses (exit 1, file untouched) if the file's first line is not `Algorithm=SHA-256` or no
-blocklist file is found. It adds only fingerprints the file lacks, so a second run adds nothing. If the
+The script refuses (exit 1, file untouched) if the file's first line is not `Algorithm=SHA-256`, no
+blocklist file is found, or a fingerprint list is missing from beside it. It adds only fingerprints the file
+lacks, so a second run adds nothing. The JDK reads the file as a Java properties file and looks a certificate
+up by its **uppercase** SHA-256, so every line it writes is uppercase, and a lowercase copy already in the
+file does not count as present (it blocks nothing). If the
 fingerprint count after the append is not what it expected, it restores the backup.
 
 ## The lists

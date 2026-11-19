@@ -49,8 +49,14 @@ head1="$(head -1 "$target")"
 
 lists=("$HERE/emudhra-16.sha256")
 (( ALTS )) && lists+=("$HERE/emudhra-32-alternates.sha256")
+for l in "${lists[@]}"; do
+  grep -qE '^[0-9A-F]{64}$' "$l" 2>/dev/null || { echo "STOP: fingerprint list $l is missing or holds no fingerprint; copy the whole blocklist folder" >&2; exit 1; }
+done
 want="$(grep -hE '^[0-9A-F]{64}$' "${lists[@]}")"
-have="$(tr 'a-f' 'A-F' < "$target" | grep -oE '^[0-9A-F]{64}' || true)"
+# The JDK reads this file as java.util.Properties and looks a certificate up by its UPPERCASE SHA-256
+# (X509CertImpl), so only an exact uppercase line blocks anything: a lowercase copy already in the file does
+# not count as present, and every line written here is uppercase.
+have="$(grep -oE '^[0-9A-F]{64}' "$target" || true)"
 add="$(comm -23 <(sort -u <<<"$want") <(sort -u <<<"$have"))"
 n_want="$(grep -c . <<<"$want")"
 n_add="$(grep -c . <<<"$add" || true)"
