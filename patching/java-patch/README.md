@@ -83,10 +83,17 @@ variant, same-build refusal); not yet on a real host. Run `inspect` and `preflig
 
 ## CVE-2026-91403 (eMudhra CAs): the new JDK must carry the fix
 
-Preflight reads the new JDK's own blocklist out of the tarball (`jre/lib/security/blacklisted.certs` on
-Java 8, `lib/security/blocked.certs` on 11+) and refuses the JDK unless it blocks all 16 compromised eMudhra
-intermediates in `blocklist/emudhra-16.sha256`, as uppercase keys, which is how the JVM looks them up.
-`verify` checks the installed JDK the same way. A version number is not enough: Oracle's first fix
+Two things must hold, and both are read from the files the JVM uses, not from a version number:
+- the new JDK's own blocklist (`jre/lib/security/blacklisted.certs` on Java 8, `lib/security/blocked.certs` on
+  11+) blocks all 16 compromised eMudhra intermediates in `blocklist/emudhra-16.sha256`, as uppercase keys,
+  which is how the JVM looks them up;
+- its `cacerts` holds none of the four roots in `blocklist/emudhra-roots.sha256` (nor any of the 16). This is
+  checked **by certificate fingerprint**, so an alias can't hide one. An unreadable `cacerts` is a refusal.
+
+Preflight checks the tarball, reading both files out of it with the current JDK's keytool. `apply` checks the
+tree it is about to switch in again, whether it just unpacked it or found it already there, so a separate
+`apply`, an `apply --force` or a pre-existing directory cannot bypass the check. `verify` checks the installed
+JDK. A version number is not enough: Oracle's first fix
 (8u511-b32, 17.0.21.0.2) was still affected (CVE-2026-114820). Take the newest build of your major from MOS,
 the 17 Nov 2026 release or later. `--no-cve-check` installs an unfixed JDK anyway, with a warning, for
 example a vendor build that distrusts the CAs another way. It needs no network: it reads the tarball. Until
@@ -94,7 +101,8 @@ the JDK is in, `blocklist/java-blocklist.sh` is the stopgap.
 
 Oracle's final fix (CVE-2026-114820) also **deletes four roots** from `cacerts`: `emsigneccrootcag3`,
 `emsignrootcag1`, `emsignrootcag2` and `comodoaaaca` (Sectigo's AAA Certificate Services). The CA carry-over in
-`apply` never imports those four back from the old store, under any alias spelling. As a result, an outbound
+`apply` never imports those four (or any of the 16) back from the old store: they are matched by alias name
+and by certificate fingerprint. As a result, an outbound
 TLS call to a server whose chain ends at one of them fails after the upgrade. That is intended, but test the
 integrations that matter.
 

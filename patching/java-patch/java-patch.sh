@@ -115,7 +115,10 @@ carry_cacerts() {
     [ -n "$a" ] || continue
     pem="$RUN_DIR/ca_$n.pem"   # by counter: an alias may contain '/' or a path, which a file name must not
     if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$pem" \
-       && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then
+       && cert_is_distrusted "$oldjh/bin/keytool" "$pem"; then
+      log "cacerts: $a not carried - its certificate is distrusted by CVE-2026-91403/114820 (fingerprint match)"; rm -f "$pem"; continue
+    fi
+    if [ -s "$pem" ] && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then
       n=$((n+1)); else nf=$((nf+1)); err "cacerts: alias $a NOT carried over (see $LOG_FILE)"; fi
     rm -f "$pem"
   done <<<"$extra"
@@ -205,27 +208,66 @@ pick_tar() {
 # SHA-256, so only an exact uppercase key counts. The list is blocklist/emudhra-16.sha256 beside this script.
 CVE_LIST="$SCRIPT_DIR/blocklist/emudhra-16.sha256"
 cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(grep -E '^[0-9A-F]{64}$' "$CVE_LIST" | sort -u) | grep -c . || true; }
+# cert_is_distrusted <keytool> <pem>: rc 0 when the certificate's SHA-256 is a distrusted root or compromised intermediate
+cert_is_distrusted() {
+  local fp; fp="$("$1" -printcert -file "$2" 2>/dev/null | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | head -1)"
+  [ -n "$fp" ] && grep -qxF "$fp" <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" 2>/dev/null)
+}
 # cve_distrusted_aliases <aliases on stdin>: the ones naming a root Oracle's final fix (CVE-2026-114820) removed
 # from cacerts - emSign ECC Root CA G3, emSign Root CA G1 and G2, and Sectigo's AAA Certificate Services
 cve_distrusted_aliases() { grep -iE '^(emsigneccrootcag3|emsignrootcag1|emsignrootcag2|comodoaaaca)( \[jdk\])?$' || true; }
-# cve_check_tar: the new JDK must carry Oracle's fix for CVE-2026-91403 (CVSS 9.1, the eMudhra CA distrust of
-# 21 Oct 2026): its own blocklist must block all 16 compromised intermediates. Version numbers cannot be trusted
-# for this - Oracle shipped a first fix (8u511-b32, 17.0.21.0.2) that was still affected (CVE-2026-114820) - so
-# the proof is the file the JVM reads. A JDK that fails it does not beat the vulnerability: refused, unless
-# --no-cve-check (a vendor build that distrusts the CAs some other way; say so in the change record).
-cve_check_tar() {
-  local want got f txt=""
-  [ -r "$CVE_LIST" ] && want="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST")" && [ "$want" -gt 0 ] || { err "CVE-2026-91403 check: $CVE_LIST is missing - copy the whole tree (get.sh), not a single script"; return 1; }
-  for f in "$NEW_TOP/jre/lib/security/blacklisted.certs" "$NEW_TOP/lib/security/blacklisted.certs" "$NEW_TOP/lib/security/blocked.certs"; do
-    txt="$(tar -xzOf "$TARBALL" "$f" 2>/dev/null || tar -xzOf "$TARBALL" "./$f" 2>/dev/null)" && [ -n "$txt" ] && break; txt=""
-  done
-  if [ -z "$txt" ]; then got=0; else got="$(printf '%s\n' "$txt" | cve_blocked)"; fi
-  state_set cve_blocked "$got/$want"
-  if [ "$got" = "$want" ]; then log "CVE-2026-91403: the new JDK blocks all $want compromised eMudhra intermediates - it carries the fix"; return 0; fi
-  local why; [ -z "$txt" ] && why="it has no blacklisted.certs / blocked.certs" || why="its blocklist blocks $got of the $want compromised eMudhra intermediates"
-  if [ "$NO_CVE_CHECK" = 1 ]; then warn "CVE-2026-91403: $why - going on because of --no-cve-check: this JDK does NOT carry Oracle's fix"; return 0; fi
-  err "CVE-2026-91403: $why, so this build does NOT fix the vulnerability (Java 8 needs 8u511-b33 or later, Java 17 17.0.21.0.3 or later; take the newest from MOS). --no-cve-check to install it anyway"
+# CVE_ROOTS: the four roots Oracle's final fix (CVE-2026-114820) deletes from cacerts, by certificate SHA-256
+CVE_ROOTS="$SCRIPT_DIR/blocklist/emudhra-roots.sha256"
+# cert_sha256s <keytool> <keystore> <pwfile>: the SHA-256 of every certificate in the store, uppercase, no colons.
+# Returns 1 when the store cannot be listed (fail closed: an unread store is not a clean one).
+cert_sha256s() {
+  local out; out="$(to 60 "$1" -list -v -keystore "$2" -storepass:file "$3" 2>&1)" || return 1
+  printf '%s\n' "$out" | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | grep -E '^[0-9A-F]{64}$' | sort -u || true
+}
+# cve_bad_fps <fingerprints on stdin>: those that are a distrusted root or a compromised intermediate
+cve_bad_fps() { comm -12 - <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" | sort -u) || true; }
+# cve_tree_check <jdk dir> <keytool>: does this JDK tree fix CVE-2026-91403 AND CVE-2026-114820? Both must hold:
+#   - its own blocklist (jre/lib/security/blacklisted.certs on 8, lib/security/blocked.certs on 11+, read by the
+#     JVM as java.util.Properties, uppercase SHA-256 keys) blocks all 16 compromised eMudhra intermediates;
+#   - its cacerts holds none of the four roots the final fix deletes, nor any of the 16, checked BY FINGERPRINT
+#     (an alias can be anything).
+# A version number cannot say this: Oracle's first fix (8u511-b32, 17.0.21.0.2) already had the 16 in the
+# blocklist and still shipped the roots (CVE-2026-114820). Refused unless --no-cve-check (warned). rc 0 = fixed.
+cve_tree_check() {
+  local jh="$1" kt="$2" want got bf="" cf="" why="" fps bad pf
+  [ -r "$CVE_LIST" ] && [ -r "$CVE_ROOTS" ] && want="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST")" && [ "$want" -gt 0 ] \
+    && [ "$(grep -cE '^[0-9A-F]{64}$' "$CVE_ROOTS")" -gt 0 ] || { err "CVE-2026-91403 check: $CVE_LIST or $CVE_ROOTS is missing - copy the whole tree (get.sh), not a single script"; return 1; }
+  local f; for f in "$jh/jre/lib/security/blacklisted.certs" "$jh/lib/security/blacklisted.certs" "$jh/lib/security/blocked.certs"; do [ -s "$f" ] && { bf="$f"; break; }; done
+  for f in "$jh/jre/lib/security/cacerts" "$jh/lib/security/cacerts"; do [ -s "$f" ] && { cf="$f"; break; }; done
+  if [ -z "$bf" ]; then why="it has no blacklisted.certs / blocked.certs"
+  else got="$(cve_blocked <"$bf")"; [ "$got" = "$want" ] || why="its blocklist blocks $got of the $want compromised eMudhra intermediates"; fi
+  if [ -z "$why" ]; then
+    if [ -z "$cf" ]; then why="it has no cacerts to check for the distrusted roots"
+    elif ! pf="$(cacerts_pw_file)"; then why="cannot create the keytool password file"
+    else
+      if ! fps="$(cert_sha256s "$kt" "$cf" "$pf")"; then why="its cacerts cannot be read with CACERTS_PASSWORD - whether it still trusts the distrusted roots is NOT known"
+      elif [ -z "$fps" ]; then why="keytool listed no certificate fingerprints in its cacerts - whether it still trusts the distrusted roots is NOT known"
+      else bad="$(printf '%s\n' "$fps" | cve_bad_fps | grep -c . || true)"; [ "$bad" = 0 ] || why="its cacerts still trusts $bad of the distrusted eMudhra/AAA certificates (the first fix, still affected by CVE-2026-114820)"; fi
+      rm -f "$pf"
+    fi
+  fi
+  state_set cve_check "$([ -z "$why" ] && echo fixed || echo "NOT fixed: $why")"
+  if [ -z "$why" ]; then log "CVE-2026-91403/114820: $jh blocks all $want compromised eMudhra intermediates and its cacerts holds none of the distrusted roots - it carries the fix"; return 0; fi
+  if [ "$NO_CVE_CHECK" = 1 ]; then warn "CVE-2026-91403: $jh - $why. Going on because of --no-cve-check: this JDK does NOT carry Oracle's fix"; return 0; fi
+  err "CVE-2026-91403: $jh - $why, so this build does NOT fix the vulnerability (Oracle 17 Nov 2026: 8u513-b04, 17.0.21.1; take the newest from MOS). --no-cve-check to install it anyway"
   return 1
+}
+# cve_check_tar: the same check on the tarball, before anything is unpacked - its blocklist and cacerts are read
+# out of it into the run dir and checked with the OLD JDK's keytool (a keystore is readable by any keytool)
+cve_check_tar() {
+  local d="$RUN_DIR/cve-check" f
+  rm -rf "$d"; mkdir -p "$d" || { err "CVE-2026-91403 check: cannot create $d"; return 1; }
+  for f in jre/lib/security/blacklisted.certs lib/security/blacklisted.certs lib/security/blocked.certs jre/lib/security/cacerts lib/security/cacerts; do
+    mkdir -p "$d/$(dirname "$f")"
+    tar -xzOf "$TARBALL" "$NEW_TOP/$f" >"$d/$f" 2>/dev/null || tar -xzOf "$TARBALL" "./$NEW_TOP/$f" >"$d/$f" 2>/dev/null || rm -f "$d/$f"
+  done
+  local rc=0; cve_tree_check "$d" "$OLD_JH/bin/keytool" || rc=1
+  rm -rf "$d"; return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -352,6 +394,9 @@ cmd_apply() {
     newver="$(printf '%s\n' "$jerr" | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -1)"
     [ -n "$newver" ] || die "the JDK unpacked to $NEW_JH but $NEW_JH/bin/java -version printed no version - $TARBALL is not a runnable JDK (a fastdebug-only or incomplete build, or bin/java linked against something absent). java said: $(printf '%s' "$jerr" | head -3 | tr '\n' ' '). Nothing was moved; fix the tarball and retry."
     log "new JDK: $newver ($(jdk_vendor "$NEW_JH"))"
+    # the tree that will actually be switched in - unpacked now, or already there - is checked, whatever preflight
+    # said: a separate apply, an apply --force over a failed preflight, or a pre-existing NEW_JH all land here
+    cve_tree_check "$NEW_JH" "$NEW_JH/bin/keytool" || die "CVE-2026-91403: $NEW_JH does not fix the vulnerability - nothing was switched (--no-cve-check to install it anyway)"
   fi
   if [ "$NO_CACERTS" = 0 ] && [ "$DRY_RUN" = 0 ]; then
     local oc nc; oc="$OLD_JH/$([ -f "$OLD_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"; nc="$NEW_JH/$([ -f "$NEW_JH/jre/lib/security/cacerts" ] && echo jre/lib/security/cacerts || echo lib/security/cacerts)"
@@ -417,13 +462,8 @@ cmd_verify() {
   if [ "$DRY_RUN" = 1 ] && [ "$(state_get apply || true)" != ok ]; then log "dry-run: would verify $(state_get new_jh || printf '%s' "$NEW_JH") runs ${NEW_VER:-the new build}, no reference names the old JDK, no JVM is still on it, and the WLST homes and URLs answer"; return 0; fi
   local newjh; newjh="$(state_get new_jh || true)"; [ -n "$newjh" ] || die "no new JDK recorded in $RUN_DIR"
   [ -x "$newjh/bin/java" ] && log "$newjh: $(jdk_version "$newjh")" || { err "$newjh/bin/java missing"; fail=1; }
-  # CVE-2026-91403: the JDK now in place must block every compromised eMudhra intermediate (see cve_check_tar)
-  local bf b n w; bf=""; for b in "$newjh/jre/lib/security/blacklisted.certs" "$newjh/lib/security/blacklisted.certs" "$newjh/lib/security/blocked.certs"; do [ -f "$b" ] && { bf="$b"; break; }; done
-  w="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST" 2>/dev/null || true)"
-  if [ -z "$bf" ]; then n=0; else n="$(cve_blocked <"$bf")"; fi
-  if [ -n "$w" ] && [ "$w" -gt 0 ] && [ "$n" = "$w" ]; then log "CVE-2026-91403: $newjh blocks all $w compromised eMudhra intermediates"
-  elif [ "$NO_CVE_CHECK" = 1 ]; then warn "CVE-2026-91403: $newjh blocks $n of ${w:-?} eMudhra intermediates (--no-cve-check): NOT fixed"
-  else err "CVE-2026-91403: $newjh blocks $n of ${w:-?} compromised eMudhra intermediates - the vulnerability is NOT fixed"; fail=1; fi
+  # CVE-2026-91403/114820: the JDK now in place must carry the fix (see cve_tree_check)
+  cve_tree_check "$newjh" "$newjh/bin/keytool" || fail=1
   if [ "$IN_PLACE" = 1 ]; then
     # the path did not change, so there is nothing to re-point: the new build must simply be there. Read the
     # build from state - a separate 'verify' invocation has not run pick_tar, so $NEW_VER is empty there.
