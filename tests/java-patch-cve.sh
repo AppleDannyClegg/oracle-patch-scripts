@@ -61,8 +61,13 @@ check "$T/short.tar.gz" no-cve; [ $? = 0 ] && grep -q '^WARN .*does NOT carry' "
 rm "$T/tree/patching/java-patch/blocklist"
 check "$T/j17.tar.gz"; [ $? = 1 ] && grep -q 'is missing' "$T/out" && ok || bad "a missing fingerprint list not refused: $(cat "$T/out")"
 
-# wired in: preflight fails on it, verify checks the installed JDK
+# the four roots Oracle's final fix removes from cacerts are never carried back from the old store
+got="$( . "$T/tree/patching/java-patch/java-patch.sh" 2>/dev/null; printf '%s\n' 'emsigneccrootcag3' 'EmSignRootCAG1' 'emsignrootcag2 [jdk]' 'comodoaaaca' 'corp-root-ca' 'comodoaaaca-old' 'myemsignrootcag1' | cve_distrusted_aliases | tr '\n' ',')"
+[ "$got" = "emsigneccrootcag3,EmSignRootCAG1,emsignrootcag2 [jdk],comodoaaaca," ] && ok || bad "distrusted aliases matched '$got'"
 body() { sed -n "/^$1() *{/,/^}/p" "$SCRIPT"; }
+body carry_cacerts | grep -q 'cve_distrusted_aliases' && ok || bad "carry_cacerts does not drop the distrusted roots"
+
+# wired in: preflight fails on it, verify checks the installed JDK
 body cmd_preflight | grep -q 'cve_check_tar || fail=1' && ok || bad "cmd_preflight does not fail on cve_check_tar"
 body cmd_verify | grep -q 'cve_blocked' && ok || bad "cmd_verify does not check the installed JDK's blocklist"
 

@@ -92,6 +92,12 @@ the 17 Nov 2026 release or later. `--no-cve-check` installs an unfixed JDK anywa
 example a vendor build that distrusts the CAs another way. It needs no network: it reads the tarball. Until
 the JDK is in, `blocklist/java-blocklist.sh` is the stopgap.
 
+Oracle's final fix (CVE-2026-114820) also **deletes four roots** from `cacerts`: `emsigneccrootcag3`,
+`emsignrootcag1`, `emsignrootcag2` and `comodoaaaca` (Sectigo's AAA Certificate Services). The CA carry-over in
+`apply` never imports those four back from the old store, under any alias spelling. As a result, an outbound
+TLS call to a server whose chain ends at one of them fails after the upgrade. That is intended, but test the
+integrations that matter.
+
 ## Without internet
 
 On the Windows laptop with internet: `patching/patch-manifest.sh` on the server writes the manifest (it lists

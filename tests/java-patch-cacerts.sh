@@ -59,6 +59,20 @@ out="$(carry "$OLD" "$NEW" 2>&1)"; rc="${out##*rc=}"
 grep -q "alias comodoaaaca" "$IMPORTS" && bad "the [jdk] vendor root was carried" || ok
 grep -q '\[jdk\]' "$LOG" && ok || bad "the [jdk] skip is not named in the output"
 
+# ---- CVE-2026-114820: a distrusted root under a plain (non-[jdk]) alias is not carried back -----------
+: >"$IMPORTS"
+mkdir -p "$T/tree/patching/java-patch/blocklist"; cp "$ROOT/patching/java-patch/blocklist/emudhra-16.sha256" "$T/tree/patching/java-patch/blocklist/"
+stub "$OLD" "emsigneccrootcag3, 2024-01-01, trustedCertEntry,
+comodoaaaca, 2024-01-01, trustedCertEntry,
+site root ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 0
+out="$(carry "$OLD" "$NEW" 2>&1)"; rc="${out##*rc=}"
+[ "$rc" = 0 ] && [ "$(cat "$IMPORTS")" = "site root ca" ] && ok || bad "distrusted roots carried back: imports [$(tr '\n' '|' <"$IMPORTS")], want [site root ca]"
+grep -q 'distrusted by CVE' "$LOG" && ok || bad "the distrusted-root skip is not named in the output"
+stub "$OLD" "comodoaaaca [jdk], 2024-01-01, trustedCertEntry,
+site root ca, 2024-01-01, trustedCertEntry,
+weird/ca name, 2024-01-01, trustedCertEntry,
+shared ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 0
+
 # ---- an import failure is reported and non-zero -------------------------------------------------------
 : >"$IMPORTS"
 stub "$NEW" "shared ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 1

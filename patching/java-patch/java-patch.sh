@@ -107,6 +107,10 @@ carry_cacerts() {
   extra="$(comm -23 <(printf '%s\n' "$olda") <(printf '%s\n' "$newa") | grep .)"
   skip="$(printf '%s\n' "$extra" | grep -c ' \[jdk\]$' || true)"
   extra="$(printf '%s\n' "$extra" | { grep -v ' \[jdk\]$' || true; } | grep . || true)"
+  # CVE-2026-114820: Oracle's final eMudhra fix DELETES four roots from cacerts. Carrying them back from the old
+  # store would undo it, so they are never carried, under any alias spelling.
+  local dis; dis="$(printf '%s\n' "$extra" | cve_distrusted_aliases)"
+  [ -n "$dis" ] && { log "cacerts: not carried - distrusted by CVE-2026-91403/114820: $(printf '%s' "$dis" | tr '\n' ' ')"; extra="$(comm -23 <(printf '%s\n' "$extra" | sort) <(printf '%s\n' "$dis" | sort) | grep . || true)"; }
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     pem="$RUN_DIR/ca_$n.pem"   # by counter: an alias may contain '/' or a path, which a file name must not
@@ -201,6 +205,9 @@ pick_tar() {
 # SHA-256, so only an exact uppercase key counts. The list is blocklist/emudhra-16.sha256 beside this script.
 CVE_LIST="$SCRIPT_DIR/blocklist/emudhra-16.sha256"
 cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(grep -E '^[0-9A-F]{64}$' "$CVE_LIST" | sort -u) | grep -c . || true; }
+# cve_distrusted_aliases <aliases on stdin>: the ones naming a root Oracle's final fix (CVE-2026-114820) removed
+# from cacerts - emSign ECC Root CA G3, emSign Root CA G1 and G2, and Sectigo's AAA Certificate Services
+cve_distrusted_aliases() { grep -iE '^(emsigneccrootcag3|emsignrootcag1|emsignrootcag2|comodoaaaca)( \[jdk\])?$' || true; }
 # cve_check_tar: the new JDK must carry Oracle's fix for CVE-2026-91403 (CVSS 9.1, the eMudhra CA distrust of
 # 21 Oct 2026): its own blocklist must block all 16 compromised intermediates. Version numbers cannot be trusted
 # for this - Oracle shipped a first fix (8u511-b32, 17.0.21.0.2) that was still affected (CVE-2026-114820) - so

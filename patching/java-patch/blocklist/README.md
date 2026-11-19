@@ -49,7 +49,11 @@ fingerprint count after the append is not what it expected, it restores the back
 Neither list was copied from Oracle's own file. Before relying on it, compare with the `blacklisted.certs` /
 `blocked.certs` inside a patched Oracle JDK (8u511-b33 or later): every line here should be in it.
 
-Do **not** delete roots from `cacerts` instead. Removing `comodoaaaca` (AAA Certificate Services) breaks
-ordinary sites that chain through Sectigo.
+This stopgap keeps the roots in `cacerts` and blocks only the intermediates. Do not delete the roots by hand
+instead: removing `comodoaaaca` (AAA Certificate Services) breaks ordinary sites that chain through Sectigo.
+Be aware that Oracle's **final** fix (CVE-2026-114820) does delete four roots from `cacerts`: `emsigneccrootcag3`,
+`emsignrootcag1`, `emsignrootcag2` and `comodoaaaca`. So after the patched JDK goes in, an outbound TLS call to a
+server whose chain ends at one of those roots fails, which is intended. Test the integrations that matter after
+the JDK upgrade. `java-patch.sh` never carries those four back from the old `cacerts`.
 
 Tested against fake JDK layouts only (`tests/java-blocklist.sh`), not a real JDK.
