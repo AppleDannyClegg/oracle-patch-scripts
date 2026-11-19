@@ -114,10 +114,12 @@ carry_cacerts() {
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     pem="$RUN_DIR/ca_$n.pem"   # by counter: an alias may contain '/' or a path, which a file name must not
-    if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$pem" \
-       && cert_is_distrusted "$oldjh/bin/keytool" "$pem"; then
-      log "cacerts: $a not carried - its certificate is distrusted by CVE-2026-91403/114820 (fingerprint match)"; rm -f "$pem"; continue
+    local dr=1
+    if "$oldjh/bin/keytool" -exportcert -rfc -alias "$a" -keystore "$oc" -storepass:file "$pf" 2>>"$LOG_FILE" >"$pem"; then
+      cert_is_distrusted "$oldjh/bin/keytool" "$pem"; dr=$?
     fi
+    if [ "$dr" = 0 ]; then log "cacerts: $a not carried - its certificate is distrusted by CVE-2026-91403/114820 (fingerprint match)"; rm -f "$pem"; continue; fi
+    if [ "$dr" = 2 ]; then nf=$((nf+1)); err "cacerts: alias $a NOT carried over - its fingerprint could not be read, so whether it is a distrusted CA is not known"; rm -f "$pem"; continue; fi
     if [ -s "$pem" ] && "$newjh/bin/keytool" -importcert -noprompt -alias "$a" -file "$pem" -keystore "$nc" -storepass:file "$pf" >>"$LOG_FILE" 2>&1; then
       n=$((n+1)); else nf=$((nf+1)); err "cacerts: alias $a NOT carried over (see $LOG_FILE)"; fi
     rm -f "$pem"
@@ -208,10 +210,14 @@ pick_tar() {
 # SHA-256, so only an exact uppercase key counts. The list is blocklist/emudhra-16.sha256 beside this script.
 CVE_LIST="$SCRIPT_DIR/blocklist/emudhra-16.sha256"
 cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(grep -E '^[0-9A-F]{64}$' "$CVE_LIST" | sort -u) | grep -c . || true; }
-# cert_is_distrusted <keytool> <pem>: rc 0 when the certificate's SHA-256 is a distrusted root or compromised intermediate
+# cert_is_distrusted <keytool> <pem>: rc 0 = the certificate's SHA-256 is a distrusted root or compromised
+# intermediate; 1 = read and clean; 2 = its fingerprint could not be read (the caller must not import it)
 cert_is_distrusted() {
-  local fp; fp="$("$1" -printcert -file "$2" 2>/dev/null | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | head -1)"
-  [ -n "$fp" ] && grep -qxF "$fp" <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" 2>/dev/null)
+  local out fp; out="$("$1" -printcert -file "$2" 2>/dev/null)" || return 2
+  fp="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | head -1)"
+  printf '%s' "$fp" | grep -qE '^[0-9A-F]{64}$' || return 2
+  grep -qxF "$fp" <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" 2>/dev/null) && return 0
+  return 1
 }
 # cve_distrusted_aliases <aliases on stdin>: the ones naming a root Oracle's final fix (CVE-2026-114820) removed
 # from cacerts - emSign ECC Root CA G3, emSign Root CA G1 and G2, and Sectigo's AAA Certificate Services
@@ -236,7 +242,9 @@ cve_bad_fps() { comm -12 - <(grep -hE '^[0-9A-F]{64}$' "$CVE_ROOTS" "$CVE_LIST" 
 cve_tree_check() {
   local jh="$1" kt="$2" want got bf="" cf="" why="" fps bad pf
   [ -r "$CVE_LIST" ] && [ -r "$CVE_ROOTS" ] && want="$(grep -cE '^[0-9A-F]{64}$' "$CVE_LIST")" && [ "$want" -gt 0 ] \
-    && [ "$(grep -cE '^[0-9A-F]{64}$' "$CVE_ROOTS")" -gt 0 ] || { err "CVE-2026-91403 check: $CVE_LIST or $CVE_ROOTS is missing - copy the whole tree (get.sh), not a single script"; return 1; }
+    && [ "$(grep -cE '^[0-9A-F]{64}$' "$CVE_ROOTS")" -gt 0 ] || {
+      [ "$NO_CVE_CHECK" = 1 ] && { warn "CVE-2026-91403: $CVE_LIST or $CVE_ROOTS is missing, so $jh is NOT checked (--no-cve-check)"; return 0; }
+      err "CVE-2026-91403 check: $CVE_LIST or $CVE_ROOTS is missing - copy the whole tree (get.sh), not a single script"; return 1; }
   local f; for f in "$jh/jre/lib/security/blacklisted.certs" "$jh/lib/security/blacklisted.certs" "$jh/lib/security/blocked.certs"; do [ -s "$f" ] && { bf="$f"; break; }; done
   for f in "$jh/jre/lib/security/cacerts" "$jh/lib/security/cacerts"; do [ -s "$f" ] && { cf="$f"; break; }; done
   if [ -z "$bf" ]; then why="it has no blacklisted.certs / blocked.certs"
@@ -404,6 +412,8 @@ cmd_apply() {
     if ! carry_cacerts "$OLD_JH" "$NEW_JH" "$oc" "$nc" "$pf"; then rm -f "$pf"; die "cacerts: not every CA alias was carried over (see above) - the new JDK would trust fewer CAs than the old one; fix the cause or --no-cacerts"; fi
     rm -f "$pf"
   fi
+  # the last write to the new trust store is done: check the FINAL tree, the one that is switched in next
+  [ "$DRY_RUN" = 1 ] || cve_tree_check "$NEW_JH" "$NEW_JH/bin/keytool" || die "CVE-2026-91403: after the CA carry-over $NEW_JH does not fix the vulnerability - nothing was switched (--no-cve-check to install it anyway)"
   if [ "$IN_PLACE" = 1 ]; then
     # preflight's stop is not enough on its own: a separate 'apply --force' skips its verdict, and an apply with
     # no preflight only warns - so re-check here, and --force does not touch this

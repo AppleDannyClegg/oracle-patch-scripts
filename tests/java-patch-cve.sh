@@ -47,7 +47,8 @@ case "$mode" in
          case " $* " in *" -v "*) while IFS='|' read -r a f; do printf 'Alias name: %s\nEntry type: trustedCertEntry\nCertificate fingerprints:\n\t SHA1: 00\n\t SHA256: %s\n' "$a" "$(colon "$f")"; done <"$ks";;
                         *) while IFS='|' read -r a f; do printf '%s, 2024-01-01, trustedCertEntry,\n' "$a"; done <"$ks";; esac;;
   -exportcert) grep "^$al|" "$ks" | head -1 | cut -d'|' -f2;;
-  -printcert) printf 'Owner: CN=x\nCertificate fingerprints:\n\t SHA256: %s\n' "$(colon "$(head -1 "$file")")";;
+  -printcert) [ "$(head -1 "$file")" = NOPRINT ] && { echo "keytool error: java.lang.Exception: Failed to parse input" >&2; exit 1; }
+              printf 'Owner: CN=x\nCertificate fingerprints:\n\t SHA256: %s\n' "$(colon "$(head -1 "$file")")";;
   -importcert) printf '%s\n' "$al" >>"$IMPORTS";;
 esac
 exit 0
@@ -115,6 +116,11 @@ in_script "carry_cacerts '$T/kt' '$T/kt' '$T/old.ks' '$T/new.ks' '$T/pw'"; rc=$?
 [ $rc = 0 ] && [ "$(sort "$IMPORTS")" = "corp-ca" ] && ok || bad "carry-over imported [$(tr '\n' '|' <"$IMPORTS")] rc=$rc, want only corp-ca: $(cat "$T/out")"
 grep -q 'renamed-root not carried - its certificate is distrusted' "$T/out" && ok || bad "the fingerprint skip is not named: $(cat "$T/out")"
 
+# a certificate whose fingerprint cannot be read is NOT imported (fail closed), and the carry reports it
+printf 'corp-ca|%s\nodd-ca|NOPRINT\n' "$OK1" >"$T/old.ks"; printf 'other|%s\n' "$OK2" >"$T/new.ks"; : >"$IMPORTS"
+in_script "carry_cacerts '$T/kt' '$T/kt' '$T/old.ks' '$T/new.ks' '$T/pw'"; rc=$?
+[ $rc != 0 ] && ! grep -qx 'odd-ca' "$IMPORTS" && grep -q 'odd-ca NOT carried over - its fingerprint could not be read' "$T/out" && ok || bad "an unreadable fingerprint was imported or not reported: rc=$rc imports [$(tr '\n' '|' <"$IMPORTS")]: $(cat "$T/out")"
+
 # the four alias spellings, and only those
 got="$( . "$T/tree/patching/java-patch/java-patch.sh" 2>/dev/null; printf '%s\n' 'emsigneccrootcag3' 'EmSignRootCAG1' 'emsignrootcag2 [jdk]' 'comodoaaaca' 'corp-root-ca' 'comodoaaaca-old' 'myemsignrootcag1' | cve_distrusted_aliases | tr '\n' ',')"
 [ "$got" = "emsigneccrootcag3,EmSignRootCAG1,emsignrootcag2 [jdk],comodoaaaca," ] && ok || bad "distrusted aliases matched '$got'"
@@ -128,6 +134,9 @@ body() { sed -n "/^$1() *{/,/^}/p" "$SCRIPT"; }
 body cmd_preflight | grep -q 'cve_check_tar || fail=1' && ok || bad "cmd_preflight does not fail on cve_check_tar"
 a="$(body cmd_apply)"; ln_c="$(printf '%s\n' "$a" | grep -n 'cve_tree_check' | head -1 | cut -d: -f1)"; ln_s="$(printf '%s\n' "$a" | grep -n 'carry_cacerts\|mv "\$OLD_JH"\|ln -sfn' | head -1 | cut -d: -f1)"
 [ -n "$ln_c" ] && [ -n "$ln_s" ] && [ "$ln_c" -lt "$ln_s" ] && printf '%s\n' "$a" | grep -q 'cve_tree_check .*|| die' && ok || bad "cmd_apply does not die on cve_tree_check before the carry-over/switch (check line ${ln_c:-none}, switch ${ln_s:-none})"
+# apply re-checks the FINAL tree after the last write to cacerts (the carry-over), before the switch
+lc="$(printf '%s\n' "$a" | grep -n 'carry_cacerts' | head -1 | cut -d: -f1)"; lf="$(printf '%s\n' "$a" | grep -n 'cve_tree_check' | sed -n 2p | cut -d: -f1)"; lsw="$(printf '%s\n' "$a" | grep -n 'mv "\$OLD_JH"\|ln -sfn\|swap\|switch_' | grep -v '^ *#' | head -1 | cut -d: -f1)"
+[ -n "$lc" ] && [ -n "$lf" ] && [ "$lf" -gt "$lc" ] && { [ -z "$lsw" ] || [ "$lf" -lt "$lsw" ]; } && ok || bad "cmd_apply does not re-check the final tree after carry_cacerts and before the switch (carry ${lc:-none}, check ${lf:-none}, switch ${lsw:-none})"
 body cmd_verify | grep -q 'cve_tree_check .*|| fail=1' && ok || bad "cmd_verify does not fail on cve_tree_check"
 
 echo "java-patch-cve: $pass passed, $fail failed"

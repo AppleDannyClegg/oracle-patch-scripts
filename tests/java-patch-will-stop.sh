@@ -6,6 +6,7 @@
 # Usage: tests/java-patch-will-stop.sh [repo-root]
 
 set -uo pipefail
+# NO_CVE_CHECK=1: these fake JDKs carry no blocklist or cacerts; the CVE check has its own gate (java-patch-cve.sh)
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 SCRIPT="$ROOT/patching/java-patch/java-patch.sh"
 [ -f "$SCRIPT" ] || { echo "java-patch will-stop gate: $SCRIPT not found"; exit 2; }
@@ -42,7 +43,7 @@ preflight() { # <extra flag...>; prints the output, returns cmd_preflight's stat
   # shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
   ( PATH="${PSDIR:-$T/bin}:$PATH"; export PROC_DIR="${PROC_DIR_OVERRIDE:-/proc}"
     . "$T/tree/patching/java-patch/java-patch.sh"
-    RUN_DIR="$T/run"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; WILL_STOP=0
+    RUN_DIR="$T/run"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; NO_CVE_CHECK=1; WILL_STOP=0
     FORCE=0; JSON_OUT=0; VERBOSE=0; IN_PLACE=0; KEEP_OLD=0; OLD_JH="$T/jdk"
     parse_opts "$@" "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --run-dir "$T/run"
     cmd_preflight >/dev/null 2>"$T/err"; printf 'rc=%s\n' "$?" )
@@ -69,7 +70,7 @@ grep -q 'cannot read the process list' "$T/err" && ok || bad "the unreadable pro
 # shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
 ( PATH="$T/bin:$PATH"
   . "$T/tree/patching/java-patch/java-patch.sh"
-  RUN_DIR="$T/run"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; WILL_STOP=1; FORCE=1
+  RUN_DIR="$T/run"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; NO_CVE_CHECK=1; WILL_STOP=1; FORCE=1
   JSON_OUT=0; VERBOSE=0; OLD_JH="$T/jdk"
   parse_opts "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --java-home "$T/jdk" --force --no-cacerts --run-dir "$T/run"
   cmd_apply >/dev/null 2>"$T/aerr"; printf 'rc=%s\n' "$?" ) >"$T/aout" 2>&1
@@ -83,7 +84,7 @@ printf 'in_place=1\nold_jdk=%s\nold_real=%s\nold_jh=%s\nbackup=ok\n' "$T/oldjdk"
 # shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
 ( PATH="$T/bin:$PATH"
   . "$T/tree/patching/java-patch/java-patch.sh"
-  RUN_DIR="$T/rbrun"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; JSON_OUT=0; VERBOSE=0
+  RUN_DIR="$T/rbrun"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; NO_CVE_CHECK=1; JSON_OUT=0; VERBOSE=0
   OLD_JH="$T/jdk"; OLD_REAL="$T/jdk"
   cmd_rollback >/dev/null 2>"$T/rberr"; printf 'rc=%s\n' "$?" ) >"$T/rbout" 2>&1
 grep -q 'rc=0' "$T/rbout" && bad "rollback ran under a live JVM" || ok
@@ -97,7 +98,7 @@ printf 'in_place=1\nold_jdk=%s\nold_real=%s\nold_jh=%s\nbackup=ok\n' "$T/oldjdk"
 # shellcheck disable=SC2034  # RUN_DIR/TOOL/... are read by the sourced script
 ( PATH="$T/bin:$PATH"
   . "$T/tree/patching/java-patch/java-patch.sh"
-  RUN_DIR="$T/rbrun2"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; JSON_OUT=0; VERBOSE=0
+  RUN_DIR="$T/rbrun2"; TOOL=java-patch; DRY_RUN=0; ASSUME_YES=1; NO_CACERTS=1; NO_CVE_CHECK=1; JSON_OUT=0; VERBOSE=0
   OLD_JH="$T/sym/jdk"; OLD_REAL="$T/sym/jdk"
   cmd_rollback >/dev/null 2>"$T/rberr2"; printf 'rc=%s\n' "$?" ) >"$T/rbout2" 2>&1
 grep -q 'rc=0' "$T/rbout2" && bad "rollback ran under a live JVM through a symlinked parent" || ok

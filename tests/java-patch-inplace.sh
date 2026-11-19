@@ -7,6 +7,7 @@
 # Usage: tests/java-patch-inplace.sh [repo-root]
 
 set -uo pipefail
+# --no-cve-check: these fake JDKs carry no blocklist or cacerts; the CVE check has its own gate (java-patch-cve.sh)
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 S="$ROOT/patching/java-patch/java-patch.sh"
 [ -f "$S" ] || { echo "java-patch in-place gate: $S not found"; exit 2; }
@@ -28,7 +29,7 @@ printf 'JAVA_VERSION="1.8.0_521"\n' >"$T/src/jdk-1.8.0_521/release"
 tar -czf "$T/jdk-1.8.0_521_linux-x64_bin.tar.gz" -C "$T/src" jdk-1.8.0_521
 
 R="$T/run"; OUT="$T/out.log"
-run() { bash "$S" "$@" --java-home "$T/java" --no-cacerts --run-dir "$R" >>"$OUT" 2>&1; }
+run() { bash "$S" "$@" --java-home "$T/java" --no-cacerts --no-cve-check --run-dir "$R" >>"$OUT" 2>&1; }
 ver() { "$T/java/bin/java" -version 2>&1 | head -1; }
 
 # a reference file that names the target: in place the script must not read, copy or restore it
@@ -48,12 +49,12 @@ grep -q '^new_ver=1.8.0_511' "$R/state" 2>/dev/null && ok || bad "apply did not 
 # 'latest'; point that at this real run and give it a different tarball (1.8.0_521), so a state write is visible.
 H="$T/home"; mkdir -p "$H/java-patch/runs"; ln -sfn "$R" "$H/java-patch/runs/latest"
 before="$(sha "$R/state")"
-HOME="$H" bash "$S" apply "$T/jdk-1.8.0_521_linux-x64_bin.tar.gz" --dry-run --yes --java-home "$T/java" --no-cacerts >>"$OUT" 2>&1
+HOME="$H" bash "$S" apply "$T/jdk-1.8.0_521_linux-x64_bin.tar.gz" --dry-run --yes --java-home "$T/java" --no-cacerts --no-cve-check >>"$OUT" 2>&1
 [ "$(sha "$R/state")" = "$before" ] && ok || bad "a no---run-dir dry-run apply changed a real run's state (apply=$(sed -n 's/^apply=//p' "$R/state" | tail -1), new_ver=$(sed -n 's/^new_ver=//p' "$R/state" | tail -1))"
 
 run verify && ok || bad "a separate 'verify --run-dir' failed: $(tail -3 "$OUT")"
 # after a real apply, 'verify --dry-run' is read-only but must still check for real (Baymax P3)
-bash "$S" verify --dry-run --run-dir "$R" --java-home "$T/java" --no-cacerts >"$T/out-vdry.log" 2>&1 && ok || bad "'verify --dry-run' after a real apply failed: $(tail -2 "$T/out-vdry.log")"
+bash "$S" verify --dry-run --run-dir "$R" --java-home "$T/java" --no-cacerts --no-cve-check >"$T/out-vdry.log" 2>&1 && ok || bad "'verify --dry-run' after a real apply failed: $(tail -2 "$T/out-vdry.log")"
 grep -q 'dry-run: would verify' "$T/out-vdry.log" && bad "'verify --dry-run' skipped the read-only checks after a real apply" || ok
 
 # a bare 'rollback --run-dir R' has no --java-home: it must seed OLD_JH from the recorded old_jh
@@ -64,7 +65,7 @@ bash "$S" rollback --run-dir "$R" --yes >>"$OUT" 2>&1 && ok || bad "a bare 'roll
 ls -d "$T"/java.failed-* >/dev/null 2>&1 && ok || bad "rollback did not park the new build at a .failed-<stamp> sibling"
 grep -q 'the new build being rolled back from is at .*\.failed-' "$OUT" && ok || bad "rollback did not name the .failed-<stamp> residue"
 # a dry run installed nothing: verify must not assert, and must not drive a rollback
-bash "$S" run "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --dry-run --yes --java-home "$T/java" --no-cacerts --run-dir "$T/run-dry" >"$T/out-dry.log" 2>&1 && ok || bad "run --dry-run failed: $(tail -3 "$T/out-dry.log")"
+bash "$S" run "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --dry-run --yes --java-home "$T/java" --no-cacerts --no-cve-check --run-dir "$T/run-dry" >"$T/out-dry.log" 2>&1 && ok || bad "run --dry-run failed: $(tail -3 "$T/out-dry.log")"
 grep -q 'dry-run: would verify' "$T/out-dry.log" && ok || bad "run --dry-run did not say it would verify"
 grep -q 'Verify FAILED' "$T/out-dry.log" && bad "run --dry-run reported Verify FAILED" || ok
 # in place, the reference file is not copied, recorded or restored: it is the human's ask
@@ -72,7 +73,7 @@ grep -q 'Verify FAILED' "$T/out-dry.log" && bad "run --dry-run reported Verify F
 [ -z "$(ls -A "$R/files" 2>/dev/null)" ] && ok || bad "in place: a reference file was backed up into $R/files"
 grep -q '^backed_files=' "$R/state" 2>/dev/null && bad "in place: backed_files was recorded" || ok
 # a dry-run backup writes no state (Ash P3)
-bash "$S" backup --dry-run --java-home "$T/java" --no-cacerts --run-dir "$T/run-drybackup" >>"$OUT" 2>&1 && ok || bad "backup --dry-run failed"
+bash "$S" backup --dry-run --java-home "$T/java" --no-cacerts --no-cve-check --run-dir "$T/run-drybackup" >>"$OUT" 2>&1 && ok || bad "backup --dry-run failed"
 grep -q '^backup=' "$T/run-drybackup/state" 2>/dev/null && bad "backup --dry-run wrote state" || ok
 
 # cycle isolation: a bare 'preflight' (no --run-dir) must start a FRESH run dir, not reuse the previous
@@ -81,7 +82,7 @@ grep -q '^backup=' "$T/run-drybackup/state" 2>/dev/null && bad "backup --dry-run
 H="$T/home2"; RB="$H/java-patch/runs"; prev="$RB/20260101-000000-run"
 mkdir -p "$prev"; printf 'backup=ok\nbacked_files=/u01/x/setDomainEnv.sh\n' >"$prev/state"
 ln -sfn "$prev" "$RB/latest"
-HOME="$H" bash "$S" preflight "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts >>"$OUT" 2>&1 && ok || bad "no---run-dir preflight failed: $(tail -2 "$OUT")"
+HOME="$H" bash "$S" preflight "$T/jdk-1.8.0_511_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --no-cve-check >>"$OUT" 2>&1 && ok || bad "no---run-dir preflight failed: $(tail -2 "$OUT")"
 grep -q '^preflight=' "$prev/state" && bad "no---run-dir preflight reused the previous cycle's run dir (wrote into latest)" || ok
 
 # a tarball whose bin/java does not run must be refused at apply, before the in-place rename
@@ -89,9 +90,9 @@ mkdir -p "$T/src/jdk-1.8.0_531/bin"; : >"$T/src/jdk-1.8.0_531/bin/java"; chmod +
 printf 'JAVA_VERSION="1.8.0_531"\n' >"$T/src/jdk-1.8.0_531/release"
 tar -czf "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" -C "$T/src" jdk-1.8.0_531
 R3="$T/run-dud"
-bash "$S" preflight "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --run-dir "$R3" >>"$OUT" 2>&1 && ok || bad "preflight of a bin/java-that-does-not-run tarball failed: $(tail -2 "$OUT")"
+bash "$S" preflight "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --no-cve-check --run-dir "$R3" >>"$OUT" 2>&1 && ok || bad "preflight of a bin/java-that-does-not-run tarball failed: $(tail -2 "$OUT")"
 before="$(ver)"; olds_before="$(ls -d "$T"/java.old-* 2>/dev/null | wc -l | tr -d ' ')"
-bash "$S" apply "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --yes --run-dir "$R3" >>"$T/out-dud.log" 2>&1 && bad "apply accepted a tarball whose bin/java does not run" || ok
+bash "$S" apply "$T/jdk-1.8.0_531_linux-x64_bin.tar.gz" --java-home "$T/java" --no-cacerts --no-cve-check --yes --run-dir "$R3" >>"$T/out-dud.log" 2>&1 && bad "apply accepted a tarball whose bin/java does not run" || ok
 grep -q 'not a runnable JDK' "$T/out-dud.log" && ok || bad "the run-less tarball did not name 'not a runnable JDK'"
 [ "$(ver)" = "$before" ] && ok || bad "the run-less tarball changed the target JDK"
 [ "$(ls -d "$T"/java.old-* 2>/dev/null | wc -l | tr -d ' ')" = "$olds_before" ] && ok || bad "the run-less tarball left a rename behind"

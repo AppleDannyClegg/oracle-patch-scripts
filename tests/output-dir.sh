@@ -45,6 +45,9 @@ while IFS= read -r f; do
     patching/ohs-quarter/ohs-quarter-explain.sh) continue;;
     # install-screen.sh writes no file, run dir or report: it hands local RPMs to rpm and prints to stdout
     operations/install-screen/install-screen.sh) continue;;
+    # java-blocklist.sh writes only the JDK blocklist file it is pointed at and a backup beside that file; it
+    # creates no run dir, log or report, so there is no output to route
+    patching/java-patch/blocklist/java-blocklist.sh) continue;;
   esac
   if grep -qE 'output_path|OUTPUT_CONFIGURED' "$f"; then ok
   elif grep -qE '\. .*oracle-lib\.sh' "$f" && grep -qE 'init_run_dir|reuse_or_init|report_init' "$f"; then ok

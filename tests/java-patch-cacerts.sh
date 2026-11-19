@@ -30,6 +30,7 @@ case " \$* " in
   *" -list "*) printf '%s\n' "$2" ;;
   *" -exportcert "*) printf -- '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n' ;;
   *" -importcert "*) printf '%s\n' "\$alias" >>"$3"; exit $4 ;;
+  *" -printcert "*) printf 'Certificate fingerprints:\n\t SHA256: 33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33:33\n' ;;
 esac
 exit 0
 EOF
@@ -61,7 +62,7 @@ grep -q '\[jdk\]' "$LOG" && ok || bad "the [jdk] skip is not named in the output
 
 # ---- CVE-2026-114820: a distrusted root under a plain (non-[jdk]) alias is not carried back -----------
 : >"$IMPORTS"
-mkdir -p "$T/tree/patching/java-patch/blocklist"; cp "$ROOT/patching/java-patch/blocklist/emudhra-16.sha256" "$T/tree/patching/java-patch/blocklist/"
+mkdir -p "$T/tree/patching/java-patch/blocklist"; cp "$ROOT/patching/java-patch/blocklist/emudhra-16.sha256" "$ROOT/patching/java-patch/blocklist/emudhra-roots.sha256" "$T/tree/patching/java-patch/blocklist/"
 stub "$OLD" "emsigneccrootcag3, 2024-01-01, trustedCertEntry,
 comodoaaaca, 2024-01-01, trustedCertEntry,
 site root ca, 2024-01-01, trustedCertEntry," "$IMPORTS" 0
