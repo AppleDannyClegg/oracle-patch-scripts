@@ -123,8 +123,22 @@ token from the clipboard (or `-Paste`), writes `%USERPROFILE%\.mos-token` where 
 against MOS before you run anything.
 
 The scripts are bash, so to *run* them on Windows use Git Bash or WSL; `get.ps1` skips the library
-self-test on Windows for that reason. It also prints the server-side `chmod -R +x` you need after
-`scp`-ing the tree from Windows, which has no Unix executable bit.
+self-test on Windows for that reason.
+
+Windows has no Unix executable bit, so a tree copied from Windows (a `git pull` there, then `scp`)
+arrives with every script non-executable. Let `get.ps1` do the copy instead, and it sets the bit on the
+server:
+
+```powershell
+.\get.ps1 -Server oracle@dbhost              # download the newest, copy it to ~/scripts there, chmod +x every *.sh
+.\get.ps1 -Server oracle@dbhost -PushOnly    # copy this tree as it is (e.g. your git checkout), same chmod
+```
+
+It uses one ssh session (Windows 10/11's built-in OpenSSH and tar), leaves out `.git`, `*.conf` and
+downloaded `patches-*` folders (so the server keeps its own `oracle.conf`), and fails if any script on the
+server is still not executable afterwards. `-RemoteParent /u01/app` puts the tree somewhere other than the
+home folder. If you copied by hand, run `find . -name '*.sh' -exec chmod +x {} +` on the server, at the top
+of the tree.
 
 ## Servers without internet access
 

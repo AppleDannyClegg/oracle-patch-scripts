@@ -78,6 +78,8 @@ add_gate() {
 if [ $# -gt 0 ]; then GATES=(); for g in "$@"; do add_gate "$g"; done; fi
 # the extra jobs are only added where they can run: a copy of this tree (tests/run-all-harness.sh) has none of them
 if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-patches.ps1 ]; then add_gate get-patches; fi
+# get-push drives get.ps1 -Server end to end under pwsh with a fake ssh; added only where pwsh runs (a skip is not a pass)
+if command -v pwsh >/dev/null 2>&1 && [ -f tests/get-push.sh ]; then add_gate get-push; fi
 # get-mos-token is a bash gate that shells the script's own -SelfTest, so it needs pwsh/powershell (it accepts both)
 # and it SELF-SKIPS with rc 0 when neither is installed - and this harness marks a gate ok on rc 0 and a last line
 # with no FAIL and no 'N failed', so a skip would draw an `ok` row for work that never ran. Added only where pwsh

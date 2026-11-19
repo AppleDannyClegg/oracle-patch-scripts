@@ -20,6 +20,18 @@ scope and sets TLS 1.2 before the download:
 The scripts themselves are bash. This installer lays the tree down and checks the shared
 library; to actually RUN the scripts on Windows you need Git Bash or WSL (bash on PATH).
 
+Copy to the server and make the scripts executable there in one step. Windows has no Unix exec
+bit, so a plain scp (or a git pull on Windows and then scp) leaves every script non-executable;
+-Server copies the tree over one ssh session and runs chmod +x on every *.sh there:
+
+  .\get.ps1 -Server oracle@dbhost                    # download the newest, then copy to ~/scripts there
+  .\get.ps1 -Server oracle@dbhost -PushOnly          # copy THIS tree as it is (e.g. your git checkout)
+  .\get.ps1 C:\git\oracle-patch-scripts -Server oracle@dbhost -PushOnly -RemoteParent /u01/app
+
+The tree lands as <RemoteParent>/<folder name> (default: the oracle user's home). .git, *.conf and
+downloaded patches (patches-*) are not copied, so the server keeps its own oracle.conf. It fails,
+rather than saying done, if any script on the server is still not executable afterwards.
+
 Custom destination (the pipe form cannot take arguments; build a script block instead):
 
   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/AppleDannyClegg/oracle-patch-scripts/main/get.ps1))) 'C:\tools\oracle-patch-scripts'
@@ -29,7 +41,16 @@ param(
     [Parameter(Position = 0)]
     [string]$Dest,
     # Run the resolver self-test (no network) and exit: the same cases tests/get-patches.ps1 checks.
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    # Copy the tree to a server and make its scripts executable there, e.g. -Server oracle@dbhost.
+    # Windows has no Unix exec bit, so a plain scp delivers every script as a non-executable file.
+    [string]$Server,
+    # The folder on the server that receives the tree (default: the oracle user's home). The tree lands
+    # as <RemoteParent>/<folder name>.
+    [string]$RemoteParent,
+    # With -Server: skip the download and copy the tree as it is (the folder given, or this script's own
+    # folder, e.g. a git checkout you have just pulled).
+    [switch]$PushOnly
 )
 
 # Everything below runs in a CHILD scope, so the plain 'irm | iex' cannot leak this script's
@@ -37,6 +58,8 @@ param(
 & {
 
 $ErrorActionPreference = 'Stop'
+# read before the default below fills $Dest in ($PSBoundParameters here is this script block's, not the script's)
+$DestGiven = -not [string]::IsNullOrEmpty($Dest)
 
 # OUTPUT_DIR: the one base every file this repo creates, downloads or reports goes under, so the tree, the
 # patches and the reports can be moved off /u01 (or out of %USERPROFILE%) in one place. ORACLE_OUTPUT_DIR in
@@ -94,6 +117,48 @@ if (-not $Dest) {
     $Dest = Join-Path $base 'scripts'
 }
 
+# Push-Tree: copy the tree to $Server in ONE ssh session (one password prompt) and set the exec bit there.
+# tar, not scp: tar can leave out .git, *.conf and downloaded patches. *.conf is left out on purpose so a
+# push never overwrites the server's own oracle.conf or tool confs; set those up on the server. The remote
+# side checks that no *.sh is left without +x and fails if one is.
+function Test-PushArg([string] $Value, [string] $Pattern, [string] $What) {
+    if ($Value -notmatch $Pattern) { throw "$What '$Value' has characters this copy does not accept (letters, digits, . _ - / @ only)" }
+}
+function Get-PushCommand([string] $Local, [string] $Target, [string] $Parent) {
+    $Local = (Resolve-Path -LiteralPath $Local).Path.TrimEnd('\', '/')
+    $leaf = Split-Path -Leaf $Local
+    $localParent = Split-Path -Parent $Local
+    Test-PushArg $Target '^[A-Za-z0-9._-]+(@[A-Za-z0-9._-]+)?$' 'server'
+    Test-PushArg $leaf '^[A-Za-z0-9._-]+$' 'folder name'
+    $p = if ($Parent) { $Parent.TrimEnd('/') } else { '.' }
+    Test-PushArg $p '^[A-Za-z0-9._/-]+$' 'remote folder'
+    $tree = "$p/$leaf"
+    # the remote command: unpack, chmod every script, then count the scripts still not executable and all of
+    # them. No $(...) or $VAR in it: the local shell (bash off Windows) would expand those on THIS machine
+    $remote = "mkdir -p '$p' && tar -xf - -C '$p' && find '$tree' -name '*.sh' -exec chmod +x {} + && echo pushed-ok && find '$tree' -name '*.sh' ! -perm -u+x | wc -l && find '$tree' -name '*.sh' | wc -l"
+    $tarArgs = "-cf - -C `"$localParent`" --exclude=.git --exclude=*.conf --exclude=*.old --exclude=patches-* `"$leaf`""
+    [pscustomobject]@{ Tree = $tree; Tar = $tarArgs; Ssh = "ssh $Target `"$remote`"" }
+}
+function Push-Tree([string] $Local, [string] $Target, [string] $Parent) {
+    foreach ($tool in 'tar', 'ssh') {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool not found: Windows 10/11 ship both (OpenSSH Client and tar.exe); install the OpenSSH Client optional feature" }
+    }
+    $c = Get-PushCommand $Local $Target $Parent
+    Write-Host "copying $Local to ${Target}:$($c.Tree) (one ssh session; .git, *.conf and downloaded patches are left out)"
+    # cmd's pipe carries tar's bytes unchanged; a PowerShell 5.1 pipe between two programs re-encodes them
+    $line = "tar $($c.Tar) | $($c.Ssh)"
+    $out = if ($env:OS -eq 'Windows_NT') { cmd /c $line 2>&1 } else { bash -c $line 2>&1 }
+    $out | ForEach-Object { Write-Host "  $_" }
+    $lines = @($out | ForEach-Object { "$_".Trim() })
+    $i = [array]::LastIndexOf($lines, 'pushed-ok')
+    if ($i -lt 0 -or $lines.Count -lt $i + 3 -or $lines[$i + 1] -notmatch '^\d+$' -or $lines[$i + 2] -notmatch '^\d+$') {
+        throw "the copy to $Target did not finish (see above) - nothing was confirmed on the server"
+    }
+    $notExec = [int]$lines[$i + 1]; $scripts = [int]$lines[$i + 2]
+    if ($notExec -ne 0 -or $scripts -eq 0) { throw "on $Target, $notExec of $scripts scripts are not executable after the copy" }
+    Write-Host "done on ${Target}: $scripts scripts copied to $($c.Tree), all executable"
+}
+
 # -SelfTest covers this copy of the resolver before any network: it cannot be dot-sourced by the other gate
 # without running the installer, so it checks itself here.
 if ($SelfTest) {
@@ -112,8 +177,29 @@ if ($SelfTest) {
         $env:ORACLE_OUTPUT_DIR = $saved
         Remove-Item -LiteralPath $conf -Force -ErrorAction SilentlyContinue
     }
+    # the push command: what is left out, the exec-bit check, and refusal of a value that would break quoting
+    $pt = Join-Path ([IO.Path]::GetTempPath()) ('get-push-' + [guid]::NewGuid().ToString('N'))
+    try {
+        $null = New-Item -ItemType Directory -Force -Path (Join-Path $pt 'scripts')
+        $c = Get-PushCommand (Join-Path $pt 'scripts') 'oracle@db-1' '/u01/app'
+        if ($c.Tree -ne '/u01/app/scripts') { $fail++; Write-Host "FAIL push lands at <parent>/<folder> ($($c.Tree))" }
+        foreach ($x in '--exclude=.git', '--exclude=*.conf', '--exclude=patches-*') { if ($c.Tar -notlike "*$x*") { $fail++; Write-Host "FAIL push tar lacks $x" } }
+        if ($c.Ssh -notlike "*-exec chmod +x*" -or $c.Ssh -notlike "*! -perm -u+x*") { $fail++; Write-Host 'FAIL push does not chmod and re-check the exec bit' }
+        if ((Get-PushCommand (Join-Path $pt 'scripts') 'oracle@db-1' '').Tree -ne './scripts') { $fail++; Write-Host 'FAIL push defaults to the home folder' }
+        foreach ($bad in @(@('oracle@db-1;rm -rf /', '/u01'), @('oracle@db-1', "/u01'x"), @('oracle@db-1', '/u01 x'))) {
+            $threw = $false; try { $null = Get-PushCommand (Join-Path $pt 'scripts') $bad[0] $bad[1] } catch { $threw = $true }
+            if (-not $threw) { $fail++; Write-Host "FAIL push accepted '$($bad[0])' '$($bad[1])'" }
+        }
+    } finally { Remove-Item -LiteralPath $pt -Recurse -Force -ErrorAction SilentlyContinue }
     if ($fail -ne 0) { throw "get.ps1 selftest: $fail failed" }
     Write-Host 'get.ps1 selftest ok'
+    return
+}
+if ($PushOnly) {
+    if (-not $Server) { throw '-PushOnly needs -Server user@host' }
+    $tree = if ($DestGiven) { $Dest } else { $PSScriptRoot }
+    if (-not $tree -or -not (Test-Path -LiteralPath (Join-Path $tree 'lib/oracle-lib.sh'))) { throw "$tree is not an oracle-patch-scripts tree (no lib/oracle-lib.sh): pass the folder" }
+    Push-Tree $tree $Server $RemoteParent
     return
 }
 # Windows PowerShell 5.1 still defaults to TLS 1.0/1.1; GitHub needs 1.2 (classic 'Could not create
@@ -285,11 +371,17 @@ try {
         }
     }
     Write-Host '  lib/                 shared library, needed by every script above (bash lib/oracle-lib.sh selftest)'
+    if ($Server) {
+        Write-Host ''
+        Push-Tree $Dest $Server $RemoteParent
+        return
+    }
     Write-Host ''
     Write-Host "next: read $Dest\README.md, then copy the whole tree to the server (a script needs lib/ two levels up), e.g."
     Write-Host "  scp -r $Dest oracle@server:~/"
     Write-Host "Windows has no Unix exec bit, so if you copied from Windows set it on the server after the copy:"
     Write-Host "  ssh oracle@server 'chmod -R +x ~/$(Split-Path -Leaf $Dest)'"
+    Write-Host "or let this script do the copy and the chmod in one go next time:  -Server oracle@server"
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
