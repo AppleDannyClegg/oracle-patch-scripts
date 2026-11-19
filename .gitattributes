@@ -1,4 +1,6 @@
-# Shell scripts must keep LF on every platform. With Git for Windows' default core.autocrlf=true a
-# checked-out *.sh gets CRLF, and a CRLF shebang makes the kernel look for 'bash\r' ("no such file or
-# directory"). Force LF for shell scripts, so a clone behaves like the tree get.sh/get.ps1 download.
+# Every text file keeps LF on every platform. With Git for Windows' default core.autocrlf=true a checkout
+# gets CRLF: a CRLF shebang makes the kernel look for 'bash\r' ("no such file or directory"), and a CRLF
+# data file (the java-patch fingerprint lists, lib/file-patterns) has a '\r' on every line, so a '^...$'
+# match finds nothing (Gen, 19 Nov 2026: the CVE check read the lists as empty). The tree is all text.
+* text=auto eol=lf
 *.sh text eol=lf
