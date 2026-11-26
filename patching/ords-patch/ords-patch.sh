@@ -460,7 +460,7 @@ ords_stop() {
 # ords_pid: the first ORDS pid, empty when none; rc 1 when pgrep itself could not run (rc 2/3) - an unreadable process list is not 'no ORDS'
 ords_pid() { local p rc; p="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null)"; rc=$?; [ $rc -le 1 ] || return 1; printf '%s\n' "$p" | head -1; }
 # pid_alive <pid>: 0 alive, 1 gone, 2 the process table cannot be read (ps does not even show this shell) - 2 is never 'gone' (wls-patch 3ab88b8's stop)
-pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -E "^ *$$\$" >/dev/null|| return 2; ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
+pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -E "^ *$$\$" >/dev/null|| return 2; ps -p "$1" -o pid= 2>/dev/null | grep -E "^ *$1\$" >/dev/null; }
 ords_start() {
   detect || true
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }
