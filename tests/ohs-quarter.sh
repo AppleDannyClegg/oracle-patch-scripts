@@ -398,5 +398,13 @@ runq "$T/rootkit2" FAIL_OHS_APPLY=1; rc=$?
   && [ "$(line '^dbclient rollback')" -lt "$(line '^java rollback')" ] && [ "$(line '^java rollback')" -lt "$(line '^ohs start')" ] && ok \
   || bad "deferred path through 4/7 did not restore and start: rc=$rc: $(grep -E 'rollback|restore|start' "$T/calls.log" | tail -8 | tr '\n' ';')"
 
+# the contact's real run has the jar inside the zip and no extracted/ folder yet: the unzip -Z1 branch decides
+mkroot "$T/rootjar" 1 1 1 1 1 1 1 1
+mkdir -p "$T/kitzip/p28186730_1394225"; : >"$T/kitzip/p28186730_1394225/opatch_generic.jar"
+(cd "$T/kitzip" && zip -qr "$T/rootjar/wlspsu/p28186730_1394225_Generic.zip" .)
+[ ! -d "$T/rootjar/wlspsu/extracted" ] && ok || bad "the kit case was not fresh: extracted/ already exists"
+runq "$T/rootjar"
+grep -q -- '--opatch-upgrade-pending' "$T/calls.log" && ok || bad "a jar inside an unextracted kit zip did not defer the OPatch check"
+
 echo "ohs-quarter gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
