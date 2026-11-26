@@ -272,8 +272,8 @@ load_config() {
 }
 
 discover_oracle_home() {
-  [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME" ] && return 0
-  if [ -n "${MW_HOME:-}" ] && [ -d "$MW_HOME" ]; then ORACLE_HOME="$MW_HOME"; return 0; fi
+  [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME" ] && { ORACLE_HOME="$(strip_dir "$ORACLE_HOME")"; return 0; }
+  if [ -n "${MW_HOME:-}" ] && [ -d "$MW_HOME" ]; then ORACLE_HOME="$(strip_dir "$MW_HOME")"; return 0; fi
   # central inventory pointer
   local inv_loc inv_dir homes
   for inv_loc in /etc/oraInst.loc /var/opt/oracle/oraInst.loc "$HOME/oraInst.loc"; do
@@ -1789,9 +1789,10 @@ cmd_run() {
 # ---------------------------------------------------------------------------
 usage() { sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; }
 
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 main() {
   local cmd="" args=()
-  strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
 
 while [ $# -gt 0 ]; do
     case "$1" in

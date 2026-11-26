@@ -165,7 +165,7 @@ version_ge() {
 # ---- discovery ------------------------------------------------------------------------------------------
 find_home() {
   if [ -n "$ORACLE_HOME_ARG" ]; then printf '%s' "$ORACLE_HOME_ARG"; return; fi
-  if [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME/ohs" ]; then printf '%s' "$ORACLE_HOME"; return; fi
+  if [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME/ohs" ]; then printf '%s' "$(strip_dir "$ORACLE_HOME")"; return; fi
   local inv d h
   for inv in ${ORAINST_LOC:-/etc/oraInst.loc /var/opt/oracle/oraInst.loc}; do
     [ -f "$inv" ] || continue
@@ -1124,9 +1124,10 @@ cmd_rollback() {
   exit 0
 }
 
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 main() {
   local cmd="" args=()
-  strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
