@@ -783,7 +783,22 @@ cmd_preflight() {
       echo "    $id  $(patch_description "$path" | cut -c1-70)  [$st]"
     done <<<"$list"
     echo "  Advice      :"
-    if ! printf '%s\n' "$list" | grep -qi 'PATCH SET UPDATE' && ! grep -qil 'PATCH SET UPDATE' "$pdir"/extracted/*/README.txt 2>/dev/null; then
+    # Decide from each patch's own title, not from grep's binary guess on a README. The title reader
+    # uses grep -a, so a PSU whose README carries a NUL still counts as present.
+    local has_psu=0 pid path kind
+    while IFS='|' read -r pid path kind; do
+      [ "$kind" = opatch-upgrade ] && continue
+      patch_description "$path" | grep -qiE 'PATCH SET UPDATE|\bPSU\b' && has_psu=1
+    done <<<"$list"
+    # Keep the whole-README check beside the title check: a real PSU README can name the id on
+    # line 1 and say WLS PATCH SET UPDATE further down. grep -a so a NUL does not hide its body.
+    if [ "$has_psu" = 0 ]; then
+      local ext_root
+      while IFS= read -r ext_root; do
+        grep -aqiE 'PATCH SET UPDATE|\bPSU\b' "$ext_root"/*/README.txt >/dev/null 2>&1 && has_psu=1
+      done < <(patch_ext_roots "$pdir")
+    fi
+    if [ "$has_psu" = 0 ]; then
       echo "    - No WLS Patch Set Update (PSU) in this folder. A quarterly CPU normally includes one; check you downloaded it."
     fi
     if grep -qi 'coherence' "$ORACLE_HOME/inventory/registry.xml" 2>/dev/null && ! grep -qil 'coherence' "$pdir"/extracted/*/README.txt 2>/dev/null; then

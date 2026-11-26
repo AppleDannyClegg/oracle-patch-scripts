@@ -90,5 +90,19 @@ fresh; patch_tree "$T/src" ""; printf 'Oracle WebLogic Server Patch 39000002 REA
 mkzip "$T/pd/p39000002_122140_Generic.zip" "$T/src"; plan "$T/pd" >/dev/null
 grep -q 'Patch 39000002 : Oracle WebLogic Server Patch' "$T/out" && ! grep -q 'Binary file' "$T/out" && ok || bad "binary README: $(grep -E 'Patch|Binary|No WLS' "$T/out" | head -3)"
 
+# a binary PSU README must still count as a PSU: the advice line is about the folder, not grep's binary guess
+fresh; patch_tree "$T/src" ""
+printf 'Oracle WebLogic Server Patch 39000002 WLS PSU 12.2.1.4.260514\000binary\n' >"$T/src/39000002/README.txt"
+mkzip "$T/pd/p39000002_122140_Generic.zip" "$T/src"
+HOME="$T" ORACLE_HOME="$OH" JAVA_HOME="$T/jdk" bash "$SCRIPT" preflight "$T/pd" --oracle-home "$OH" --java-home "$T/jdk" --run-dir "$T/rd-psu" --dry-run >"$T/out" 2>&1
+! grep -q 'No WLS Patch Set Update' "$T/out" && ok || bad "PSU in a binary README was reported as absent: $(grep -A2 'Advice' "$T/out" | head -3)"
+
+# the id-only title with the PSU wording further down the README still counts (body check beside title check)
+fresh; patch_tree "$T/src" ""
+printf '39000002\nOracle WebLogic Server\nWLS PATCH SET UPDATE 12.2.1.4.260514\n' >"$T/src/39000002/README.txt"
+mkzip "$T/pd/p39000002_122140_Generic.zip" "$T/src"
+HOME="$T" ORACLE_HOME="$OH" JAVA_HOME="$T/jdk" bash "$SCRIPT" preflight "$T/pd" --oracle-home "$OH" --java-home "$T/jdk" --run-dir "$T/rd-body" --dry-run >"$T/out" 2>&1
+! grep -q 'No WLS Patch Set Update' "$T/out" && ok || bad "PSU wording below the title line was reported as absent: $(grep -A4 'Advice' "$T/out" | head -5)"
+
 echo "wls-patch discovery gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
