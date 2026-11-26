@@ -60,7 +60,7 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --java-home) optchk "$@"; case "$2" in */) JAVA_TRAILING_SLASH=1;; esac; OLD_JH="$(strip_dir "$2")"; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$(strip_dir "$2")"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
+    --java-home) optchk "$@"; OLD_JH="$(strip_dir "$2")"; JAVA_TRAILING_SLASH=0; [ "${2%/}" != "$2" ] && JAVA_TRAILING_SLASH=1; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$(strip_dir "$2")"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
     --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --no-cve-check) NO_CVE_CHECK=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --will-stop) WILL_STOP=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
