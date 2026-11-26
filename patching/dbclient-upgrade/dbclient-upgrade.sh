@@ -433,7 +433,7 @@ scope_of() {
   if grep -q 'name="Oracle HTTP Server (Standalone)"' "$reg"; then echo standalone; return; fi
   if grep -q 'name="Oracle HTTP Server (Collocated)"' "$reg"; then echo collocated; return; fi
   names="$(reg_names "$1")"
-  printf '%s\n' "$names" | grep -qx 'Oracle HTTP Server' || { echo embedded; return; }
+  printf '%s\n' "$names" | grep -x 'Oracle HTTP Server' || { echo embedded >/dev/null; return; }
   while IFS= read -r n; do
     case "$n" in
       ''|'Oracle HTTP Server'|OPatch) ;;
@@ -552,7 +552,7 @@ failed_copies() {
   for p in "$@"; do
     for c in "$p".failed-*; do
       [ -e "$c" ] || [ -L "$c" ] || continue
-      printf '%s\n' "${c#"$p"}" | grep -qE '^\.failed-[0-9]{8}-?[0-9]{4,6}$' && printf '%s\n' "$c"
+      printf '%s\n' "${c#"$p"}" | grep -E '^\.failed-[0-9]{8}-?[0-9]{4,6}$' >/dev/null&& printf '%s\n' "$c"
     done
   done
   return 0
@@ -687,7 +687,7 @@ run_gate() {
 
 no_weblogic() {
   local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - refused"; exit 2; }
-  if printf '%s\n' "$procs" | grep -q 'weblogic\.Server'; then
+  if printf '%s\n' "$procs" | grep - 'weblogic\.Server' >/dev/null; then
     err "$1 refused: WebLogic servers run from $OH - stop them first (wls-patch.sh stop); this script stops only OHS and node manager. Nothing was changed."
     exit 1
   fi

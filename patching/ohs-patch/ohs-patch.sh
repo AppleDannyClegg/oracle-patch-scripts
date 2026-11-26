@@ -310,8 +310,8 @@ cmd_inspect() {
     log "  OHS bundle: ${b:-none}"
     local rv; rv="$(rsf_version "$OH")"
     log "  DB client : $([ -n "$rv" ] && printf "oracle.rdbms.rsf %s" "$rv" || printf "unknown (no oracle.rdbms.rsf in %s)" "$OH/inventory/ContentsXML/comps.xml")"
-    if printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "  series    : DB19C line"
-    elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then log "  series    : plain OHS bundle line"
+    if printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE) DB19C BUNDLE PATCH' >/dev/null; then log "  series    : DB19C line"
+    elif printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE) BUNDLE PATCH' >/dev/null; then log "  series    : plain OHS bundle line"
     else log "  series    : no OHS bundle installed yet"; fi
   else
     unknown "opatch lspatches failed - installed patches unknown"
@@ -374,7 +374,7 @@ failed_copies() {
   for p in "$@"; do
     for c in "$p".failed-*; do
       [ -e "$c" ] || [ -L "$c" ] || continue
-      printf '%s\n' "${c#"$p"}" | grep -qE '^\.failed-[0-9]{8}-?[0-9]{4,6}$' && printf '%s\n' "$c"
+      printf '%s\n' "${c#"$p"}" | grep -E '^\.failed-[0-9]{8}-?[0-9]{4,6}$' >/dev/null&& printf '%s\n' "$c"
     done
   done
   return 0
@@ -420,7 +420,7 @@ cmd_preflight() {
   pd="$(printf '%s\n' "$pds" | head -1)"; id="$(basename "$pd")"; PD="$pd"; PID="$id"
   title="$(readme_title "$pd")"; min="$(readme_min_opatch "$pd")"
   log "patch    : $id ${title:+- $title}"
-  if printf '%s\n' "$lsp" | grep -q "^$id;"; then warn "$id is already installed in $OH - nothing to apply"; fi
+  if printf '%s\n' "$lsp" | grep - "^$id;" >/dev/null; then warn "$id is already installed in $OH - nothing to apply"; fi
   if [ -z "$min" ]; then warn "no 'OPatch version ... or higher' line in $pd/README.txt - check the README by hand"
   elif [ -z "$opv" ]; then :   # unknown OPatch version: already UNKNOWN above, never a pass
   elif ! version_ge "$opv" "$min"; then
@@ -460,8 +460,8 @@ cmd_preflight() {
              log "series   : $id is a DB19C bundle; oracle.rdbms.rsf is $rsf now and the DB Client 19c upgrade runs before it in this outage - apply checks it again on the 19c home"
            else block "$id is a DB19C bundle and needs the Database Client 19c in $OH, but oracle.rdbms.rsf is $rsf - install the DB Client 19c Upgrade (patch 34761383, an FMW installer with no rollback but the backup; KB585169) first"; fi ;;
       esac
-    elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) DB19C BUNDLE PATCH'; then log "series   : home is on the DB19C line"
-    elif printf '%s\n' "$lsp" | grep -qi 'OHS (NATIVE) BUNDLE PATCH'; then block "$id is a DB19C bundle but $OH is on the plain OHS bundle line - the Database Client 19c upgrade (KB585169) comes first"
+    elif printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE) DB19C BUNDLE PATCH' >/dev/null; then log "series   : home is on the DB19C line"
+    elif printf '%s\n' "$lsp" | grep -i 'OHS (NATIVE) BUNDLE PATCH' >/dev/null; then block "$id is a DB19C bundle but $OH is on the plain OHS bundle line - the Database Client 19c upgrade (KB585169) comes first"
     else warn "no OHS bundle installed yet: confirm $OH had the Database Client 19c upgrade (KB585169) before applying the DB19C bundle $id"; fi
   fi
 
@@ -474,7 +474,7 @@ cmd_preflight() {
   local need; need="$(printf '%s\n' "$app" | grep -oE 'oracle\.[A-Za-z0-9_.]+:[0-9][0-9.]*' | sort -u)"
   if [ "$arc" = 0 ] && grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
     log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
-  elif [ "$CLIENT19_PENDING" = 1 ] && ! printf '%s\n' "$need" | grep -qv '^oracle\.rdbms\.rsf:19\.'; then
+  elif [ "$CLIENT19_PENDING" = 1 ] && ! printf '%s\n' "$need" | grep -v '^oracle\.rdbms\.rsf:19\.' >/dev/null; then
     # on a 12c client a DB19C patch cannot pass CheckApplicable yet (it needs oracle.rdbms.rsf 19); apply's own
     # preflight asks again once the upgrade earlier in the outage has run, and a failure there restores. Only when
     # the 19c client is ALL OPatch says is missing: anything else still stops here, before the stop (T1167)
@@ -542,7 +542,7 @@ cmd_preflight() {
     if [ -n "$procs" ]; then
       log "running from $OH (all must be stopped before the apply):"
       while read -r pid args; do [ -n "$pid" ] && log "  pid $pid  $(kind_of_proc "$args")"; done <<<"$procs"
-      if printf '%s\n' "$procs" | grep -q 'weblogic.Server'; then
+      if printf '%s\n' "$procs" | grep - 'weblogic.Server' >/dev/null; then
         warn "WebLogic servers run from this home ($layout): stop them first (wls-patch.sh stop) - this script's commands stop only OHS and node manager"
       fi
     else log "running  : nothing from $OH"; fi
@@ -813,7 +813,7 @@ run_gate() {
   [ "$DRY_RUN" = 1 ] && { DRY_EXT="$(mktemp -d)"; trap 'rm -rf "$DRY_EXT"' EXIT; }
   local prc; cmd_preflight "$pdir"; prc=$?
   [ "$prc" = 0 ] || { err "$what refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
-  if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
+  if printf ' %s ' "$PRE_IDS" | grep - " $PID " >/dev/null; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
   no_weblogic "$what"
   [ -d "$BACKUP_DIR" ] && [ -w "$BACKUP_DIR" ] || { err "$what refused: backup dir $BACKUP_DIR is missing or not writable - nothing was changed"; exit 1; }
   STAMP="$(date '+%Y%m%d-%H%M%S')"
@@ -823,7 +823,7 @@ run_gate() {
 # this script stops only OHS components and node manager: a WebLogic server running from the home is refused
 no_weblogic() {
   local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - refused"; exit 2; }
-  if printf '%s\n' "$procs" | grep -q 'weblogic\.Server'; then
+  if printf '%s\n' "$procs" | grep - 'weblogic\.Server' >/dev/null; then
     err "$1 refused: WebLogic servers run from $OH - stop them first (wls-patch.sh stop); this script stops only OHS and node manager. Nothing was changed."
     exit 1
   fi
@@ -885,7 +885,7 @@ step_apply() {
   log "3/5 opatch apply $PID"
   ( cd "$PD" && do_cmd env ORACLE_HOME="$OH" "$OH/OPatch/opatch" apply -silent -oh "$OH" ) || recover "opatch apply failed"
   local now; now="$(installed_ids)" || recover "lspatches cannot be read after the apply"
-  printf ' %s ' "$now" | grep -q " $PID " || recover "opatch apply returned 0 but lspatches does not show $PID"
+  printf ' %s ' "$now" | grep - " $PID " || recover "opatch apply returned 0 but lspatches does not show $PID" >/dev/null
 }
 
 # 4 start
@@ -899,7 +899,7 @@ step_start() {
 # 5 verify: the level moved and stays moved
 step_verify() {
   local now; now="$(installed_ids)" || recover "lspatches cannot be read after the start"
-  printf ' %s ' "$now" | grep -q " $PID " || recover "lspatches does not show $PID after the start"
+  printf ' %s ' "$now" | grep - " $PID " || recover "lspatches does not show $PID after the start" >/dev/null
   state applied "$PID"; state outcome applied
   if [ "$OPERATOR_STOPS" = 1 ]; then
     log "5/5 applied: $PID is installed in $OH. The home is left STOPPED for the operator to start; nothing was checked as answering. Backup kept at $BK."
@@ -1009,7 +1009,7 @@ cmd_apply() {
   [ "$DRY_RUN" = 1 ] && { DRY_EXT="$(mktemp -d)"; trap 'rm -rf "$DRY_EXT"' EXIT; }
   local prc; cmd_preflight "$pdir"; prc=$?
   [ "$prc" = 0 ] || { err "apply refused: preflight is not READY (exit $prc) - nothing was changed"; exit "$prc"; }
-  if printf ' %s ' "$PRE_IDS" | grep -q " $PID "; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
+  if printf ' %s ' "$PRE_IDS" | grep - " $PID " >/dev/null; then log "$PID is already installed in $OH - nothing to do"; exit 0; fi
   local rd
   if [ -n "$BACKUP_RUN_ARG" ]; then
     rd="$BACKUP_RUN_ARG"
@@ -1044,7 +1044,7 @@ cmd_verify() {
     local pd; pd="$(patch_dirs "$pdir" | head -1)"
     PID="$(basename "${pd:-}")"
     [ -n "$PID" ] || die "no patch found in $pdir"
-    if printf ' %s ' "$now" | grep -q " $PID "; then log "$PID is installed"; else err "$PID is NOT installed in $OH"; rc=1; fi
+    if printf ' %s ' "$now" | grep - " $PID " >/dev/null; then log "$PID is installed"; else err "$PID is NOT installed in $OH"; rc=1; fi
   fi
   if [ "$OPERATOR_STOPS" = 1 ]; then
     log "ports not checked: the operator starts the components (--operator-stops)"

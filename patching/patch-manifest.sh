@@ -346,7 +346,7 @@ other_lines() {
   wls="$(wls_homes)"
   for h in $(inventory_homes | sort -u); do
     [ -x "$h/OPatch/opatch" ] || continue
-    printf '%s\n' "$wls" | grep -qxF "$h" && continue
+    printf '%s\n' "$wls" | grep -xF "$h" >/dev/null&& continue
     kind="$(home_kind "$h")"
     opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     [ -n "$opatch" ] || echo "patch-manifest: warning: could not read the OPatch version of $h - get-patches.ps1 may skip the OPatch kit" >&2

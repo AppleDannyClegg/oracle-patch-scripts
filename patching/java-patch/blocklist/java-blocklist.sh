@@ -50,7 +50,7 @@ head1="$(head -1 "$target")"
 lists=("$HERE/emudhra-16.sha256")
 (( ALTS )) && lists+=("$HERE/emudhra-32-alternates.sha256")
 for l in "${lists[@]}"; do
-  tr -d '\r' <"$l" 2>/dev/null | grep -qE '^[0-9A-F]{64}$' || { echo "STOP: fingerprint list $l is missing or holds no fingerprint; copy the whole blocklist folder" >&2; exit 1; }
+  tr -d '\r' <"$l" 2>/dev/null | grep -E '^[0-9A-F]{64}$' >/dev/null || { echo "STOP: fingerprint list $l is missing or holds no fingerprint; copy the whole blocklist folder" >&2; exit 1; }
 done
 # a carriage return is dropped first: git on Windows (core.autocrlf) checks the lists out as CRLF
 want="$(cat "${lists[@]}" | tr -d '\r' | grep -E '^[0-9A-F]{64}$')"

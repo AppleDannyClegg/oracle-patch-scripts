@@ -128,7 +128,7 @@ add_cert() {
   local kind="$1" target="$2" where="$3" pem="$4" flags="${5:-}"
   x509_facts "$pem" || { CERTS="${CERTS}?|$kind|$target|$where|unreadable|-|-|-|-|-|unreadable"$'\n'; return 1; }
   [ "$X_SELF" = 1 ] && flags="${flags:+$flags,}self-signed"
-  { printf '%s\n' "$X_CN" "$X_ICN" | grep -qiE 'demo|^localhost$|CertGenCA' || grep -q <<<"$X_ISS" 'OracleOHS'; } && flags="${flags:+$flags,}demo"
+  { printf '%s\n' "$X_CN" "$X_ICN" | grep -iE 'demo|^localhost$|CertGenCA' || grep -q <<<"$X_ISS" 'OracleOHS' >/dev/null; } && flags="${flags:+$flags,}demo"
   grep -qiE <<<"$X_SIG" 'sha1|md5' && flags="${flags:+$flags,}weak-sig"
   [ "$X_KEYALG" = rsaEncryption ] && [ -n "$X_BITS" ] && [ "$X_BITS" -lt 2048 ] && flags="${flags:+$flags,}weak-key"
   CERTS="${CERTS}$X_DAYS|$kind|$target|$where|$X_CN|$X_ICN|$X_END|$X_SIG|${X_BITS:-?}|$X_SERIAL|${flags:--}"$'\n'
@@ -215,7 +215,7 @@ wls_ssl_servers() {
        b&&match($0,/<custom-trust-key-store-type>[^<]*<\/custom-trust-key-store-type>/){tt=substr($0,RSTART+29,RLENGTH-59)}
        b&&/<\/server>/{b=0; print n"|"a"|"(e==""?"false":e)"|"(p==""?"7002":p)"|"(k==""?"DemoIdentityAndDemoTrust":k)"|"f"|"t"|"al"|"tf"|"tt}' "$1/config/config.xml" 2>/dev/null
 }
-wls_home_of_domain() { local h; for h in $(wls_homes); do wls_domains "$h" | grep -qx "$1" && { printf '%s' "$h"; return; }; done; wls_homes | head -1; }
+wls_home_of_domain() { local h; for h in $(wls_homes); do wls_domains "$h" | grep -x "$1" >/dev/null&& { printf '%s' "$h"; return; }; done; wls_homes | head -1; }
 demo_identity() { local d="$1" h; h="$(wls_home_of_domain "$d")"; local f; for f in "$d/security/DemoIdentity.jks" "$d/security/DemoIdentity.p12" "$h/wlserver/server/lib/DemoIdentity.jks" "$h/wlserver/server/lib/DemoIdentity.p12"; do [ -f "$f" ] && { printf '%s' "$f"; return; }; done; }
 abs_in() { case "$2" in /*) printf '%s' "$2";; *) printf '%s/%s' "$1" "$2";; esac; }
 # inspect_wls [domain] [server]
@@ -451,14 +451,14 @@ check_material() { # --cert/--key/--chain consistent; sets NEW_SERIAL NEW_CN NEW
   else
     [ "$X_SELF" = 1 ] && warn "$CERT is self-signed" || { openssl verify "$CERT" >/dev/null 2>&1 && log "chain: issuer $NEW_ICN is in the system trust store" || warn "no --chain and the issuer '$NEW_ICN' is not in the system trust store: clients need the chain; give --chain for the keystore/wallet"; }
   fi
-  printf '%s,%s' "$NEW_CN" "$NEW_SAN" | tr ',' '\n' | grep -qixF "$CHECK_HOST" && log "names: $CHECK_HOST is covered (CN=$NEW_CN SAN=$NEW_SAN)" || warn "names: neither CN ($NEW_CN) nor SAN ($NEW_SAN) is '$CHECK_HOST' (CHECK_HOST): clients that verify the hostname will complain"
+  printf '%s,%s' "$NEW_CN" "$NEW_SAN" | tr ',' '\n' | grep -ixF "$CHECK_HOST" >/dev/null&& log "names: $CHECK_HOST is covered (CN=$NEW_CN SAN=$NEW_SAN)" || warn "names: neither CN ($NEW_CN) nor SAN ($NEW_SAN) is '$CHECK_HOST' (CHECK_HOST): clients that verify the hostname will complain"
   [ "$NEW_DAYS" != "?" ] && [ "$NEW_DAYS" -lt "$INFO_DAYS" ] && warn "the new certificate already expires in $NEW_DAYS days"
   return 0
 }
 # make_p12 <out.p12> <pass>: PKCS12 with cert+key+chain, 3DES/SHA1 so every keytool and orapki can read it
 make_p12() {
   local out="$1" pf; pf="$(tmp_secret_file "$2")"; keypass_opt; local legacy=()
-  openssl version | grep -qE 'OpenSSL [3-9]' && legacy=(-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1)
+  openssl version | grep -E 'OpenSSL [3-9]' >/dev/null&& legacy=(-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1)
   ( umask 077; openssl pkcs12 -export -in "$CERT" -inkey "$KEY" ${CHAIN:+-certfile "$CHAIN"} -name "$CERT_ALIAS" -out "$out" -passout "file:$pf" "${KP[@]}" "${legacy[@]}" 2>>"$LOG_FILE" ); local rc=$?
   rm -f "$pf"; keypass_done; [ "$rc" = 0 ] || die "openssl pkcs12 -export failed (see $LOG_FILE)"
 }
@@ -468,7 +468,7 @@ chain_cas() { local o="$1"; mkdir -p "$o"; [ -n "$CHAIN" ] || return 0; awk -v o
 import_cas() {
   local ks="$1" pw="$2" t="$3" f fp present n=0; present="$(kt "$ks" "$pw" -list -storetype "$t" | grep -oE '[0-9A-F]{2}(:[0-9A-F]{2}){31}' | tr -d ':' | tr 'A-F' 'a-f')"
   for f in $(chain_cas "$RUN_DIR/chain"); do
-    fp="$(openssl x509 -in "$f" -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f')"; printf '%s\n' "$present" | grep -q "$fp" && { dbg "CA $(openssl x509 -in "$f" -noout -subject | cut -c1-80) already trusted"; continue; }
+    fp="$(openssl x509 -in "$f" -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f')"; printf '%s\n' "$present" | grep - "$fp" >/dev/null&& { dbg "CA $(openssl x509 -in "$f" -noout -subject | cut -c1-80) already trusted"; continue; }
     x509_facts "$f"; local alias; alias="cert-renew-$(printf '%s' "$X_CN" | tr -c 'A-Za-z0-9' '_' | cut -c1-40 | tr 'A-Z' 'a-z')"
     log "importing CA '$X_CN' as $alias into $ks"; [ "$DRY_RUN" = 1 ] || KT_ERR="$LOG_FILE" kt "$ks" "$pw" -importcert -noprompt -trustcacerts -storetype "$t" -alias "$alias" -file "$f" >/dev/null || { err "import of $X_CN into $ks failed: $(grep -iE 'exception|error|denied|read-only' "$LOG_FILE" | tail -1)"; return 1; }; n=$((n+1))
   done; log "$n CA certificate(s) added to $ks"
@@ -630,7 +630,7 @@ wls_apply_one() {
   local mode="${TRUST_MODE_OPT:-}"; [ -z "$mode" ] && case "$T_MODE" in CustomIdentityAnd*) mode="$T_MODE";; *) mode=CustomIdentityAndJavaStandardTrust;; esac
   local trust="${WALLET_OPT:-$T_TRUST}" trusttype="${T_TRUSTTYPE:-JKS}"
   if [ "$mode" = CustomIdentityAndCustomTrust ]; then [ -n "$trust" ] || die "--trust-mode CustomIdentityAndCustomTrust needs a trust store (--wallet <file> or the server's current one)"; [ -n "$CHAIN" ] && { local tp; tp="$(ks_pass "$trust" "$trusttype")" || die "trust store $trust: password unknown (KS_PASSWORDS)"; import_cas "$trust" "$tp" "$trusttype"; }
-  elif [ -n "$CHAIN" ]; then local jh c; jh="$(wls_java_home "$T_HOME")"; c="$jh/jre/lib/security/cacerts"; [ -f "$c" ] || c="$jh/lib/security/cacerts"; [ -f "$c" ] && { local f miss=0; for f in $(chain_cas "$RUN_DIR/chain"); do x509_facts "$f"; kt "$c" "$(ks_pass "$c" JKS)" -list -v | grep -qF "$(openssl x509 -in "$f" -noout -fingerprint -sha256 | sed 's/.*=//')" || { miss=1; warn "CA '$X_CN' is not in $c (JavaStandardTrust): servers that call this one over t3s/https will not trust it - cert-renew.sh apply java:$jh --chain $CHAIN"; }; done; [ "$miss" = 0 ] && log "chain CAs present in $c"; }; fi
+  elif [ -n "$CHAIN" ]; then local jh c; jh="$(wls_java_home "$T_HOME")"; c="$jh/jre/lib/security/cacerts"; [ -f "$c" ] || c="$jh/lib/security/cacerts"; [ -f "$c" ] && { local f miss=0; for f in $(chain_cas "$RUN_DIR/chain"); do x509_facts "$f"; kt "$c" "$(ks_pass "$c" JKS)" -list -v | grep -F "$(openssl x509 -in "$f" -noout -fingerprint -sha256 | sed 's/.*=//')" || { miss=1 >/dev/null; warn "CA '$X_CN' is not in $c (JavaStandardTrust): servers that call this one over t3s/https will not trust it - cert-renew.sh apply java:$jh --chain $CHAIN"; }; done; [ "$miss" = 0 ] && log "chain CAs present in $c"; }; fi
   local py; py="edit()
 startEdit()
 cd('/Servers/$T_SERVER')
@@ -709,7 +709,7 @@ cmd_verify() {
   local want; want="$(state_get new_serial || true)"; [ -n "$CERT" ] && { x509_facts "$CERT" && want="$X_SERIAL"; }
   local fail=0 one; for one in $(expand_targets "$t"); do
     resolve_target "$one"
-    if [ "$T_KIND" = java ]; then local f; for f in $(chain_cas "$RUN_DIR/chain"); do x509_facts "$f"; kt "$T_FILE" "$(ks_pass "$T_FILE" JKS)" -list -v | grep -qF "$(openssl x509 -in "$f" -noout -fingerprint -sha256 | sed 's/.*=//')" && log "$T_FILE trusts '$X_CN'" || { err "$T_FILE does not hold '$X_CN'"; fail=1; }; done; continue; fi
+    if [ "$T_KIND" = java ]; then local f; for f in $(chain_cas "$RUN_DIR/chain"); do x509_facts "$f"; kt "$T_FILE" "$(ks_pass "$T_FILE" JKS)" -list -v | grep -F "$(openssl x509 -in "$f" -noout -fingerprint -sha256 | sed 's/.*=//')" >/dev/null&& log "$T_FILE trusts '$X_CN'" || { err "$T_FILE does not hold '$X_CN'"; fail=1; }; done; continue; fi
     [ -n "$T_PORT" ] || { warn "$one: no port known to probe"; continue; }
     local hp="${T_ADDR:-127.0.0.1}:$T_PORT" out; out="$RUN_DIR/verify_$(printf '%s' "$one" | tr ':/' '__').pem"
     [ "$DRY_RUN" = 1 ] && { log "would probe $hp"; continue; }
@@ -722,7 +722,7 @@ cmd_verify() {
     x509_facts "$out"
     if [ -n "$want" ]; then [ "$X_SERIAL" = "$want" ] && log "$one: $hp serves the new certificate (serial $want)" || { err "$one: $hp serves serial $X_SERIAL, expected $want - restart pending?"; fail=1; }; else log "$one: $hp serves CN=$X_CN serial $X_SERIAL"; fi
     log "$one: expires $X_END ($X_DAYS days), CN=$X_CN SAN=$X_SAN, $X_SIG/${X_BITS:-?} bits"; [ "$X_DAYS" != "?" ] && [ "$X_DAYS" -lt "$WARN_DAYS" ] && { err "$one: expires in $X_DAYS days"; fail=1; }
-    printf '%s,%s' "$X_CN" "$X_SAN" | tr ',' '\n' | grep -qixF "$CHECK_HOST" || warn "$one: $CHECK_HOST not in CN/SAN"
+    printf '%s,%s' "$X_CN" "$X_SAN" | tr ',' '\n' | grep -ixF "$CHECK_HOST" || warn "$one: $CHECK_HOST not in CN/SAN" >/dev/null
     local n; n="$(grep -c 'BEGIN CERTIFICATE' "$out.chain")"; local vr; if [ -n "$CHAIN" ]; then vr="$(openssl verify -CAfile "$CHAIN" -untrusted "$out.chain" "$out" 2>&1)"; else vr="$(openssl verify -untrusted "$out.chain" "$out" 2>&1)"; fi
     grep -q <<<"$vr" ': OK' && log "$one: chain verifies ($n cert(s) sent by the server$([ -n "$CHAIN" ] && echo ", against $CHAIN" || echo ', system trust'))" || { [ "$n" -le 1 ] && warn "$one: the server sends only the leaf (no chain): $vr" || warn "$one: chain does not verify: $(printf '%s' "$vr" | tail -1)"; }
   done
