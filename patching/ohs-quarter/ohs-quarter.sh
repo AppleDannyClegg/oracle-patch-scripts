@@ -372,7 +372,13 @@ for entry in "${APPLY[@]}"; do
   [ "${entry%%|*}" = wls ] || continue
   arg="${entry#*|}"
   for kit_zip in "$arg"/p28186730_*.zip; do
-    [ -f "$kit_zip" ] && opatch_pending="$arg"
+    [ -f "$kit_zip" ] || continue
+    # wls-patch decides a kit is present by finding opatch_generic.jar, not by the zip name.
+    # A name alone must not defer the OPatch check on a home that will never get the upgrade.
+    if unzip -Z1 "$kit_zip" 2>/dev/null | grep -q 'opatch_generic.jar$' \
+       || find "$arg/extracted" -name opatch_generic.jar -type f 2>/dev/null | grep -q .; then
+      opatch_pending="$arg"
+    fi
   done
 done
 log "=== 1/7 preflight (nothing has changed yet)"
