@@ -382,5 +382,21 @@ for pair in "java:java-patch/java-patch.sh" "wls:wls-patch/wls-patch.sh" "dbclie
   [ -z "$unknown" ] && ok || bad "ohs-quarter passes $who options its script (${pair#*:}) has no arm for:$unknown"
 done
 
+# a kit zip with that name but no jar must not defer the OPatch check: wls keys on opatch_generic.jar
+mkroot "$T/rootkit" 1 1 1 1 1 1 1 1
+: >"$T/rootkit/wlspsu/p28186730_1394225_Generic.zip"
+runq "$T/rootkit"
+! grep -q -- '--opatch-upgrade-pending' "$T/calls.log" && ok || bad "a named zip with no jar deferred the OPatch check: $(grep -- '--opatch-upgrade-pending' "$T/calls.log" | head -2)"
+
+# the deferred path reaches 4/7: a wrong kit name makes the ohs apply block, and recover() restores in reverse
+mkroot "$T/rootkit2" 1 1 1 1 1 1 1 1
+mkdir -p "$T/rootkit2/wlspsu/extracted/p28186730_1394225"; : >"$T/rootkit2/wlspsu/extracted/p28186730_1394225/opatch_generic.jar"
+: >"$T/rootkit2/wlspsu/p28186730_1394225_Generic.zip"
+runq "$T/rootkit2" FAIL_OHS_APPLY=1; rc=$?
+[ "$rc" = 1 ] && grep -q -- '--opatch-upgrade-pending' "$T/calls.log" && grep -q 'ohs-patch apply failed' "$T/out" \
+  && [ -n "$(line '^dbclient rollback')" ] && [ -n "$(line '^java rollback')" ] \
+  && [ "$(line '^dbclient rollback')" -lt "$(line '^java rollback')" ] && [ "$(line '^java rollback')" -lt "$(line '^ohs start')" ] && ok \
+  || bad "deferred path through 4/7 did not restore and start: rc=$rc: $(grep -E 'rollback|restore|start' "$T/calls.log" | tail -8 | tr '\n' ';')"
+
 echo "ohs-quarter gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
