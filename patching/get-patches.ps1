@@ -728,9 +728,9 @@ function Get-OhsPlan($Manifest) {
 # ohs-quarter.sh applies sixteen folders in one outage. The JDK, the OHS bundle and the installer are looked up
 # above; the other thirteen are single patches MOS has no "newest of" query for - the FMW CPU Patch Advisor page
 # (KA1182 / Doc 2806740.2, 'Oracle HTTP Server 12.2.1.4 (with a DB Client 19c)') names them each quarter. So this
-# is a TABLE, not a lookup, and it is the November 2026 row. The same numbers, with the same folders, are the
+# is a TABLE, not a lookup, and it is the October 2026 row. The same numbers, with the same folders, are the
 # built-in table of patching/ohs-quarter/ohs-quarter-stage.sh; tests/get-patches.ps1 fails if the two differ.
-$script:OhsSetQuarter = 'November 2026'
+$script:OhsSetQuarter = 'October 2026'
 $script:OhsSetFolders = @('wlspsu', 'dbclient', 'dbclientru', 'webgate', 'oss', 'ohs', 'fmwbp', 'jdbc', 'libovd', 'fmwthirdparty', 'perl', 'libdms2', 'libiau', 'cloningspu', 'rda')
 $script:OhsSetBuiltIn = @(
     '39919567 wlspsu', '28186730 wlspsu', '34761383 dbclient', '39425385 dbclientru', '39114058 webgate', '39567777 oss', '40176880 ohs', '36789759 fmwbp',
