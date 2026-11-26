@@ -364,6 +364,17 @@ trap on_signal INT TERM
 trap '' HUP   # a dropped ssh (SIGHUP) must not leave a half-restored home; run inside screen/tmux or nohup
 
 # ---- 1. preflight everything before any change -----------------------------------------------------------
+# wls-patch installs the OPatch kit from wlspsu BEFORE the ohs sets, so a later bundle may ask for a
+# newer OPatch than the home currently has. Pass the kit's folder to ohs-patch's preflight; it defers
+# the version block only when that kit itself meets the later README's minimum.
+opatch_pending=""
+for entry in "${APPLY[@]}"; do
+  [ "${entry%%|*}" = wls ] || continue
+  arg="${entry#*|}"
+  for kit_zip in "$arg"/p28186730_*.zip; do
+    [ -f "$kit_zip" ] && opatch_pending="$arg"
+  done
+done
 log "=== 1/7 preflight (nothing has changed yet)"
 for entry in "${APPLY[@]}"; do
   owner="${entry%%|*}"; arg="${entry#*|}"
@@ -375,7 +386,7 @@ for entry in "${APPLY[@]}"; do
     dc)   drun preflight "$arg" || die "dbclient-upgrade preflight failed - nothing changed"; log "dbclient: $arg preflight OK";;
     # the DB Client 19c installer runs before every opatch set in this outage, so a DB19C set on today's 12c client
     # is checked again by its own apply (field run 12 Nov 2026: 40005842 refused at 1/7 on the 12c client)
-    ohs)  if [ -n "$INSTALLER_DIR" ]; then orun preflight "$arg" --client-19c-pending; else orun preflight "$arg"; fi || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
+    ohs)  oflags=(); [ -n "$INSTALLER_DIR" ] && oflags+=(--client-19c-pending); [ -n "$opatch_pending" ] && oflags+=(--opatch-upgrade-pending "$opatch_pending"); orun preflight "$arg" "${oflags[@]}" || die "ohs-patch preflight failed for $arg - nothing changed"; log "$(basename "$arg"): $arg preflight OK";;
   esac
 done
 

@@ -784,3 +784,12 @@ echo " 4242 bash /u01/scripts/ohs-quarter.sh --patch-root /u01/stage" >>"$T/ps.t
 
 echo "ohs-patch gate: $pass passed, $fail failed$skiptail"
 [ "$fail" = 0 ]
+
+# a staged OPatch kit that meets the later README's minimum defers the old-OPatch block (18:12 dry run)
+build; echo "OPatch 13.9.4.2.10" >"$T/opv"; mkdir -p "$T/kit"
+printf 'OPatch 13.9.4.2.30 or higher\n' >"$T/kit/README.txt"
+runkit() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --opatch-upgrade-pending "$T/kit" >"$T/out" 2>&1; echo $?; }
+rc="$(runkit)"
+[ "$rc" = 0 ] && grep -q 'OPatch kit in .*13.9.4.2.30' "$T/out" && ! grep -q BLOCKING "$T/out" && ok || bad "staged OPatch kit did not defer old OPatch: rc $rc: $(grep -E 'OPatch|BLOCK' "$T/out" | head -3)"
+printf 'OPatch 13.9.4.2.10 or higher\n' >"$T/kit/README.txt"; rc="$(runkit)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: OPatch 13.9.4.2.10 is older' "$T/out" && ok || bad "a kit below the later minimum was accepted: rc $rc"
