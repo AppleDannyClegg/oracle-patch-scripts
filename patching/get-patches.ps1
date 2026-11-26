@@ -728,17 +728,18 @@ function Get-OhsPlan($Manifest) {
 # ohs-quarter.sh applies sixteen folders in one outage. The JDK, the OHS bundle and the installer are looked up
 # above; the other thirteen are single patches MOS has no "newest of" query for - the FMW CPU Patch Advisor page
 # (KA1182 / Doc 2806740.2, 'Oracle HTTP Server 12.2.1.4 (with a DB Client 19c)') names them each quarter. So this
-# is a TABLE, not a lookup, and it is the October 2026 row. The same numbers, with the same folders, are the
+# is a TABLE, not a lookup, and it is the November 2026 row. The same numbers, with the same folders, are the
 # built-in table of patching/ohs-quarter/ohs-quarter-stage.sh; tests/get-patches.ps1 fails if the two differ.
-$script:OhsSetQuarter = 'October 2026'
+$script:OhsSetQuarter = 'November 2026'
 $script:OhsSetFolders = @('wlspsu', 'dbclient', 'dbclientru', 'webgate', 'oss', 'ohs', 'fmwbp', 'jdbc', 'libovd', 'fmwthirdparty', 'perl', 'libdms2', 'libiau', 'cloningspu', 'rda')
 $script:OhsSetBuiltIn = @(
-    '39919567 wlspsu', '34761383 dbclient', '39425385 dbclientru', '39114058 webgate', '39567777 oss', '40005842 ohs', '36789759 fmwbp',
+    '39919567 wlspsu', '28186730 wlspsu', '34761383 dbclient', '39425385 dbclientru', '39114058 webgate', '39567777 oss', '40176880 ohs', '36789759 fmwbp',
     '39487427 jdbc', '39465265 libovd', '39574504 fmwthirdparty', '38590502 perl', '38098858 libdms2', '38832179 libiau',
     '37056593 cloningspu', '39798204 rda')
 
 # "<number> <folder>" lines -> rows. A line that is not that shape, a folder the runbook does not have, or a
-# number or folder given twice is refused: a table read wrongly is a set downloaded wrongly
+# number given twice is refused. Two numbers MAY share a folder - the OPatch kit shares wlspsu with the PSU - so
+# the folder is not a uniqueness key. A table read wrongly is a set downloaded wrongly.
 function ConvertTo-OhsSet([string[]] $Lines, [string] $From) {
     $rows = @()
     foreach ($raw in $Lines) {
@@ -747,7 +748,7 @@ function ConvertTo-OhsSet([string[]] $Lines, [string] $From) {
         if ($l -notmatch '^(\d{6,9})\s+(\S+)$') { throw "${From}: '$raw' is not '<patch number> <folder>'" }
         $n = $Matches[1]; $fo = $Matches[2]
         if ($fo -notin $script:OhsSetFolders) { throw "${From}: '$fo' is not a folder ohs-quarter.sh reads ($($script:OhsSetFolders -join ' '))" }
-        if ($rows | Where-Object { $_.Number -eq $n -or $_.Folder -eq $fo }) { throw "${From}: patch $n or folder $fo is listed twice" }
+        if ($rows | Where-Object { $_.Number -eq $n }) { throw "${From}: patch $n is listed twice" }
         $rows += [pscustomobject]@{ Number = $n; Folder = $fo }
     }
     if ($rows.Count -eq 0) { throw "${From}: no '<patch number> <folder>' lines" }

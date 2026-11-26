@@ -43,11 +43,12 @@ set -uo pipefail
 SETS=(jdk wlspsu dbclient dbclientru webgate oss ohs fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda)
 # number folder - ohs-quarter.sh's own table (its header, "The set, in the order this script applies it")
 MAP="39919567 wlspsu
+28186730 wlspsu
 34761383 dbclient
 39425385 dbclientru
 39114058 webgate
 39567777 oss
-40005842 ohs
+40176880 ohs
 36789759 fmwbp
 39487427 jdbc
 39465265 libovd

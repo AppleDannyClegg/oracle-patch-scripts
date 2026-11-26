@@ -12,12 +12,13 @@
 # KB585169 + the 34761383 README:
 #   jdk/            Java SE 8u503+ (18143322)         java-patch.sh   the JDK at /u01/app/oracle/java
 #   wlspsu/         WLS PSU 39919567 12.2.1.4.260823   wls-patch.sh    for the home's wlserver
+#                   plus OPatch kit 28186730, read from the same folder by wls-patch's preflight
 #   dbclient/       DB Client 19c 34761383             dbclient-upgrade.sh  the FMW INSTALLER (12c -> 19.14),
 #                                                                     plus the opt-in removal of the 12c patches
 #   dbclientru/     FMW DBCLIENT RU 39425385           ohs-patch.sh    opatch (-> 19.31)
 #   webgate/        OAM WebGate DB19c 39114058         ohs-patch.sh    needs DBCLIENT FOR FMW 19.29 or later
 #   oss/            OSS 19C bundle 39567777            ohs-patch.sh    advisor applies OHS + OSS + DB Client together
-#   ohs/            OHS (NATIVE) DB19c 40005842        ohs-patch.sh
+#   ohs/            OHS (NATIVE) DB19c 40176880        ohs-patch.sh
 #   fmwbp/          FMW Platform BP 36789759           ohs-patch.sh    functionality fixes (Daniel 7 Nov: in the set)
 #   jdbc/           JDBC 19.31 39487427                ohs-patch.sh
 #   libovd/         LibOVD 39465265                    ohs-patch.sh

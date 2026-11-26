@@ -18,7 +18,8 @@ tree() { # <dir>: a full download
   local d="$1"; mkdir -p "$d/wls" "$d/ohs" "$d/jdk" "$d/dbclient" "$d/db"
   local n
   for n in 39919567 39425385 39114058 39567777 36789759 39487427 39465265 39574504 38590502 38098858 38832179 37056593 39798204; do echo "zip $n" >"$d/wls/p${n}_122140_Generic.zip"; done
-  echo "zip 40005842" >"$d/ohs/p40005842_122140_Linux-x86-64.zip"
+  echo "zip 40176880" >"$d/ohs/p40176880_122140_Linux-x86-64.zip"
+  echo "kit 28186730" >"$d/wls/p28186730_1394225_Generic.zip"
   echo "zip 34761383" >"$d/dbclient/p34761383_122140_Linux-x86-64.zip"
   echo "tar" >"$d/jdk/jdk-8u511-linux-x64.tar.gz"; echo "jdkzip" >"$d/jdk/p18143322_180511_Linux-x86-64.zip"
   echo "note" >"$d/README.txt"
@@ -29,9 +30,17 @@ tree() { # <dir>: a full download
 sets_of() { sed -n 's/^SETS=(\(.*\))$/\1/p' "$1"; }
 qsets="$(sets_of "$REPO/patching/ohs-quarter/ohs-quarter.sh")"; ssets="$(sets_of "$S")"
 r=0; [ -n "$qsets" ] && [ "$qsets" = "$ssets" ] || r=1; ok $r "the stage's SETS are ohs-quarter.sh's, in order: stage [$ssets] composer [$qsets]"
-maps="$(sed -n '/^MAP="/,/"$/p' "$S" | tr -d '"' | sed 's/^MAP=//' | awk 'NF == 2 { print $2 }')"
+table="$(sed -n '/^MAP="/,/"$/p' "$S" | tr -d '"' | sed 's/^MAP=//')"
+maps="$(printf '%s\n' "$table" | awk 'NF == 2 { print $2 }')"
+# Both built-in tables must be CURRENT, or the contact has to hand-make a map. The OHS bundle
+# changed number last quarter and the OPatch kit has no row at all in the shipped table.
+r=0
+printf '%s\n' "$table" | grep -qxF '40176880 ohs' || r=1
+printf '%s\n' "$table" | grep -qxF '28186730 wlspsu' || r=1
+grep -qF 'OHS (NATIVE) DB19c 40176880' "$REPO/patching/ohs-quarter/ohs-quarter.sh" || r=1
+ok $r "both built-in tables carry this quarter's OHS bundle and the OPatch kit"
 r=0; for f in $maps; do case " $qsets " in *" $f "*) ;; *) r=1; echo "  stage MAP folder $f is not in ohs-quarter.sh SETS";; esac; done
-[ "$(printf '%s\n' $maps | grep -c .)" = 15 ] || r=1; ok $r "every folder in the stage's table is one ohs-quarter.sh reads (15 table rows; the JDK is the tarball)"
+[ "$(printf '%s\n' $maps | grep -c .)" = 16 ] || r=1; ok $r "every folder in the stage's table is one ohs-quarter.sh reads (16 table rows; the JDK is the tarball)"
 # ---- plan changes nothing and names every destination ----
 tree "$T/dl"; before="$(snapshot "$T/dl")"
 "$S" plan "$T/dl" "$T/root" >"$T/plan.out" 2>&1; ok $? "plan on a full tree exits 0"
@@ -42,13 +51,13 @@ has "$T/plan.out" "jdk/p18143322_180511_Linux-x86-64.zip"; ok $? "plan lists the
 
 # ---- run: every file in its runbook folder, the kind folders no longer carry patches ----
 "$S" run "$T/dl" "$T/root" >"$T/run.out" 2>&1; ok $? "run on a full tree exits 0"
-want="cloningspu/p37056593_122140_Generic.zip dbclient/p34761383_122140_Linux-x86-64.zip dbclientru/p39425385_122140_Generic.zip fmwbp/p36789759_122140_Generic.zip fmwthirdparty/p39574504_122140_Generic.zip jdbc/p39487427_122140_Generic.zip jdk/jdk-8u511-linux-x64.tar.gz libdms2/p38098858_122140_Generic.zip libiau/p38832179_122140_Generic.zip libovd/p39465265_122140_Generic.zip ohs/p40005842_122140_Linux-x86-64.zip oss/p39567777_122140_Generic.zip perl/p38590502_122140_Generic.zip rda/p39798204_122140_Generic.zip webgate/p39114058_122140_Generic.zip wlspsu/p39919567_122140_Generic.zip"
+want="cloningspu/p37056593_122140_Generic.zip dbclient/p34761383_122140_Linux-x86-64.zip dbclientru/p39425385_122140_Generic.zip fmwbp/p36789759_122140_Generic.zip fmwthirdparty/p39574504_122140_Generic.zip jdbc/p39487427_122140_Generic.zip jdk/jdk-8u511-linux-x64.tar.gz libdms2/p38098858_122140_Generic.zip libiau/p38832179_122140_Generic.zip libovd/p39465265_122140_Generic.zip ohs/p40176880_122140_Linux-x86-64.zip oss/p39567777_122140_Generic.zip perl/p38590502_122140_Generic.zip rda/p39798204_122140_Generic.zip webgate/p39114058_122140_Generic.zip wlspsu/p28186730_1394225_Generic.zip wlspsu/p39919567_122140_Generic.zip"
 got="$(cd "$T/root" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
 r=0; [ "$got" = "$want" ] || r=1; ok $r "run files the 16 sets exactly: [$got]"
 r=0; [ "$(cat "$T/root/webgate/p39114058_122140_Generic.zip")" = "zip 39114058" ] || r=1; ok $r "a staged file is the file that was downloaded"
 r=0; [ -z "$(find "$T/dl/wls" "$T/dl/ohs" "$T/dl/dbclient" -type f)" ] || r=1; ok $r "run moved the patches out of the kind folders"
 for k in wls db spb; do r=0; [ ! -e "$T/root/$k" ] || r=1; ok $r "the staged root has no $k/ (ohs-quarter.sh refuses one)"; done
-has "$T/run.out" "staged 16 file(s)"; ok $? "run counts what it staged"
+has "$T/run.out" "staged 17 file(s)"; ok $? "run counts what it staged"
 
 # ---- the staged root is one ohs-quarter.sh accepts, and the download tree is one it refuses ----
 mk() { printf '#!/bin/sh\nexit 0\n' >"$1"; chmod +x "$1"; }
@@ -61,7 +70,7 @@ q "$T/root" >"$T/q-root.out" 2>&1
 ! has "$T/q-root.out" "get-patches.ps1 download tree" && ! has "$T/q-root.out" "partial runbook"; ok $? "ohs-quarter.sh does not refuse the staged root as foreign or partial: $(tail -1 "$T/q-root.out")"
 
 # ---- a partial download: staged, and the missing folders are named with the --skip list ----
-mkdir -p "$T/part/ohs" "$T/part/dbclient"; echo a >"$T/part/ohs/p40005842_122140_Linux-x86-64.zip"; echo b >"$T/part/dbclient/p34761383_122140_Linux-x86-64.zip"
+mkdir -p "$T/part/ohs" "$T/part/dbclient"; echo a >"$T/part/ohs/p40176880_122140_Linux-x86-64.zip"; echo b >"$T/part/dbclient/p34761383_122140_Linux-x86-64.zip"
 "$S" run "$T/part" "$T/root-part" >"$T/part.out" 2>&1; ok $? "a partial download is staged (exit 0)"
 has "$T/part.out" "NOT IN THIS DOWNLOAD: jdk wlspsu dbclientru webgate oss fmwbp jdbc libovd fmwthirdparty perl libdms2 libiau cloningspu rda"; ok $? "the folders the download lacks are named"
 has "$T/part.out" "--skip jdk,wlspsu,dbclientru,webgate,oss,fmwbp,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau,cloningspu,rda"; ok $? "the --skip list ohs-quarter.sh would need is printed, not applied"
@@ -74,11 +83,11 @@ refuses() { # <what> <expected text> <src> <dest> [args...]
   [ "$rc" = 1 ] && has "$T/r.out" "$text" && has "$T/r.out" "Nothing changed" && [ "$(snapshot "$src")" = "$b" ]
   ok $? "$what: rc=$rc, said '$text', source untouched: $(grep ERROR "$T/r.out" | head -1)"
 }
-tree "$T/u"; echo x >"$T/u/wls/p28186730_139400_Generic.zip"
-refuses "an unknown patch number" "no folder for p28186730_139400_Generic.zip" "$T/u" "$T/root-u"
+tree "$T/u"; echo x >"$T/u/wls/p99999999_139400_Generic.zip"
+refuses "an unknown patch number" "no folder for p99999999_139400_Generic.zip" "$T/u" "$T/root-u"
 r=0; [ ! -e "$T/root-u" ] || r=1; ok $r "a refused run creates no root"
 "$S" run "$T/u" "$T/root-u" --leave-unknown >"$T/lu.out" 2>&1; ok $? "--leave-unknown stages the rest"
-[ -f "$T/u/wls/p28186730_139400_Generic.zip" ] && has "$T/lu.out" "wls/p28186730_139400_Generic.zip"; ok $? "...and the unknown zip stays put and is listed"
+[ -f "$T/u/wls/p99999999_139400_Generic.zip" ] && has "$T/lu.out" "wls/p99999999_139400_Generic.zip"; ok $? "...and the unknown zip stays put and is listed"
 
 # ---- a WLS Stack Patch Bundle (get-patches.ps1's spb/) is not part of this runbook: named, left out, not a refusal ----
 tree "$T/b"; mkdir -p "$T/b/spb"; echo spb >"$T/b/spb/p40129641_122140_Generic.zip"
@@ -88,14 +97,14 @@ has "$T/b.out" "WLS PSU in wlspsu/"; ok $? "...and the output says the home take
 ! has "$T/b.out" "Add it with --map"; ok $? "...not the unknown-number error"
 "$S" run "$T/b" "$T/root-b" >"$T/b-run.out" 2>&1; ok $? "run with a Stack Patch Bundle present exits 0"
 r=0; [ -f "$T/b/spb/p40129641_122140_Generic.zip" ] && [ ! -e "$T/root-b/spb" ] || r=1; ok $r "...the bundle stays where it was and the root gets no spb/"
-has "$T/b-run.out" "staged 16 file(s)"; ok $? "...and the 16 runbook sets are staged"
+has "$T/b-run.out" "staged 17 file(s)"; ok $? "...and the 17 current-quarter files are staged"
 # a --map line for the bundle's number still files it: the table is asked before the spb/ rule
 mkdir -p "$T/bm/spb"; echo spb >"$T/bm/spb/p40129641_122140_Generic.zip"; printf '40129641 wlspsu\n' >"$T/bmap"
 "$S" run "$T/bm" "$T/root-bm" --map "$T/bmap" >"$T/bm.out" 2>&1; ok $? "--map naming the bundle's number exits 0"
 r=0; [ -f "$T/root-bm/wlspsu/p40129641_122140_Generic.zip" ] || r=1; ok $r "...and files it where the map says"
 # an unknown number OUTSIDE spb/ is still refused: the spb/ case must not become a general pass
-tree "$T/b2"; mkdir -p "$T/b2/spb"; echo spb >"$T/b2/spb/p40129641_122140_Generic.zip"; echo x >"$T/b2/wls/p28186730_139400_Generic.zip"
-refuses "an unknown number beside a Stack Patch Bundle" "no folder for p28186730_139400_Generic.zip" "$T/b2" "$T/root-b2"
+tree "$T/b2"; mkdir -p "$T/b2/spb"; echo spb >"$T/b2/spb/p40129641_122140_Generic.zip"; echo x >"$T/b2/wls/p99999999_139400_Generic.zip"
+refuses "an unknown number beside a Stack Patch Bundle" "no folder for p99999999_139400_Generic.zip" "$T/b2" "$T/root-b2"
 
 tree "$T/j"; echo t2 >"$T/j/jdk/jdk-8u503-linux-x64.tar.gz"
 refuses "two JDK tarballs" "more than one JDK tarball" "$T/j" "$T/root-j"
@@ -106,9 +115,9 @@ refuses "one patch twice with different bytes" "twice with different contents" "
 tree "$T/s"; mkdir -p "$T/root-s/ohs"; echo old >"$T/root-s/ohs/p39611663_122140_Linux-x86-64.zip"
 refuses "last quarter's zip in a destination folder" "already holds p39611663_122140_Linux-x86-64.zip" "$T/s" "$T/root-s"
 
-tree "$T/o"; mkdir -p "$T/root-o/ohs"; echo other >"$T/root-o/ohs/p40005842_122140_Linux-x86-64.zip"
+tree "$T/o"; mkdir -p "$T/root-o/ohs"; echo other >"$T/root-o/ohs/p40176880_122140_Linux-x86-64.zip"
 refuses "a different file already at the destination" "exists and differs" "$T/o" "$T/root-o"
-r=0; [ "$(cat "$T/root-o/ohs/p40005842_122140_Linux-x86-64.zip")" = other ] || r=1; ok $r "the existing destination file is not overwritten"
+r=0; [ "$(cat "$T/root-o/ohs/p40176880_122140_Linux-x86-64.zip")" = other ] || r=1; ok $r "the existing destination file is not overwritten"
 
 tree "$T/i"
 refuses "a root inside the download dir" "is the download dir or inside it" "$T/i" "$T/i/staged"
@@ -130,9 +139,9 @@ printf '41111111 ohs\n41111111 jdbc\n' >"$T/dupmap"
 # ---- --copy leaves the download whole; a second run of the same files is a no-op, not a refusal ----
 tree "$T/c"; b="$(snapshot "$T/c")"
 "$S" run "$T/c" "$T/root-c" --copy >"$T/c.out" 2>&1; ok $? "--copy exits 0"
-r=0; [ "$(snapshot "$T/c")" = "$b" ] && [ -f "$T/root-c/ohs/p40005842_122140_Linux-x86-64.zip" ] || r=1; ok $r "--copy leaves the download tree whole and fills the root"
+r=0; [ "$(snapshot "$T/c")" = "$b" ] && [ -f "$T/root-c/ohs/p40176880_122140_Linux-x86-64.zip" ] || r=1; ok $r "--copy leaves the download tree whole and fills the root"
 "$S" run "$T/c" "$T/root-c" --copy >"$T/c2.out" 2>&1; ok $? "staging the same files again is accepted"
-has "$T/c2.out" "already there: ohs/p40005842_122140_Linux-x86-64.zip" && has "$T/c2.out" "staged 0 file(s)"; ok $? "...and says each is already there"
+has "$T/c2.out" "already there: ohs/p40176880_122140_Linux-x86-64.zip" && has "$T/c2.out" "staged 0 file(s)"; ok $? "...and says each is already there"
 
 # ---- arguments ----
 "$S" run "$T/c" >"$T/a.out" 2>&1; [ $? = 1 ] && has "$T/a.out" "needs <download-dir> and <patch-root>"; ok $? "a missing root is refused"
