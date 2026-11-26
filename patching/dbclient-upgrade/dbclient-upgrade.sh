@@ -433,7 +433,7 @@ scope_of() {
   if grep -q 'name="Oracle HTTP Server (Standalone)"' "$reg"; then echo standalone; return; fi
   if grep -q 'name="Oracle HTTP Server (Collocated)"' "$reg"; then echo collocated; return; fi
   names="$(reg_names "$1")"
-  printf '%s\n' "$names" | grep -x 'Oracle HTTP Server' || { echo embedded >/dev/null; return; }
+  printf '%s\n' "$names" | grep -x 'Oracle HTTP Server' >/dev/null|| { echo embedded; return; }
   while IFS= read -r n; do
     case "$n" in
       ''|'Oracle HTTP Server'|OPatch) ;;
@@ -687,7 +687,7 @@ run_gate() {
 
 no_weblogic() {
   local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - refused"; exit 2; }
-  if printf '%s\n' "$procs" | grep - 'weblogic\.Server' >/dev/null; then
+  if printf '%s\n' "$procs" | grep 'weblogic\.Server' >/dev/null; then
     err "$1 refused: WebLogic servers run from $OH - stop them first (wls-patch.sh stop); this script stops only OHS and node manager. Nothing was changed."
     exit 1
   fi

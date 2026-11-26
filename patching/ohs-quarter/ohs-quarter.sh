@@ -376,7 +376,7 @@ for entry in "${APPLY[@]}"; do
     # wls-patch decides a kit is present by finding opatch_generic.jar, not by the zip name.
     # A name alone must not defer the OPatch check on a home that will never get the upgrade.
     if unzip -Z1 "$kit_zip" 2>/dev/null | grep 'opatch_generic.jar$' >/dev/null \
-       || find "$arg/extracted" -name opatch_generic.jar -type f 2>/dev/null | grep - . >/dev/null; then
+       || find "$arg/extracted" -name opatch_generic.jar -type f 2>/dev/null | grep . >/dev/null; then
       opatch_pending="$arg"
     fi
   done

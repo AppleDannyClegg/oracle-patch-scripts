@@ -143,7 +143,7 @@ cmd_download() {
   local ids="${ARGS[*]:1}"; [ -z "$ids" ] && ids="${PATCHES//,/ }"; [ -z "$ids" ] && die "no patch ids: run 'latest' first or give them"
   mkdir -p "$dir"; local id todo=""
   for id in $ids; do
-    printf '%s\n' "$INSTALLED" | grep - "^$id;" >/dev/null&& { log "$id already installed, skipping"; continue; }
+    printf '%s\n' "$INSTALLED" | grep "^$id;" >/dev/null&& { log "$id already installed, skipping"; continue; }
     ls "$dir"/p"${id}"_*.zip >/dev/null 2>&1 && { log "$id already in $dir"; continue; }
     todo="$todo $id"
   done
@@ -195,7 +195,7 @@ cmd_preflight() {
   # already installed / conflicts
   for p in $PATCH_PATHS; do
     local id; id="$(basename "$p")"
-    if printf '%s\n' "$INSTALLED" | grep - "^$id;" >/dev/null; then log "$id already installed: $(patch_desc "$p")"; continue; fi
+    if printf '%s\n' "$INSTALLED" | grep "^$id;" >/dev/null; then log "$id already installed: $(patch_desc "$p")"; continue; fi
     log "$id: $(patch_desc "$p") $(patch_is_rolling "$p" && echo '[rolling]' || echo '[NOT rolling]')"
     local out; out="$(opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
     if grep -qE <<<"$out" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed'; then log "  no conflicts"
@@ -252,7 +252,7 @@ cmd_plan() {
   [ -n "$OOP" ] && echo "  3. clone        cp -a $HOME_DIR $OOP ; patch the clone ; then switch oratab/srvctl and restart (less downtime)"
   echo "  3. stop         $([ -n "$GRID_HOME" ] && echo 'srvctl stop database' || echo 'shutdown immediate') for: $SIDS $([ "$ROLLING" = 1 ] && echo '(this node only)') ; listener of this home"
   [ -n "${OPATCH_ZIP:-}" ] && echo "  4. opatch kit   unzip $(basename "$OPATCH_ZIP") over $HOME_DIR/OPatch"
-  local p; for p in $PATCH_PATHS; do printf '  4. apply        %-10s %s%s\n' "$(basename "$p")" "$(patch_desc "$p")" "$(printf '%s\n' "$INSTALLED" | grep - "^$(basename "$p");" >/dev/null&& echo '  [already installed: skip]')"; done
+  local p; for p in $PATCH_PATHS; do printf '  4. apply        %-10s %s%s\n' "$(basename "$p")" "$(patch_desc "$p")" "$(printf '%s\n' "$INSTALLED" | grep "^$(basename "$p");" >/dev/null&& echo '  [already installed: skip]')"; done
   echo "  5. start        what was running; listener"
   echo "  6. datapatch    datapatch -verbose in each database (all open PDBs), utlrp"
   echo "  7. verify       opatch lspatches, dba_registry_sqlpatch SUCCESS per container, invalids, services$([ "$GRID" = 1 ] && echo ', GI via opatchauto (root)')"
@@ -371,11 +371,11 @@ cmd_apply() {
   esac
   local p; for p in $PATCH_PATHS; do
     local id; id="$(basename "$p")"
-    printf '%s\n' "$INSTALLED" | grep - "^$id;" >/dev/null&& [ -z "$OOP" ] && { log "$id already installed, skipping"; continue; }
+    printf '%s\n' "$INSTALLED" | grep "^$id;" >/dev/null&& [ -z "$OOP" ] && { log "$id already installed, skipping"; continue; }
     log "applying $id: $(patch_desc "$p")"; confirm "opatch apply $id to $target?" || die "aborted"
     if [ "$DRY_RUN" = 0 ]; then
       (cd "$p" && ORACLE_HOME="$target" to 3600 "$target/OPatch/opatch" apply -silent -ocmrf /dev/null 2>&1 || ORACLE_HOME="$target" to 3600 "$target/OPatch/opatch" apply -silent 2>&1) | tee -a "$LOG_FILE" | grep -E 'OPatch (succeeded|failed|completed)|Error|error|conflict|Patch [0-9]+ successfully applied' | tail -5
-      if ! env ORACLE_HOME="$target" "$target/OPatch/opatch" lspatches 2>/dev/null | grep - "^$id;" >/dev/null; then err "$id did not apply (see $LOG_FILE)"; state_set apply failed; return 1; fi
+      if ! env ORACLE_HOME="$target" "$target/OPatch/opatch" lspatches 2>/dev/null | grep "^$id;" >/dev/null; then err "$id did not apply (see $LOG_FILE)"; state_set apply failed; return 1; fi
     fi
     state_append applied "$id"
   done
@@ -454,7 +454,7 @@ cmd_verify() {
   setup_env; reuse_or_init verify
   local oop; oop="$(state_get oop_home || true)"; [ -n "$oop" ] && HOME_DIR="$oop"
   local fail=0 id; INSTALLED="$(OPATCH_TIMEOUT=180 opatch lspatches 2>/dev/null)"
-  for id in $(state_get applied || true); do printf '%s\n' "$INSTALLED" | grep - "^$id;" >/dev/null&& log "$id in inventory" || { err "$id missing from inventory"; fail=1; }; done
+  for id in $(state_get applied || true); do printf '%s\n' "$INSTALLED" | grep "^$id;" >/dev/null&& log "$id in inventory" || { err "$id missing from inventory"; fail=1; }; done
   local s; for s in $SIDS; do
     up "$s" || { err "$s not running"; fail=1; continue; }
     sql_ok "$s" || { err "$s unreachable"; fail=1; continue; }
@@ -472,7 +472,7 @@ cmd_verify() {
     if [ -z "$pdbs" ]; then warn "$s: could not read the PDB open modes (v\$pdbs)"; elif [ "$pdbs" != 0 ]; then warn "$s: $pdbs PDB(s) not open"; fi
     log "$s: services $(sql_lines "$s" "select listagg(name,',') within group (order by name) from v\$active_services where name not like 'SYS%';" | head -1)"
   done
-  local h lsn ok=0; listener_homes | while read -r h lsn; do [ "$h" = "$HOME_DIR" ] && echo "$lsn"; done | grep - . || { local lst >/dev/null; lst="$(state_get listeners || true)"; [ -n "$lst" ] && { err "listener $lst not running"; fail=1; }; }
+  local h lsn ok=0; listener_homes | while read -r h lsn; do [ "$h" = "$HOME_DIR" ] && echo "$lsn"; done | grep . >/dev/null|| { local lst; lst="$(state_get listeners || true)"; [ -n "$lst" ] && { err "listener $lst not running"; fail=1; }; }
   state_set verify "$([ "$fail" = 0 ] && echo ok || echo failed)"; [ "$fail" = 0 ] && log "Verify OK" || err "Verify FAILED"; return "$fail"
 }
 
@@ -496,7 +496,7 @@ cmd_rollback() {
     if [ "$DRY_RUN" != 1 ]; then
       local inv rci=0; inv="$(OPATCH_TIMEOUT=180 opatch lspatches 2>/dev/null)" || rci=$?
       if [ "$rci" != 0 ]; then err "could not read the inventory after the rollback (opatch lspatches rc $rci): cannot confirm $ids are gone - not recorded as rolled back"; rfail=1
-      else for id in $ids; do printf '%s\n' "$inv" | grep - "^$id;" >/dev/null&& { err "$id is still in the inventory after opatch rollback (opatch lspatches) - not rolled back"; rfail=1; }; done; fi
+      else for id in $ids; do printf '%s\n' "$inv" | grep "^$id;" >/dev/null&& { err "$id is still in the inventory after opatch rollback (opatch lspatches) - not rolled back"; rfail=1; }; done; fi
     fi
   fi
   cmd_start || rfail=1

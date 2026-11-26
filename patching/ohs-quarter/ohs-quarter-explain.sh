@@ -107,7 +107,7 @@ pick_sets() {
     done
   else
     # recover stopped before them (E1): the sets that applied, and the one whose apply failed
-    { grep -F ': applied ' "$LOG" | grep -vE 'jdk: applied|wlspsu: applied' || has 'dbclient-upgrade apply failed' || has 'ohs-patch apply failed' >/dev/null; } && sh=1
+    { grep -F ': applied ' "$LOG" | grep -vE 'jdk: applied|wlspsu: applied' >/dev/null|| has 'dbclient-upgrade apply failed' || has 'ohs-patch apply failed'; } && sh=1
     { has 'wlspsu: applied' || has 'wls-patch apply failed'; } && wl=1
     { has 'jdk: applied' || has 'java-patch apply failed'; } && jv=1
     if has 'interrupted after the stop'; then

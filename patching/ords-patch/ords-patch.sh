@@ -441,7 +441,7 @@ ords_stop() {
   [ -n "$ORDS_RUNNING" ] || { log "ORDS not running"; return 0; }
   if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"
   elif [ "$WLS_MODE" = 1 ]; then wls_deployer -stop -name "$WLS_ORDS_APP" && { ORDS_RUNNING=""; state_set app_stopped 1; log "app $WLS_ORDS_APP stopped"; }; return $?
-  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep - '\bords\.service' >/dev/null; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
+  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep '\bords\.service' >/dev/null; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
   else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING" || { err "cannot signal ORDS pid $ORDS_RUNNING (owner: $(ps -o user= -p "$ORDS_RUNNING" 2>/dev/null || echo '?')): not stopped"; return 1; }; fi
   [ "$DRY_RUN" = 1 ] && return 0
   # the proof is the process table, not kill -0: kill -0 also fails on a process this user may not signal (EPERM), which read as 'gone'
@@ -460,13 +460,13 @@ ords_stop() {
 # ords_pid: the first ORDS pid, empty when none; rc 1 when pgrep itself could not run (rc 2/3) - an unreadable process list is not 'no ORDS'
 ords_pid() { local p rc; p="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null)"; rc=$?; [ $rc -le 1 ] || return 1; printf '%s\n' "$p" | head -1; }
 # pid_alive <pid>: 0 alive, 1 gone, 2 the process table cannot be read (ps does not even show this shell) - 2 is never 'gone' (wls-patch 3ab88b8's stop)
-pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -E "^ *$$\$" >/dev/null || return 2; ps -p "$1" -o pid= 2>/dev/null | grep -E "^ *$1\$" >/dev/null; }
+pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -E "^ *$$\$" >/dev/null|| return 2; ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
 ords_start() {
   detect || true
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }
   if [ -n "${ORDS_START_CMD:-}" ]; then run_sh "$ORDS_START_CMD"
   elif [ "$WLS_MODE" = 1 ]; then wls_deployer -start -name "$WLS_ORDS_APP" || return 1; state_set app_stopped 0
-  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service --all 2>/dev/null | grep - '\bords\.service' >/dev/null; then run_sh "sudo systemctl start ${ORDS_SERVICE:-ords}"
+  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service --all 2>/dev/null | grep '\bords\.service' >/dev/null; then run_sh "sudo systemctl start ${ORDS_SERVICE:-ords}"
   else run_sh "nohup '$ORDS_HOME/bin/ords' --config '$ORDS_CONFIG' serve >'$RUN_DIR/ords.out' 2>&1 &"; fi
   [ "$DRY_RUN" = 1 ] && return 0
   wait_for_url "$ORDS_URL" "$START_TIMEOUT" && log "ORDS answers at $ORDS_URL" || { err "ORDS not answering at $ORDS_URL after ${START_TIMEOUT}s (see $RUN_DIR/ords.out or the service log)"; return 1; }
