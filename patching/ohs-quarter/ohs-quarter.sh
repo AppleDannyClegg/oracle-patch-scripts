@@ -130,13 +130,15 @@ optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; IGNORE_SYS_PREREQS=0; SKIP=""; NO_CACERTS=0; OPERATOR_STOPS=0; FORCE=0; DRY=0; YES=0
+strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --patch-root)  optchk "$@"; PATCH_ROOT="$2"; shift 2;;
-    --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2;;
-    --java-home)   optchk "$@"; JAVA_HOME_ARG="$2"; shift 2;;
-    --run-dir)     optchk "$@"; RUN_DIR="$2"; shift 2;;
-    --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2;;
+    --patch-root)  optchk "$@"; PATCH_ROOT="$(strip_dir "$2")"; shift 2;;
+    --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$(strip_dir "$2")"; shift 2;;
+    --java-home)   optchk "$@"; JAVA_HOME_ARG="$(strip_dir "$2")"; shift 2;;
+    --run-dir)     optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
+    --backup-dir)  optchk "$@"; BACKUP_DIR="$(strip_dir "$2")"; shift 2;;
     --remove-12c)  optchk "$@"; REMOVE_12C="$2"; shift 2;;
     --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2;;
     --ignore-sys-prereqs) IGNORE_SYS_PREREQS=1; shift;;

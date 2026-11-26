@@ -1791,14 +1791,16 @@ usage() { sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local cmd="" args=()
-  while [ $# -gt 0 ]; do
+  strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+
+while [ $# -gt 0 ]; do
     case "$1" in
-      --oracle-home) optchk "$@"; CLI_ORACLE_HOME="$2"; shift 2 ;;
-      --domain-home) optchk "$@"; CLI_DOMAIN_HOME="$2"; shift 2 ;;
-      --java-home) optchk "$@";  optchk "$@";  optchk "$@"; CLI_JAVA_HOME="$2"; shift 2 ;;
+      --oracle-home) optchk "$@"; CLI_ORACLE_HOME="$(strip_dir "$2")"; shift 2 ;;
+      --domain-home) optchk "$@"; CLI_DOMAIN_HOME="$(strip_dir "$2")"; shift 2 ;;
+      --java-home) optchk "$@";  optchk "$@";  optchk "$@"; CLI_JAVA_HOME="$(strip_dir "$2")"; shift 2 ;;
       --admin-url) optchk "$@";  optchk "$@";  optchk "$@"; CLI_ADMIN_URL="$2"; shift 2 ;;
-      --backup-dir) optchk "$@";  optchk "$@"; CLI_BACKUP_DIR="$2"; shift 2 ;;
-      --run-dir)   optchk "$@"; RUN_DIR="$2"; shift 2 ;;
+      --backup-dir) optchk "$@";  optchk "$@"; CLI_BACKUP_DIR="$(strip_dir "$2")"; shift 2 ;;
+      --run-dir)   optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2 ;;
       --dry-run)     DRY_RUN=1; shift ;;
       --yes|-y)      ASSUME_YES=1; shift ;;
       --no-backup)   NO_BACKUP=1; shift ;;

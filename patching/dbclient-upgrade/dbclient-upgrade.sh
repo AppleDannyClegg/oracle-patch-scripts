@@ -949,13 +949,15 @@ cmd_rollback() {
 
 main() {
   local cmd="" args=()
-  while [ $# -gt 0 ]; do
+  strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+
+while [ $# -gt 0 ]; do
     case "$1" in
-      --oracle-home)  optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2 ;;
-      --domain-home)  optchk "$@"; DOMAIN_ARG="$2"; shift 2 ;;
-      --backup-dir)   optchk "$@"; BACKUP_DIR="$2"; shift 2 ;;
-      --run-dir)      optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
-      --backup-run)   optchk "$@"; BACKUP_RUN="$2"; shift 2 ;;
+      --oracle-home)  optchk "$@"; ORACLE_HOME_ARG="$(strip_dir "$2")"; shift 2 ;;
+      --domain-home)  optchk "$@"; DOMAIN_ARG="$(strip_dir "$2")"; shift 2 ;;
+      --backup-dir)   optchk "$@"; BACKUP_DIR="$(strip_dir "$2")"; shift 2 ;;
+      --run-dir)      optchk "$@"; RUN_DIR_ARG="$(strip_dir "$2")"; shift 2 ;;
+      --backup-run)   optchk "$@"; BACKUP_RUN="$(strip_dir "$2")"; shift 2 ;;
       --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2 ;;
       --remove-patches) optchk "$@"; REMOVE_PATCHES="$2"; shift 2 ;;
       --ignore-sys-prereqs) IGNORE_SYS_PREREQS=1; shift ;;

@@ -48,12 +48,14 @@ HOME_DIR="${ORACLE_HOME:-}"; SIDS="${ORACLE_SID:-}"; GRID=0; OOP=""; ROLLING=0; 
 DB_VERSION=""; RU_LEVEL=""; RU_DESC=""; OPATCH_VERSION=""; INSTALLED=""; GRID_HOME=""; IS_RAC=0; DB_ROLES=""
 
 usage() { usage_from_header "$0"; }
+strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --home) optchk "$@"; HOME_DIR="$2"; shift 2;; --sid) optchk "$@"; SIDS="${2//,/ }"; shift 2;; --grid) GRID=1; shift;; --oop) optchk "$@"; OOP="$2"; shift 2;; --rolling) ROLLING=1; shift;;
-    --no-restore-point) NO_RP=1; shift;; --no-backup) NO_BACKUP=1; shift;; --patches) optchk "$@"; PATCHES="$2"; shift 2;; --release) optchk "$@"; PICK_RELEASE="$2"; shift 2;; --latest) USE_LATEST=1; shift;;
-    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+    --home) optchk "$@"; HOME_DIR="$(strip_dir "$2")"; shift 2;; --sid) optchk "$@"; SIDS="${2//,/ }"; shift 2;; --grid) GRID=1; shift;; --oop) optchk "$@"; OOP="$(strip_dir "$2")"; shift 2;; --rolling) ROLLING=1; shift;;
+    --no-restore-point) NO_RP=1; shift;; --no-backup) NO_BACKUP=1; shift;; --patches) optchk "$@"; PATCHES="$(strip_dir "$2")"; shift 2;; --release) optchk "$@"; PICK_RELEASE="$(strip_dir "$2")"; shift 2;; --latest) USE_LATEST=1; shift;;
+    --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
