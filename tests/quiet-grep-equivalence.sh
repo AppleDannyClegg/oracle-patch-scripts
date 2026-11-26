@@ -143,6 +143,13 @@ export mentioned X_CN X_ICN X_ISS X_SIG X_SAN NEW_CN NEW_SAN CHECK_HOST CN SAN L
 export done s tailtxt need rsf ids OPATCH_KIT_BUG first LOG_FILE LOG kit_zip arg pdir raw
 export name ORACLE_HOME OH TARBALL JAVA_HOME OOP off ver APEX_VER spb_path x stmt rp proc n
 export MOS_USER T_HOME
+# names the sites read that the first pass left unbound: a gap is an unrun site, so
+# each one added here is a site that can now be compared (or honestly fail).
+c=28575727; pout="$out"; dout="$out"; l="Server1"; last="Server1 1234"; re="OracleOHS"
+shaped="AdminServer"; w="AdminServer"; wls="$WORK/wls"; path="$WORK/oh"; port=7001
+target="$WORK/chain.pem"; body="<html>portal</html>"; CERT="$WORK/chain.pem"; T_FILE="$WORK/t.jks"
+f="$WORK/chain.pem"; CHAIN="$WORK/chain.pem"; h="Server1"
+export c pout dout l last re shaped w wls path port target body CERT T_FILE f CHAIN h
 # big mode: every variable a producer might write becomes larger than one stdio
 # write, so an early-exiting grep can lose the race and SIGPIPE its writer (the
 # class this PR exists for). Appended after the content, so the first line still
@@ -171,8 +178,26 @@ systemctl(){ printf "%s\n" "ords.service loaded active running"; }
 '
 mkdir -p "$WORK/oh" "$WORK/jdk" "$WORK/arg/extracted" "$WORK/pdir"
 printf '%s\n' 'jdk: applied ' 'wlspsu: applied ' 'dbclient-upgrade preflight OK' 'ohs-patch preflight OK' > "$WORK/log.txt"
-printf 'PK\003\004not-a-real-zip' > "$WORK/kit.zip"; printf '%s\n' '</results>' > "$WORK/raw.html"
+printf 'PK\003\004not-a-real-zip' > "$WORK/kit.zip"
+printf '%s\n' '-----BEGIN CERTIFICATE-----' 'MIIB' '-----END CERTIFICATE-----' > "$WORK/chain.pem"
+printf '%s\n' 'not-a-real-keystore' > "$WORK/t.jks"; mkdir -p "$WORK/wls"; printf '%s\n' '</results>' > "$WORK/raw.html"
 printf '%s\n' '<html>' > "$WORK/pdir/x.part"; : > "$WORK/x.tar.gz"
+
+# A segment cut at a ; or { can be half a block (an `if ...; then` with no fi, a body
+# with no closing brace). Completing it is worth doing: the site then runs and its
+# verdict is real, which matters because an unbalanced fragment would otherwise be
+# reported as a parse gap and the site left uncompared. The first completion that
+# parses wins; if none does, the segment is compared as-is and reported as a gap.
+complete() { # $1 segment -> a runnable command on stdout
+  local seg="$1" pre suf
+  for pre in "" "true; "; do
+    for suf in "" "; :" "; then :; fi" "; do :; done" " ; }" "; fi" "; done" \
+               "; then :; fi; }" " ; } ; fi" " ; } ; done" " :; fi" " :; done"; do
+      if bash -n <<<"$pre$seg$suf" 2>/dev/null; then printf '%s' "$pre$seg$suf"; return 0; fi
+    done
+  done
+  printf '%s' "$seg"; return 1
+}
 
 # -------------------------------------------------------------------- one site
 # Runs one command with the input on stdin, inside the shape the script uses:
