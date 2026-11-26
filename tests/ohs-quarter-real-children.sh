@@ -71,7 +71,8 @@ HOME="$T/home" PATH="$T/stub:$PATH" RUN_BASE="$T/runs" START_TIMEOUT=1 POLL=1 OS
   --skip wlspsu,dbclientru,webgate,oss,ohs,fmwbp,jdbc,libovd,fmwthirdparty,perl,libdms2,libiau,cloningspu,rda >"$T/out" 2>&1
 rc=$?
 [ "$rc" = 0 ] && ok || bad "dry run: rc $rc: $(grep -E '\[ERROR\]' "$T/out" | head -3 | tr '\n' ' ')"
-grep -q '=== 7/7 OHS QUARTER OK' "$T/out" && ok || bad "dry run: no 7/7 OK line: $(tail -2 "$T/out" | tr '\n' ' ')"
+grep -q '=== 7/7 DRY RUN' "$T/out" && ok || bad "dry run: the last line is not DRY RUN: $(tail -2 "$T/out" | tr '\n' ' ')"
+grep -q 'OHS QUARTER OK' "$T/out" && bad "dry run: it printed the applied line: $(grep 'OHS QUARTER OK' "$T/out" | head -1)" || ok
 grep -qE 'recovering:|Recovery incomplete' "$T/out" && bad "dry run: the composer went into recovery: $(grep -E 'recover|Recovery' "$T/out" | head -2 | tr '\n' ' ')" || ok
 [ ! -s "$T/actions" ] && ok || bad "dry run: the home was acted on: $(tr '\n' ' ' <"$T/actions")"
 grep -q 'oracle.rdbms.rsf" VER="12.1.0.2.0"' "$OH/inventory/ContentsXML/comps.xml" && ok || bad "dry run: the client level changed"
