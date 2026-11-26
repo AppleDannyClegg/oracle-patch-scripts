@@ -280,7 +280,9 @@ rsf_version() {
 readme_title() { head -5 "$1/README.txt" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]]//g' | grep -m1 -iE 'bundle patch|patch' ; }
 # the minimum is only a version with 'or higher/later/above' after it: a README also names versions it was built with
 readme_min_opatch() {
-  LC_ALL=C grep -aoE 'OPatch (utility )?(version )?13\.9(\.[0-9]+)+ or (higher|later|above)' "$1/README.txt" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
+  { LC_ALL=C grep -aoE 'OPatch (utility )?(version )?13\.9(\.[0-9]+)+ or (higher|later|above)' "$1/README.txt" 2>/dev/null
+    LC_ALL=C grep -aoE 'OPatch version must be atleast 13\.9(\.[0-9]+)+' "$1/README.txt" 2>/dev/null; } \
+    | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
 }
 
 # ---- preflight ------------------------------------------------------------------------------------------
@@ -425,24 +427,22 @@ cmd_preflight() {
     # A later opatch set can be reached on an older OPatch when wls-patch installs the OPatch kit
     # earlier in this same outage. Defer ONLY when the staged kit itself meets the later README's
     # minimum; an old or unreadable kit still blocks before the stop, as it always did.
-    local kit_min="" kit_readme="" kit_zip=""
+    # The kit's version is the release in its file name (p28186730_1394220 -> 13.9.4.2.20),
+    # the same number wls-patch uses to decide the kit is present. Its README's 'or later'
+    # line says what the kit REQUIRES on the home, not what it installs.
+    local kit_version="" kit_zip="" base="" rel=""
     if [ -n "$OPATCH_PENDING" ]; then
-      if [ -f "$OPATCH_PENDING/README.txt" ]; then
-        kit_readme="$OPATCH_PENDING/README.txt"
-      else
-        for kit_zip in "$OPATCH_PENDING"/p28186730_*.zip; do
-          [ -f "$kit_zip" ] || continue
-          kit_readme="$(mktemp)"
-          unzip -p "$kit_zip" '*/README.txt' 2>/dev/null >"$kit_readme" || :
-          break
-        done
-      fi
-      if [ -n "$kit_readme" ]; then
-        kit_min="$(LC_ALL=C grep -aoE 'OPatch (utility )?(version )?13\.9(\.[0-9]+)+ or (higher|later|above)' "$kit_readme" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1)"
-      fi
+      for kit_zip in "$OPATCH_PENDING"/p28186730_*.zip; do
+        [ -f "$kit_zip" ] || continue
+        base="$(basename "$kit_zip")"; rel="${base#p28186730_}"; rel="${rel%%_*}"
+        case "$rel" in
+          13[0-9][0-9][0-9][0-9][0-9]) kit_version="${rel:0:2}.${rel:2:1}.${rel:3:1}.${rel:4:1}.${rel:5:2}" ;;
+        esac
+        break
+      done
     fi
-    if [ -n "$kit_min" ] && version_ge "$kit_min" "$min"; then
-      warn "OPatch $opv is older than the $min $id's README asks for, but the OPatch kit in $OPATCH_PENDING is $kit_min and wls-patch installs it first in this outage - apply checks again after the upgrade"
+    if [ -n "$kit_version" ] && version_ge "$kit_version" "$min"; then
+      warn "OPatch $opv is older than the $min $id's README asks for, but the OPatch kit in $OPATCH_PENDING is $kit_version and wls-patch installs it first in this outage - apply checks again after the upgrade"
     else
       block "OPatch $opv is older than the $min $id's README asks for - apply OPatch 28186730 first"
     fi
