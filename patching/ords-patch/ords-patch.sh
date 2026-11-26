@@ -176,7 +176,7 @@ run_sql() {
   sql_available || return 1
   local out
   # confirm() answers yes under --dry-run, so this is the guard: no statement that changes anything runs in a dry run
-  if [ "$DRY_RUN" = 1 ] && ! printf '%s' "$1" | grep -qiE '^[[:space:]]*(select|with)[[:space:]]'; then log "DRY-RUN SQL: $(printf '%s' "$1" | head -1)"; return 0; fi
+  if [ "$DRY_RUN" = 1 ] && ! grep -qiE <<<"$1" '^[[:space:]]*(select|with)[[:space:]]'; then log "DRY-RUN SQL: $(printf '%s' "$1" | head -1)"; return 0; fi
   # connect on stdin (/nolog): SQL_CONNECT may be user/pw@tns and must never sit on sqlplus's command line
   out="$(printf 'whenever sqlerror exit 1\nconnect %s\nset heading off feedback off pagesize 0 linesize 32767 trimspool on verify off\n%s\n%s\nexit\n' "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD -L /nolog 2>&1)" || { printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
   printf '%s\n' "$out" | grep -qE '^ERROR:|SP2-0640|ORA-01017|ORA-12[0-9]{3}|ORA-65011|ORA-65019' && { printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }   # a failed connect is not an SQL error for 'whenever'
@@ -487,7 +487,7 @@ switch_home() { # point ORDS_HOME at <dir>
 # war_embeds_config: 0 = the deployed war's web.xml names config.url, 1 = it does not, 2 = the war could not be read (which is not 'no')
 war_embeds_config() {
   local x; x="$(unzip -p "$WLS_ORDS_WAR" WEB-INF/web.xml 2>/dev/null)" || return 2
-  printf '%s' "$x" | grep -q 'config.url'
+  grep -q <<<"$x" 'config.url'
 }
 cmd_apply() {
   setup_env; reuse_or_init apply

@@ -219,7 +219,7 @@ cve_blocked() { grep -oE '^[0-9A-F]{64}' | sort -u | comm -12 - <(list_fps "$CVE
 cert_is_distrusted() {
   local out fp; out="$("$1" -printcert -file "$2" 2>/dev/null)" || return 2
   fp="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*SHA-\{0,1\}256:[[:space:]]*//p' | tr -d ': ' | tr 'a-f' 'A-F' | head -1)"
-  printf '%s' "$fp" | grep -qE '^[0-9A-F]{64}$' || return 2
+  grep -qE <<<"$fp" '^[0-9A-F]{64}$' || return 2
   grep -qxF "$fp" <(list_fps "$CVE_ROOTS" "$CVE_LIST") && return 0
   return 1
 }

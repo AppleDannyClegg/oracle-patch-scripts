@@ -266,7 +266,7 @@ do_cmd_p() { local u; u="$(umask)"; umask 077; do_cmd "$@"; local r=$?; umask "$
 why_failed() {
   local d="$1" c="$2" tailtxt; tailtxt="$(tail -3 "$RUN_DIR/run.log" 2>/dev/null)"
   [ -n "$tailtxt" ] && printf '%s\n' "$tailtxt" | sed 's/^/    /' >&2
-  if printf '%s' "$tailtxt" | grep -qiE 'password|user ?name|credential'; then
+  if grep -qiE <<<"$tailtxt" 'password|user ?name|credential'; then
     err "  it asked for the node manager credentials: none are stored for this user ($(id -un 2>/dev/null), HOME $HOME), or they are stale. With the node manager up, as this user, run once: $d/bin/startComponent.sh ${c:-<component>} storeUserConfig"
   fi
 }
@@ -633,7 +633,7 @@ cmd_preflight() {
   if [ -z "$ZIP" ]; then block "no p34761383_*.zip in $dir"
   else
     local lst; if lst="$(unzip -l "$ZIP" 2>/dev/null)"; then
-      printf '%s' "$lst" | grep -qE '(^|[ /])fmw_12\.2\.1\.19\.0_dbclient_linux64\.bin$' && printf '%s' "$lst" | grep -qE '(^|[ /])changePerm\.sh$' \
+      grep -qE <<<"$lst" '(^|[ /])fmw_12\.2\.1\.19\.0_dbclient_linux64\.bin$' && grep -qE <<<"$lst" '(^|[ /])changePerm\.sh$' \
         && log "installer : $ZIP (fmw_12.2.1.19.0_dbclient_linux64.bin, changePerm.sh)" \
         || block "$ZIP does not hold fmw_12.2.1.19.0_dbclient_linux64.bin and changePerm.sh"
     else block "$ZIP cannot be read by unzip -l"; fi

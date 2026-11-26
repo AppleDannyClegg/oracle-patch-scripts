@@ -128,8 +128,8 @@ add_cert() {
   local kind="$1" target="$2" where="$3" pem="$4" flags="${5:-}"
   x509_facts "$pem" || { CERTS="${CERTS}?|$kind|$target|$where|unreadable|-|-|-|-|-|unreadable"$'\n'; return 1; }
   [ "$X_SELF" = 1 ] && flags="${flags:+$flags,}self-signed"
-  { printf '%s\n' "$X_CN" "$X_ICN" | grep -qiE 'demo|^localhost$|CertGenCA' || printf '%s' "$X_ISS" | grep -q 'OracleOHS'; } && flags="${flags:+$flags,}demo"
-  printf '%s' "$X_SIG" | grep -qiE 'sha1|md5' && flags="${flags:+$flags,}weak-sig"
+  { printf '%s\n' "$X_CN" "$X_ICN" | grep -qiE 'demo|^localhost$|CertGenCA' || grep -q <<<"$X_ISS" 'OracleOHS'; } && flags="${flags:+$flags,}demo"
+  grep -qiE <<<"$X_SIG" 'sha1|md5' && flags="${flags:+$flags,}weak-sig"
   [ "$X_KEYALG" = rsaEncryption ] && [ -n "$X_BITS" ] && [ "$X_BITS" -lt 2048 ] && flags="${flags:+$flags,}weak-key"
   CERTS="${CERTS}$X_DAYS|$kind|$target|$where|$X_CN|$X_ICN|$X_END|$X_SIG|${X_BITS:-?}|$X_SERIAL|${flags:--}"$'\n'
 }
@@ -273,7 +273,7 @@ inspect_listener() {
     w="${WALLET_OPT:-}"; [ -z "$w" ] && for f in "$ad/listener.ora" "$ad/sqlnet.ora"; do [ -f "$f" ] && w="$(wallet_dir_in "$f")" && [ -n "$w" ] && break; done
     ports="$(tcps_ports_in "$ad/listener.ora")"
     [ -z "$w" ] && [ -z "$ports" ] && continue
-    [ -n "$w" ] && ! printf '%s' "$done" | grep -q " $w " && { add_wallet listener listener "$w"; done="$done $w "; }
+    [ -n "$w" ] && ! grep -q <<<"$done" " $w " && { add_wallet listener listener "$w"; done="$done $w "; }
     for port in $ports; do add_live listener listener "127.0.0.1:$port"; done
   done
 }
@@ -310,7 +310,7 @@ inspect_gg() {
     while IFS= read -r f; do grep -q 'BEGIN CERTIFICATE' "$f" 2>/dev/null && add_cert gg "gg:$(basename "$(dirname "$(dirname "$(dirname "$f")")")")" "$f" "$f"; done < <(find "$d" -maxdepth 5 -path '*/etc/ssl/*' \( -name '*.pem' -o -name '*.crt' \) 2>/dev/null | head -40)
   done
 }
-apex_wallet_one() { local sid="$1" v; v="$(sql_val "$sid" "apex_instance_admin.get_parameter('WALLET_PATH')" 2>/dev/null)"; printf '%s' "$v" | grep -qE '^file:' && { v="${v#file:}"; add_wallet apex "apex:$sid${PDB_SET:+/$(printf '%s' "$PDB_SET" | sed 's/.*container=//; s/;//')}" "$v"; }; }
+apex_wallet_one() { local sid="$1" v; v="$(sql_val "$sid" "apex_instance_admin.get_parameter('WALLET_PATH')" 2>/dev/null)"; grep -qE <<<"$v" '^file:' && { v="${v#file:}"; add_wallet apex "apex:$sid${PDB_SET:+/$(printf '%s' "$PDB_SET" | sed 's/.*container=//; s/;//')}" "$v"; }; }
 inspect_apex() {
   local sid p; for sid in $(db_instances); do sql_ok "$sid" || continue
     if db_is_cdb "$sid"; then for p in $(db_pdbs "$sid"); do with_pdb "$p" apex_wallet_one "$sid"; done; else apex_wallet_one "$sid"; fi; done
@@ -322,9 +322,9 @@ listening_ports() { # "port process" for every local TCP listener
 }
 inspect_ports() {
   [ "$NO_SCAN" = 1 ] && return 0
-  local port proc n=0 p; for p in ${EXTRA_PORTS//,/ }; do printf '%s' "$LIVE_PORTS" | grep -q " $p " || add_live port "tcp:$p" "127.0.0.1:$p"; done
+  local port proc n=0 p; for p in ${EXTRA_PORTS//,/ }; do grep -q <<<"$LIVE_PORTS" " $p " || add_live port "tcp:$p" "127.0.0.1:$p"; done
   while read -r port proc; do
-    case "$port" in ''|*[!0-9]*) continue;; esac; printf '%s' "$LIVE_PORTS" | grep -q " $port " && continue; [ "$port" -lt 1024 ] && [ "$proc" != "?" ] && [ "$proc" != tnslsnr ] && continue
+    case "$port" in ''|*[!0-9]*) continue;; esac; grep -q <<<"$LIVE_PORTS" " $port " && continue; [ "$port" -lt 1024 ] && [ "$proc" != "?" ] && [ "$proc" != tnslsnr ] && continue
     n=$((n+1)); [ "$n" -gt "$PORT_LIMIT" ] && { warn "port scan stopped after $PORT_LIMIT ports (PORT_LIMIT)"; break; }
     local out; out="$RUN_DIR/live_127.0.0.1_$port.pem"; live_pem "127.0.0.1:$port" "$out" && add_cert port "tcp:$port ($proc)" "live 127.0.0.1:$port" "$out" live
   done < <(listening_ports)
@@ -447,7 +447,7 @@ check_material() { # --cert/--key/--chain consistent; sets NEW_SERIAL NEW_CN NEW
     [ "$kpub" = "$cpub" ] || die "$KEY does not match $CERT (public keys differ)"
   fi
   if [ -n "$CHAIN" ]; then
-    local vr; vr="$(openssl verify -CAfile "$CHAIN" "$CERT" 2>&1)"; printf '%s' "$vr" | grep -q ': OK' && log "chain: $CERT verifies against $CHAIN ($(grep -c 'BEGIN CERTIFICATE' "$CHAIN") certs)" || die "chain does not verify: $vr"
+    local vr; vr="$(openssl verify -CAfile "$CHAIN" "$CERT" 2>&1)"; grep -q <<<"$vr" ': OK' && log "chain: $CERT verifies against $CHAIN ($(grep -c 'BEGIN CERTIFICATE' "$CHAIN") certs)" || die "chain does not verify: $vr"
   else
     [ "$X_SELF" = 1 ] && warn "$CERT is self-signed" || { openssl verify "$CERT" >/dev/null 2>&1 && log "chain: issuer $NEW_ICN is in the system trust store" || warn "no --chain and the issuer '$NEW_ICN' is not in the system trust store: clients need the chain; give --chain for the keystore/wallet"; }
   fi
@@ -520,7 +520,7 @@ cmd_csr() {
   local name="${ARGS[0]:-}"; [ -n "$name" ] || die "csr <name> --cn NAME [--san a,b] [--bits N]"; [ -n "$CN" ] || die "--cn is required"
   init_run_dir csr; find_tools
   local d="$CERT_DIR/$name"; [ -f "$d/$name.key" ] && [ "$FORCE" != 1 ] && die "$d/$name.key exists (--force to replace it)"
-  local sans="DNS:$CN"; local s; for s in ${SAN//,/ }; do [ "$s" = "$CN" ] && continue; printf '%s' "$s" | grep -qE '^[0-9.]+$' && sans="$sans,IP:$s" || sans="$sans,DNS:$s"; done
+  local sans="DNS:$CN"; local s; for s in ${SAN//,/ }; do [ "$s" = "$CN" ] && continue; grep -qE <<<"$s" '^[0-9.]+$' && sans="$sans,IP:$s" || sans="$sans,DNS:$s"; done
   log "key: RSA $BITS -> $d/$name.key (0600); CSR subject /CN=$CN$CSR_SUBJECT_SUFFIX; SAN $sans"
   [ "$DRY_RUN" = 1 ] && return 0
   ( umask 077; mkdir -p "$d" ) || die "cannot create $d"
@@ -724,7 +724,7 @@ cmd_verify() {
     log "$one: expires $X_END ($X_DAYS days), CN=$X_CN SAN=$X_SAN, $X_SIG/${X_BITS:-?} bits"; [ "$X_DAYS" != "?" ] && [ "$X_DAYS" -lt "$WARN_DAYS" ] && { err "$one: expires in $X_DAYS days"; fail=1; }
     printf '%s,%s' "$X_CN" "$X_SAN" | tr ',' '\n' | grep -qixF "$CHECK_HOST" || warn "$one: $CHECK_HOST not in CN/SAN"
     local n; n="$(grep -c 'BEGIN CERTIFICATE' "$out.chain")"; local vr; if [ -n "$CHAIN" ]; then vr="$(openssl verify -CAfile "$CHAIN" -untrusted "$out.chain" "$out" 2>&1)"; else vr="$(openssl verify -untrusted "$out.chain" "$out" 2>&1)"; fi
-    printf '%s' "$vr" | grep -q ': OK' && log "$one: chain verifies ($n cert(s) sent by the server$([ -n "$CHAIN" ] && echo ", against $CHAIN" || echo ', system trust'))" || { [ "$n" -le 1 ] && warn "$one: the server sends only the leaf (no chain): $vr" || warn "$one: chain does not verify: $(printf '%s' "$vr" | tail -1)"; }
+    grep -q <<<"$vr" ': OK' && log "$one: chain verifies ($n cert(s) sent by the server$([ -n "$CHAIN" ] && echo ", against $CHAIN" || echo ', system trust'))" || { [ "$n" -le 1 ] && warn "$one: the server sends only the leaf (no chain): $vr" || warn "$one: chain does not verify: $(printf '%s' "$vr" | tail -1)"; }
   done
   state_set verify "$([ "$fail" = 0 ] && echo ok || echo failed)"; [ "$fail" = 0 ] && log "Verify OK" || err "Verify FAILED"; return "$fail"
 }

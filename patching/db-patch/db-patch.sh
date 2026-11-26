@@ -198,8 +198,8 @@ cmd_preflight() {
     if printf '%s\n' "$INSTALLED" | grep -q "^$id;"; then log "$id already installed: $(patch_desc "$p")"; continue; fi
     log "$id: $(patch_desc "$p") $(patch_is_rolling "$p" && echo '[rolling]' || echo '[NOT rolling]')"
     local out; out="$(opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
-    if printf '%s' "$out" | grep -qE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed'; then log "  no conflicts"
-    elif printf '%s' "$out" | grep -qiE 'conflict'; then err "  CONFLICT: $(printf '%s' "$out" | grep -iE 'conflict|superset|subset' | head -3 | tr '\n' ' ')"; fail=1
+    if grep -qE <<<"$out" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed'; then log "  no conflicts"
+    elif grep -qiE <<<"$out" 'conflict'; then err "  CONFLICT: $(printf '%s' "$out" | grep -iE 'conflict|superset|subset' | head -3 | tr '\n' ' ')"; fail=1
     else warn "  prereq check gave no verdict (see log)"; fi
     # release match
     local prel; prel="$(grep -oE 'release="[0-9.]+"' "$p/etc/config/inventory.xml" 2>/dev/null | head -1 | cut -d'"' -f2)"; [ -n "$prel" ] && [ "${prel%.*}" != "${DB_VERSION%.*}" ] && { err "  patch is for release $prel, home is $DB_VERSION"; fail=1; }
@@ -283,14 +283,14 @@ cmd_backup() {
     local stmt out; for stmt in "create pfile='$RUN_DIR/$s/init$s.ora.bak' from spfile;" "alter database backup controlfile to '$RUN_DIR/$s/control.bak' reuse;" "alter database backup controlfile to trace as '$RUN_DIR/$s/control.trc' reuse;"; do
       [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: $s: $stmt"; continue; }
       out="$(sql_run "$s" "$stmt" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
-      printf '%s' "$out" | grep -qE 'ORA-[0-9]+' && { err "$s: $stmt failed: $(printf '%s\n' "$out" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"; fail=1; }
+      grep -qE <<<"$out" 'ORA-[0-9]+' && { err "$s: $stmt failed: $(printf '%s\n' "$out" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"; fail=1; }
     done
     if [ "$NO_RP" = 0 ] && [ "$(sql_val "$s" "(select log_mode from v\$database)")" = ARCHIVELOG ] && [ "$(sql_val "$s" "(select database_role from v\$database)")" = PRIMARY ]; then
       local rp="DBPATCH_$ts"; log "$s: creating guaranteed restore point $rp"
       if [ "$DRY_RUN" = 0 ]; then out="$(sql_run "$s" "create restore point $rp guarantee flashback database;" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
         # the restore point is the undo 'run' promises for a bad datapatch; a run without one used to carry on after a warning.
         # Not having it is an error - --no-restore-point is the way to say so on purpose
-        if printf '%s' "$out" | grep -qE 'ORA-[0-9]+'; then err "$s: restore point $rp NOT created: $(printf '%s\n' "$out" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120) - fix it (FRA, flashback) or re-run with --no-restore-point"; fail=1
+        if grep -qE <<<"$out" 'ORA-[0-9]+'; then err "$s: restore point $rp NOT created: $(printf '%s\n' "$out" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120) - fix it (FRA, flashback) or re-run with --no-restore-point"; fail=1
         else state_append restore_points "$s:$rp"; fi
       fi
     fi
@@ -417,7 +417,7 @@ cmd_start() {
       *) err "$s is up but $om - not open read write (startup errors above / $LOG_FILE)"; state_set started failed; return 1;;
     esac
     case "$om" in PRIMARY/*|"LOGICAL STANDBY"/*) local pout; pout="$(sql_run "$s" "alter pluggable database all open;" 2>&1)"; printf '%s\n' "$pout" >>"$LOG_FILE"
-      printf '%s' "$pout" | grep -qE 'ORA-[0-9]+' && warn "$s: alter pluggable database all open: $(printf '%s\n' "$pout" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"
+      grep -qE <<<"$pout" 'ORA-[0-9]+' && warn "$s: alter pluggable database all open: $(printf '%s\n' "$pout" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"
       local closed; closed="$(sql_val "$s" "(select count(*) from v\$pdbs where open_mode<>'READ WRITE' and name<>'PDB\$SEED')" 2>/dev/null)"
       [ -n "$closed" ] && [ "$closed" != 0 ] && warn "$s: $closed PDB(s) still not READ WRITE after 'all open'";;
     esac
@@ -525,7 +525,7 @@ cmd_cleanup() {
   local rc=0 rp; for rp in $(state_get restore_points || true); do local s="${rp%%:*}" name="${rp#*:}"; confirm "Drop restore point $name in $s?" || continue
     [ "$DRY_RUN" = 1 ] && { log "DRY-RUN: drop restore point $name in $s"; continue; }
     local dout; dout="$(sql_run "$s" "drop restore point $name;" 2>&1)"; printf '%s\n' "$dout" >>"$LOG_FILE"
-    if printf '%s' "$dout" | grep -qE 'ORA-[0-9]+'; then err "$s: drop restore point $name failed: $(printf '%s\n' "$dout" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"; rc=1; continue; fi
+    if grep -qE <<<"$dout" 'ORA-[0-9]+'; then err "$s: drop restore point $name failed: $(printf '%s\n' "$dout" | grep -m1 -oE 'ORA-[0-9]+.*' | cut -c1-120)"; rc=1; continue; fi
     local left; left="$(sql_val "$s" "(select count(*) from v\$restore_point where name='$name')" 2>/dev/null)"
     case "$left" in 0) log "$s: dropped $name";; "") warn "$s: drop restore point $name returned no error but v\$restore_point could not be read afterwards - check it";; *) err "$s: $name is still in v\$restore_point after the drop"; rc=1;; esac
   done

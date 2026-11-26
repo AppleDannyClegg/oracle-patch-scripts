@@ -451,7 +451,7 @@ cmd_preflight() {
   # DB19C series (KB585169)
   local rsf; rsf="$(rsf_version "$OH")"
   log "DB client : $([ -n "$rsf" ] && printf "oracle.rdbms.rsf %s" "$rsf" || printf "unknown (no oracle.rdbms.rsf in %s)" "$OH/inventory/ContentsXML/comps.xml")"
-  if printf '%s' "$title" | grep -qi 'DB19C'; then
+  if grep -qi <<<"$title" 'DB19C'; then
     # the client level, when the inventory shows it, decides; the bundle titles are only the fallback
     if [ -n "$rsf" ]; then
       case "$rsf" in
@@ -472,7 +472,7 @@ cmd_preflight() {
   app="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckApplicable -ph . -oh "$OH" 2>&1)"; arc=$?
   # every oracle.<component>:<version> OPatch names in its answer (an empty list is not "the 19c client alone")
   local need; need="$(printf '%s\n' "$app" | grep -oE 'oracle\.[A-Za-z0-9_.]+:[0-9][0-9.]*' | sort -u)"
-  if [ "$arc" = 0 ] && printf '%s' "$app" | grep -qiE 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
+  if [ "$arc" = 0 ] && grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
     log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
   elif [ "$CLIENT19_PENDING" = 1 ] && ! printf '%s\n' "$need" | grep -qv '^oracle\.rdbms\.rsf:19\.'; then
     # on a 12c client a DB19C patch cannot pass CheckApplicable yet (it needs oracle.rdbms.rsf 19); apply's own
@@ -480,19 +480,19 @@ cmd_preflight() {
     # the 19c client is ALL OPatch says is missing: anything else still stops here, before the stop (T1167)
     warn "components: CheckApplicable did not pass on the 12c client (rc $arc) - deferred: the DB Client 19c upgrade runs first in this outage and apply checks again. OPatch said: $(printf '%s\n' "$app" | grep -viE '^(oracle interim patch installer|copyright|invoking prereq|opatch (failed|succeeded))' | grep . | head -3 | tr '\n' ' ')"
   elif [ "$CLIENT19_PENDING" = 1 ] \
-       && printf '%s' "$title" | grep -qi 'DB19C' \
-       && [ -n "$rsf" ] && ! printf '%s' "$rsf" | grep -q '^19\.' \
+       && grep -qi <<<"$title" 'DB19C' \
+       && [ -n "$rsf" ] && ! grep -q <<<"$rsf" '^19\.' \
        && [ -z "$need" ] \
-       && printf '%s' "$app" | grep -qiE 'ZOP-45|Version Mismatch of Component'; then
+       && grep -qiE <<<"$app" 'ZOP-45|Version Mismatch of Component'; then
     # 16 Nov field answer, OPatch 13.9.4.2.25 on the 12c client (T1808): ZOP-45 + "Version Mismatch of Component"
     # with NO oracle.<component>:<version> named at all. Deferred like the rsf:19 case above - the DB Client 19c
     # upgrade runs first in this outage and apply's own preflight asks again (a failure there restores). If rsf is
     # already 19.* the mismatch is real, and any component other than rsf:19 is still named, so both block here
     warn "components: CheckApplicable did not pass on the 12c client (rc $arc) - deferred: the DB Client 19c upgrade runs first in this outage and apply checks again. OPatch said: $(printf '%s\n' "$app" | grep -iE 'ZOP-45|Version Mismatch of Component|The details are|Prereq "checkApplicable" (for patch [0-9]+ )?failed' | tr '\n' ' ')"
-  elif printf '%s' "$app" | grep -qi 'requires component(s) that are not installed'; then
+  elif grep -qi <<<"$app" 'requires component(s) that are not installed'; then
     miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
     block "$id needs ${miss:-a component} that is not installed in $OH (OUI-67073) - opatch apply would refuse after the stop. For a DB19C bundle that is the Database Client 19c upgrade (KB585169), which comes first"
-  elif printf '%s' "$app" | grep -qiE 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
+  elif grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
     block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" (for patch [0-9]+ )?failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
   else
     unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
@@ -504,10 +504,10 @@ cmd_preflight() {
   # only the 'passed' line is a pass: OPatch prints the header 'Conflicts/Supersets for each patch are:' for a real
   # conflict too, so a 'superset' word in the output is no proof of anything (a superset of an installed bundle passes)
   # the exit status first (Jocasta P3): non-zero is a conflict whatever the wording says
-  if [ "$prc" = 0 ] && printf '%s' "$pre" | grep -qE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed' && ! printf '%s' "$pre" | grep -qi 'Conflict with'; then
+  if [ "$prc" = 0 ] && grep -qE <<<"$pre" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed' && ! grep -qi <<<"$pre" 'Conflict with'; then
     log "conflicts: none"
-    printf '%s' "$pre" | grep -qiE 'superset|subset' && log "  ($id supersedes an installed patch - OPatch rolls the older one back itself)"
-  elif [ "$prc" = 0 ] && ! printf '%s' "$pre" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?failed|Conflict with' && printf '%s' "$pre" | grep -qiE 'superset|subset'; then
+    grep -qiE <<<"$pre" 'superset|subset' && log "  ($id supersedes an installed patch - OPatch rolls the older one back itself)"
+  elif [ "$prc" = 0 ] && ! grep -qiE <<<"$pre" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?failed|Conflict with' && grep -qiE <<<"$pre" 'superset|subset'; then
     warn "$id supersedes an installed patch - OPatch rolls the older one back itself"
   else block "conflict check did not pass for $id (rc $prc): $(printf '%s\n' "$pre" | grep -iE 'conflict|error|fail' | head -3 | tr '\n' ' ')"; fi
 
@@ -633,7 +633,7 @@ do_cmd_p() { local u; u="$(umask)"; umask 077; do_cmd "$@"; local r=$?; umask "$
 why_failed() {
   local d="$1" c="$2" tailtxt; tailtxt="$(tail -3 "$RUN_DIR/run.log" 2>/dev/null)"
   [ -n "$tailtxt" ] && printf '%s\n' "$tailtxt" | sed 's/^/    /' >&2
-  if printf '%s' "$tailtxt" | grep -qiE 'password|user ?name|credential'; then
+  if grep -qiE <<<"$tailtxt" 'password|user ?name|credential'; then
     err "  it asked for the node manager credentials: none are stored for this user ($(id -un 2>/dev/null), HOME $HOME), or they are stale. With the node manager up, as this user, run once: $d/bin/startComponent.sh ${c:-<component>} storeUserConfig"
   fi
 }
