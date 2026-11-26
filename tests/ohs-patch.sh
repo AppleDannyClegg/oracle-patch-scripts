@@ -782,5 +782,23 @@ echo " 4242 bash /u01/scripts/ohs-quarter.sh --patch-root /u01/stage" >>"$T/ps.t
 [ "$rc" = 1 ] && grep -q "a patch script is running" "$T/out" && [ -d "$OH.failed-20261116-113104" ] && ok || bad "prune while ohs-quarter runs: rc $rc (want 1): $(tail -2 "$T/out")"
 : >"$T/ps.txt"; rm -rf "$T/decoy" "${OH:?}".failed-* "${OH:?}".bad "${OH:?}".failedX "$T"/inv.failed-*
 
+# a staged OPatch kit defers the old-OPatch block; its VERSION comes from the kit zip name, not from the
+# 'or higher' line in its README (which is the OPatch the kit itself requires). 1394220 = 13.9.4.2.20.
+build; echo "OPatch 13.9.4.2.10" >"$T/opv"; mkdir -p "$T/kit"
+printf 'This kit needs OPatch 13.9.4.2.30 or later on the home\n' >"$T/kit/README.txt"
+: >"$T/kit/p28186730_1394220_Generic.zip"
+runkit() { HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" bash "$SCRIPT" preflight "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --opatch-upgrade-pending "$T/kit" >"$T/out" 2>&1; echo $?; }
+rc="$(runkit)"
+[ "$rc" = 0 ] && grep -q 'OPatch kit in .*13.9.4.2.20' "$T/out" && ! grep -q BLOCKING "$T/out" && ok || bad "staged OPatch kit did not defer old OPatch: rc $rc: $(grep -E 'OPatch|BLOCK' "$T/out" | head -3)"
+rm -f "$T/kit/p28186730_1394220_Generic.zip"; : >"$T/kit/p28186730_1394005_Generic.zip"; rc="$(runkit)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: OPatch 13.9.4.2.10 is older' "$T/out" && ok || bad "a kit older than the later minimum was accepted: rc $rc"
+
+rm -f "$T/kit/p28186730_1394005_Generic.zip"; : >"$T/kit/p28186730_latest_Generic.zip"; rc="$(runkit)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: OPatch 13.9.4.2.10 is older' "$T/out" && ok || bad "an unparseable kit name was accepted: rc $rc"
+
+# the 'must be atleast' wording from client RU 39425385 is a minimum too (third fault in the note)
+build; printf 'Bundle Patch README\n\n ORACLE_HOME must have OPatch version must be atleast 13.9.4.2.30\n' >"$PD/40005842/README.txt"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'is older than the 13.9.4.2.30' "$T/out" && ok || bad "'must be atleast' was not read as a minimum: rc $rc"
+
 echo "ohs-patch gate: $pass passed, $fail failed$skiptail"
 [ "$fail" = 0 ]

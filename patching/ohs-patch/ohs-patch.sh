@@ -110,7 +110,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 # <<< output-location
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
-DRY_RUN=0; CLIENT19_PENDING=0; ASSUME_YES=0; NO_BACKUP=0; PRINT_CMDS=0; PRUNE_ALL=0; DRY_EXT=""; OPERATOR_STOPS=0
+DRY_RUN=0; CLIENT19_PENDING=0; OPATCH_PENDING=""; ASSUME_YES=0; NO_BACKUP=0; PRINT_CMDS=0; PRUNE_ALL=0; DRY_EXT=""; OPERATOR_STOPS=0
 START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
 problems=0; unknowns=0
 # what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
@@ -280,7 +280,9 @@ rsf_version() {
 readme_title() { head -5 "$1/README.txt" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]]//g' | grep -m1 -iE 'bundle patch|patch' ; }
 # the minimum is only a version with 'or higher/later/above' after it: a README also names versions it was built with
 readme_min_opatch() {
-  LC_ALL=C grep -aoE 'OPatch (utility )?(version )?13\.9(\.[0-9]+)+ or (higher|later|above)' "$1/README.txt" 2>/dev/null | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
+  { LC_ALL=C grep -aoE 'OPatch (utility )?(version )?13\.9(\.[0-9]+)+ or (higher|later|above)' "$1/README.txt" 2>/dev/null
+    LC_ALL=C grep -aoE 'OPatch version must be atleast 13\.9(\.[0-9]+)+' "$1/README.txt" 2>/dev/null; } \
+    | grep -oE '13\.9(\.[0-9]+)+' | sort -V | tail -1
 }
 
 # ---- preflight ------------------------------------------------------------------------------------------
@@ -421,7 +423,29 @@ cmd_preflight() {
   if printf '%s\n' "$lsp" | grep -q "^$id;"; then warn "$id is already installed in $OH - nothing to apply"; fi
   if [ -z "$min" ]; then warn "no 'OPatch version ... or higher' line in $pd/README.txt - check the README by hand"
   elif [ -z "$opv" ]; then :   # unknown OPatch version: already UNKNOWN above, never a pass
-  elif ! version_ge "$opv" "$min"; then block "OPatch $opv is older than the $min $id's README asks for - apply OPatch 28186730 first"
+  elif ! version_ge "$opv" "$min"; then
+    # A later opatch set can be reached on an older OPatch when wls-patch installs the OPatch kit
+    # earlier in this same outage. Defer ONLY when the staged kit itself meets the later README's
+    # minimum; an old or unreadable kit still blocks before the stop, as it always did.
+    # The kit's version is the release in its file name (p28186730_1394220 -> 13.9.4.2.20),
+    # the same number wls-patch uses to decide the kit is present. Its README's 'or later'
+    # line says what the kit REQUIRES on the home, not what it installs.
+    local kit_version="" kit_zip="" base="" rel=""
+    if [ -n "$OPATCH_PENDING" ]; then
+      for kit_zip in "$OPATCH_PENDING"/p28186730_*.zip; do
+        [ -f "$kit_zip" ] || continue
+        base="$(basename "$kit_zip")"; rel="${base#p28186730_}"; rel="${rel%%_*}"
+        case "$rel" in
+          13[0-9][0-9][0-9][0-9][0-9]) kit_version="${rel:0:2}.${rel:2:1}.${rel:3:1}.${rel:4:1}.${rel:5:2}" ;;
+        esac
+        break
+      done
+    fi
+    if [ -n "$kit_version" ] && version_ge "$kit_version" "$min"; then
+      warn "OPatch $opv is older than the $min $id's README asks for, but the OPatch kit in $OPATCH_PENDING is $kit_version and wls-patch installs it first in this outage - apply checks again after the upgrade"
+    else
+      block "OPatch $opv is older than the $min $id's README asks for - apply OPatch 28186730 first"
+    fi
   else log "OPatch   : $opv meets the README minimum $min"; fi
 
   # DB19C series (KB585169)
@@ -1112,6 +1136,7 @@ main() {
       --dry-run)   DRY_RUN=1; shift ;;
       --all)       PRUNE_ALL=1; shift ;;
       --client-19c-pending) CLIENT19_PENDING=1; shift ;;
+      --opatch-upgrade-pending) optchk "$@"; OPATCH_PENDING="$2"; shift 2 ;;
       --yes)       ASSUME_YES=1; shift ;;
       --no-backup) NO_BACKUP=1; shift ;;
       --operator-stops) OPERATOR_STOPS=1; shift ;;

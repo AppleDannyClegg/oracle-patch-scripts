@@ -85,5 +85,10 @@ for cmd in plan preflight; do
   [ -f "$T/rd-$cmd/wls-patch.log" ] && ok || bad "$cmd --run-dir: no wls-patch.log in the given run dir"
 done
 
+# a README with a NUL byte is still text for patch_description: grep -a, not "Binary file matches"
+fresh; patch_tree "$T/src" ""; printf 'Oracle WebLogic Server Patch 39000002 README\000binary\n' >"$T/src/39000002/README.txt"
+mkzip "$T/pd/p39000002_122140_Generic.zip" "$T/src"; plan "$T/pd" >/dev/null
+grep -q 'Patch 39000002 : Oracle WebLogic Server Patch' "$T/out" && ! grep -q 'Binary file' "$T/out" && ok || bad "binary README: $(grep -E 'Patch|Binary|No WLS' "$T/out" | head -3)"
+
 echo "wls-patch discovery gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]

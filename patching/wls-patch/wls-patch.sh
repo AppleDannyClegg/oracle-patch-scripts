@@ -585,15 +585,15 @@ patch_description() {
   [ -f "$p/README.txt" ] || return 0
   # the title is the first non-blank line when it names the id; a prose line naming it ("Download patch <id> from MOS")
   # comes only after that, then the bundle/PSU line
-  local re="(^|[^0-9])$id([^0-9]|\$)" first; first="$(grep -m1 -v '^[[:space:]]*$' "$p/README.txt")"
+  local re="(^|[^0-9])$id([^0-9]|\$)" first; first="$(grep -am1 -v '^[[:space:]]*$' "$p/README.txt")"
   { if printf '%s\n' "$first" | grep -qE "$re"; then printf '%s\n' "$first"; else
-      grep -m1 -E "$re" "$p/README.txt" || grep -m1 -iE 'BUNDLE|PATCH SET UPDATE' "$p/README.txt"; fi; } | sed 's/^ *//'
+      grep -am1 -E "$re" "$p/README.txt" || grep -am1 -iE 'BUNDLE|PATCH SET UPDATE' "$p/README.txt"; fi; } | sed 's/^ *//'
 }
 
 patch_min_opatch() {
   local p="$1"
   [ -f "$p/README.txt" ] || return 1
-  grep -oE 'OPatch (utility )?(version )?[0-9]+(\.[0-9]+){2,5}' "$p/README.txt" | grep -oE '[0-9]+(\.[0-9]+){2,5}' | sort -V | tail -1
+  grep -aoE 'OPatch (utility )?(version )?[0-9]+(\.[0-9]+){2,5}' "$p/README.txt" | grep -oE '[0-9]+(\.[0-9]+){2,5}' | sort -V | tail -1
 }
 
 # ---------------------------------------------------------------------------
@@ -670,7 +670,7 @@ cmd_preflight() {
     if [ -f "$path/README.txt" ] && [ -n "$WLS_VERSION" ]; then
       local short="${WLS_VERSION%.*}"   # 12.2.1.4.0 -> 12.2.1.4
       local mentioned
-      mentioned="$(grep -oE '\b(12\.1\.[23]|12\.2\.1\.[0-9]|14\.1\.[12])(\.[0-9])?\b' "$path/README.txt" | sed -E 's/^(12\.2\.1\.[0-9]|12\.1\.[23]|14\.1\.[12])\.[0-9]$/\1/; s/^(12\.1\.[23]|14\.1\.[12])$/&.0/' | sort -u | tr '\n' ' ')"
+      mentioned="$(grep -aoE '\b(12\.1\.[23]|12\.2\.1\.[0-9]|14\.1\.[12])(\.[0-9])?\b' "$path/README.txt" | sed -E 's/^(12\.2\.1\.[0-9]|12\.1\.[23]|14\.1\.[12])\.[0-9]$/\1/; s/^(12\.1\.[23]|14\.1\.[12])$/&.0/' | sort -u | tr '\n' ' ')"
       if [ -n "$mentioned" ] && ! printf ' %s ' "$mentioned" | grep -q " $short "; then
         err "Patch $id is for WebLogic $mentioned- this home is $short. Wrong download."
         problems=$((problems + 1))
