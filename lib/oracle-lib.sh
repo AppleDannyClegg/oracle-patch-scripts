@@ -22,7 +22,7 @@ ORACLE_LIB_VERSION="1.0.0"
 set -o pipefail
 # Directory options may arrive with a trailing slash; an aside path built by
 # appending to such a value would sit INSIDE the directory being moved.
-strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
 TOOL="${TOOL:-$(basename "${BASH_SOURCE[1]:-$0}" .sh)}"
 VERSION="${VERSION:-0.0.0}"
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[1]:-$0}")" && pwd)}"

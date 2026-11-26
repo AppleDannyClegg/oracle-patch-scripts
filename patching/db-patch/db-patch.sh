@@ -48,7 +48,7 @@ HOME_DIR="${ORACLE_HOME:-}"; SIDS="${ORACLE_SID:-}"; GRID=0; OOP=""; ROLLING=0; 
 DB_VERSION=""; RU_LEVEL=""; RU_DESC=""; OPATCH_VERSION=""; INSTALLED=""; GRID_HOME=""; IS_RAC=0; DB_ROLES=""
 
 usage() { usage_from_header "$0"; }
-strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
 
 parse_opts() {
   ARGS=()

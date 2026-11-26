@@ -757,7 +757,7 @@ cmd_run() {
 usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
 main() {
   local cmd="" args=()
-  strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+  strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
 
 while [ $# -gt 0 ]; do
     case "$1" in

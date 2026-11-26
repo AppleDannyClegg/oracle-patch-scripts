@@ -81,7 +81,7 @@ optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 PATCH_ROOT=""; JAVA_HOME_ARG=""; ORACLE_HOME_ARG=""; BACKUP_DIR_ARG=""; RUN_DIR=""; NO_CACERTS=0; FORCE=0; DRY=0; YES=0
-strip_dir() { local v="${1%/}"; printf "%s" "${v:-/}"; }
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
