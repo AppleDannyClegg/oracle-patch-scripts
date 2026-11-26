@@ -122,7 +122,7 @@ $bugNoSha = @'
 # OHS 12.2.1.4 on Linux x86-64: the real abstract shapes (MOS, 5 Nov 2026) - the DB19C bundle is the current
 # line, the plain one stopped in Jan 2024; the Apache plug-in bundle and a tracking bug are look-alikes
 $ohsRows = '<results>' +
-    (Row 40005842 'OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910' '2026-10-19') +
+    (Row 40176880 'OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910' '2026-10-19') +
     (Row 39611663 'OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260624' '2026-07-20') +
     (Row 36187026 'OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115' '2024-01-29') +
     (Row 40030272 'APACHE PLUGIN BUNDLE PATCH FOR DB19C 12.2.1.4.261020' '2026-09-16') +
@@ -735,18 +735,18 @@ finally {
     $p6 = @($all6 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] -and $_.Kind -eq 'ohs' })
     Check ($p6.Count -eq 2) "an OHS bundle planned for the DB19C home and the collocated one, got $($p6.Count)"
     # the DB19C bundle 'must be applied only to an Oracle Fusion Middleware home where the Oracle Database Client 12c has
-    # been upgraded to 19c' (40005842 README, Section 2): a home on the plain line is not planned it, and is told why
+    # been upgraded to 19c' (40176880 README, Section 2): a home on the plain line is not planned it, and is told why
     Check (-not ($p6 | Where-Object { $_.For -eq '/u01/ohsold' })) "a home on the plain OHS line is NOT planned the DB19C bundle"
     Check (@($w6 | Where-Object { "$_" -like '*/u01/ohsold*KB585169*' }).Count -eq 1) "the plain-line home warns about the DB client 19c upgrade (KB585169): $(@($w6) -join ' / ')"
     Check (@($w6 | Where-Object { "$_" -like '*/u01/fmw*no OHS bundle installed*KB585169*' }).Count -eq 1) "a home with no OHS bundle yet warns to confirm the DB client 19c upgrade: $(@($w6) -join ' / ')"
-    Check (@($p6 | Where-Object { $_.Patch -eq '40005842' }).Count -eq 2) "the newest OHS DB19C bundle 40005842 is planned: $(@($p6 | ForEach-Object { $_.Patch }) -join ',')"
+    Check (@($p6 | Where-Object { $_.Patch -eq '40176880' }).Count -eq 2) "the newest OHS DB19C bundle 40176880 is planned: $(@($p6 | ForEach-Object { $_.Patch }) -join ',')"
     Check (@($p6 | Where-Object { $_.For -eq '/u01/ohs' -and $_.Installed -eq '260624' }).Count -eq 1) "the standalone home's installed OHS level is read (260624)"
     Check (@($p6 | Where-Object { $_.For -eq '/u01/fmw' }).Count -eq 1) "the collocated OHS home gets its own OHS item"
     Check (-not ($p6 | Where-Object { $_.Patch -eq '40030272' })) "the Apache plug-in bundle is not planned as the OHS bundle"
     # current: an OHS home already on 260910 plans nothing
     $ohsCur = Join-Path $tmp 'ohscur.txt'
     @('host|wl7', 'home|/u01/ohs|ohs|12.2.1.4.0|13.9.4.2.23',
-      'patch|/u01/ohs|40005842|OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910') | Set-Content -LiteralPath $ohsCur
+      'patch|/u01/ohs|40176880|OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910') | Set-Content -LiteralPath $ohsCur
     $p7 = @(Get-PatchPlan (Read-Manifest $ohsCur) | Where-Object { $_.Kind -eq 'ohs' })
     Check ($p7.Count -eq 0) "an OHS home on the newest bundle plans nothing, got $($p7.Count)"
 
@@ -777,8 +777,8 @@ finally {
     Check (@($dc8 | ForEach-Object { Get-PatchFolder -Item $_ } | Sort-Object -Unique) -join ',' -eq 'dbclient') "the installer's folder is dbclient/"
     Check (@($dc8 | Where-Object { $_.Installed -eq '12.1.0.2.0' }).Count -eq 2) "the installer item shows the client level it found"
     Check (@($w8 | Where-Object { "$_" -like '*/u01/ohs12*12.1.0.2.0*34761383*BEFORE*' }).Count -eq 1) "the 12c-client home is told the installer goes on before the bundle: $(@($w8) -join ' / ')"
-    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs12' -and $_.Patch -eq '40005842' }).Count -eq 1) "the 12c-client home still gets its OHS bundle in the same download"
-    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs19' -and $_.Patch -eq '40005842' }).Count -eq 1) "a 19c-client home with bare patch lines is planned the DB19C bundle"
+    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs12' -and $_.Patch -eq '40176880' }).Count -eq 1) "the 12c-client home still gets its OHS bundle in the same download"
+    Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs19' -and $_.Patch -eq '40176880' }).Count -eq 1) "a 19c-client home with bare patch lines is planned the DB19C bundle"
     Check (@($w8 | Where-Object { "$_" -like '*/u01/ohs19 *' -or "$_" -like '*/u01/ohs19:*' }).Count -eq 0) "a 19c-client home gets no 'confirm the client' warning - the manifest already answered it: $(@($w8) -join ' / ')"
     Check (@($ohs8 | Where-Object { $_.For -eq '/u01/ohs19plain' }).Count -eq 1 -and @($w8 | Where-Object { "$_" -like '*/u01/ohs19plain*' }).Count -eq 0) "the client level outranks a plain-line title: a 19c client is planned the DB19C bundle, no warning"
     Check (@($w8 | Where-Object { "$_" -like '*/u01/ohsnone*no OHS bundle installed*KB585169*' }).Count -eq 1) "no client level in the manifest: the title fallback still warns to confirm the client"
@@ -787,7 +787,7 @@ finally {
     # -PatchKind dbclient is a real kind, and an upload hint names the step that uses the folder
     Check ((Get-PatchItem -Patch '34761383' -Kind 'dbclient').Kind -eq 'dbclient') "-PatchKind dbclient is accepted"
     $hd = Join-Path $tmp 'hints-dbclient'; New-Item -ItemType Directory -Path (Join-Path $hd 'dbclient'), (Join-Path $hd 'ohs') | Out-Null
-    Set-Content -LiteralPath (Join-Path $hd 'dbclient/p34761383_122140_Linux-x86-64.zip') 'x'; Set-Content -LiteralPath (Join-Path $hd 'ohs/p40005842_122140_Linux-x86-64.zip') 'x'
+    Set-Content -LiteralPath (Join-Path $hd 'dbclient/p34761383_122140_Linux-x86-64.zip') 'x'; Set-Content -LiteralPath (Join-Path $hd 'ohs/p40176880_122140_Linux-x86-64.zip') 'x'
     $hints8 = @(Get-UploadHints 'wl8' $hd '/u01/patches')
     $iDc = [array]::FindIndex([string[]] $hints8, [Predicate[string]] { param($x) $x -like '*:/u01/patches/dbclient/*dbclient-upgrade.sh*' })
     $iOhs = [array]::FindIndex([string[]] $hints8, [Predicate[string]] { param($x) $x -like '*:/u01/patches/ohs/*ohs-patch.sh*' })
@@ -798,7 +798,7 @@ finally {
     # downloaded here and unknown there is refused on the server (seen on the first real run, with the SPB)
     $stageMap = @((Get-Content -LiteralPath (Join-Path $root 'patching/ohs-quarter/ohs-quarter-stage.sh')) -join "`n" |
         Select-String -Pattern '(?s)\nMAP="(.*?)"' | ForEach-Object { $_.Matches[0].Groups[1].Value -split "`n" } | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object)
-    Check ($stageMap.Count -eq 15 -and (($stageMap -join ',') -eq ((@($script:OhsSetBuiltIn) | Sort-Object) -join ','))) "the built-in set is ohs-quarter-stage.sh's table, number for number: [$($stageMap -join ',')] vs [$((@($script:OhsSetBuiltIn) | Sort-Object) -join ',')]"
+    Check ($stageMap.Count -eq 16 -and (($stageMap -join ',') -eq ((@($script:OhsSetBuiltIn) | Sort-Object) -join ','))) "the built-in set is ohs-quarter-stage.sh's table, number for number: [$($stageMap -join ',')] vs [$((@($script:OhsSetBuiltIn) | Sort-Object) -join ',')]"
     # the shape of the first real manifest: a collocated home, client 12.1, three bare patch lines
     $real = Join-Path $tmp 'ohsset.txt'
     @('host|wl9', 'plat|linux|x86_64', 'wls|/u01/fmw|12.2.1.4.0|13.9.4.2.25|no', 'patch|/u01/fmw|27516009|', 'patch|/u01/fmw|39487427|',
@@ -807,11 +807,11 @@ finally {
     $w9 = @($all9 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
     $p9 = @($all9 | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
     $set9 = @($p9 | Where-Object { $_.Kind -eq 'ohsset' })
-    $want9 = @('39919567', '39425385', '39114058', '39567777', '36789759', '39465265', '39574504', '38590502', '38098858', '38832179', '37056593', '39798204')
+    $want9 = @('39919567', '28186730', '39425385', '39114058', '39567777', '36789759', '39465265', '39574504', '38590502', '38098858', '38832179', '37056593', '39798204')
     Check ((@($set9 | ForEach-Object { $_.Patch } | Sort-Object) -join ',') -eq (($want9 | Sort-Object) -join ',')) "a 12.2.1.4 OHS home is planned the rest of the runbook set, less the one it has (39487427): $(@($set9 | ForEach-Object { $_.Patch }) -join ',')"
     Check (@($set9 | ForEach-Object { Get-PatchFolder -Item $_ } | Sort-Object -Unique) -join ',' -eq 'ohsset') "the set's folder is ohsset/"
     Check (@($set9 | Where-Object { $_.Release -ne '12.2.1.4.0' -or $_.For -ne '/u01/fmw' }).Count -eq 0) "each set item carries the home and its release, so a record with several releases cannot be picked blind"
-    Check (@($p9 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 1 -and @($p9 | Where-Object { $_.Patch -eq '40005842' }).Count -eq 1) "the installer and the OHS bundle are planned once each - the table adds no second copy: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
+    Check (@($p9 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 1 -and @($p9 | Where-Object { $_.Patch -eq '40176880' }).Count -eq 1) "the installer and the OHS bundle are planned once each - the table adds no second copy: $(@($p9 | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     Check (@($w9 | Where-Object { "$_" -like '*another quarter*' }).Count -eq 0) "no stale-table warning when MOS's bundle is the table's: $(@($w9) -join ' / ')"
     # the WebLogic inside an OHS home takes the runbook's WLS PSU (ohsset/ 39919567, wlspsu/), never a Stack Patch Bundle:
     # a field run planned the SPB there and ohs-quarter-stage.sh refused it (T1056, Gort #15642). MOS lists an SPB here
@@ -834,7 +834,7 @@ finally {
     Check (@($pf | Where-Object { $_.Kind -eq 'wls' -and $_.What -like 'FMW Platform Bundle*' }).Count -eq 0 -and @($pf | Where-Object { $_.Patch -eq '36789759' }).Count -eq 1) "an OHS home with an FMW Platform Bundle installed is planned the set's 36789759 only, no MOS bundle beside it: $(@($pf | ForEach-Object { "$($_.Kind)=$($_.Patch)" }) -join ',')"
     # the first fixture again: which homes get the set, and the installer where the lookup could not decide
     $set8 = @($p8 | Where-Object { $_.Kind -eq 'ohsset' })
-    Check ($set8.Count -eq 13) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
+    Check ($set8.Count -eq 14) "five 12.2.1.4 homes still download each set patch once, got $($set8.Count)"
     Check (@($w8 | Where-Object { "$_" -like '*/u01/ohsnone*no readable Database Client level*34761383*' }).Count -eq 0 -and @($p8 | Where-Object { $_.Patch -eq '34761383' }).Count -eq 2) "an installer already planned for another home is not planned or warned about again"
     $noCl = Join-Path $tmp 'ohsset-nocl.txt'
     @('host|wl9', 'plat|linux|x86_64', 'home|/u01/ohsold|ohs|12.2.1.4.0|13.9.4.2.23', 'patch|/u01/ohsold|36187026|OHS (NATIVE) BUNDLE PATCH 12.2.1.4.240115',
@@ -854,8 +854,8 @@ finally {
     $wQ = @($allQ | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
     $pQ = @($allQ | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] -and $_.Kind -eq 'ohsset' })
     Check ((@($pQ | ForEach-Object { $_.Patch }) -join ',') -eq '41000001,41000003') "-OhsSet replaces the built-in table, and its ohs row is never downloaded from the table: $(@($pQ | ForEach-Object { $_.Patch }) -join ',')"
-    Check (@($wQ | Where-Object { "$_" -like '*/u01/fmw*40005842*41000002*another quarter*-OhsSet*' }).Count -eq 1) "a table whose OHS bundle is not the one MOS lists is called another quarter's: $(@($wQ) -join ' / ')"
-    foreach ($badSet in @(@('39919567'), @('39919567 wls'), @('39919567 wlspsu', '39919567 oss'), @('39919567 wlspsu', '40000000 wlspsu'), @('# nothing'))) {
+    Check (@($wQ | Where-Object { "$_" -like '*/u01/fmw*40176880*41000002*another quarter*-OhsSet*' }).Count -eq 1) "a table whose OHS bundle is not the one MOS lists is called another quarter's: $(@($wQ) -join ' / ')"
+    foreach ($badSet in @(@('39919567'), @('39919567 wls'), @('39919567 wlspsu', '39919567 oss'), @('39919567 wlspsu', '39919567 oss'), @('# nothing'))) {
         $threw = $false; try { ConvertTo-OhsSet $badSet 'test' | Out-Null } catch { $threw = $true }
         Check $threw "a set table that is malformed, names a folder the runbook lacks, repeats a number or folder, or is empty is refused: [$($badSet -join ' | ')]"
     }
@@ -1092,7 +1092,7 @@ $fDbg = @(F 'p39919567_122140_Linux-x86-64_debug.zip' '12.2.1.4.0')
 $r = Select-MosFile $fDbg '12.2.1.4.0' 'wls'
 Check (-not $r.File -and $r.Reason -match 'internal/debug') "a non-JDK record whose only file is an internal/debug artifact is refused, not taken: file [$($r.File.Name)] reason [$($r.Reason)]"
 Check ($r.Warning -notmatch 'only an internal/debug') "the refusal is not also a 'taking it anyway' warning: [$($r.Warning)]"
-$fDbgOhs = @(F 'p40005842_122140_Linux-x86-64_internal.zip' '12.2.1.4.0')
+$fDbgOhs = @(F 'p40176880_122140_Linux-x86-64_internal.zip' '12.2.1.4.0')
 $r = Select-MosFile $fDbgOhs '12.2.1.4.0' 'ohs'
 Check (-not $r.File -and $r.Reason -match 'internal/debug') "the same refusal for an ohs record: [$($r.File.Name)] [$($r.Reason)]"
 # control: a production file beside the debug one is still taken, and no refusal
