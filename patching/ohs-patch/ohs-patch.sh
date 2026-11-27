@@ -471,8 +471,19 @@ cmd_preflight() {
   local app arc miss
   app="$(cd "$pd" && ORACLE_HOME="$OH" "$OH/OPatch/opatch" prereq CheckApplicable -ph . -oh "$OH" 2>&1)"; arc=$?
   # every oracle.<component>:<version> OPatch names in its answer (an empty list is not "the 19c client alone")
+  # A VERDICT LINE CAN ARRIVE WITH A BREAK INSIDE IT, and then this check reads a real verdict as absent.
+  # The tool may wrap the phrase, and the capture above merges stderr into the same stream (2>&1), so a line
+  # arriving between the writes that make up the phrase splits it too. Either way `Prereq "checkApplicable"`
+  # and its result land on different lines, and the otherwise identical answer matches nothing. This change
+  # does not claim a break is what a given host saw: an early match has its own, separately fixed failure
+  # mode, and the log excerpt that prompted this folds its last lines together, so it cannot show where the
+  # breaks were. Fold the answer's line breaks to spaces and
+  # match that. A diagnostic line BETWEEN the two halves is still no verdict - the fixture in tests/ohs-patch.sh
+  # holds that case UNKNOWN - so this repairs a break, it does not invent a verdict. The raw $app is unchanged
+  # and is still what the messages below quote.
+  local appline; appline="$(printf '%s' "$app" | tr '\n' ' ')"
   local need; need="$(printf '%s\n' "$app" | grep -oE 'oracle\.[A-Za-z0-9_.]+:[0-9][0-9.]*' | sort -u)"
-  if [ "$arc" = 0 ] && grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
+  if [ "$arc" = 0 ] && grep -qiE <<<"$appline" 'Prereq "checkApplicable" (for patch [0-9]+ )?passed'; then
     log "components: every component $id needs is in $OH (opatch prereq CheckApplicable)"
   elif [ "$CLIENT19_PENDING" = 1 ] && ! printf '%s\n' "$need" | grep -v '^oracle\.rdbms\.rsf:19\.' >/dev/null; then
     # on a 12c client a DB19C patch cannot pass CheckApplicable yet (it needs oracle.rdbms.rsf 19); apply's own
@@ -492,7 +503,7 @@ cmd_preflight() {
   elif grep -qi <<<"$app" 'requires component(s) that are not installed'; then
     miss="$(printf '%s' "$app" | sed -n 's/.*These not-installed components are \([^ ]*\).*/\1/p' | head -1)"
     block "$id needs ${miss:-a component} that is not installed in $OH (OUI-67073) - opatch apply would refuse after the stop. For a DB19C bundle that is the Database Client 19c upgrade (KB585169), which comes first"
-  elif grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
+  elif grep -qiE <<<"$appline" 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
     block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" (for patch [0-9]+ )?failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
   else
     unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
