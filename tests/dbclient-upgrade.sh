@@ -92,8 +92,9 @@ build; printf 'ID="ol"\nVERSION_ID="9.4"\nPRETTY_NAME="Oracle Linux Server 9.4"\
 # name the opt-in AND the README's condition on it (patching/ohs-quarter/README.md:124-125: read the installer's
 # output in run.log first, use the option only when that check is the only failed prereq) - a warning that steers
 # at the switch alone would be telling an operator to skip a check blind
-[ "$rc" = 0 ] && grep -q 'redhat-lsb' "$T/out" && grep -q 'run.log' "$T/out" && grep -q 'only failed prereq' "$T/out" && ok \
-  || bad "OL 9.4: preflight did not warn with the README's condition: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3)"
+named=1; for p in libaio-devel-0.3.110 redhat-lsb-4.1 redhat-lsb-core-4.1 libXtst-devel-1.2.3; do grep -q -- "$p" "$T/out" || { named=0; echo "        (warning does not name $p)"; }; done
+[ "$rc" = 0 ] && [ "$named" = 1 ] && grep -q 'install it first' "$T/out" && grep -q 'run.log' "$T/out" && grep -q 'only failed prereq' "$T/out" && ok \
+  || bad "OL 9.4: preflight did not warn with all four packages and the README's condition: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3)"
 # and the warning is version-bounded: OL 8 has these packages, so a warning there would be noise, not a warning
 build; printf 'ID="ol"\nVERSION_ID="8.9"\nPRETTY_NAME="Oracle Linux Server 8.9"\n' >"$T/os-release"; rc="$(pre)"
 [ "$rc" = 0 ] && ! grep -q 'redhat-lsb' "$T/out" && ok \

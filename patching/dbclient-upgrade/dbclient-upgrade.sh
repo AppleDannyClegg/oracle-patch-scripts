@@ -484,13 +484,15 @@ os_check() {
     case "$name" in *"Red Hat"*) id=rhel;; *Oracle*) id=ol;; *) id="";; esac
   fi
   [ -n "$ver" ] || { echo "unknown no version in $f"; return; }
-  # Oracle Linux 9 does not ship redhat-lsb, which the installer's own "Check:Packages" asks for: the field run on
-  # 16 Nov 2026 (OL 9.4) passed every other prereq and aborted on that one. The OS rule above only asks for 7.4, so
-  # the release reads "ok" and the install stops a step later - say so here, with the README's own condition rather
-  # than steering at the switch. A warning, not a block: --ignore-sys-prereqs is the operator's opt-in, and this
-  # function's stdout must stay exactly the verdict, so the line goes to stderr.
+  # The installer's own "Check:Packages" asks for four packages, and the 16 Nov 2026 OL 9.4 field run failed on all
+  # four by name. redhat-lsb, redhat-lsb-core and libXtst-devel are not shipped for OL 9 (README.md:122); libaio-devel
+  # is the one Oracle does ship a build for OL 9, so it is the one to install first. The OS rule above only asks for
+  # 7.4, so the release reads "ok" and the install stops a step later - say so here, with the README's own condition
+  # rather than steering at the switch. A warning, not a block: --ignore-sys-prereqs is the operator's opt-in, and
+  # this function's stdout must stay exactly the verdict, so these lines go to stderr.
   if [ "$id" = ol ] && version_ge "$ver" 9; then
-    warn "OS $name: the installer's \"Check:Packages\" asks for redhat-lsb, which Oracle Linux 9 does not ship, so an install that stops there needs --ignore-sys-prereqs only when that check is the only failed prereq - read the installer's prerequisite results in the run dir's run.log first"
+    warn "OS $name: the installer's \"Check:Packages\" asks for libaio-devel-0.3.110, redhat-lsb-4.1, redhat-lsb-core-4.1 and libXtst-devel-1.2.3 - the 16 Nov 2026 OL 9.4 run failed on all four"
+    warn "  libaio-devel is the one Oracle ships a build for OL 9 - install it first. The install then needs --ignore-sys-prereqs only when that check is the only failed prereq: read the installer's prerequisite results in the run dir's run.log first"
   fi
   case "$id" in
     rhel|ol) if version_ge "$ver" 7.4; then echo "ok ${name:-$id $ver}"; else echo "block ${name:-$id $ver} is older than 7.4"; fi ;;
