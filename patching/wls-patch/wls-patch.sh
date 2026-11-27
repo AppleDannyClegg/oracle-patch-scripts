@@ -374,7 +374,7 @@ discover_domains() {
     while read -r d; do
       [ -z "$d" ] && continue
       [ -f "$d/config/config.xml" ] || continue
-      printf '%s\n' "$DOMAINS" | grep -qx "$d" || DOMAINS="${DOMAINS:+$DOMAINS$'\n'}$d"
+      printf '%s\n' "$DOMAINS" | grep -x "$d" >/dev/null|| DOMAINS="${DOMAINS:+$DOMAINS$'\n'}$d"
     done < <(sed -n 's/.*<domain location="\([^"]*\)".*/\1/p' "$ORACLE_HOME/domain-registry.xml")
   fi
   if [ -z "$DOMAINS" ]; then
@@ -598,7 +598,7 @@ patch_description() {
   # the title is the first non-blank line when it names the id; a prose line naming it ("Download patch <id> from MOS")
   # comes only after that, then the bundle/PSU line
   local re="(^|[^0-9])$id([^0-9]|\$)" first; first="$(grep -am1 -v '^[[:space:]]*$' "$p/README.txt")"
-  { if printf '%s\n' "$first" | grep -qE "$re"; then printf '%s\n' "$first"; else
+  { if printf '%s\n' "$first" | grep -E "$re" >/dev/null; then printf '%s\n' "$first"; else
       grep -am1 -E "$re" "$p/README.txt" || grep -am1 -iE 'BUNDLE|PATCH SET UPDATE' "$p/README.txt"; fi; } | sed 's/^ *//'
 }
 
@@ -675,7 +675,7 @@ cmd_preflight() {
     min="$(patch_min_opatch "$path" || true)"
     [ -n "$min" ] && { [ -z "$required_opatch" ] || version_ge "$min" "$required_opatch"; } && required_opatch="$min"
     # already installed?
-    if printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;"; then
+    if printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null; then
       warn "Patch $id is already installed - it will be skipped"
     fi
     # platform/version sanity from README
@@ -683,7 +683,7 @@ cmd_preflight() {
       local short="${WLS_VERSION%.*}"   # 12.2.1.4.0 -> 12.2.1.4
       local mentioned
       mentioned="$(grep -aoE '\b(12\.1\.[23]|12\.2\.1\.[0-9]|14\.1\.[12])(\.[0-9])?\b' "$path/README.txt" | sed -E 's/^(12\.2\.1\.[0-9]|12\.1\.[23]|14\.1\.[12])\.[0-9]$/\1/; s/^(12\.1\.[23]|14\.1\.[12])$/&.0/' | sort -u | tr '\n' ' ')"
-      if [ -n "$mentioned" ] && ! printf ' %s ' "$mentioned" | grep -q " $short "; then
+      if [ -n "$mentioned" ] && ! printf ' %s ' "$mentioned" | grep " $short " >/dev/null; then
         err "Patch $id is for WebLogic $mentioned- this home is $short. Wrong download."
         problems=$((problems + 1))
       elif [ -z "$mentioned" ]; then
@@ -758,7 +758,7 @@ cmd_preflight() {
   # conflicts (skip the OPatch kit itself)
   while IFS='|' read -r id path kind; do
     [ "$kind" = patch ] || continue
-    printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" && continue
+    printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null&& continue
     log "Conflict check for $id"
     local out rc
     out="$(cd "$path" && "$ORACLE_HOME/OPatch/opatch" prereq CheckConflictAgainstOHWithDetail -ph . ${JAVA_HOME:+-jdk "$JAVA_HOME"} -oh "$ORACLE_HOME" 2>&1)"
@@ -769,9 +769,9 @@ cmd_preflight() {
     # proves nothing: a failed prereq or any 'Conflict with' line is a conflict whatever else the output says (Gort
     # 17:05, Edi 17:05:46); only a superset with no failure is OPatch's own subset rollback
     # the exit status first (Edi/Jocasta P3): a prereq that exits non-zero is a conflict whatever its wording
-    if [ "$rc" = 0 ] && printf '%s' "$out" | grep -qE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed' && ! printf '%s' "$out" | grep -qi 'Conflict with'; then
+    if [ "$rc" = 0 ] && grep -qE <<<"$out" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed' && ! grep -qi <<<"$out" 'Conflict with'; then
       log "  no conflicts"
-    elif [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -qiE 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?failed|Conflict with' && printf '%s' "$out" | grep -qiE 'subset|superset'; then
+    elif [ "$rc" = 0 ] && ! grep -qiE <<<"$out" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?failed|Conflict with' && grep -qiE <<<"$out" 'subset|superset'; then
       warn "  $id supersedes / is superseded by an installed patch - OPatch will handle the subset rollback automatically:"
       printf '%s\n' "$out" | grep -iE 'subset|superset|Patch [0-9]+' | head -10 | sed 's/^/    /' >&2
     else
@@ -791,7 +791,7 @@ cmd_preflight() {
     while IFS='|' read -r id path kind; do
       if [ "$kind" = opatch-upgrade ]; then echo "    OPatch upgrade kit            [install first]"; continue; fi
       local st="new"
-      printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" && st="already installed, skip"
+      printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null&& st="already installed, skip"
       echo "    $id  $(patch_description "$path" | cut -c1-70)  [$st]"
     done <<<"$list"
     echo "  Advice      :"
@@ -800,7 +800,7 @@ cmd_preflight() {
     local has_psu=0 pid path kind
     while IFS='|' read -r pid path kind; do
       [ "$kind" = opatch-upgrade ] && continue
-      patch_description "$path" | grep -qiE 'PATCH SET UPDATE|\bPSU\b' && has_psu=1
+      patch_description "$path" | grep -iE 'PATCH SET UPDATE|\bPSU\b' >/dev/null&& has_psu=1
     done <<<"$list"
     # Keep the whole-README check beside the title check: a real PSU README can name the id on
     # line 1 and say WLS PATCH SET UPDATE further down. grep -a so a NUL does not hide its body.
@@ -952,7 +952,7 @@ cmd_stop() {
       fi
     done <<<"$running"
     # admin
-    if printf '%s\n' "$running" | awk '{print $1}' | grep -qx "$ADMIN_SERVER_NAME" && [ -x "$bin/stopWebLogic.sh" ]; then
+    if printf '%s\n' "$running" | awk '{print $1}' | grep -x "$ADMIN_SERVER_NAME" >/dev/null&& [ -x "$bin/stopWebLogic.sh" ]; then
       log "Stopping admin server $ADMIN_SERVER_NAME"
       run_sh "cd '$bin' && ./stopWebLogic.sh" || warn "stopWebLogic returned non-zero"
     fi
@@ -1023,7 +1023,7 @@ cmd_start() {
         run_sh "cd '$bin' && nohup ./startNodeManager.sh >'$DOMAIN_HOME/nodemanager.out' 2>&1 &"
       fi
     fi
-    if printf ' %s ' "$want" | grep -q " $ADMIN_SERVER_NAME "; then
+    if printf ' %s ' "$want" | grep " $ADMIN_SERVER_NAME " >/dev/null; then
       log "Starting admin server $ADMIN_SERVER_NAME"
       run_sh "cd '$bin' && nohup ./startWebLogic.sh >'$DOMAIN_HOME/${ADMIN_SERVER_NAME}.out' 2>&1 &"
       [ "$DRY_RUN" = 1 ] || wait_for_url "$ADMIN_URL" "$START_TIMEOUT" || { err "Admin server not answering at $ADMIN_URL after ${START_TIMEOUT}s"; return 1; }
@@ -1166,7 +1166,7 @@ cmd_apply() {
   # 2. patches, in directory order (sort patch-list by id so PSU (lower? no) - we keep README-agnostic order)
   while IFS='|' read -r id path kind; do
     [ "$kind" = patch ] || continue
-    if printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;"; then
+    if printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null; then
       log "Skipping $id (already installed)"; continue
     fi
     log "Applying $id : $(patch_description "$path")"
@@ -1174,7 +1174,7 @@ cmd_apply() {
       # opatch's exit status is not the outcome: the inventory is re-read and must name the patch before it is recorded as applied
       if [ "$DRY_RUN" != 1 ]; then
         INSTALLED_PATCHES="$("$ORACLE_HOME/OPatch/opatch" lspatches 2>/dev/null | grep -E '^[0-9]+;' || true)"
-        printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" || { err "opatch apply exited 0 but $id is not in 'opatch lspatches' - not recorded as applied. See $ORACLE_HOME/cfgtoollogs/opatch/"; state_set failed_patch "$id"; return 1; }
+        printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null|| { err "opatch apply exited 0 but $id is not in 'opatch lspatches' - not recorded as applied. See $ORACLE_HOME/cfgtoollogs/opatch/"; state_set failed_patch "$id"; return 1; }
       fi
       state_append applied "$id"
       log "Applied $id"
@@ -1243,7 +1243,7 @@ cmd_verify() {
   fi
   local id
   for id in $expected; do
-    if printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;"; then log "inventory has $id"; else err "inventory MISSING $id"; ok=0; fi
+    if printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null; then log "inventory has $id"; else err "inventory MISSING $id"; ok=0; fi
   done
   # servers
   local want n port
@@ -1251,14 +1251,14 @@ cmd_verify() {
   local up; up="$(running_servers)" || { err "$PS_UNREADABLE - the servers are NOT verified"; return 1; }
   [ -z "$want" ] && want="$(printf '%s\n' "$up" | awk '{print $1}' | tr '\n' ' ')"
   for n in $want; do
-    if printf '%s\n' "$up" | awk '{print $1}' | grep -qx "$n"; then
+    if printf '%s\n' "$up" | awk '{print $1}' | grep -x "$n" >/dev/null; then
       port="$(printf '%s\n' "$MANAGED_SERVERS" | awk -v s="$n" '$1==s {print $2}')"
       if [ -n "$port" ] && ! port_open "$port"; then err "$n process exists but port $port closed"; ok=0; else log "$n running"; fi
     else
       err "$n not running"; ok=0
     fi
   done
-  if [ -n "$ADMIN_URL" ] && printf ' %s ' "$want" | grep -q " $ADMIN_SERVER_NAME "; then
+  if [ -n "$ADMIN_URL" ] && printf ' %s ' "$want" | grep " $ADMIN_SERVER_NAME " >/dev/null; then
     if wait_for_url "$ADMIN_URL" 30; then log "admin console answers at $ADMIN_URL"; else err "admin console not answering at $ADMIN_URL"; ok=0; fi
   fi
   # look for fresh errors in server logs since the run started
@@ -1320,7 +1320,7 @@ cmd_rollback() {
       else
         inv="$("$ORACLE_HOME/OPatch/opatch" lspatches 2>/dev/null)" || rci=$?
         if [ "$rci" != 0 ]; then err "opatch rollback exited 0 but 'opatch lspatches' failed (rc $rci) afterwards - cannot confirm $id is gone, not recorded as rolled back"; fail=1
-        elif printf '%s\n' "$inv" | grep -q "^$id;"; then
+        elif printf '%s\n' "$inv" | grep "^$id;" >/dev/null; then
           err "opatch rollback exited 0 but $id is still in 'opatch lspatches' - not recorded as rolled back. See $ORACLE_HOME/cfgtoollogs/opatch/"; fail=1
         else state_append rolled_back "$id"; fi
       fi
@@ -1385,7 +1385,7 @@ cmd_heal() {
   while read -r lok; do
     [ -z "$lok" ] && continue
     n="$(printf '%s' "$lok" | sed -n 's#.*/servers/\([^/]*\)/.*#\1#p')"
-    if [ -n "$n" ] && printf '%s\n' "$up" | awk '{print $1}' | grep -qx "$n"; then continue; fi
+    if [ -n "$n" ] && printf '%s\n' "$up" | awk '{print $1}' | grep -x "$n" >/dev/null; then continue; fi
     found=$((found + 1))
     log "Removing orphaned lock $lok (server $n not running)"
     if run_cmd rm -f "$lok"; then fixed=$((fixed + 1))
@@ -1416,7 +1416,7 @@ cmd_heal() {
   if [ -n "$last" ] && [ -f "$last/state" ] && [ "$last" != "$RUN_DIR" ]; then
     local fp
     fp="$(sed -n 's/^failed_patch=//p' "$last/state")"
-    if [ -n "$fp" ] && ! sed -n 's/^rolled_back=//p' "$last/state" | grep -q "$fp"; then
+    if [ -n "$fp" ] && ! sed -n 's/^rolled_back=//p' "$last/state" | grep "$fp" >/dev/null; then
       found=$((found + 1))
       warn "Previous run $last failed on patch $fp and was not rolled back. Run: $0 rollback --run-dir $last"
     fi
@@ -1445,7 +1445,7 @@ mos_login() {
   [ -z "$tok" ] && [ -f "$MOS_TOKEN_FILE" ] && tok="$(grep -vE '^[[:space:]]*(#|$)' "$MOS_TOKEN_FILE" | head -1 | tr -d '[:space:]')"
   [ -z "$tok" ] && [ -t 0 ] && { read -r -s -p "My Oracle Support access token: " tok; echo; }
   if [ -z "$tok" ]; then
-    { [ -n "${MOS_USER:-}" ] || grep -qs 'updates.oracle.com' "$HOME/.netrc"; } && die "MOS_USER/~/.netrc are no use any more: updates.oracle.com stopped taking the account password - $(mos_token_hint)"
+    { [ -n "${MOS_USER:-}" ] || grep -s 'updates.oracle.com' "$HOME/.netrc" >/dev/null; } && die "MOS_USER/~/.netrc are no use any more: updates.oracle.com stopped taking the account password - $(mos_token_hint)"
     die "No MOS token: $(mos_token_hint)"
   fi
   # the token goes into a curl config file (mode 600), never on a command line
@@ -1468,7 +1468,7 @@ mos_release_ids() {
     local cache raw; cache="${TMPDIR:-/tmp}/aru-releases-$(id -u)-$(date +%Y%m%d).txt"; raw="$RUN_DIR/.aru-releases.xml"
     if [ -s "$cache" ]; then MOS_REL="$cache"; else
       "${MOS_CURL[@]}" -o "$raw" "$MOS_BASE/Orion/Services/metadata?table=aru_releases" || { rm -f "$raw"; err "could not fetch the MOS release table"; return 1; }
-      tail -c 200 "$raw" | grep -q '</results>' || { rm -f "$raw"; err "the MOS release table arrived incomplete: try again"; return 1; }
+      tail -c 200 "$raw" | grep '</results>' >/dev/null|| { rm -f "$raw"; err "the MOS release table arrived incomplete: try again"; return 1; }
       tr -d '\n\r' <"$raw" | sed 's/<release /\n<release /g' | sed -nE 's/^<release id="([0-9]+)"[^>]*name="([^"]*)"><!\[CDATA\[([^]]*)\]\]>.*/\3|\2|\1/p' >"$cache.$$" && mv "$cache.$$" "$cache"; rm -f "$raw"
       [ -s "$cache" ] || { err "MOS returned an empty release table"; rm -f "$cache"; return 1; }
       MOS_REL="$cache"
@@ -1509,7 +1509,7 @@ mos_name_search() {
 mos_pick_file() {
   local bug="$1" xml
   xml="$("${MOS_CURL[@]}" "$MOS_BASE/Orion/Services/search?bug=$bug" | tr -d '\n\r')" || return 1
-  if printf '%s' "$xml" | grep -qi '<html'; then
+  if grep -qi <<<"$xml" '<html'; then
     err "MOS returned a web page instead of patch data for $bug - the token was not accepted"; return 1
   fi
   [ -n "$xml" ] || { err "No metadata returned for patch $bug"; return 1; }
@@ -1634,7 +1634,7 @@ cmd_download() {
 
   # add the OPatch kit when the installed OPatch is older than modern PSUs demand
   if [ "$WLS_FAMILY" = opatch ] && [ -n "$OPATCH_VERSION" ] && ! version_ge "$OPATCH_VERSION" "13.9.4.2.0" \
-     && ! printf ' %s ' "$ids" | grep -q " $OPATCH_KIT_BUG "; then
+     && ! printf ' %s ' "$ids" | grep " $OPATCH_KIT_BUG " >/dev/null; then
     log "OPatch $OPATCH_VERSION is old - adding the OPatch kit ($OPATCH_KIT_BUG) to the download list"
     ids="$OPATCH_KIT_BUG $ids"
   fi
@@ -1645,7 +1645,7 @@ cmd_download() {
   for id in $ids; do
     [[ "$id" =~ ^[0-9]{6,10}$ ]] || { warn "'$id' is not a patch number - skipped"; continue; }
     if ls "$pdir"/p"$id"_*.zip >/dev/null 2>&1; then log "$id already in $pdir - skip"; continue; fi
-    if [ "$id" != "$OPATCH_KIT_BUG" ] && printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;"; then log "$id already installed - skip"; continue; fi
+    if [ "$id" != "$OPATCH_KIT_BUG" ] && printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null; then log "$id already installed - skip"; continue; fi
     todo="${todo:+$todo }$id"
   done
   if [ -z "$todo" ]; then log "Nothing to download"; return 0; fi
@@ -1662,7 +1662,7 @@ cmd_download() {
     if ! "${MOS_CURL[@]}" -o "$pdir/$name.part" "$url"; then
       err "Download failed for $name"; rm -f "$pdir/$name.part"; fail=$((fail + 1)); continue
     fi
-    if head -c 300 "$pdir/$name.part" | grep -qi '<html'; then
+    if head -c 300 "$pdir/$name.part" | grep -i '<html' >/dev/null; then
       err "$name came back as a web page (login/entitlement problem), not a zip"; rm -f "$pdir/$name.part"; fail=$((fail + 1)); continue
     fi
     if [ -n "$sha" ] && command -v sha256sum >/dev/null; then
@@ -1704,7 +1704,7 @@ cmd_plan() {
     local id
     for id in $(printf '%s' "$PATCHES" | tr ',' ' '); do
       any=1
-      if printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;"; then echo "  Patch $id : already installed - skip"
+      if printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null; then echo "  Patch $id : already installed - skip"
       elif ls "${pdir:-/nonexistent}"/p"$id"_*.zip >/dev/null 2>&1; then echo "  Patch $id : in $pdir, will be applied"
       else echo "  Patch $id : will be downloaded from MOS, then applied"; fi
     done
@@ -1718,7 +1718,7 @@ cmd_plan() {
       if [ "$kind" = opatch-upgrade ]; then echo "  OPatch kit : present in $pdir - installed first"; continue; fi
       if [ "$kind" = spb ]; then echo "  SPB        : $path - applied with SPBAT (precheck then apply), not opatch apply"; continue; fi
       local st="will be applied" min
-      printf '%s\n' "$INSTALLED_PATCHES" | grep -q "^$id;" && st="already installed - skip"
+      printf '%s\n' "$INSTALLED_PATCHES" | grep "^$id;" >/dev/null&& st="already installed - skip"
       min="$(patch_min_opatch "$path" || true)"
       [ -n "$min" ] && [ -n "$OPATCH_VERSION" ] && ! version_ge "$OPATCH_VERSION" "$min" && st="$st (needs OPatch $min, have $OPATCH_VERSION)"
       printf '  Patch %s : %-60s %s\n' "$id" "$(patch_description "$path" | cut -c1-60)" "$st"
@@ -1813,7 +1813,7 @@ cmd_run() {
   if ! confirm "Preflight OK. Stop WebLogic, back up, and apply patches now?"; then return 1; fi
 
   # a Stack Patch Bundle's only complete rollback is the backup (its nrollback is cumulative), so it never runs without one
-  if [ "$NO_BACKUP" = 1 ] && prepare_patch_dir "$pdir" 2>/dev/null | grep -q '|spb$'; then
+  if [ "$NO_BACKUP" = 1 ] && prepare_patch_dir "$pdir" 2>/dev/null | grep '|spb$' >/dev/null; then
     err "--no-backup is refused for a Stack Patch Bundle: restoring the backup is its only complete rollback. Nothing was changed."
     return 1
   fi
