@@ -1066,6 +1066,10 @@ cmd_apply() {
   while IFS='|' read -r _ p kind; do [ "$kind" = spb ] && spb_path="$p"; done <<<"$list"
   if [ -n "$spb_path" ]; then
     log "Applying the Stack Patch Bundle with SPBAT: $spb_path"
+    # A run dir can be reused for a retry. Clear the previous attempt's
+    # comparison verdict before this one starts; state_set replaces by key.
+    state_set spb_inventory_unchanged 0
+    state_set spb_inventory_compared 0
     # record the inventory itself, not just a PSU version: whether the PSU level moves is a question about Oracle's
     # naming (an SPB is dated later than the PSU it carries, and the abstract wording varies), while 'lspatches is
     # byte-identical before and after' means the bundle put nothing in this home, whatever the strings look like
@@ -1084,14 +1088,24 @@ cmd_apply() {
     # SPBAT's exit status alone is weak: say straight away whether the inventory moved, and let verify fail on it
     local la="$RUN_DIR/lspatches.after" lrc2=0
     "$ORACLE_HOME/OPatch/opatch" lspatches >"$la" 2>/dev/null || lrc2=$?
-    if [ "$lrc" = 0 ] && [ "$lrc2" = 0 ] && cmp -s "$lb" "$la"; then
-      warn "SPBAT reported success but 'opatch lspatches' is unchanged (PSU ${PSU_LEVEL:-unknown}, bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
-      state_set spb_inventory_unchanged 1
-    elif [ "$lrc" = 0 ] && [ "$lrc2" = 0 ]; then
-      if [ "$before0" != none ] && [ -n "${PSU_LEVEL:-}" ]; then log "the bundle moved the PSU from $before0 to $PSU_LEVEL"
-      else log "the inventory changed (see $lb and $la)"; fi
-    else
+    if [ "$lrc" != 0 ] || [ "$lrc2" != 0 ]; then
       warn "could not read 'opatch lspatches' both before (rc $lrc) and after (rc $lrc2) - not comparing the inventory"
+      state_set spb_inventory_compared 0
+    else
+      local crc=0
+      cmp -s "$lb" "$la" || crc=$?
+      if [ "$crc" = 0 ]; then
+        warn "SPBAT reported success but 'opatch lspatches' is unchanged (PSU ${PSU_LEVEL:-unknown}, bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
+        state_set spb_inventory_unchanged 1
+        state_set spb_inventory_compared 1
+      elif [ "$crc" = 1 ]; then
+        if [ "$before0" != none ] && [ -n "${PSU_LEVEL:-}" ]; then log "the bundle moved the PSU from $before0 to $PSU_LEVEL"
+        else log "the inventory changed (see $lb and $la)"; fi
+        state_set spb_inventory_compared 1
+      else
+        warn "could not compare the inventories (cmp rc $crc) - no conclusion about this bundle; verify will fail"
+        state_set spb_inventory_compared 0
+      fi
     fi
     log "SPBAT apply finished (SPB $spb_path)"
     return 0
@@ -1154,9 +1168,15 @@ cmd_verify() {
     # itself, so it does not depend on how Oracle words the PSU abstract
     local rci=0
     "$ORACLE_HOME/OPatch/opatch" lspatches >/dev/null 2>&1 || rci=$?
+    local brc; brc="$(state_get lspatches_before_rc || true)"
     if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
+    elif [ -z "$brc" ] || [ "$brc" != 0 ]; then
+      err "opatch lspatches before the bundle was not readable (rc ${brc:-no record}) - cannot claim the inventory changed; verify fails"
+      ok=0
     elif [ "$(state_get spb_inventory_unchanged || true)" = 1 ]; then
       err "'opatch lspatches' is unchanged after the bundle: SPBAT reported success but the inventory does not show it. If it was already installed re-applying changes nothing; otherwise read the SPBAT log. Nothing was observed to change, so 'run' will not roll back automatically"; ok=0
+    elif [ "$(state_get spb_inventory_compared || true)" != 1 ]; then
+      err "no successful before/after inventory comparison was recorded - cannot claim the bundle changed the inventory; verify fails"; ok=0
     else
       log "the inventory changed with the bundle (PSU ${PSU_LEVEL:-unknown})"
     fi
