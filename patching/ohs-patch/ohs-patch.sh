@@ -510,8 +510,7 @@ cmd_preflight() {
   elif grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
     block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" (for patch [0-9]+ )?failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
   else
-    local saved; saved="$(keep_answer "checkapplicable-$id" "$app")"
-    unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: answer saved: $saved - first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
+    unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: answer saved: $(keep_answer "checkapplicable-$id" "$app") - first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
   fi
 
   # conflicts (read-only OPatch prereq)

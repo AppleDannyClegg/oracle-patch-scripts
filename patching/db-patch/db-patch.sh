@@ -217,7 +217,7 @@ cmd_preflight() {
     local out; out="$(opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
     if grep -qE <<<"$out" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed'; then log "  no conflicts"
     elif grep -qiE <<<"$out" 'conflict'; then err "  CONFLICT: $(printf '%s' "$out" | grep -iE 'conflict|superset|subset' | head -3 | tr '\n' ' ')"; fail=1
-    else local saved; saved="$(keep_answer "checkconflict-$id" "$out")"; warn "  prereq check gave no verdict (see log) - answer saved: $saved"; fi
+    else warn "  prereq check gave no verdict (see log) - answer saved: $(keep_answer "checkconflict-$id" "$out")"; fi
     # release match
     local prel; prel="$(grep -oE 'release="[0-9.]+"' "$p/etc/config/inventory.xml" 2>/dev/null | head -1 | cut -d'"' -f2)"; [ -n "$prel" ] && [ "${prel%.*}" != "${DB_VERSION%.*}" ] && { err "  patch is for release $prel, home is $DB_VERSION"; fail=1; }
   done
