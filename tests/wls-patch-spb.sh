@@ -204,7 +204,7 @@ L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
 grep -q 'ORACLE_HOME restored' "$L" && bad "recovery restored BACKUP_DIR/latest (an older backup), not this run's: $(tail -4 "$L")" || ok
 grep -q 'servers NOT started' "$L" && ok || bad "with no backup recorded for this run, the servers were not left stopped: $(tail -4 "$L")"
 
-# ---- a failed BEFORE inventory read must not let verify claim the inventory changed (Vesper #49791) ----
+# ---- a failed BEFORE inventory read must not let verify claim the inventory changed ----
 OH11="$T/oh-beforefail"; mk_home "$OH11" 13.9.4.2.23
 PD11="$T/patches-beforefail"; mk_spb "$PD11"; rm -f "$T/psu"; : >"$T/spbat.log"
 : >"$T/lsp_fail"
