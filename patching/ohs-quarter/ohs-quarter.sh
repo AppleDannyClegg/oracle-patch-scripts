@@ -74,7 +74,7 @@
 #                      for every folder above that is missing or empty; naming a folder that has content is refused
 #   --no-cacerts       do not carry CA aliases across (java-patch)
 #   --force            passed to java-patch and wls-patch, the two children that have a --force
-#   --yes --dry-run    as the children
+#   --yes --dry-run    as the children. A dry run's last line says DRY RUN, never OHS QUARTER OK: it applied nothing
 #   -h|--help
 #
 # Env: OHS_QUARTER_JAVA_PATCH / OHS_QUARTER_WLS_PATCH / OHS_QUARTER_DBCLIENT / OHS_QUARTER_OHS_PATCH override the
@@ -476,7 +476,12 @@ for entry in "${APPLY[@]}"; do
   esac
 done
 
-if [ -n "$LEFT_OUT" ]; then
+# The last line is the one an operator reads, and on a dry run it must not read like a finished outage: nothing was
+# stopped, applied or started, and no shared backup was written. "OK ... applied in one outage" over a run that
+# changed nothing is the same false success the partial-by-request rule (:36) keeps off a partial one.
+if [ "$DRY" = 1 ]; then
+  log "=== 7/7 DRY RUN: nothing was stopped, changed or started; would apply $APPLIED_N of ${#SETS[@]} sets in one outage ($what)${LEFT_OUT:+; left out (--skip): $LEFT_OUT}. No shared backup was written: a real run would put it under $SHARED"
+elif [ -n "$LEFT_OUT" ]; then
   log "=== 7/7 OHS QUARTER OK, PARTIAL BY REQUEST: $APPLIED_N of ${#SETS[@]} sets applied in one outage ($what). LEFT OUT (--skip): $LEFT_OUT. The shared backup is under $SHARED"
 else
   if [ "$OPERATOR_STOPS" = 1 ]; then

@@ -80,7 +80,9 @@ Naming a folder in `--skip` that has content is refused too.
    It logs to the terminal only, so keep the `tee`: step 8 reads that log.
    It runs every child's preflight first, then asks once for the whole outage (`--yes` skips the question; with
    no terminal and no `--yes` it refuses). Then: backup, stop, apply in the order above, start, verify.
-   The last line is `OHS QUARTER OK` (or `OHS QUARTER OK, PARTIAL BY REQUEST` with the `--skip` list).
+   The last line is `OHS QUARTER OK` (or `OHS QUARTER OK, PARTIAL BY REQUEST` with the `--skip` list). With
+   `--dry-run` the last line is `DRY RUN` instead: nothing was stopped, applied or started, and no shared
+   backup was written - so a dry run never ends on the line a finished outage ends on.
 8. **If it stopped with exit 1 or 3**, ask what to do next:
    ```bash
    patching/ohs-quarter/ohs-quarter-explain.sh ohs-quarter.log <run-dir>
@@ -160,7 +162,7 @@ rollback. Then it starts once.
 
 | Exit | Meaning |
 |---|---|
-| 0 | applied and verified (`OHS QUARTER OK`) |
+| 0 | applied and verified (`OHS QUARTER OK`). With `--dry-run` the same 0 but the last line is `DRY RUN`: nothing changed |
 | 1 | refused or failed. If it failed after the backup, the restore worked and the home is back where it was. If the outage's stop failed, nothing was patched and the components were started again |
 | 3 | **recovery did not finish**: a restore failed, or the stop before the restores did (then nothing is restored), or the start after them did. Also when the outage's stop failed and starting the components again failed too (nothing was patched, but a component is DOWN). The components are NOT started and the home may be part-patched: fix it by hand from the backups the run made (the shared one is `<run-dir>/backup`) |
 

@@ -347,10 +347,19 @@ grep -q 'Non-interactive and --yes not given' "$T/out" && ok || bad "the no---ye
 grep -qE '^(java|wls|dbclient|ohs) (stop|apply|start|backup)' "$T/calls.log" && bad "a changing call ran although it refused without --yes" || ok
 
 # ---- dry-run: every changing verb carries --dry-run -----------------------------------------------------------
+# and its last line must not read like a finished outage: nothing was applied, and the shared backup it names does
+# not exist. An operator reads the last line - "OHS QUARTER OK ... applied in one outage" over a dry run is the
+# false success this file already keeps off a partial one (:142)
 : >"$T/calls.log"; rm -rf "$T/run" "$T/bk" "$T/wlsbk"
 bash "$SCRIPT" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run >"$T/out" 2>&1 && ok || bad "dry-run failed: $(tail -3 "$T/out")"
 miss="$(grep -E '^(java|wls|dbclient|ohs) (stop|apply|start|backup|rollback|restore)' "$T/calls.log" | grep -v -- '--dry-run')"
 [ -z "$miss" ] && ok || bad "a changing call ran without --dry-run: $miss"
+tail -1 "$T/out" | grep -q '7/7 DRY RUN' && ok || bad "a dry run's last line is not DRY RUN: $(tail -1 "$T/out")"
+tail -1 "$T/out" | grep -q 'applied' && bad "a dry run's last line says applied: $(tail -1 "$T/out")" || ok
+tail -1 "$T/out" | grep -q 'OHS QUARTER OK' && bad "a dry run's last line says OHS QUARTER OK: $(tail -1 "$T/out")" || ok
+[ ! -s "$T/run/backup/home.tgz" ] && ok || bad "a dry run wrote a shared backup"
+# the real run's last line is still the OK one: the dry line is a branch, not a replacement (the happy path above
+# asserts the 16-set OK line, so this is the one that could quietly have stopped being reachable)
 
 # ---- the options the composer hands each child are options that child really has -----------------------------
 # The stubs accept anything, so a flag the real child rejects ("unknown option") sails through every test above:
