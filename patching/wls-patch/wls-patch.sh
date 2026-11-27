@@ -1154,7 +1154,11 @@ cmd_verify() {
     # itself, so it does not depend on how Oracle words the PSU abstract
     local rci=0
     "$ORACLE_HOME/OPatch/opatch" lspatches >/dev/null 2>&1 || rci=$?
+    local brc; brc="$(state_get lspatches_before_rc || true)"
     if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
+    elif [ -z "$brc" ] || [ "$brc" != 0 ]; then
+      err "opatch lspatches before the bundle was not readable (rc ${brc:-no record}) - cannot claim the inventory changed; verify fails"
+      ok=0
     elif [ "$(state_get spb_inventory_unchanged || true)" = 1 ]; then
       err "'opatch lspatches' is unchanged after the bundle: SPBAT reported success but the inventory does not show it. If it was already installed re-applying changes nothing; otherwise read the SPBAT log. Nothing was observed to change, so 'run' will not roll back automatically"; ok=0
     else

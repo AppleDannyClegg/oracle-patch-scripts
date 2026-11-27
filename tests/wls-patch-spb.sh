@@ -204,5 +204,17 @@ L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
 grep -q 'ORACLE_HOME restored' "$L" && bad "recovery restored BACKUP_DIR/latest (an older backup), not this run's: $(tail -4 "$L")" || ok
 grep -q 'servers NOT started' "$L" && ok || bad "with no backup recorded for this run, the servers were not left stopped: $(tail -4 "$L")"
 
+# ---- a failed BEFORE inventory read must not let verify claim the inventory changed (Vesper #49791) ----
+OH11="$T/oh-beforefail"; mk_home "$OH11" 13.9.4.2.23
+PD11="$T/patches-beforefail"; mk_spb "$PD11"; rm -f "$T/psu"; : >"$T/spbat.log"
+: >"$T/lsp_fail"
+rc="$(run "$OH11" apply "$PD11" --oracle-home "$OH11" --java-home "$T/jdk" --yes)"
+rm -f "$T/lsp_fail"
+rc="$(run "$OH11" verify --oracle-home "$OH11" --java-home "$T/jdk")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+[ "$rc" != 0 ] && ok || bad "verify passed although the BEFORE inventory read failed: $(tail -3 "$L")"
+grep -qi 'before' "$L" && ok || bad "verify did not name the failed before-read: $(tail -3 "$L")"
+! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on an unreadable baseline: $(tail -3 "$L")"
+
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
