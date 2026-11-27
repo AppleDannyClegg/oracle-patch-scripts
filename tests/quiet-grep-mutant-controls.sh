@@ -46,6 +46,11 @@ CLONE="$WORK/clone"
 if ! git clone -q --no-hardlinks "$REPO" "$CLONE" 2>/dev/null; then
   echo "FAIL  cannot clone $REPO - the controls need a scratch clone" >&2; exit 1
 fi
+# THE MUTANTS ARE COMMITS, SO THE CLONE NEEDS AN IDENTITY. A fresh clone has no user.email, git refuses the
+# commit, and every fixture then compares the unmutated head with itself: rc 0, count 0, reported as a MISS on
+# the gate rather than as the harness fault it is. Local to the scratch clone, never global.
+git -C "$CLONE" config user.email "mutant-controls@example.invalid"
+git -C "$CLONE" config user.name  "mutant controls"
 for r in "$BASE_REF" "$HEAD_REF"; do
   git -C "$CLONE" rev-parse --verify -q "$r^{commit}" >/dev/null || {
     echo "FAIL  $r is not in the clone" >&2; exit 1; }
@@ -126,7 +131,14 @@ fixture() { # $1 name, $2 line, $3 wanted rc, $4 wanted count
   git -C "$CLONE" checkout -q --detach "$HEAD_SHA"
   git -C "$CLONE" checkout -q -B "fixture-$name" "$HEAD_SHA"
   printf '%s\n' "$line" >> "$CLONE/patching/wls-patch/wls-patch.sh"
-  git -C "$CLONE" commit -qam "fixture: $name"
+  if ! git -C "$CLONE" commit -qam "fixture: $name" 2>"$WORK/commit.err"; then
+    miss "fixture $name: the mutant could not be committed, so nothing was mutated: $(head -1 "$WORK/commit.err")"
+    return
+  fi
+  if [ "$(git -C "$CLONE" rev-parse HEAD)" = "$HEAD_SHA" ]; then
+    miss "fixture $name: the commit left HEAD at $HEAD_SHA - the gate would compare the head with itself"
+    return
+  fi
   same_tree "$HEAD_SHA"
   rc="$(run_default)"
   count="$(grep -oE '[0-9]+ pipeline grep -q command\(s\) left in the head' "$WORK/default.out" | head -1 | grep -oE '^[0-9]+')"
