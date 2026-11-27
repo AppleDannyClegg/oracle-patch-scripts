@@ -266,7 +266,7 @@ do_cmd_p() { local u; u="$(umask)"; umask 077; do_cmd "$@"; local r=$?; umask "$
 why_failed() {
   local d="$1" c="$2" tailtxt; tailtxt="$(tail -3 "$RUN_DIR/run.log" 2>/dev/null)"
   [ -n "$tailtxt" ] && printf '%s\n' "$tailtxt" | sed 's/^/    /' >&2
-  if printf '%s' "$tailtxt" | grep -qiE 'password|user ?name|credential'; then
+  if grep -qiE <<<"$tailtxt" 'password|user ?name|credential'; then
     err "  it asked for the node manager credentials: none are stored for this user ($(id -un 2>/dev/null), HOME $HOME), or they are stale. With the node manager up, as this user, run once: $d/bin/startComponent.sh ${c:-<component>} storeUserConfig"
   fi
 }
@@ -433,7 +433,7 @@ scope_of() {
   if grep -q 'name="Oracle HTTP Server (Standalone)"' "$reg"; then echo standalone; return; fi
   if grep -q 'name="Oracle HTTP Server (Collocated)"' "$reg"; then echo collocated; return; fi
   names="$(reg_names "$1")"
-  printf '%s\n' "$names" | grep -qx 'Oracle HTTP Server' || { echo embedded; return; }
+  printf '%s\n' "$names" | grep -x 'Oracle HTTP Server' >/dev/null|| { echo embedded; return; }
   while IFS= read -r n; do
     case "$n" in
       ''|'Oracle HTTP Server'|OPatch) ;;
@@ -552,7 +552,7 @@ failed_copies() {
   for p in "$@"; do
     for c in "$p".failed-*; do
       [ -e "$c" ] || [ -L "$c" ] || continue
-      printf '%s\n' "${c#"$p"}" | grep -qE '^\.failed-[0-9]{8}-?[0-9]{4,6}$' && printf '%s\n' "$c"
+      printf '%s\n' "${c#"$p"}" | grep -E '^\.failed-[0-9]{8}-?[0-9]{4,6}$' >/dev/null&& printf '%s\n' "$c"
     done
   done
   return 0
@@ -633,7 +633,7 @@ cmd_preflight() {
   if [ -z "$ZIP" ]; then block "no p34761383_*.zip in $dir"
   else
     local lst; if lst="$(unzip -l "$ZIP" 2>/dev/null)"; then
-      printf '%s' "$lst" | grep -qE '(^|[ /])fmw_12\.2\.1\.19\.0_dbclient_linux64\.bin$' && printf '%s' "$lst" | grep -qE '(^|[ /])changePerm\.sh$' \
+      grep -qE <<<"$lst" '(^|[ /])fmw_12\.2\.1\.19\.0_dbclient_linux64\.bin$' && grep -qE <<<"$lst" '(^|[ /])changePerm\.sh$' \
         && log "installer : $ZIP (fmw_12.2.1.19.0_dbclient_linux64.bin, changePerm.sh)" \
         || block "$ZIP does not hold fmw_12.2.1.19.0_dbclient_linux64.bin and changePerm.sh"
     else block "$ZIP cannot be read by unzip -l"; fi
@@ -687,7 +687,7 @@ run_gate() {
 
 no_weblogic() {
   local procs; procs="$(from_home "$OH")" || { err "cannot read the process list - refused"; exit 2; }
-  if printf '%s\n' "$procs" | grep -q 'weblogic\.Server'; then
+  if printf '%s\n' "$procs" | grep 'weblogic\.Server' >/dev/null; then
     err "$1 refused: WebLogic servers run from $OH - stop them first (wls-patch.sh stop); this script stops only OHS and node manager. Nothing was changed."
     exit 1
   fi
