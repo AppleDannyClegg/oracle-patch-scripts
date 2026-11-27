@@ -43,6 +43,11 @@ f="$(grep -oE '/[^ ]*\.txt' "$T/stdout" | head -1)"
 [ -n "$f" ] && [ -f "$f" ] || bad "no single .txt path printed on stdout"
 [ -f "$f" ] || { echo "gate: $pass ok, $fail FAIL (no file)"; exit 1; }
 
+# the usage region: usage() is sed -n '2,/^$/p', so a blank line above an option hides it
+h="$("$Q" --help 2>&1)"
+printf '%s\n' "$h" | grep -qF 'collect <run-dir>' && ok || bad "--help does not mention collect <run-dir>"
+printf '%s\n' "$h" | grep -qF 'Env:' && ok || bad "--help lost the Env: paragraph (usage() stops at the first blank line)"
+printf '%s\n' "$h" | grep -qF -- '-h|--help' && ok || bad "--help lost -h|--help"
 head -6 "$f" | grep -qiE 'could not|cannot|unreadable' && ok || bad "top of file does not say which sections failed"
 insection 'installer prerequisites' "$f" 'Prereq failed'      && ok || bad "P1: the installer's Prereq line is missing (it is in backup/run.log)"
 insection 'home and its set-aside'  "$f" '\.failed-20261127-112913' && ok || bad "P1: the .failed-<stamp> set-aside copy is missing"

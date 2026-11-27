@@ -75,7 +75,10 @@
 #   --no-cacerts       do not carry CA aliases across (java-patch)
 #   --force            passed to java-patch and wls-patch, the two children that have a --force
 #   --yes --dry-run    as the children. A dry run's last line says DRY RUN, never OHS QUARTER OK: it applied nothing
-
+#   -h|--help
+#
+# Env: OHS_QUARTER_JAVA_PATCH / OHS_QUARTER_WLS_PATCH / OHS_QUARTER_DBCLIENT / OHS_QUARTER_OHS_PATCH override the
+#      child script paths (used by the gate). RUN_BASE overrides the parent of the default run dir.
 #
 # collect <run-dir>
 #   ONE read-only file for the OHS contact, from a run folder: state files, the quarter log tail,
@@ -85,10 +88,6 @@
 #   <run-dir>-support.txt beside the run folder and prints that path. It only reads: nothing is
 #   started, stopped or changed, and a wallet's CONTENTS are never printed, names only. It works
 #   after a failed run, and its top says which sections it could not read.
-#   -h|--help
-#
-# Env: OHS_QUARTER_JAVA_PATCH / OHS_QUARTER_WLS_PATCH / OHS_QUARTER_DBCLIENT / OHS_QUARTER_OHS_PATCH override the
-#      child script paths (used by the gate). RUN_BASE overrides the parent of the default run dir.
 
 set -uo pipefail
 # >>> output-location (the same block in lib/oracle-lib.sh and every script that does not source it; tests/output-dir.sh compares them)
@@ -148,7 +147,7 @@ strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; 
 # It reads only. Nothing is started, stopped or changed, and no wallet's CONTENTS are printed.
 # ---------------------------------------------------------------------------------------------------
 collect_main() {
-  local rd="${1:-}" cl="${2:-}"
+  local rd="${1:-}" cl="${2:-}" lg cf il jh ilok found hits doms
   [ -n "$rd" ] || die "collect needs a run folder: ohs-quarter.sh collect <run-dir>"
   [ -d "$rd" ] || die "collect: not a folder: $rd"
   rd="$(strip_dir "$rd")"
@@ -156,6 +155,7 @@ collect_main() {
   local out body missing=()
   out="$(dirname "$rd")/$(basename "$rd")-support.txt"
   body="$(mktemp)" || die "collect: cannot make a scratch file"
+  local TMPCFG; TMPCFG="$(mktemp)" || die "collect: cannot make a scratch file"
   # shellcheck disable=SC2064
   trap "rm -f '$body'" RETURN 2>/dev/null || true
 
@@ -231,12 +231,16 @@ collect_main() {
 
   { hdr "listeners and Listen lines"
     hits=0
+    doms=""
+    [ -n "$oh" ] && [ -r "$oh/domain-registry.xml" ] && doms="$(sed -n 's/.*<domain location="\([^"]*\)".*/\1/p' "$oh/domain-registry.xml" 2>/dev/null)"
+    { if [ -n "$doms" ]; then for dm in $doms; do find "$dm" -maxdepth 8 -path '*/OHS/instances/*' \( -name httpd.conf -o -name ssl.conf \) 2>/dev/null; done
+      else find "$rd" "$(dirname "$(dirname "${oh:-/nonexistent}")")" -maxdepth 12 -path '*/OHS/instances/*' \( -name httpd.conf -o -name ssl.conf \) 2>/dev/null; fi; } >"$TMPCFG" 2>/dev/null
     while IFS= read -r cf; do
       [ -n "$cf" ] || continue
       if grep -qiE '^[[:space:]]*Listen[[:space:]]' "$cf" 2>/dev/null; then
         printf -- '-- %s\n' "$cf"; grep -hiE '^[[:space:]]*Listen[[:space:]]' "$cf"; hits=1
       fi
-    done < <(find "$rd" "$(dirname "$(dirname "${oh:-/nonexistent}")")" -maxdepth 12 -path '*/OHS/instances/*' \( -name httpd.conf -o -name ssl.conf \) 2>/dev/null | sort)
+    done <"$TMPCFG"
     [ "$hits" = 1 ] || { echo "(no OHS instance httpd.conf/ssl.conf under the run folder or the home's parent)"; missing+=("Listen lines"); }
     if command -v ss >/dev/null 2>&1; then ss -lnt 2>&1 | head -30; elif command -v netstat >/dev/null 2>&1; then netstat -lnt 2>&1 | head -30; else echo "(neither ss nor netstat is on this host)"; missing+=("listeners"); fi
   } >>"$body" 2>&1
@@ -257,7 +261,7 @@ collect_main() {
     cat "$body"
   } >"$out" || { rm -f "$body"; die "collect: cannot write $out"; }
 
-  rm -f "$body"
+  rm -f "$body" "$TMPCFG"
   printf '%s\n' "$out"
   return 0
 }
