@@ -242,7 +242,7 @@ L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
 ! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on a comparison that never happened: $(tail -3 "$L")"
 grep -qi 'comparison\|compare' "$L" && ok || bad "verify did not name the missing comparison: $(tail -3 "$L")"
 
-# ---- a cmp ERROR is not an inventory change (Vesper's second read) ----
+# ---- a cmp ERROR is not an inventory change ----
 OH13="$T/oh-cmperr"; mk_home "$OH13" 13.9.4.2.23
 PD13="$T/patches-cmperr"; mk_spb "$PD13"; rm -f "$T/psu"; : >"$T/spbat.log"; rm -f "$T/lsp_fail" "$T/afterfail-now"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 0\n' "$T" >"$PD13/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
