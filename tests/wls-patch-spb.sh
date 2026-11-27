@@ -341,5 +341,34 @@ L="$T/run-afterchanged/wls-patch.log"
 [ "$rc" = 0 ] && grep -q 'VERIFY PASSED' "$L" && ok || bad "one failed after-read rolled back a changed bundle: rc $rc: $(tail -3 "$L")"
 grep -q 'fresh read against the before snapshot' "$L" && ok || bad "verify did not say it re-compared the fresh read: $(tail -3 "$L")"
 
+# ---- a failed retry in a reused run dir must not inherit an after-read flag ----
+OH19="$T/oh-retry-flag"; mk_home "$OH19" 13.9.4.2.23
+PD19="$T/patches-retry-flag"; mk_spb "$PD19"; rm -f "$T/psu" "$T/lsp_fail" "$T/afterfail-now"; : >"$T/spbat.log"
+cat >"$PD19/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+[ -f "$T/spb-fail" ] && exit 17
+: >"$T/afterfail-now"
+exit 0
+EOF
+chmod +x "$PD19/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$OH19/OPatch/opatch" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "OPatch Version: 13.9.4.2.23"; exit 0 ;;
+  lspatches) [ -f "$T/afterfail-now" ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$OH19/OPatch/opatch"
+rc="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+rm -f "$T/afterfail-now"; : >"$T/spb-fail"
+rc="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+rm -f "$T/spb-fail"
+rc="$(run "$OH19" verify --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag")"
+L="$T/run-retry-flag/wls-patch.log"
+[ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed retry inherited the earlier after-read flag: rc $rc: $(tail -3 "$L")"
+
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1066,6 +1066,13 @@ cmd_apply() {
   while IFS='|' read -r _ p kind; do [ "$kind" = spb ] && spb_path="$p"; done <<<"$list"
   if [ -n "$spb_path" ]; then
     log "Applying the Stack Patch Bundle with SPBAT: $spb_path"
+    # A reused run dir can retry. Reset the previous attempt's verdicts before
+    # SPBAT runs: a failed apply returns before the comparison block below.
+    if [ "$DRY_RUN" != 1 ]; then
+      state_set spb_inventory_unchanged 0
+      state_set spb_inventory_compared 0
+      state_set spb_after_read_failed 0
+    fi
     # record the inventory itself, not just a PSU version: whether the PSU level moves is a question about Oracle's
     # naming (an SPB is dated later than the PSU it carries, and the abstract wording varies), while 'lspatches is
     # byte-identical before and after' means the bundle put nothing in this home, whatever the strings look like
@@ -1074,8 +1081,6 @@ cmd_apply() {
       # A reused run dir can retry a real SPB. Clear the previous verdict only
       # for a REAL attempt: a dry run changes nothing and must not invalidate
       # the comparison the last real apply recorded.
-      state_set spb_inventory_unchanged 0
-      state_set spb_inventory_compared 0
       state_set psu_before "$before0"
       "$ORACLE_HOME/OPatch/opatch" lspatches >"$lb" 2>/dev/null || lrc=$?
       state_set lspatches_before_rc "$lrc"; }
