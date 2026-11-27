@@ -85,7 +85,7 @@ build; printf 'ID="ubuntu"\nVERSION_ID="22.04"\n' >"$T/os-release"; rc="$(pre)"
 build; printf 'Red Hat Enterprise Linux Server release 7.9 (Maipo)\n' >"$T/os-release"; rc="$(pre)"
 [ "$rc" = 0 ] && ok || bad "a redhat-release file with 7.9: rc $rc: $(grep -E 'OS|BLOCK|UNKNOWN' "$T/out" | head -2)"
 # OL 9 passes the OS rule (9 > 7.4) and then the installer stops on its own package check: the OUI "Check:Packages"
-# asks for redhat-lsb, which Oracle Linux 9 does not ship (patching/ohs-quarter/README.md:122), so the install aborts
+# asks for redhat-lsb, which Oracle Linux 9 does not ship (patching/ohs-quarter/README.md:121), so the install aborts
 # unless --ignore-sys-prereqs is passed, and only then if that check is the only failed prereq (:124-125). Preflight
 # must SAY that, condition and all - an OS line that reads "ok" over a check the OS cannot pass is the surprise here.
 build; printf 'ID="ol"\nVERSION_ID="9.4"\nPRETTY_NAME="Oracle Linux Server 9.4"\n' >"$T/os-release"; rc="$(pre)"
@@ -93,7 +93,13 @@ build; printf 'ID="ol"\nVERSION_ID="9.4"\nPRETTY_NAME="Oracle Linux Server 9.4"\
 # output in run.log first, use the option only when that check is the only failed prereq) - a warning that steers
 # at the switch alone would be telling an operator to skip a check blind
 named=1; for p in libaio-devel-0.3.110 redhat-lsb-4.1 redhat-lsb-core-4.1 libXtst-devel-1.2.3; do grep -q -- "$p" "$T/out" || { named=0; echo "        (warning does not name $p)"; }; done
-[ "$rc" = 0 ] && [ "$named" = 1 ] && grep -q 'install it first' "$T/out" && grep -q 'run.log' "$T/out" && grep -q 'only failed prereq' "$T/out" && ok \
+# the dated claim sits on the run it belongs to, and the two false statements are pinned OUT: a line claiming the 16 Nov
+# run failed on all four, or that libaio-devel is the only one Oracle ships, must fail here.
+[ "$rc" = 0 ] && [ "$named" = 1 ] && grep -q '27 Nov 2026 OL 9.6' "$T/out" && ok || bad "OL 9.4: the warning does not attribute the four to the right run: $(grep -E 'WARN' "$T/out" | head -2)"
+grep -qF 'the 16 Nov 2026 OL 9.4 run failed on all four' "$T/out" && bad "the warning pins all four on the 16 Nov run, which named three" || ok
+grep -qF 'the one Oracle ships a build for OL 9' "$T/out" && bad "the warning says one package is Oracle-shipped; two are (libaio-devel and libXtst-devel)" || ok
+grep -qF 'install libaio-devel and libXtst-devel first' "$T/out" && ok || bad "the advice does not name both Oracle-shipped packages"
+[ "$rc" = 0 ] && [ "$named" = 1 ] && grep -q 'run.log' "$T/out" && grep -q 'only failed prereq' "$T/out" && ok \
   || bad "OL 9.4: preflight did not warn with all four packages and the README's condition: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3)"
 # and the warning is version-bounded: OL 8 has these packages, so a warning there would be noise, not a warning
 build; printf 'ID="ol"\nVERSION_ID="8.9"\nPRETTY_NAME="Oracle Linux Server 8.9"\n' >"$T/os-release"; rc="$(pre)"
