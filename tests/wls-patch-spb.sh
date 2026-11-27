@@ -127,8 +127,8 @@ OH3="$T/oh-fail"; mk_home "$OH3" 13.9.4.2.23
 PD4="$T/patches-fail"; mk_spb "$PD4"
 cat >"$PD4/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<S
 #!/bin/sh
-echo 'SPBAT tool-line-1: checking the bundle'
-echo 'SPBAT tool-line-2: rejecting the bundle'
+printf '%s\n' 'SPBAT tool-line-1: checking the bundle'
+printf '%s\n' 'SPBAT tool-line-2: rejecting the bundle'
 exit 17
 S
 chmod +x "$PD4/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
