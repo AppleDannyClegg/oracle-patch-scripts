@@ -204,5 +204,32 @@ L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
 grep -q 'ORACLE_HOME restored' "$L" && bad "recovery restored BACKUP_DIR/latest (an older backup), not this run's: $(tail -4 "$L")" || ok
 grep -q 'servers NOT started' "$L" && ok || bad "with no backup recorded for this run, the servers were not left stopped: $(tail -4 "$L")"
 
+# ---- a failed immediate after-read must not become a successful comparison later ----
+OH12="$T/oh-afterfail"; mk_home "$OH12" 13.9.4.2.23
+PD12="$T/patches-afterfail"; mk_spb "$PD12"; rm -f "$T/psu"; : >"$T/spbat.log"
+# SPBAT reports success without moving the inventory; opatch fails ONLY the second
+# lspatches call (apply's immediate after-read), then normal reads are restored.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 0\n' "$T" >"$PD12/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$OH12/OPatch/opatch" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "OPatch Version: 13.9.4.2.23"; exit 0 ;;
+  lspatches)
+    n=\$(cat "$T/lsp-calls" 2>/dev/null || echo 0); n=\$((n + 1)); echo \$n >"$T/lsp-calls"
+    [ \$n = 2 ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE 12.2.1.4.260514"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$OH12/OPatch/opatch"
+rm -f "$T/lsp-calls"
+rc="$(run "$OH12" apply "$PD12" --oracle-home "$OH12" --java-home "$T/jdk" --yes)"
+cp "$OH/OPatch/opatch" "$OH12/OPatch/opatch"   # fresh reads work again
+rc="$(run "$OH12" verify --oracle-home "$OH12" --java-home "$T/jdk")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+[ "$rc" != 0 ] && ok || bad "verify passed after apply could not compare the inventory: $(tail -3 "$L")"
+! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on a comparison that never happened: $(tail -3 "$L")"
+grep -qi 'comparison\|compare' "$L" && ok || bad "verify did not name the missing comparison: $(tail -3 "$L")"
+
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

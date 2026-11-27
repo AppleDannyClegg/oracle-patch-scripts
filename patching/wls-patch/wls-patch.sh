@@ -1087,11 +1087,14 @@ cmd_apply() {
     if [ "$lrc" = 0 ] && [ "$lrc2" = 0 ] && cmp -s "$lb" "$la"; then
       warn "SPBAT reported success but 'opatch lspatches' is unchanged (PSU ${PSU_LEVEL:-unknown}, bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
       state_set spb_inventory_unchanged 1
+      state_set spb_inventory_compared 1
     elif [ "$lrc" = 0 ] && [ "$lrc2" = 0 ]; then
       if [ "$before0" != none ] && [ -n "${PSU_LEVEL:-}" ]; then log "the bundle moved the PSU from $before0 to $PSU_LEVEL"
       else log "the inventory changed (see $lb and $la)"; fi
+      state_set spb_inventory_compared 1
     else
       warn "could not read 'opatch lspatches' both before (rc $lrc) and after (rc $lrc2) - not comparing the inventory"
+      state_set spb_inventory_compared 0
     fi
     log "SPBAT apply finished (SPB $spb_path)"
     return 0
@@ -1157,6 +1160,8 @@ cmd_verify() {
     if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
     elif [ "$(state_get spb_inventory_unchanged || true)" = 1 ]; then
       err "'opatch lspatches' is unchanged after the bundle: SPBAT reported success but the inventory does not show it. If it was already installed re-applying changes nothing; otherwise read the SPBAT log. Nothing was observed to change, so 'run' will not roll back automatically"; ok=0
+    elif [ "$(state_get spb_inventory_compared || true)" != 1 ]; then
+      err "no successful before/after inventory comparison was recorded - cannot claim the bundle changed the inventory; verify fails"; ok=0
     else
       log "the inventory changed with the bundle (PSU ${PSU_LEVEL:-unknown})"
     fi
