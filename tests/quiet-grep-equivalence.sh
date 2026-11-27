@@ -399,20 +399,24 @@ echo "== unconverted pipeline grep -q commands (the converted class) =="
 echo "   base $BASE_REF: $base_left"
 echo "   head $HEAD_REF: $head_left"
 if [ "$base_left" = 0 ]; then
-  if git -C "$REPO" diff --quiet "$BASE_REF" "$HEAD_REF" 2>/dev/null; then
-    # THE REFS ARE THE SAME TREE. That is the after-merge state, and it is how run-all
-    # invokes this file: with no arguments the base is origin/main and the head is the
-    # checkout, so once the change is merged there is no differential to run. Failing here
-    # would fail the suite for a merge that worked. What still has a meaning is the
-    # invariant the conversion exists to keep - the head must have no pipeline grep -q.
-    if [ "$head_left" = 0 ]; then
-      ok "$BASE_REF and $HEAD_REF are the same tree (the conversion is already there): nothing to compare, and $head_left pipeline grep -q left in the head"
-    else
-      bad "$head_left pipeline grep -q command(s) left in the head - not converted:"
-      unconverted "$HEAD_REF"
-    fi
+  # THE BASE HOLDS NONE OF THE CONVERTED CLASS. Two states look like this, and neither is a
+  # reason to fail a tree, so the deciding question is about the HEAD, which is the half this
+  # gate can still assert without a differential:
+  #   - the refs are the same tree: the after-merge state, which is how run-all invokes this
+  #     file - with no arguments the base is the merge ref and the head is the checkout;
+  #   - the refs differ by an ordinary successor commit that touches nothing of this class,
+  #     which is every commit made after this branch merges.
+  # In both, the invariant the conversion exists to keep is that the head has no pipeline
+  # grep -q left. That can fail, so it is a check and not a formality. A wrong base shows up
+  # as a missing comparison, and the mutant controls are what measure whether the comparison
+  # works, so a run with nothing to compare says exactly that instead of deciding red.
+  if [ "$head_left" != 0 ]; then
+    bad "$head_left pipeline grep -q command(s) left in the head - not converted:"
+    unconverted "$HEAD_REF"
+  elif git -C "$REPO" diff --quiet "$BASE_REF" "$HEAD_REF" 2>/dev/null; then
+    ok "$BASE_REF and $HEAD_REF are the same tree (the conversion is already there): nothing to compare, and $head_left pipeline grep -q left in the head"
   else
-    bad "the base has none of this class, so this gate compares nothing - wrong refs?"
+    ok "$BASE_REF holds none of the converted class and the head has none left: nothing to compare here, and the static half of this gate - 0 pipeline grep -q left in the head - is what ran"
   fi
 elif [ "$head_left" = 0 ]; then
   ok "every pipeline grep -q in the base is converted in the head"

@@ -19,14 +19,18 @@
 # is nothing to compare) and must still fail when the head holds an unconverted pipeline.
 #
 # Usage: tests/quiet-grep-mutant-controls.sh [--base REF] [--head REF] [--quiet]
-#   --base defaults to origin/main, --head to HEAD.
+#   --base defaults to the pre-conversion baseline, --head to HEAD.
 #   exit 0 - the unmutated head was clean, both same-tree cases behaved, every mutant caught
 #   exit 1 - any of those did not
 #   exit 2 - bad usage, or the git refs could not be read
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-BASE_REF="origin/main"; HEAD_REF="HEAD"; QUIET=0
+# THE BASELINE IS PINNED to the last tree before the conversion, and not origin/main. Once
+# this branch is merged origin/main IS the converted form, so a mutant would be compared with
+# a converted site instead of with the command the conversion replaced - the same fault as an
+# empty fixture, one level up. The baseline only has to resolve in a full clone.
+BASE_REF="eddc6d6"; HEAD_REF="HEAD"; QUIET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_REF="$2"; shift 2;;
