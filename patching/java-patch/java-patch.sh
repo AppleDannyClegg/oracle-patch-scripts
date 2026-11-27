@@ -547,6 +547,11 @@ cmd_rollback() {
   # before discover, which needs $OLD_JH/bin/java to exist.
   local injd; injd="$(state_get old_jdk || true)"
   [ -n "${OLD_JH:-}" ] || OLD_JH="$(state_get old_jh || true)"   # a bare 'rollback --run-dir R' has no --java-home
+  # Older state files saved paths raw. A trailing slash made the aside path a
+  # child of the home being moved, and mv refused "subdirectory of itself".
+  # old_real is the canonical readlink target, NOT the saved home as written:
+  # a symlinked Java home legitimately has different values for the two.
+  [ -n "${OLD_JH:-}" ] && OLD_JH="$(strip_dir "$OLD_JH")"
   if [ -n "$injd" ] && [ -d "$injd" ] && [ -n "${OLD_JH:-}" ] && [ ! -e "$OLD_JH" ]; then
     # the same hazard apply refuses: moving the old build back under a JVM that runs on it
     local rin
