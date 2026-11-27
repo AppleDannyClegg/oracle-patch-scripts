@@ -6,5 +6,5 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(bash "$REPO/tests/ohs-patch-container.sh" 2>&1)"
 printf '%s\n' "$out" | grep -E '^--- (normal|hidden):|container gate:'
 summary="$(printf '%s\n' "$out" | grep -E '^--- hidden: ohs-patch gate:' | tail -1)"
-printf '%s\n' "$summary" | grep -qE '[0-9]+ passed, 0 failed' || { echo "FAIL: hidden pass did not run the ancestor walk green"; exit 1; }
-echo "OK: hidden pass ran the ancestor walk green"
+printf '%s\n' "$summary" | grep -qE '[0-9]+ passed, 0 failed' || { printf '%s\n' "FAIL: hidden pass did not run the ancestor walk green"; exit 1; }
+printf '%s\n' "OK: hidden pass ran the ancestor walk green"
