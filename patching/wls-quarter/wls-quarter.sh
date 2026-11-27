@@ -256,7 +256,7 @@ if [ "$DRY" = 0 ]; then
   were="$(sed -n 's/^servers_were_running=//p' "$WLS_RUN/state" 2>/dev/null | tail -1)"
   if [ -n "$were" ] && [ -z "${were//[[:space:]]/}" ]; then
     nothing_was_running=1
-    log "start: nothing was running before the outage, so nothing was started; host is patched and left down"
+    log "start: nothing was running before the outage, so nothing was started; the host is left down"
   fi
 fi
 
