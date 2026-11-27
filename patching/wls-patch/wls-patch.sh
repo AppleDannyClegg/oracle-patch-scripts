@@ -1097,24 +1097,23 @@ cmd_apply() {
       "$ORACLE_HOME/OPatch/opatch" lspatches >"$lb" 2>/dev/null || lrc=$?
       state_set lspatches_before_rc "$lrc"; }
     [ "$DRY_RUN" = 1 ] || state_set spb_pending "$spb_path"
-    local spb_out="$RUN_DIR/spbat.apply.out" spb_rc=0 spb_tmp=0
+    local spb_out="$RUN_DIR/spbat.apply.out" spb_rc=0
+    # A dry run only needs run_cmd's existing trace: capture nothing, so it cannot
+    # overwrite a real transcript or fail to clean up a temporary file.
     if [ "$DRY_RUN" = 1 ]; then
-      # A dry run reusing this run dir must not overwrite the real attempt's transcript.
-      spb_out="$(mktemp "${TMPDIR:-/tmp}/spbat-dry.XXXXXX")" || spb_out=/dev/null
-      spb_tmp=1
+      ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" )
+      spb_rc=$?
     else
       : >"$spb_out"
+      # tee keeps the tool's live stream for the caller and captures the redacted copy for the heading.
+      ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) | tee -a "$spb_out"
+      spb_rc=${PIPESTATUS[0]}
     fi
-    # tee keeps the tool's live stream for the caller and captures the redacted copy for the heading.
-    ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) | tee -a "$spb_out"
-    spb_rc=${PIPESTATUS[0]}
     if [ "$spb_rc" != 0 ]; then
       [ "$DRY_RUN" = 1 ] || bundle_result "$spb_rc" "$spb_out" "$lrc" "not read" "not compared"
-      [ "$spb_tmp" = 1 ] && rm -f "$spb_out"
       err "SPBAT apply failed. See $LOG_FILE and the SPBAT logs"; state_set failed_patch SPB; return 1
     fi
     if [ "$DRY_RUN" = 1 ]; then
-      [ "$spb_tmp" = 1 ] && rm -f "$spb_out"
       log "dry-run: not recording the SPB as applied"   # a dry run must not change a real run's state
       return 0
     fi
@@ -1148,7 +1147,6 @@ cmd_apply() {
       fi
     fi
     bundle_result "$spb_rc" "$spb_out" "$lrc" "$lrc2" "$crc"
-    [ "$spb_tmp" = 1 ] && rm -f "$spb_out"
     log "SPBAT apply finished (SPB $spb_path)"
     return 0
   fi
