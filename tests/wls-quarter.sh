@@ -157,7 +157,10 @@ runq "$T/root" && ! grep -q 'DRY RUN' "$T/out" && ok || bad "a real run carried 
 # ---- a run where the child recorded nothing as running says so, at step 5 and on the last line -----------------
 : >"$T/calls.log"; rm -rf "$T/run"; rm -f "$T/stop.ok"
 NOTHING_WAS_RUNNING=1 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --yes >"$T/out" 2>&1 && ok || bad "a run where nothing was running failed: $(tail -3 "$T/out")"
-grep -q 'nothing was running before the outage, so nothing was started' "$T/out" && ok || bad "step 5 did not say nothing was running: [$(grep '5/6' -A1 "$T/out" | tail -1)]"
+grep -q 'nothing was running before the outage, so nothing was started; the host is left down' "$T/out" && ok || bad "step 5 did not say nothing was running: [$(grep '5/6 start' -A1 "$T/out" | tail -1)]"
+# and it must not claim a finished patch before verify has run - step 6 is where "patched" can be said
+step5="$(grep '5/6 start' -A1 "$T/out" | tail -1)"
+printf '%s' "$step5" | grep -q 'patched' && bad "the step-5 line says 'patched' before verify has run: [$step5]" || ok
 tail -1 "$T/out" | grep -q 'NO SERVERS STARTED' && ok || bad "the last line does not carry NO SERVERS STARTED: [$(tail -1 "$T/out")]"
 # an ordinary run must not carry it, or the marker means nothing
 runq "$T/root"; rc=$?; grep -q 'NO SERVERS STARTED' "$T/out" && bad "an ordinary run said NO SERVERS STARTED (rc=$rc): [$(tail -1 "$T/out")]" || ok
