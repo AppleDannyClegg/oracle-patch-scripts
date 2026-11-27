@@ -459,11 +459,11 @@ unconverted() { # $1 ref - the offending lines, for a human
   done < <(leftover_lines "$1")
 }
 unconverted_count() { # $1 ref - how many pipeline grep -q COMMANDS are left
-  local c rest n=0
+  local c rest total=0
   while IFS=$'\t' read -r c rest; do
-    n=$((n + c))
+    total=$((total + c))
   done < <(leftover_lines "$1")
-  printf '%s\n' "$n"
+  printf '%s\n' "$total"
 }
 base_left=$(unconverted_count "$BASE_REF")
 head_left=$(unconverted_count "$HEAD_REF")
