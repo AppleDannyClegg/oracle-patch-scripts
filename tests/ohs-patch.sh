@@ -684,6 +684,12 @@ build; running; rc="$(runc verify "$PD")"
 [ "$rc" = 1 ] && [ -z "$(acts)" ] && grep -q '40005842 is NOT installed' "$T/out" && ok || bad "verify before the apply: rc $rc (want 1), actions [$(acts)] (want empty), NOT-installed line count $(grep -c '40005842 is NOT installed' "$T/out") (want 1): $(grep -E 'ERROR|WARN' "$T/out" | head -2)"
 build; running; echo "40005842;OHS (NATIVE) DB19C BUNDLE PATCH 12.2.1.4.260910" >>"$LSP"; touch "$T/curl.fail"; rc="$(runc verify "$PD")"
 [ "$rc" = 1 ] && grep -q 'does not answer on port 7777' "$T/out" && ok || bad "verify with a port down: rc $rc (want 1)"
+# the port wait says what it is waiting for and for how long, and keeps saying so while it waits (Gort #50861): the
+# only other lines for this component are at the END of the wait, so a 300s budget is 300s of console silence
+build; running; touch "$T/curl.fail"
+rc="$(HOME="$T/home" PATH="$T/stub:$PATH" ORACLE_HOME="" START_TIMEOUT=2 POLL=1 PROGRESS_EVERY=1 RUN_BASE="$T/runs" bash "$SCRIPT" run "$PD" --oracle-home "$OH" --backup-dir "$T/backup" --yes >"$T/out" 2>&1 </dev/null; echo $?; settle)"
+grep -q 'port 7777' "$T/out" && grep -q 'budget 2s' "$T/out" && ok || bad "the port wait did not name the port and the budget: rc $rc: $(grep -iE 'port|waiting' "$T/out" | head -3 | tr '\n' ' ')"
+[ "$(grep -c 'still waiting' "$T/out")" -ge 1 ] && ok || bad "the port wait printed no progress line while waiting: $(grep -iE 'port 7777' "$T/out" | tr '\n' ' ')"
 
 # every step that changes whether a server runs says so in the positive when it succeeds (Daniel, 21:01)
 build; running; rc="$(runr --yes)"

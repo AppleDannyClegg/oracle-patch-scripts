@@ -320,6 +320,14 @@ runq "$T/root" FAIL_OHS_VERIFY=1; rc=$?
 runq "$T/root" FAIL_START=1; rc=$?
 [ "$rc" = 1 ] && ok || bad "a start failure exited $rc (want 1)"
 [ -n "$(line '^java rollback')" ] && ok || bad "a start failure did not recover"
+# the recovery is neither silent nor vague (Daniel 12:00 via Gort #50861): a numbered line before each step, and a
+# failed START after a verified restore must not tell the operator the home may be part-patched - the home is fine
+[ "$(grep -cE '\[[0-9]+\] recovering:' "$T/out")" -ge 3 ] && ok || bad "the recovery printed $(grep -cE '\[[0-9]+\] recovering:' "$T/out") numbered step lines (want at least 3: stop, rollback, start)"
+grep -qE '\[1\] recovering:' "$T/out" && grep -qE '\[2\] recovering:' "$T/out" && ok || bad "the recovering steps are not numbered past [1]: $(grep -oE '\[[0-9]+\] recovering:' "$T/out" | tr '\n' ' ')"
+# FAIL_START=1 fails only the FIRST start, so the recovery's own start succeeds: the closing line here is the success
+# one. The failed-START close (path E3, "did not start after recovery") is exercised by tests/ohs-quarter-explain.sh:98
+# (FAIL_START_ALL=1) and must still hold an explain row there - that gate is what pins it.
+grep -q 'recovery complete' "$T/out" && ok || bad "a restored-and-started recovery did not say so: $(grep -iE 'recover|not start' "$T/out" | tail -3 | tr '\n' ' ')" 
 
 # every opatch bundle that fails restores from the shared backup, not just webgate
 for hook in FAIL_DBCLIENTRU FAIL_OSS; do
@@ -333,6 +341,9 @@ done
 runq "$T/root" FAIL_DB_APPLY=1 FAIL_ROLLBACK=1; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed shared restore exited $rc (want 3)"
 grep -q '^ohs start' "$T/calls.log" && bad "components were started although a recovery step failed" || ok
+# the control for the pair above: when the RESTORE is what failed, the part-patched line must still print
+runq "$T/root" FAIL_DB_APPLY=1 FAIL_ROLLBACK=1; rc=$?
+grep -q 'Fix by hand' "$T/out" && ok || bad "a recovery whose shared restore FAILED no longer says to fix the home by hand: $(grep -iE 'recover|restor|part' "$T/out" | tail -3 | tr '\n' ' ')"
 
 # ---- not a single folder present: refuse, no run dir, no child call -------------------------------------------
 mkdir -p "$T/empty"

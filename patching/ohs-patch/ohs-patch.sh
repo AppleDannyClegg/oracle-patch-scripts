@@ -111,7 +111,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN_ARG=""
 DRY_RUN=0; CLIENT19_PENDING=0; OPATCH_PENDING=""; ASSUME_YES=0; NO_BACKUP=0; PRINT_CMDS=0; PRUNE_ALL=0; DRY_EXT=""; OPERATOR_STOPS=0
-START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
+START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; PROGRESS_EVERY="${PROGRESS_EVERY:-60}"; RUN_BASE="${RUN_BASE:-$(output_path ohs-patch)/runs}"
 problems=0; unknowns=0
 # what preflight found, for run: the home, the patch dir and id, the domains, the central inventory, 'domain|component'
 OH=""; PD=""; PID=""; DOMS=""; INV=""; COMPS=""; PRE_IDS=""
@@ -696,7 +696,7 @@ stopped_proved() {
 # then every Listen port answers HTTP. 0 = all up.
 start_all() {
   if [ "$OPERATOR_STOPS" = 1 ]; then operator_stops_note operator_start_commands; return 0; fi
-  local d c t rc=0 havecurl=1
+  local d c t rc=0 havecurl=1 last=0
   # no curl on the host: the ports cannot be checked, so they are not - a missing tool must never roll back a good apply
   command -v curl >/dev/null || { havecurl=0; warn "curl not available - skipping the port check; startComponent.sh's own status is the only start check"; }
   while IFS= read -r d; do [ -n "$d" ] || continue
@@ -705,8 +705,9 @@ start_all() {
     nohup "$d/bin/startNodeManager.sh" >>"$RUN_DIR/nodemanager-$(basename "$d").out" 2>&1 </dev/null &
   done <<<"$DOMS"
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
-    t=0; until do_cmd "$d/bin/startComponent.sh" "$c"; do
+    t=0; last=0; until do_cmd "$d/bin/startComponent.sh" "$c"; do
       t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "startComponent.sh $c did not succeed in ${START_TIMEOUT}s - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; continue 2; }
+      [ $((t - last)) -ge "$PROGRESS_EVERY" ] && { log "  still starting $c: ${t}s of ${START_TIMEOUT}s"; last=$t; }
       sleep "$POLL"
     done
     [ "$DRY_RUN" = 1 ] || log "  started $c"
@@ -719,13 +720,16 @@ start_all() {
 
 # every Listen port of one component answers HTTP(S) within <wait> seconds; 0 = all answer
 ports_answer() {
-  local d="$1" c="$2" wait="$3" p t code rc=0
+  local d="$1" c="$2" wait="$3" p t code rc=0 last=0
   for p in $(instance_ports "$d" "$c"); do
-    t=0; while :; do
+    # say it when the wait BEGINS, not only at either end: this can hold the console for <wait>s (Gort #50861)
+    log "  waiting for $c to answer on port $p (budget ${wait}s, checking every ${POLL}s)"
+    t=0; last=0; while :; do
       code="$(curl -k -s -o /dev/null -m 10 -w '%{http_code}' "https://localhost:$p/" 2>/dev/null)"
       case "$code" in ''|000) code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://localhost:$p/" 2>/dev/null)";; esac
       case "$code" in ''|000) ;; *) log "  $c answers on port $p (HTTP $code)"; break;; esac
       t=$((t + POLL)); [ "$t" -le "$wait" ] || { err "$c does not answer on port $p after ${wait}s"; rc=1; break; }
+      [ $((t - last)) -ge "$PROGRESS_EVERY" ] && { log "  still waiting for $c on port $p: ${t}s of ${wait}s"; last=$t; }
       sleep "$POLL"
     done
   done

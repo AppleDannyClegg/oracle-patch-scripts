@@ -292,8 +292,9 @@ restore_wls_home() {
 }
 
 recover() {
-  local rec=1
+  local rec=1 step=0
   log "recovering: stopping the components first. If this is killed mid-restore, ${ORACLE_HOME_ARG:-the Oracle home} may be part-patched: the previous copy is moved aside as ${ORACLE_HOME_ARG:-<home>}.broken-*, and the shared backup is $SHARED (run dir $RUN_DIR) - restore by hand from that copy, not the half-restored home"
+  step=$((step + 1)); log "[$step] recovering: stop the components"
   if ! orun stop; then
     err "Could not stop the components to recover - nothing is restored, and they are NOT started. Fix by hand."
     return 1
@@ -305,10 +306,10 @@ recover() {
   local shared_restored=0
   if [ "$ohs_attempted" = 1 ] || [ "$dc_attempted" = 1 ]; then
     if [ -n "$INSTALLER_DIR" ]; then
-      log "recovering: dbclient-upgrade rollback from $SHARED (the installer's restore_all - not opatch rollback)"
+      step=$((step + 1)); log "[$step] recovering: dbclient-upgrade rollback from $SHARED (the installer's restore_all - not opatch rollback)"
       if dshared rollback; then shared_restored=1; else err "the restore failed - restore this home by hand from the backup"; rec=0; fi
     else
-      log "recovering: ohs-patch rollback from $SHARED"
+      step=$((step + 1)); log "[$step] recovering: ohs-patch rollback from $SHARED"
       if oshared rollback; then shared_restored=1; else err "the restore failed - restore this home by hand from the backup"; rec=0; fi
     fi
   fi
@@ -317,20 +318,29 @@ recover() {
       log "recovering: the shared restore already put this home back to the pre-outage level - skipping the wls home restore (it would untar over the same home)"
     elif [ "$OPERATOR_STOPS" = 1 ]; then
       log "recovering: operator-stops - no stop is run; assuming the home is stopped for the wls restore"
+      step=$((step + 1)); log "[$step] recovering: wls-patch restore of its own home+domains backup"
       restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
     elif ! orun stop; then
+      step=$((step + 1)); log "[$step] recovering: stop the components before the wls restore"
       err "cannot stop the components before the wls restore - refusing to restore over a running home"; rec=0
     else
+      step=$((step + 1)); log "[$step] recovering: wls-patch restore of its own home+domains backup"
       restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
     fi
   fi
   if [ "$java_attempted" = 1 ]; then
-    log "recovering: java-patch rollback"
+    step=$((step + 1)); log "[$step] recovering: java-patch rollback"
     jrun rollback || { err "java-patch rollback failed - restore the JDK by hand"; rec=0; }
   fi
   if [ "$rec" = 1 ]; then
     trap ':' INT TERM   # handled, not ignored: what this starts gets default INT/TERM, so the next stop can stop it
-    orun start || { err "the components did not start after recovery - manual attention needed"; rec=0; }
+    step=$((step + 1)); log "[$step] recovering: start the components"
+    if orun start; then
+      log "recovery complete: every rollback succeeded and the components are running again"
+    else
+      err "Recovery incomplete - the components did not start after recovery, and what failed is the START: the home RESTORED cleanly (every rollback above succeeded and it is at its pre-outage level), so look at the components themselves (and whether they answer on localhost), not at the backup. Logs: $RUN_DIR"
+      rec=0
+    fi
   else
     err "Recovery incomplete - components NOT started: the home may be part-patched. Fix by hand."
   fi
