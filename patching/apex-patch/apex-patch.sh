@@ -755,12 +755,15 @@ cmd_run() {
 }
 
 usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 main() {
   local cmd="" args=()
-  while [ $# -gt 0 ]; do
+
+while [ $# -gt 0 ]; do
     case "$1" in
-      --apex-base) optchk "$@"; CLI_APEX_BASE="$2"; shift 2;; --images-dir) optchk "$@"; CLI_IMG="$2"; shift 2;; --pdb) optchk "$@"; CLI_PDB="$2"; shift 2;;
-      --runtime) CLI_TYPE=runtime; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+      --apex-base) optchk "$@"; CLI_APEX_BASE="$(strip_dir "$2")"; shift 2;; --images-dir) optchk "$@"; CLI_IMG="$(strip_dir "$2")"; shift 2;; --pdb) optchk "$@"; CLI_PDB="$(strip_dir "$2")"; shift 2;;
+      --runtime) CLI_TYPE=runtime; shift;; --run-dir) optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
       --dry-run) DRY_RUN=1; shift;; --yes|-y) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;;
       --verbose|-v) VERBOSE=1; shift;; --no-restore-point) NO_RP=1; shift;; --allow-flashback) ALLOW_FLASHBACK=1; shift;;
       -h|--help|help) usage; exit 0;; --version) echo "$VERSION"; exit 0;;

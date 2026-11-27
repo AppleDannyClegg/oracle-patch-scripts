@@ -184,10 +184,28 @@ out=$(run shellcheck 2>&1)
 rows=$(printf '%s\n' "$out" | grep -c '^ok\|^FAIL')
 check "$([ "$rows" = 1 ] && echo 1)" "naming an auto-added gate runs it once (rows: $rows): $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
 
+# ---- built-in limits: a gate that takes close to the default alone gets headroom ----
+# ohs-patch took 289s alone under load against the 300s default and was killed three times on 26-27 Nov,
+# each read as a FAIL; false-success-gate has had 600 since T205 for the same reason.
+for g in ohs-patch false-success-gate; do
+    lim=$(bash "$root/tests/run-all.sh" --show-limits "$g" | awk -v g="$g" '$1 == g { print $2 }')
+    check "$([ "${lim%s}" -ge 600 ] 2>/dev/null && echo 1)" "$g's built-in limit is at least 600s (got ${lim:-none})"
+done
+
 # ---- bad options are refused, not silently defaulted ----
 run -j 0 gate-a >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "-j 0 is refused with exit 2"
 run --timeout nope gate-a >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "--timeout nope is refused with exit 2"
 run -j >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "-j with no number is refused with exit 2"
+
+# a test file that is neither in GATES nor a named docker lane never runs in the suite (PR 13 finding)
+listed="$(bash "$root/tests/run-all.sh" --show-limits | awk 'NF { print $1 }')"
+missing=""
+for f in "$root"/tests/*.sh; do
+    name="${f##*/}"; name="${name%.sh}"
+    case "$name" in audit-container|ohs-patch-container|oracle-free-container|okv-diag|run-all) continue ;; esac
+    grep -qx "$name" <<<"$listed" || missing="$missing $name"
+done
+check "$([ -z "$missing" ] && echo 1)" "every tests/*.sh is in GATES or a docker lane:$missing"
 
 echo "run-all harness gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
