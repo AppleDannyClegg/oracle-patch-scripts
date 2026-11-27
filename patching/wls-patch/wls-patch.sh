@@ -1066,15 +1066,17 @@ cmd_apply() {
   while IFS='|' read -r _ p kind; do [ "$kind" = spb ] && spb_path="$p"; done <<<"$list"
   if [ -n "$spb_path" ]; then
     log "Applying the Stack Patch Bundle with SPBAT: $spb_path"
-    # A run dir can be reused for a retry. Clear the previous attempt's
-    # comparison verdict before this one starts; state_set replaces by key.
-    state_set spb_inventory_unchanged 0
-    state_set spb_inventory_compared 0
     # record the inventory itself, not just a PSU version: whether the PSU level moves is a question about Oracle's
     # naming (an SPB is dated later than the PSU it carries, and the abstract wording varies), while 'lspatches is
     # byte-identical before and after' means the bundle put nothing in this home, whatever the strings look like
     local before0="${PSU_LEVEL:-none}" lb="$RUN_DIR/lspatches.before" lrc=0
-    [ "$DRY_RUN" = 1 ] || { state_set psu_before "$before0"
+    [ "$DRY_RUN" = 1 ] || {
+      # A reused run dir can retry a real SPB. Clear the previous verdict only
+      # for a REAL attempt: a dry run changes nothing and must not invalidate
+      # the comparison the last real apply recorded.
+      state_set spb_inventory_unchanged 0
+      state_set spb_inventory_compared 0
+      state_set psu_before "$before0"
       "$ORACLE_HOME/OPatch/opatch" lspatches >"$lb" 2>/dev/null || lrc=$?
       state_set lspatches_before_rc "$lrc"; }
     [ "$DRY_RUN" = 1 ] || state_set spb_pending "$spb_path"
@@ -1160,8 +1162,10 @@ cmd_verify() {
   expected="$(state_get applied || true)"
   # an SPB is applied as one unit by SPBAT; its patches are not in the 'applied' list, so only the servers
   # are checked - the SPBAT exit status was the apply's gate
-  if [ -n "$(state_get spb_applied || true)" ]; then
-    log "SPB $(basename "$(state_get spb_applied)") was applied by SPBAT - checking the servers"
+  if [ -n "$(state_get spb_applied || true)" ] || [ -n "$(state_get spb_pending || true)" ]; then
+    # A pending/failed attempt must reach the same gate as an applied one:
+    # otherwise a failed SPBAT can leave compared=0 and still print VERIFY PASSED.
+    log "SPB $(basename "$(state_get spb_applied || state_get spb_pending)") was attempted by SPBAT - checking the servers"
     expected=""
     # the exit status alone is a weak gate: fail when the inventory cannot be read, or when apply recorded that it
     # did not change at all (a partial SPBAT that exits 0 is not success). The comparison is the inventory against

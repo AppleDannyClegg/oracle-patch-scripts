@@ -293,5 +293,25 @@ rc="$(run "$OH15" verify --oracle-home "$OH15" --java-home "$T/jdk" --run-dir "$
 L="$T/run-retry-fail/wls-patch.log"
 [ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed retry inherited the earlier success: rc $rc: $(tail -3 "$L")"
 
+# ---- a dry run must not invalidate the comparison from the last real apply ----
+OH16="$T/oh-dry-after"; mk_home "$OH16" 13.9.4.2.23
+PD16="$T/patches-dry-after"; mk_spb "$PD16"; rm -f "$T/psu" "$T/lsp_fail" "$T/spb-change" "$T/spb-fail"; : >"$T/spbat.log"
+rc="$(run "$OH16" apply "$PD16" --oracle-home "$OH16" --java-home "$T/jdk" --run-dir "$T/run-dry-after" --yes)"
+rc="$(run "$OH16" apply "$PD16" --oracle-home "$OH16" --java-home "$T/jdk" --run-dir "$T/run-dry-after" --dry-run --yes)"
+rc="$(run "$OH16" verify --oracle-home "$OH16" --java-home "$T/jdk" --run-dir "$T/run-dry-after")"
+L="$T/run-dry-after/wls-patch.log"
+[ "$rc" = 0 ] && grep -q 'VERIFY PASSED' "$L" && ok || bad "a dry apply invalidated a real comparison: rc $rc: $(tail -3 "$L")"
+
+# ---- a failed first SPBAT attempt must fail standalone verify, not pass silently ----
+OH17="$T/oh-spbfail"; mk_home "$OH17" 13.9.4.2.23
+PD17="$T/patches-spbfail"; mk_spb "$PD17"; rm -f "$T/psu" "$T/lsp_fail"; : >"$T/spbat.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 17\n' "$T" >"$PD17/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+chmod +x "$PD17/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rc="$(run "$OH17" apply "$PD17" --oracle-home "$OH17" --java-home "$T/jdk" --run-dir "$T/run-spbfail" --yes)"
+rc="$(run "$OH17" verify --oracle-home "$OH17" --java-home "$T/jdk" --run-dir "$T/run-spbfail")"
+L="$T/run-spbfail/wls-patch.log"
+[ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed SPBAT attempt passed standalone verify: rc $rc: $(tail -3 "$L")"
+grep -q '^spb_pending=' "$T/run-spbfail/state" && ok || bad "the pending record needed by recovery was lost"
+
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
