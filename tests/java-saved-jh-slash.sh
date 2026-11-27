@@ -16,10 +16,11 @@ pass=0; fail=0
 ok() { pass=$((pass + 1)); }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 
-rollback() { # <saved old_jh> -> $RC and $T/out
+rollback() { # <saved old_jh> [recorded old_real] -> $RC and $T/out
+  local saved="$1" real="${2:-$T/home}"
   mkdir -p "$T/home/java-patch/runs/r1"
   printf 'preflight=ok\nbackup=ok\napply=ok\nin_place=1\nold_jh=%s\nold_real=%s\nold_jdk=%s\nlink_target=\nbacked_files=\n' \
-    "$1" "$T/home" "$T/jdk" >"$T/home/java-patch/runs/r1/state"
+    "$saved" "$real" "$T/jdk" >"$T/home/java-patch/runs/r1/state"
   {
     printf '. "%s/tree/patching/java-patch/java-patch.sh" >/dev/null 2>&1 || exit 99\n' "$T"
     printf 'export T="%s" RUN_DIR="%s/home/java-patch/runs/r1" DRY_RUN=0 ASSUME_YES=1\n' "$T" "$T"
@@ -39,9 +40,10 @@ rollback "$T/home"
 rollback "$T/home/"
 [ "$RC" = 0 ] && ! grep -q "$T/home/.failed-" "$T/out" && ok || bad "same home with saved slash failed: rc $RC: $(grep -E 'mv failed|ERROR|cannot move' "$T/out" | head -1)"
 
-# control: a genuinely different home is still refused
-rollback "$T/other/"
-[ "$RC" != 0 ] && ok || bad "a different saved home was accepted"
+# control: a symlinked Java home has old_jh != old_real by design; the rollback must not refuse it
+ln -sfn "$T/jdk" "$T/linkjava"
+rollback "$T/linkjava" "$T/jdk"
+[ "$RC" = 0 ] && ok || bad "a symlinked Java home was refused: rc $RC: $(grep -E 'ERROR' "$T/out" | head -1)"
 
 echo "java saved old_jh slash gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
