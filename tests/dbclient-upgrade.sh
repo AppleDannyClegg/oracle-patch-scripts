@@ -85,12 +85,15 @@ build; printf 'ID="ubuntu"\nVERSION_ID="22.04"\n' >"$T/os-release"; rc="$(pre)"
 build; printf 'Red Hat Enterprise Linux Server release 7.9 (Maipo)\n' >"$T/os-release"; rc="$(pre)"
 [ "$rc" = 0 ] && ok || bad "a redhat-release file with 7.9: rc $rc: $(grep -E 'OS|BLOCK|UNKNOWN' "$T/out" | head -2)"
 # OL 9 passes the OS rule (9 > 7.4) and then the installer stops on its own package check: the OUI "Check:Packages"
-# wants redhat-lsb, redhat-lsb-core and libXtst-devel, which Oracle Linux 9 does not ship, so it aborts unless
-# --ignore-sys-prereqs is passed (T1827, the 16 Nov 2026 field run on OL 9.4). Preflight must SAY that - an OS line
-# that reads "ok" over a check the OS cannot pass is the surprise this row is about. It warns; it does not block.
+# asks for redhat-lsb, which Oracle Linux 9 does not ship (patching/ohs-quarter/README.md:122), so the install aborts
+# unless --ignore-sys-prereqs is passed, and only then if that check is the only failed prereq (:124-125). Preflight
+# must SAY that, condition and all - an OS line that reads "ok" over a check the OS cannot pass is the surprise here.
 build; printf 'ID="ol"\nVERSION_ID="9.4"\nPRETTY_NAME="Oracle Linux Server 9.4"\n' >"$T/os-release"; rc="$(pre)"
-[ "$rc" = 0 ] && grep -q 'redhat-lsb' "$T/out" && grep -q 'ignore-sys-prereqs' "$T/out" && ok \
-  || bad "OL 9.4: preflight did not warn about the installer's package check: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3)"
+# name the opt-in AND the README's condition on it (patching/ohs-quarter/README.md:124-125: read the installer's
+# output in run.log first, use the option only when that check is the only failed prereq) - a warning that steers
+# at the switch alone would be telling an operator to skip a check blind
+[ "$rc" = 0 ] && grep -q 'redhat-lsb' "$T/out" && grep -q 'run.log' "$T/out" && grep -q 'only failed prereq' "$T/out" && ok \
+  || bad "OL 9.4: preflight did not warn with the README's condition: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3)"
 # and the warning is version-bounded: OL 8 has these packages, so a warning there would be noise, not a warning
 build; printf 'ID="ol"\nVERSION_ID="8.9"\nPRETTY_NAME="Oracle Linux Server 8.9"\n' >"$T/os-release"; rc="$(pre)"
 [ "$rc" = 0 ] && ! grep -q 'redhat-lsb' "$T/out" && ok \

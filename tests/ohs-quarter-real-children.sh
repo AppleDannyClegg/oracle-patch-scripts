@@ -32,6 +32,10 @@ bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 SCRIPT=patching/ohs-quarter/ohs-quarter.sh
 
 build
+# the OS fixture this run reads: Oracle Linux 9, where the child's preflight now warns about the installer's own
+# package check. The composer must carry that line to the operator's terminal - it is where she would see it, and
+# nothing else asserts the pass-through (Quark #50845, not checked).
+printf 'ID="ol"\nVERSION_ID="9.4"\nPRETTY_NAME="Oracle Linux Server 9.4"\n' >"$T/os-release"
 # the composer's patch root: a jdk tarball and the dbclient folder IT passes to the child as <patch-dir>
 mkdir -p "$T/root/jdk"; : >"$T/root/jdk/jdk.tar.gz"; ln -sfn "$PD" "$T/root/dbclient"
 # a java child that only logs: this gate is about the dbclient/shared-backup link, not the JDK bake
@@ -49,6 +53,9 @@ rc=$?
 SHARED="$T/run/backup"
 [ "$rc" = 0 ] && ok || bad "the composer did not finish: rc $rc: $(grep -E '\[ERROR\]' "$T/out" | head -3 | tr '\n' ' ')"
 grep -q '=== 7/7 OHS QUARTER OK' "$T/out" && ok || bad "no 7/7 OK line: $(tail -3 "$T/out" | tr '\n' ' ')"
+# the child's OL9 warning reaches the composer's output, condition and all
+[ "$rc" = 0 ] && grep -q 'redhat-lsb' "$T/out" && grep -q 'only failed prereq' "$T/out" && ok \
+  || bad "the child's OL9 preflight warning did not reach the composer's output: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3 | tr '\n' ' ')"
 # the link itself: the child's backup is IN the composer's shared dir, state and all
 [ -f "$SHARED/state" ] && ok || bad "$SHARED/state missing - the child wrote its backup somewhere else: $(grep -E 'run dir|backed up to' "$T/out" | head -3 | tr '\n' ' ')"
 grep -q '^pre_rsf=' "$SHARED/state" 2>/dev/null && ok || bad "the shared state does not carry the child's pre_rsf: $(head -5 "$SHARED/state" 2>/dev/null | tr '\n' ' ')"
