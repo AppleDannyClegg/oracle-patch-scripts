@@ -61,15 +61,6 @@
 #   --oracle-home DIR  the OHS home (passed to every child)
 #   --java-home DIR    the JDK to replace (passed to java-patch and wls-patch)
 #   --run-dir DIR      this outage's run dir (default: $RUN_BASE/<stamp>-ohs-quarter)
-#
-# collect <run-dir>
-#   ONE read-only file for the OHS contact, from a run folder: state files, the quarter log tail,
-#   the installer's prerequisites, the OS line, rpm -q of the packages the installer checks, the
-#   home and its set-aside copies, the inventory pointer, the JDK link and its release file,
-#   the process count from the home, the Listen lines and listeners, and df. It writes
-#   <run-dir>-support.txt beside the run folder and prints that path. It only reads: nothing is
-#   started, stopped or changed, and a wallet's CONTENTS are never printed, names only. It works
-#   after a failed run, and its top says which sections it could not read.
 #   --backup-dir DIR   where the backups go (passed to wls-patch and the installer)
 #   --remove-12c IDS   the 12c Database Client patches to roll back before the 19c installer (comma list of patch
 #                      numbers; default: none). Passed to dbclient-upgrade.sh as --remove-patches: it rolls back
@@ -84,6 +75,16 @@
 #   --no-cacerts       do not carry CA aliases across (java-patch)
 #   --force            passed to java-patch and wls-patch, the two children that have a --force
 #   --yes --dry-run    as the children. A dry run's last line says DRY RUN, never OHS QUARTER OK: it applied nothing
+
+#
+# collect <run-dir>
+#   ONE read-only file for the OHS contact, from a run folder: state files, the quarter log tail,
+#   the installer's prerequisites, the OS line, rpm -q of the packages the installer checks, the
+#   home and its set-aside copies, the inventory pointer, the JDK link and its release file,
+#   the process count from the home, the Listen lines and listeners, and df. It writes
+#   <run-dir>-support.txt beside the run folder and prints that path. It only reads: nothing is
+#   started, stopped or changed, and a wallet's CONTENTS are never printed, names only. It works
+#   after a failed run, and its top says which sections it could not read.
 #   -h|--help
 #
 # Env: OHS_QUARTER_JAVA_PATCH / OHS_QUARTER_WLS_PATCH / OHS_QUARTER_DBCLIENT / OHS_QUARTER_OHS_PATCH override the
@@ -147,7 +148,7 @@ strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; 
 # It reads only. Nothing is started, stopped or changed, and no wallet's CONTENTS are printed.
 # ---------------------------------------------------------------------------------------------------
 collect_main() {
-  local rd="${1:-}"
+  local rd="${1:-}" cl="${2:-}"
   [ -n "$rd" ] || die "collect needs a run folder: ohs-quarter.sh collect <run-dir>"
   [ -d "$rd" ] || die "collect: not a folder: $rd"
   rd="$(strip_dir "$rd")"
@@ -171,18 +172,25 @@ collect_main() {
   } >>"$body" 2>&1
 
   { hdr "quarter log tail"
-    if [ -f "$rd/run.log" ]; then tail -80 "$rd/run.log"; else echo "(no run.log in this run folder)"; missing+=("quarter log tail"); fi
+    cl="${cl:-}"
+    [ -n "$cl" ] || cl="$rd/run.log"
+    if [ -f "$cl" ]; then printf -- '-- %s\n' "$cl"; tail -80 "$cl"
+    else echo "(the quarter logs to the terminal only and keeps no log file in the run folder - pass its tee'd log as the second argument: ohs-quarter.sh collect <run-dir> <console-log>)"; missing+=("quarter log tail"); fi
   } >>"$body" 2>&1
 
   { hdr "installer prerequisites (client install)"
-    if [ -d "$rd/dbclient" ]; then
-      grep -hiE 'prereq|check:packages|ignoresysprereqs|aborting install' "$rd/dbclient/run.log" "$rd/run.log" 2>/dev/null | tail -40 \
-        || echo "(no prerequisite line in the client log)"
-    else echo "(this run has no dbclient step)"; fi
+    found=0
+    while IFS= read -r lg; do
+      [ -n "$lg" ] || continue
+      if grep -qiE 'prereq|check:packages|ignoresysprereqs|aborting install' "$lg" 2>/dev/null; then
+        printf -- '-- %s\n' "$lg"; grep -hiE 'prereq|check:packages|ignoresysprereqs|aborting install' "$lg" | tail -20; found=1
+      fi
+    done < <(find "$rd" -maxdepth 4 \( -name 'run.log' -o -name 'dbclient-upgrade.log' \) 2>/dev/null | sort)
+    [ "$found" = 1 ] || { echo "(no prerequisite line anywhere in this run folder; a client apply keeps its installer run.log in the shared backup dir it applies against)"; missing+=("installer prerequisites"); }
   } >>"$body" 2>&1
 
   { hdr "os line"
-    if [ -r /etc/os-release ]; then grep -E '^(PRETTY_NAME|VERSION)=' /etc/os-release; else uname -srm; fi
+    if [ -r /etc/os-release ]; then grep -E '^(PRETTY_NAME|VERSION)=' /etc/os-release; fi; uname -srm
   } >>"$body" 2>&1
 
   { hdr "packages the installer checks (rpm -q)"
@@ -192,16 +200,29 @@ collect_main() {
   { hdr "home and its set-aside copies"
     if [ -n "$oh" ] && [ -d "$oh" ]; then
       ls -ld "$oh" 2>&1
-      ls -1d "$(dirname "$oh")"/* 2>/dev/null | grep -E '(\.(bak|old|save|failed|bad|prev|orig)|\.20[0-9]{6}|~)$' | head -20 || echo "(no set-aside copy beside the home)"
+      ls -1d "$(dirname "$oh")"/* 2>/dev/null | grep -E '\.(bak|old|save|failed|bad|prev|orig)(-[0-9]{8}-[0-9]{6})?$|~$' | head -20 || echo "(no set-aside copy beside the home)"
     else echo "(the home this run touched is not on this host)"; missing+=("home and set-aside copies"); fi
   } >>"$body" 2>&1
 
   { hdr "inventory pointer"
-    if [ -f "$oh/oraInst.loc" ]; then cat "$oh/oraInst.loc"; elif [ -f "$rd/home/oraInst.loc" ]; then cat "$rd/home/oraInst.loc"; else echo "(no oraInst.loc found)"; missing+=("inventory pointer"); fi
+    ilok=0
+    for il in "$rd/state" "$rd/opatch/state" "$rd/dbclient/state"; do
+      [ -f "$il" ] || continue
+      grep -q '^inventory_loc=' "$il" && { printf -- '-- %s\n' "$il"; grep '^inventory_loc=' "$il"; ilok=1; }
+    done
+    for il in "${oh:-/nonexistent}/oraInst.loc" "$rd/home/oraInst.loc" $(find "$rd" -maxdepth 4 -name oraInst.loc 2>/dev/null); do
+      [ -f "$il" ] && { printf -- '-- %s\n' "$il"; cat "$il"; ilok=1; break; }
+    done
+    [ "$ilok" = 1 ] || { echo "(no oraInst.loc and no inventory_loc in this run folder)"; missing+=("inventory pointer"); }
   } >>"$body" 2>&1
 
   { hdr "jdk link and release"
-    if [ -n "$oh" ] && [ -e "$oh/jdk" ]; then readlink "$oh/jdk" 2>/dev/null; ls -ld "$oh/jdk" 2>&1; [ -r "$oh/jdk/release" ] && grep -E '^(JAVA_VERSION|IMPLEMENTOR)=' "$oh/jdk/release"; else echo "(no jdk link under the home)"; missing+=("jdk link"); fi
+    jh="$(sed -n 's/^new_jh=//p' "$rd/java/state" 2>/dev/null | tail -1)"
+    [ -n "$jh" ] || jh="$(sed -n 's/^old_jh=//p' "$rd/java/state" 2>/dev/null | tail -1)"
+    [ -n "$jh" ] || jh="${JAVA_HOME_ARG:-}"
+    if [ -z "$jh" ] && [ -n "$oh" ] && [ -e "$oh/jdk" ]; then jh="$oh/jdk"; fi
+    if [ -n "$jh" ]; then printf 'java run / JAVA_HOME: %s\n' "$jh"; ls -ld "$jh" 2>&1; [ -r "$jh/release" ] && grep -E '^(JAVA_VERSION|IMPLEMENTOR)=' "$jh/release"
+    else echo "(no --java-home and no java-run state on this run)"; missing+=("jdk"); fi
   } >>"$body" 2>&1
 
   { hdr "process count from the home"
@@ -209,7 +230,14 @@ collect_main() {
   } >>"$body" 2>&1
 
   { hdr "listeners and Listen lines"
-    if [ -n "$oh" ]; then grep -rhiE '^[[:space:]]*Listen[[:space:]]' "$oh/network/admin" 2>/dev/null || echo "(no Listen line under network/admin)"; fi
+    hits=0
+    while IFS= read -r cf; do
+      [ -n "$cf" ] || continue
+      if grep -qiE '^[[:space:]]*Listen[[:space:]]' "$cf" 2>/dev/null; then
+        printf -- '-- %s\n' "$cf"; grep -hiE '^[[:space:]]*Listen[[:space:]]' "$cf"; hits=1
+      fi
+    done < <(find "$rd" "$(dirname "$(dirname "${oh:-/nonexistent}")")" -maxdepth 12 -path '*/OHS/instances/*' \( -name httpd.conf -o -name ssl.conf \) 2>/dev/null | sort)
+    [ "$hits" = 1 ] || { echo "(no OHS instance httpd.conf/ssl.conf under the run folder or the home's parent)"; missing+=("Listen lines"); }
     if command -v ss >/dev/null 2>&1; then ss -lnt 2>&1 | head -30; elif command -v netstat >/dev/null 2>&1; then netstat -lnt 2>&1 | head -30; else echo "(neither ss nor netstat is on this host)"; missing+=("listeners"); fi
   } >>"$body" 2>&1
 
@@ -234,7 +262,7 @@ collect_main() {
   return 0
 }
 
-if [ "${1:-}" = collect ]; then collect_main "${2:-}"; exit $?; fi
+if [ "${1:-}" = collect ]; then collect_main "${2:-}" "${3:-}"; exit $?; fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
