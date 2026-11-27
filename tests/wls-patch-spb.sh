@@ -82,6 +82,7 @@ PD3="$T/patches-apply"; mk_spb "$PD3"; rm -f "$T/psu"; : >"$T/spbat.log"; : >"$T
 rc="$(run "$OH" apply "$PD3" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
 grep -qx -- '-phase apply -oracle_home '"$OH" "$T/spbat.log" && ok || bad "SPBAT apply not run/arg-spaced: [$(cat "$T/spbat.log")]"
 grep -q 'the bundle moved the PSU from 12.2.1.4.260514 to 12.2.1.4.261007' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a moved PSU after SPBAT was not reported: $(lastlog)"
+grep -q '^=== BUNDLE TOOL RESULT ===$' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a successful bundle did not record the tool result heading: $(lastlog)"
 grep -q 'opatch apply' "$T/opatch.log" && bad "opatch apply ran alongside SPBAT" || ok
 rc="$(run "$OH" verify --oracle-home "$OH" --java-home "$T/jdk")"
 [ "$rc" = 0 ] && ok || bad "verify after an SPB apply exited $rc: $(lastlog)"
@@ -127,7 +128,11 @@ PD4="$T/patches-fail"; mk_spb "$PD4"
 printf '#!/bin/sh\nexit 1\n' >"$PD4/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
 rc="$(run "$OH3" apply "$PD4" --oracle-home "$OH3" --java-home "$T/jdk" --yes)"
 [ "$rc" != 0 ] && ok || bad "apply exited 0 although SPBAT failed"
-grep -q 'SPBAT apply failed' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a failed SPBAT apply was not reported: $(lastlog)"
+flog="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+grep -q 'SPBAT apply failed' "$flog" && ok || bad "a failed SPBAT apply was not reported: $(lastlog)"
+grep -q '^=== BUNDLE TOOL RESULT ===$' "$flog" && ok || bad "no fixed bundle-result heading: $(lastlog)"
+grep -q '^exit: 1$' "$flog" && ok || bad "the tool's exit status is not under the heading: $(lastlog)"
+grep -q '^inventory: before rc=0 after rc=not read compare rc=not compared$' "$flog" && ok || bad "no before/after record under the heading: $(lastlog)"
 
 # ---- a dry run applies nothing and must not record the SPB as applied --------------------------------
 PD5="$T/patches-dry"; mk_spb "$PD5"; : >"$T/spbat.log"

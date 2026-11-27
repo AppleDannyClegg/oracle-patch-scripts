@@ -142,6 +142,18 @@ run_cmd() {
 # keeps the host umask, or the home is re-permissioned on rollback/apply.
 run_cmd_p() { local u; u="$(umask)"; umask 077; run_cmd "$@"; local r=$?; umask "$u"; return $r; }
 
+# bundle_result: one fixed heading with the bundle tool's OWN words, not our summary.
+bundle_result() { # <tool rc> <tool output file> <before rc> <after rc> <compare rc>
+  {
+    printf '\n=== BUNDLE TOOL RESULT ===\n'
+    printf 'tool: SPBAT apply\n'
+    printf 'exit: %s\n' "$1"
+    printf 'final tool lines:\n'
+    if [ -s "$2" ]; then tail -5 "$2"; else printf '(no output from the tool)\n'; fi
+    printf 'inventory: before rc=%s after rc=%s compare rc=%s\n' "$3" "$4" "$5"
+  } | tee -a "${LOG_FILE:-/dev/null}" >&2
+}
+
 # run_sh: run a shell snippet with stdin/stdout detached, output appended to the log.
 # Needed for START_CMD/STOP_CMD and server start scripts: anything they leave running in the
 # background must not inherit our pipe, or the script would hang waiting for it.
@@ -1085,7 +1097,13 @@ cmd_apply() {
       "$ORACLE_HOME/OPatch/opatch" lspatches >"$lb" 2>/dev/null || lrc=$?
       state_set lspatches_before_rc "$lrc"; }
     [ "$DRY_RUN" = 1 ] || state_set spb_pending "$spb_path"
-    ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) || { err "SPBAT apply failed. See $LOG_FILE and the SPBAT logs"; state_set failed_patch SPB; return 1; }
+    local spb_out="$RUN_DIR/spbat.apply.out" spb_rc=0
+    [ "$DRY_RUN" = 1 ] || : >"$spb_out"
+    ( cd "$spb_path/tools/spbat/generic/SPBAT" && run_cmd ./spbat.sh -phase apply -oracle_home "$ORACLE_HOME" ) >"$spb_out" 2>&1 || spb_rc=$?
+    if [ "$spb_rc" != 0 ]; then
+      [ "$DRY_RUN" = 1 ] || bundle_result "$spb_rc" "$spb_out" "$lrc" "not read" "not compared"
+      err "SPBAT apply failed. See $LOG_FILE and the SPBAT logs"; state_set failed_patch SPB; return 1
+    fi
     if [ "$DRY_RUN" = 1 ]; then
       log "dry-run: not recording the SPB as applied"   # a dry run must not change a real run's state
       return 0
@@ -1099,11 +1117,12 @@ cmd_apply() {
     # retried by verify against the valid before snapshot; other failures cannot.
     state_set spb_after_read_failed 0
     [ "$lrc" = 0 ] && [ "$lrc2" != 0 ] && state_set spb_after_read_failed 1
+    local crc="not run"
     if [ "$lrc" != 0 ] || [ "$lrc2" != 0 ]; then
       warn "could not read 'opatch lspatches' both before (rc $lrc) and after (rc $lrc2) - not comparing the inventory"
       state_set spb_inventory_compared 0
     else
-      local crc=0
+      crc=0
       cmp -s "$lb" "$la" || crc=$?
       if [ "$crc" = 0 ]; then
         warn "SPBAT reported success but 'opatch lspatches' is unchanged (PSU ${PSU_LEVEL:-unknown}, bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
@@ -1118,6 +1137,7 @@ cmd_apply() {
         state_set spb_inventory_compared 0
       fi
     fi
+    bundle_result "$spb_rc" "$spb_out" "$lrc" "$lrc2" "$crc"
     log "SPBAT apply finished (SPB $spb_path)"
     return 0
   fi
