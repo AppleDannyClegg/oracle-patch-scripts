@@ -27,6 +27,9 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image $IMAGE not presen
 gate() {
   docker run --rm --entrypoint bash -v "$REPO":/scripts:ro -e MODE="$1" "$IMAGE" -lc '
     set -uo pipefail
+    # The hidden PATH hides ps from the script under test. The harness still needs a real ps
+    # for the ancestor walk; capture its absolute path before the mask.
+    export REAL_PS_PATH="${REAL_PS_PATH:-$(command -v ps)}"
     # Install before the hidden PATH snapshot, so both modes carry zip/unzip.
     dnf -y install zip unzip >/dev/null 2>&1 || { echo "FAIL: cannot install zip/unzip in $IMAGE"; exit 2; }
     if [ "${MODE}" = hidden ]; then

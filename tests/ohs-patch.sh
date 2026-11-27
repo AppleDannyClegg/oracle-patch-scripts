@@ -119,7 +119,7 @@ O
   chmod +x "$OH/OPatch/opatch"
   # ps: the fake process table, or a failure. A PPID query is answered by the REAL ps, so the script's
   # ancestor walk (T1529) sees the real parent chain while the process table stays fake.
-  REAL_PS="$(command -v ps)"
+  REAL_PS="${REAL_PS_PATH:-$(command -v ps)}"
   cat >"$T/stub/ps" <<P
 #!/bin/sh
 REALPS="$REAL_PS"
