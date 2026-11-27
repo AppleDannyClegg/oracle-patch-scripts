@@ -50,9 +50,9 @@ TOOL="java-patch"; VERSION="1.0.0"
 # shellcheck source=../../lib/oracle-lib.sh
 . "$SCRIPT_DIR/../../lib/oracle-lib.sh" || { echo "lib/oracle-lib.sh not found" >&2; exit 1; }
 
-OLD_JH="${JAVA_HOME:-}"; JAVA_BASE="${JAVA_BASE:-}"; TARBALL=""; DO_RESTART=0; NO_CACERTS=0; CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"
+OLD_JH="$(strip_dir "${JAVA_HOME:-}")"; JAVA_BASE="$(strip_dir "${JAVA_BASE:-}")"; TARBALL=""; DO_RESTART=0; NO_CACERTS=0; CACERTS_PASSWORD="${CACERTS_PASSWORD:-changeit}"
 RESTART_CMDS="${RESTART_CMDS:-}"; CHECK_URLS="${CHECK_URLS:-}"; EXTRA_REF_FILES="${EXTRA_REF_FILES:-}"
-NO_CVE_CHECK=0; NEW_TOP=""
+NO_CVE_CHECK=0; NEW_TOP=""; JAVA_TRAILING_SLASH=0
 OLD_REAL=""; OLD_VER=""; OLD_MAJOR=""; NEW_JH=""; NEW_VER=""; NEW_MAJOR=""; REFS=""; LINKED=0; IN_PLACE=0; KEEP_OLD=0; WILL_STOP=0
 USER_ORDS_URL="${ORDS_URL:-}"   # only a URL the operator gave (ords_detect invents a default we must not verify against)
 
@@ -60,8 +60,8 @@ usage() { usage_from_header "$0"; }
 parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do case "$1" in
-    --java-home) optchk "$@"; OLD_JH="$2"; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$2"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
-    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --no-cve-check) NO_CVE_CHECK=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --will-stop) WILL_STOP=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+    --java-home) optchk "$@"; OLD_JH="$(strip_dir "$2")"; JAVA_TRAILING_SLASH=0; [ "${2%/}" != "$2" ] && JAVA_TRAILING_SLASH=1; shift 2;; --java-base) optchk "$@"; JAVA_BASE="$(strip_dir "$2")"; shift 2;; --tar) optchk "$@"; TARBALL="$2"; shift 2;; --restart) DO_RESTART=1; shift;;
+    --force) FORCE=1; shift;; --no-cacerts) NO_CACERTS=1; shift;; --no-cve-check) NO_CVE_CHECK=1; shift;; --in-place) IN_PLACE=1; shift;; --keep-old) KEEP_OLD=1; shift;; --will-stop) WILL_STOP=1; shift;; --dry-run) DRY_RUN=1; shift;; --yes) ASSUME_YES=1; shift;; --json) JSON_OUT=1; shift;; --verbose) VERBOSE=1; shift;; --run-dir) optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
     -h|--help) usage; exit 0;; --*) die "Unknown option: $1";; *) ARGS+=("$1"); shift;; esac; done
 }
 
@@ -326,6 +326,12 @@ cmd_download() {
 
 cmd_preflight() {
   discover; init_run_dir preflight; pick_tar; local fail=0
+  # The option was stripped at parse time, so remember its original shape: a trailing slash made
+  # the aside path a child of the home being moved and the real apply died at mv. Refuse here.
+  if [ "$JAVA_TRAILING_SLASH" = 1 ]; then
+    err "the JDK home was given with a trailing slash - the old-JDK aside path would be inside the home being moved; give the path without a trailing slash"
+    fail=1
+  fi
   log "Preflight: $OLD_JH ($OLD_VER) -> $NEW_JH ($NEW_VER) from $TARBALL"
   [ -d "$NEW_JH" ] && { [ -x "$NEW_JH/bin/java" ] && log "$NEW_JH already unpacked ($(jdk_version "$NEW_JH"))" || { err "$NEW_JH exists but is not a JDK"; fail=1; }; }
   [ "$NEW_VER" = "$OLD_VER" ] && { [ "$FORCE" = 1 ] && warn "the tarball is the same build as the current JDK ($OLD_VER) - going on because of --force" || { err "the tarball is the same build as the current JDK ($OLD_VER) (--force to reinstall)"; fail=1; }; }
@@ -541,6 +547,11 @@ cmd_rollback() {
   # before discover, which needs $OLD_JH/bin/java to exist.
   local injd; injd="$(state_get old_jdk || true)"
   [ -n "${OLD_JH:-}" ] || OLD_JH="$(state_get old_jh || true)"   # a bare 'rollback --run-dir R' has no --java-home
+  # Older state files saved paths raw. A trailing slash made the aside path a
+  # child of the home being moved, and mv refused "subdirectory of itself".
+  # old_real is the canonical readlink target, NOT the saved home as written:
+  # a symlinked Java home legitimately has different values for the two.
+  [ -n "${OLD_JH:-}" ] && OLD_JH="$(strip_dir "$OLD_JH")"
   if [ -n "$injd" ] && [ -d "$injd" ] && [ -n "${OLD_JH:-}" ] && [ ! -e "$OLD_JH" ]; then
     # the same hazard apply refuses: moving the old build back under a JVM that runs on it
     local rin

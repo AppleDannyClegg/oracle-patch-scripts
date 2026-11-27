@@ -165,7 +165,7 @@ version_ge() {
 # ---- discovery ------------------------------------------------------------------------------------------
 find_home() {
   if [ -n "$ORACLE_HOME_ARG" ]; then printf '%s' "$ORACLE_HOME_ARG"; return; fi
-  if [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME/ohs" ]; then printf '%s' "$ORACLE_HOME"; return; fi
+  if [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME/ohs" ]; then printf '%s' "$(strip_dir "$ORACLE_HOME")"; return; fi
   local inv d h
   for inv in ${ORAINST_LOC:-/etc/oraInst.loc /var/opt/oracle/oraInst.loc}; do
     [ -f "$inv" ] || continue
@@ -1124,15 +1124,18 @@ cmd_rollback() {
   exit 0
 }
 
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 main() {
   local cmd="" args=()
-  while [ $# -gt 0 ]; do
+
+while [ $# -gt 0 ]; do
     case "$1" in
-      --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2 ;;
-      --domain-home) optchk "$@"; DOMAIN_ARG="$2"; shift 2 ;;
-      --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2 ;;
-      --run-dir)     optchk "$@"; RUN_DIR_ARG="$2"; shift 2 ;;
-      --backup-run)  optchk "$@"; BACKUP_RUN_ARG="$2"; shift 2 ;;
+      --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$(strip_dir "$2")"; shift 2 ;;
+      --domain-home) optchk "$@"; DOMAIN_ARG="$(strip_dir "$2")"; shift 2 ;;
+      --backup-dir)  optchk "$@"; BACKUP_DIR="$(strip_dir "$2")"; shift 2 ;;
+      --run-dir)     optchk "$@"; RUN_DIR_ARG="$(strip_dir "$2")"; shift 2 ;;
+      --backup-run)  optchk "$@"; BACKUP_RUN_ARG="$(strip_dir "$2")"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --all)       PRUNE_ALL=1; shift ;;
       --client-19c-pending) CLIENT19_PENDING=1; shift ;;

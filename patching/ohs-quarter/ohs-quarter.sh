@@ -74,7 +74,7 @@
 #                      for every folder above that is missing or empty; naming a folder that has content is refused
 #   --no-cacerts       do not carry CA aliases across (java-patch)
 #   --force            passed to java-patch and wls-patch, the two children that have a --force
-#   --yes --dry-run    as the children
+#   --yes --dry-run    as the children. A dry run's last line says DRY RUN, never OHS QUARTER OK: it applied nothing
 #   -h|--help
 #
 # Env: OHS_QUARTER_JAVA_PATCH / OHS_QUARTER_WLS_PATCH / OHS_QUARTER_DBCLIENT / OHS_QUARTER_OHS_PATCH override the
@@ -130,13 +130,15 @@ optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 PATCH_ROOT=""; ORACLE_HOME_ARG=""; JAVA_HOME_ARG=""; RUN_DIR=""; BACKUP_DIR=""; REMOVE_12C=""; KEEP_PATCHES=""; IGNORE_SYS_PREREQS=0; SKIP=""; NO_CACERTS=0; OPERATOR_STOPS=0; FORCE=0; DRY=0; YES=0
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --patch-root)  optchk "$@"; PATCH_ROOT="$2"; shift 2;;
-    --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$2"; shift 2;;
-    --java-home)   optchk "$@"; JAVA_HOME_ARG="$2"; shift 2;;
-    --run-dir)     optchk "$@"; RUN_DIR="$2"; shift 2;;
-    --backup-dir)  optchk "$@"; BACKUP_DIR="$2"; shift 2;;
+    --patch-root)  optchk "$@"; PATCH_ROOT="$(strip_dir "$2")"; shift 2;;
+    --oracle-home) optchk "$@"; ORACLE_HOME_ARG="$(strip_dir "$2")"; shift 2;;
+    --java-home)   optchk "$@"; JAVA_HOME_ARG="$(strip_dir "$2")"; shift 2;;
+    --run-dir)     optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
+    --backup-dir)  optchk "$@"; BACKUP_DIR="$(strip_dir "$2")"; shift 2;;
     --remove-12c)  optchk "$@"; REMOVE_12C="$2"; shift 2;;
     --keep-patches) optchk "$@"; KEEP_PATCHES="$2"; shift 2;;
     --ignore-sys-prereqs) IGNORE_SYS_PREREQS=1; shift;;
@@ -474,7 +476,12 @@ for entry in "${APPLY[@]}"; do
   esac
 done
 
-if [ -n "$LEFT_OUT" ]; then
+# The last line is the one an operator reads, and on a dry run it must not read like a finished outage: nothing was
+# stopped, applied or started, and no shared backup was written. "OK ... applied in one outage" over a run that
+# changed nothing is the same false success the partial-by-request rule (:36) keeps off a partial one.
+if [ "$DRY" = 1 ]; then
+  log "=== 7/7 DRY RUN: nothing was stopped, changed or started; would apply $APPLIED_N of ${#SETS[@]} sets in one outage ($what)${LEFT_OUT:+; left out (--skip): $LEFT_OUT}. No shared backup was written: a real run would put it under $SHARED"
+elif [ -n "$LEFT_OUT" ]; then
   log "=== 7/7 OHS QUARTER OK, PARTIAL BY REQUEST: $APPLIED_N of ${#SETS[@]} sets applied in one outage ($what). LEFT OUT (--skip): $LEFT_OUT. The shared backup is under $SHARED"
 else
   if [ "$OPERATOR_STOPS" = 1 ]; then

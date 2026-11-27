@@ -272,8 +272,8 @@ load_config() {
 }
 
 discover_oracle_home() {
-  [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME" ] && return 0
-  if [ -n "${MW_HOME:-}" ] && [ -d "$MW_HOME" ]; then ORACLE_HOME="$MW_HOME"; return 0; fi
+  [ -n "${ORACLE_HOME:-}" ] && [ -d "$ORACLE_HOME" ] && { ORACLE_HOME="$(strip_dir "$ORACLE_HOME")"; return 0; }
+  if [ -n "${MW_HOME:-}" ] && [ -d "$MW_HOME" ]; then ORACLE_HOME="$(strip_dir "$MW_HOME")"; return 0; fi
   # central inventory pointer
   local inv_loc inv_dir homes
   for inv_loc in /etc/oraInst.loc /var/opt/oracle/oraInst.loc "$HOME/oraInst.loc"; do
@@ -876,7 +876,11 @@ cmd_restore() {
   local src="${1:-$(state_get backup_dir || readlink "$BACKUP_DIR/latest" 2>/dev/null)}"
   [ -d "$src" ] && [ -f "$src/oracle_home.tar.gz" ] || die "No backup to restore (looked at $src)"
   local oh
-  oh="$(cat "$src/oracle_home.txt")"
+  # A backup may have been saved when ORACLE_HOME carried a trailing slash.
+  # Normalise both sides before comparing: this is the same home, and the
+  # comparison happens before any stop or restore, so a real mismatch still
+  # refuses here.
+  oh="$(strip_dir "$(cat "$src/oracle_home.txt")")"
   [ "$oh" = "$ORACLE_HOME" ] || die "Backup is for $oh but ORACLE_HOME is $ORACLE_HOME"
   local up; up="$(running_servers)" || die "$PS_UNREADABLE - restore refused: the home must not be replaced under a live JVM"
   if [ -n "$up" ]; then
@@ -1789,16 +1793,19 @@ cmd_run() {
 # ---------------------------------------------------------------------------
 usage() { sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; }
 
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 main() {
   local cmd="" args=()
-  while [ $# -gt 0 ]; do
+
+while [ $# -gt 0 ]; do
     case "$1" in
-      --oracle-home) optchk "$@"; CLI_ORACLE_HOME="$2"; shift 2 ;;
-      --domain-home) optchk "$@"; CLI_DOMAIN_HOME="$2"; shift 2 ;;
-      --java-home) optchk "$@";  optchk "$@";  optchk "$@"; CLI_JAVA_HOME="$2"; shift 2 ;;
+      --oracle-home) optchk "$@"; CLI_ORACLE_HOME="$(strip_dir "$2")"; shift 2 ;;
+      --domain-home) optchk "$@"; CLI_DOMAIN_HOME="$(strip_dir "$2")"; shift 2 ;;
+      --java-home) optchk "$@";  optchk "$@";  optchk "$@"; CLI_JAVA_HOME="$(strip_dir "$2")"; shift 2 ;;
       --admin-url) optchk "$@";  optchk "$@";  optchk "$@"; CLI_ADMIN_URL="$2"; shift 2 ;;
-      --backup-dir) optchk "$@";  optchk "$@"; CLI_BACKUP_DIR="$2"; shift 2 ;;
-      --run-dir)   optchk "$@"; RUN_DIR="$2"; shift 2 ;;
+      --backup-dir) optchk "$@";  optchk "$@"; CLI_BACKUP_DIR="$(strip_dir "$2")"; shift 2 ;;
+      --run-dir)   optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2 ;;
       --dry-run)     DRY_RUN=1; shift ;;
       --yes|-y)      ASSUME_YES=1; shift ;;
       --no-backup)   NO_BACKUP=1; shift ;;

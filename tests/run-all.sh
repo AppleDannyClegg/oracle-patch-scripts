@@ -50,6 +50,7 @@ case "$GATE_TIMEOUT" in '' | *[!0-9]* | 0) echo "run-all.sh: --timeout needs a p
 # A gate's wall-clock limit: GATE_TIMEOUT_<gate> wins (dashes -> underscores), else a built-in for a gate that
 # needs real headroom, else the run's --timeout. false-success sweeps the whole tree and takes ~258-289s on an
 # idle box, so 300 left under 15% headroom and any overlap turned it into a timeout (T205, Gort #12833).
+# ohs-patch took 289s alone under load ~9 and was killed at 300 three times on 26-27 Nov.
 gate_timeout() { # <gate name>
     local name="$1" var override
     var="GATE_TIMEOUT_${name//-/_}"
@@ -59,7 +60,7 @@ gate_timeout() { # <gate name>
         *) printf '%s' "$override"; return ;;
     esac
     case "$name" in
-        false-success-gate) printf '%s' 600 ;;
+        false-success-gate | ohs-patch) printf '%s' 600 ;;
         *) printf '%s' "$GATE_TIMEOUT" ;;
     esac
 }
@@ -67,7 +68,7 @@ gate_timeout() { # <gate name>
 GATES=(output-dir wls-quarter ohs-quarter ohs-quarter-stage ohs-quarter-explain ohs-quarter-real-children java-patch-will-stop wls-patch-spb dry-run-gate false-success-gate false-success-selftest self-contained-gate
     secret-argv-gate java-patch-cacerts java-patch-inplace java-patch java-blocklist java-patch-cve db-patch-opatch-min db-patch-ru-title run-dir-log run-latest-link
     get-download-guard check-parse optchk-gate unreadable-gate patch-manifest patch-status-oracle-home
-    patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch dbclient-upgrade wls-patch-conflict db-patch-conflict wls-patch-discovery wls-patch-restore-failure db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate backup-perms install-screen)
+    patch-status-unknown-level ru-date oem-standby-lag okv-rotate obic-diag ohs-patch dbclient-upgrade wls-patch-conflict db-patch-conflict wls-patch-discovery wls-patch-restore-failure wls-saved-home-slash env-home-slash java-patch-dir-slash java-saved-jh-slash db-patch-opatch-kit wls-version file-patterns jdk-version patch-base run-all-harness detached-gate backup-perms install-screen)
 # add_gate skips a gate that is already in the list. Every entry goes through it - the typed list as well as the
 # two auto-appends - because two entries for one name run it twice over the same log and rc file, and a passing
 # copy then overwrites a failing copy's tally. One name, one launch, one file.
