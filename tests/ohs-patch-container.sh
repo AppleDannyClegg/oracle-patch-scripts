@@ -13,6 +13,9 @@
 # read-only preflight) settles those. This lane removes the macOS-vs-Linux blind spot, nothing more.
 #
 # Usage: tests/ohs-patch-container.sh [image]     default oraclelinux:8, or set OHS_IMAGE
+# T3039: the default image has no zip/unzip, so the two zip-only cases SKIP and
+# tests/ohs-patch.sh:555's `ln -sf "$(command -v unzip)"` gets an empty target in the hidden-PATH pass.
+# Install both in the lane setup so those cases RUN; no skip is added to the gate.
 # Exit: 0 both passes green, 1 the gate reported a failure, 2 could not run (no docker/image).
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,6 +28,8 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image $IMAGE not presen
 gate() {
   docker run --rm --entrypoint bash -v "$REPO":/scripts:ro -e MODE="$1" "$IMAGE" -lc '
     set -uo pipefail
+    # T3039: install before the hidden PATH snapshot, so both modes carry zip/unzip.
+    dnf -y install zip unzip >/dev/null 2>&1 || { echo "FAIL: cannot install zip/unzip in $IMAGE"; exit 2; }
     if [ "${MODE}" = hidden ]; then
       # every binary the image has, except curl and ps: a real PATH where those two are absent, not stubbed
       d=/tmp/ohs-gate-bin; rm -rf "$d"; mkdir -p "$d"
@@ -35,7 +40,6 @@ gate() {
       export PATH="$d"
       echo "hidden PATH -> curl=$(command -v curl || echo none) ps=$(command -v ps || echo none)"
     fi
-    command -v unzip >/dev/null || echo "note: no unzip in this image - the zip fixture case will not run"
     cd /scripts && bash tests/ohs-patch.sh'
 }
 
