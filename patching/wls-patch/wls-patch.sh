@@ -1066,11 +1066,22 @@ cmd_apply() {
   while IFS='|' read -r _ p kind; do [ "$kind" = spb ] && spb_path="$p"; done <<<"$list"
   if [ -n "$spb_path" ]; then
     log "Applying the Stack Patch Bundle with SPBAT: $spb_path"
+    # A reused run dir can retry. Reset the previous attempt's verdicts before
+    # SPBAT runs: a failed apply returns before the comparison block below.
+    if [ "$DRY_RUN" != 1 ]; then
+      state_set spb_inventory_unchanged 0
+      state_set spb_inventory_compared 0
+      state_set spb_after_read_failed 0
+    fi
     # record the inventory itself, not just a PSU version: whether the PSU level moves is a question about Oracle's
     # naming (an SPB is dated later than the PSU it carries, and the abstract wording varies), while 'lspatches is
     # byte-identical before and after' means the bundle put nothing in this home, whatever the strings look like
     local before0="${PSU_LEVEL:-none}" lb="$RUN_DIR/lspatches.before" lrc=0
-    [ "$DRY_RUN" = 1 ] || { state_set psu_before "$before0"
+    [ "$DRY_RUN" = 1 ] || {
+      # A reused run dir can retry a real SPB. Clear the previous verdict only
+      # for a REAL attempt: a dry run changes nothing and must not invalidate
+      # the comparison the last real apply recorded.
+      state_set psu_before "$before0"
       "$ORACLE_HOME/OPatch/opatch" lspatches >"$lb" 2>/dev/null || lrc=$?
       state_set lspatches_before_rc "$lrc"; }
     [ "$DRY_RUN" = 1 ] || state_set spb_pending "$spb_path"
@@ -1084,14 +1095,28 @@ cmd_apply() {
     # SPBAT's exit status alone is weak: say straight away whether the inventory moved, and let verify fail on it
     local la="$RUN_DIR/lspatches.after" lrc2=0
     "$ORACLE_HOME/OPatch/opatch" lspatches >"$la" 2>/dev/null || lrc2=$?
-    if [ "$lrc" = 0 ] && [ "$lrc2" = 0 ] && cmp -s "$lb" "$la"; then
-      warn "SPBAT reported success but 'opatch lspatches' is unchanged (PSU ${PSU_LEVEL:-unknown}, bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
-      state_set spb_inventory_unchanged 1
-    elif [ "$lrc" = 0 ] && [ "$lrc2" = 0 ]; then
-      if [ "$before0" != none ] && [ -n "${PSU_LEVEL:-}" ]; then log "the bundle moved the PSU from $before0 to $PSU_LEVEL"
-      else log "the inventory changed (see $lb and $la)"; fi
-    else
+    # Remember WHY no comparison was made: a failed immediate after-read can be
+    # retried by verify against the valid before snapshot; other failures cannot.
+    state_set spb_after_read_failed 0
+    [ "$lrc" = 0 ] && [ "$lrc2" != 0 ] && state_set spb_after_read_failed 1
+    if [ "$lrc" != 0 ] || [ "$lrc2" != 0 ]; then
       warn "could not read 'opatch lspatches' both before (rc $lrc) and after (rc $lrc2) - not comparing the inventory"
+      state_set spb_inventory_compared 0
+    else
+      local crc=0
+      cmp -s "$lb" "$la" || crc=$?
+      if [ "$crc" = 0 ]; then
+        warn "SPBAT reported success but 'opatch lspatches' is unchanged (PSU ${PSU_LEVEL:-unknown}, bundle $(basename "$spb_path")) - verify will fail unless this bundle was already installed; if it was not, read the SPBAT log"
+        state_set spb_inventory_unchanged 1
+        state_set spb_inventory_compared 1
+      elif [ "$crc" = 1 ]; then
+        if [ "$before0" != none ] && [ -n "${PSU_LEVEL:-}" ]; then log "the bundle moved the PSU from $before0 to $PSU_LEVEL"
+        else log "the inventory changed (see $lb and $la)"; fi
+        state_set spb_inventory_compared 1
+      else
+        warn "could not compare the inventories (cmp rc $crc) - no conclusion about this bundle; verify will fail"
+        state_set spb_inventory_compared 0
+      fi
     fi
     log "SPBAT apply finished (SPB $spb_path)"
     return 0
@@ -1146,17 +1171,40 @@ cmd_verify() {
   expected="$(state_get applied || true)"
   # an SPB is applied as one unit by SPBAT; its patches are not in the 'applied' list, so only the servers
   # are checked - the SPBAT exit status was the apply's gate
-  if [ -n "$(state_get spb_applied || true)" ]; then
-    log "SPB $(basename "$(state_get spb_applied)") was applied by SPBAT - checking the servers"
+  if [ -n "$(state_get spb_applied || true)" ] || [ -n "$(state_get spb_pending || true)" ]; then
+    # A pending/failed attempt must reach the same gate as an applied one:
+    # otherwise a failed SPBAT can leave compared=0 and still print VERIFY PASSED.
+    log "SPB $(basename "$(state_get spb_applied || state_get spb_pending)") was attempted by SPBAT - checking the servers"
     expected=""
     # the exit status alone is a weak gate: fail when the inventory cannot be read, or when apply recorded that it
     # did not change at all (a partial SPBAT that exits 0 is not success). The comparison is the inventory against
     # itself, so it does not depend on how Oracle words the PSU abstract
-    local rci=0
-    "$ORACLE_HOME/OPatch/opatch" lspatches >/dev/null 2>&1 || rci=$?
-    if [ "$rci" != 0 ]; then err "opatch lspatches failed (rc $rci) - cannot confirm the bundle reached the inventory"; ok=0
+    local rv="$RUN_DIR/lspatches.verify" rci=0
+    "$ORACLE_HOME/OPatch/opatch" lspatches >"$rv" 2>/dev/null || rci=$?
+    local brc; brc="$(state_get lspatches_before_rc || true)"
+    if [ "$rci" != 0 ]; then err "could not compare the inventory after the bundle: the fresh read failed (rc $rci)"; ok=0
+    elif [ -z "$brc" ] || [ "$brc" != 0 ]; then
+      err "opatch lspatches before the bundle was not readable (rc ${brc:-no record}) - cannot claim the inventory changed; verify fails"
+      ok=0
+    elif [ "$(state_get spb_after_read_failed || true)" = 1 ] && [ -f "$RUN_DIR/lspatches.before" ]; then
+      # The apply's immediate after-read failed once. The bundle may still have
+      # changed the inventory, so compare THIS fresh read with the good before
+      # snapshot rather than rolling back a successful apply over one bad read.
+      local vcmp=0
+      cmp -s "$RUN_DIR/lspatches.before" "$rv" || vcmp=$?
+      if [ "$vcmp" = 1 ]; then
+        log "the inventory changed with the bundle (verified by a fresh read against the before snapshot)"
+      elif [ "$vcmp" = 0 ]; then
+        err "the fresh inventory matches the before snapshot - the bundle did not change this home; recovery is needed"
+        ok=0
+      else
+        err "could not compare the inventory (cmp rc $vcmp) - recovery is needed"
+        ok=0
+      fi
     elif [ "$(state_get spb_inventory_unchanged || true)" = 1 ]; then
       err "'opatch lspatches' is unchanged after the bundle: SPBAT reported success but the inventory does not show it. If it was already installed re-applying changes nothing; otherwise read the SPBAT log. Nothing was observed to change, so 'run' will not roll back automatically"; ok=0
+    elif [ "$(state_get spb_inventory_compared || true)" != 1 ]; then
+      err "no successful before/after inventory comparison was recorded - cannot claim the bundle changed the inventory; verify fails"; ok=0
     else
       log "the inventory changed with the bundle (PSU ${PSU_LEVEL:-unknown})"
     fi
