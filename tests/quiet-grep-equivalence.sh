@@ -128,7 +128,13 @@ case "${FIXTURE_MODE:-match}" in
 esac
 IDS="11111111;22222222;"
 case "${FIXTURE_MODE:-match}" in match|big) IDS="28575727;28737975;";; esac
-BIG="$(awk "BEGIN{for(i=0;i<4000;i++)printf \"28575727; row %d for the pipeline\n\",i}")"
+# JUST OVER ONE PIPE BUFFER, and not one line more. The 141 race is decided by whether the
+# writer needs more than one write, not by how much more: at 4000 lines this string is
+# exported multi-megabyte and every FORK in this shell fails E2BIG, so the base and the
+# head both returned 126 and the big comparison agreed on a failure to run - the
+# expected-difference count was 0 on the honest head, which is the tell. 1200 lines of 60
+# bytes is ~74 KB: over the 64 KB pipe buffer, far under any argument limit.
+BIG="$(awk "BEGIN{for(i=0;i<1200;i++)printf \"28575727; row %d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\",i}")"
 case "${FIXTURE_MODE:-match}" in
   nomatch) CONTENT="nothing that matches";;
   big)     CONTENT="$BIG";;
@@ -177,9 +183,17 @@ export HOME HIT OTHER IDS HOST
 # write, so an early-exiting grep can lose the race and SIGPIPE its writer (the
 # class this PR exists for). Appended after the content, so the first line still
 # MATCHES and the check still takes its matching branch.
+# UNEXPORT EACH ONE AS IT GROWS. The append alone is not enough: a variable that is
+# exported stays exported, so growing twenty of them puts ~1.7 MB into the environment of
+# every child and each FORK inside a site fails E2BIG. grep is a child, so the pipeline the
+# gate is testing cannot run at all: base and head both returned 126, both "same", and the
+# expected-difference count on the honest head was 0 - a comparison that agreed on a
+# failure to run. export -n drops the export and keeps the value in this shell, which is
+# where the producer and the pattern both read it.
 if [ "${FIXTURE_MODE:-match}" = big ]; then
   for v in out pre app INSTALLED INSTALLED_PATCHES inv lsp up running procs first names done \
            want now PRE_IDS ids lst CONTENT src v2 xml body; do
+    export -n "$v" 2>/dev/null || true
     eval "$v=\"\${$v:-\${CONTENT:-}}
 $BIG\""
   done
@@ -239,7 +253,7 @@ run_cmd() { # $1 command (as written in the file), $2 mode
 }
 
 compare() { # $1 base cmd, $2 head cmd, $3 label
-  local b h mode verdict_b verdict_h err=0
+  local b h mode verdict_b verdict_h err=0 h_match=""
   export WORK
   for mode in match nomatch absent big; do
     b="$(run_cmd "$1" "$mode")"; h="$(run_cmd "$2" "$mode")"
@@ -248,11 +262,22 @@ compare() { # $1 base cmd, $2 head cmd, $3 label
         gap "$3 [$mode] shell error, not a verdict: $(printf '%s\n' "$b$h" | grep -oE '[A-Za-z_][A-Za-z0-9_]*: unbound variable|command not found: [A-Za-z_]+|syntax error' | head -1)"
         continue;;
     esac
-    if [ "$b" = "$h" ]; then ok "$3 [$mode] same"; continue; fi
+    if [ "$b" = "$h" ]; then ok "$3 [$mode] same"; [ "$mode" = match ] && h_match="$(printf '%s\n' "$h" | head -1)"; continue; fi
     verdict_b="$(printf '%s\n' "$b" | head -1)"; verdict_h="$(printf '%s\n' "$h" | head -1)"
     if [ "$mode" = big ] && [ "$verdict_b" = "rc=141" ]; then
-      EXPECTED=$((EXPECTED+1))
-      echo "EXPECTED $3 [big] base rc=141 (the grep exited early and the producer took SIGPIPE under pipefail), head ${verdict_h#rc=} - this difference is the fix"
+      # A 141 on the base is the difference the conversion exists to remove, so it is
+      # reported, not failed - BUT ONLY IF THE HEAD DECIDED WHAT IT DECIDES ON MATCHING
+      # INPUT. Excusing any head verdict accepts the case where the new form takes the
+      # same early exit and 141s too (Tesla #49635), and then "the fix" is credited with
+      # a failure it did not fix. The head verdict on matching input is the expected one.
+      if [ -n "$h_match" ] && [ "$verdict_h" = "$h_match" ]; then
+        EXPECTED=$((EXPECTED+1))
+        echo "EXPECTED $3 [big] base rc=141 (the grep exited early and the producer took SIGPIPE under pipefail), head ${verdict_h#rc=} matches the head verdict on matching input (${h_match#rc=}) - this difference is the fix"
+        continue
+      fi
+      err=1
+      bad "$3 [big] base rc=141 and head $verdict_h does not match the head verdict on matching input (${h_match:-no match-mode run}) - a 141 that was not removed"
+      printf '      base: %s\n      head: %s\n' "${1:0:150}" "${2:0:150}"
       continue
     fi
     err=1
@@ -287,6 +312,15 @@ self_test() {
   st differ 'printf "%s\n" "$INSTALLED" | grep -q "^99999999;" || warn "not installed"' \
             'printf "%s\n" "$INSTALLED" | grep - "^99999999;" >/dev/null || warn "not installed" >/dev/null' \
             "a redirect on the wrong command (rc equal, the warning gone)"
+  st same   'printf "%s\n" "$INSTALLED" | grep -q "^28575727;"' \
+            'printf "%s\n" "$INSTALLED" | grep "^28575727;" >/dev/null' \
+            "the long-input fix: base 141, head matches its own verdict on matching input"
+  # The 141 excuse needs the head verdict to be the one it gives on matching input. This
+  # head maps a 141 to exit 9 and reproduces the base's own 0 and 1 otherwise, so big mode
+  # is the ONLY mode it can differ in - where the old rule excused it and this rule must not.
+  st differ 'printf "%s\n" "$INSTALLED" | grep -q "^28575727;"' \
+            'printf "%s\n" "$INSTALLED" | grep -m1 "^28575727;" >/dev/null; rc=$?; [ "$rc" = 141 ] && exit 9; [ "$rc" = 1 ] && exit 1; exit 0' \
+            "a head that never reached its matching verdict: the 141 is not excused"
   [ "$fails" = 0 ] && { echo "self-test: the gate fails on a regression and passes an honest conversion"; return 0; }
   echo "self-test: the gate cannot fail - do not trust its verdicts"; return 1
 }
@@ -361,6 +395,7 @@ echo
 
 echo
 echo "quiet-grep-equivalence: $PASS passed, $FAIL failed, $GAPS fixture/parse gaps"
+echo "  uncovered: $GAPS gate(s) not compared for a shell error, plus ${head_left:-?} pipeline grep -q left in the head - each one is printed above, and none of them is a pass"
 echo "  compared $cmds grep commands over $sites changed lines in $(cut -f1 "$WORK/pairs" | sort -u | wc -l | tr -d ' ') files"
 echo "  expected differences (the pipefail fix): $EXPECTED"
 [ "$FAIL" = 0 ]
