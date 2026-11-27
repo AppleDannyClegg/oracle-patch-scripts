@@ -24,13 +24,9 @@ probe() { # <home with or without trailing slash>
   (
     . "$T/tree/patching/java-patch/java-patch.sh" >/dev/null 2>&1 || exit 99
     cd "$T/tree/patching/java-patch" || exit 99
-    # shellcheck disable=SC2034  # these globals are read by the sourced script
-    # shellcheck disable=SC2034  # read by the sourced script
-    OLD_JH="$1"; OLD_REAL="${1%/}"; LINKED=0; IN_PLACE=1; KEEP_OLD=0
-    # shellcheck disable=SC2034  # read by the sourced script
-    JAVA_BASE="$T/base"; TARBALL="$T/jdk.tar.gz"; DRY_RUN=1; FORCE=1
-    # shellcheck disable=SC2034  # read by parse_opts in the sourced script
-    ARGS=(); parse_opts --java-home "$1" --run-dir "$T/run" --dry-run --force
+    export OLD_JH="$1" OLD_REAL="${1%/}" LINKED=0 IN_PLACE=1 KEEP_OLD=0
+    export JAVA_BASE="$T/base" TARBALL="$T/jdk.tar.gz" DRY_RUN=1 FORCE=1
+    export ARGS; ARGS=(); parse_opts --java-home "$1" --run-dir "$T/run" --dry-run --force
     discover() { :; }
     reuse_or_init() { :; }
     state_get() { case "$1" in preflight) echo ok;; backup) echo ok;; *) echo ;; esac; }
