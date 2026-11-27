@@ -320,12 +320,17 @@ recover() {
       log "recovering: operator-stops - no stop is run; assuming the home is stopped for the wls restore"
       step=$((step + 1)); log "[$step] recovering: wls-patch restore of its own home+domains backup"
       restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
-    elif ! orun stop; then
-      step=$((step + 1)); log "[$step] recovering: stop the components before the wls restore"
-      err "cannot stop the components before the wls restore - refusing to restore over a running home"; rec=0
     else
-      step=$((step + 1)); log "[$step] recovering: wls-patch restore of its own home+domains backup"
-      restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
+      # The number belongs BEFORE the action, not after the branch that may not have run: the stop is a step
+      # whether it succeeds or fails, and on success the old shape numbered the restore without it, so the
+      # sequence read 2, 3 with no 1 for the thing it did first.
+      step=$((step + 1)); log "[$step] recovering: stop the components before the wls restore"
+      if ! orun stop; then
+        err "cannot stop the components before the wls restore - refusing to restore over a running home"; rec=0
+      else
+        step=$((step + 1)); log "[$step] recovering: wls-patch restore of its own home+domains backup"
+        restore_wls_home || { err "wls-patch restore failed - restore this home by hand"; rec=0; }
+      fi
     fi
   fi
   if [ "$java_attempted" = 1 ]; then

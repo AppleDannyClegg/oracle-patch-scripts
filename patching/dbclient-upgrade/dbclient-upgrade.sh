@@ -100,7 +100,7 @@ output_path() { # <tool>: the folder for that tool. Prints it, creates nothing.
 
 ORACLE_HOME_ARG=""; DOMAIN_ARG=""; BACKUP_DIR="/u01/backup"; RUN_DIR_ARG=""; BACKUP_RUN=""; KEEP_PATCHES=""; REMOVE_PATCHES=""; REMOVE_IDS=""; IGNORE_SYS_PREREQS=0
 DRY_RUN=0; ASSUME_YES=0; OPERATOR_STOPS=0; PRUNE_ALL=0
-START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; RUN_BASE="${RUN_BASE:-$(output_path dbclient-upgrade)/runs}"
+START_TIMEOUT="${START_TIMEOUT:-300}"; POLL="${POLL:-10}"; PROGRESS_EVERY="${PROGRESS_EVERY:-60}"; RUN_BASE="${RUN_BASE:-$(output_path dbclient-upgrade)/runs}"
 OS_RELEASE="${OS_RELEASE:-}"
 problems=0; unknowns=0
 OH=""; DOMS=""; INV=""; COMPS=""; PRE_IDS=""; PRE_RSF=""; ZIP=""
@@ -349,13 +349,16 @@ start_all() {
 
 # every Listen port of one component answers HTTP(S) within <wait> seconds; 0 = all answer
 ports_answer() {
-  local d="$1" c="$2" wait="$3" p t code rc=0
+  local d="$1" c="$2" wait="$3" p t code rc=0 last=0
   for p in $(instance_ports "$d" "$c"); do
-    t=0; while :; do
+    # say it when the wait BEGINS, not only at either end: this can hold the console for <wait>s (Gort #50861)
+    log "  waiting for $c to answer on port $p (budget ${wait}s, checking every ${POLL}s)"
+    t=0; last=0; while :; do
       code="$(curl -k -s -o /dev/null -m 10 -w '%{http_code}' "https://localhost:$p/" 2>/dev/null)"
       case "$code" in ''|000) code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://localhost:$p/" 2>/dev/null)";; esac
       case "$code" in ''|000) ;; *) log "  $c answers on port $p (HTTP $code)"; break;; esac
       t=$((t + POLL)); [ "$t" -le "$wait" ] || { err "$c does not answer on port $p after ${wait}s"; rc=1; break; }
+      [ $((t - last)) -ge "$PROGRESS_EVERY" ] && { log "  still waiting for $c on port $p: ${t}s of ${wait}s"; last=$t; }
       sleep "$POLL"
     done
   done
