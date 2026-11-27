@@ -82,6 +82,7 @@ PD3="$T/patches-apply"; mk_spb "$PD3"; rm -f "$T/psu"; : >"$T/spbat.log"; : >"$T
 rc="$(run "$OH" apply "$PD3" --oracle-home "$OH" --java-home "$T/jdk" --yes)"
 grep -qx -- '-phase apply -oracle_home '"$OH" "$T/spbat.log" && ok || bad "SPBAT apply not run/arg-spaced: [$(cat "$T/spbat.log")]"
 grep -q 'the bundle moved the PSU from 12.2.1.4.260514 to 12.2.1.4.261007' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a moved PSU after SPBAT was not reported: $(lastlog)"
+grep -q '^=== BUNDLE TOOL RESULT ===$' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a successful bundle did not record the tool result heading: $(lastlog)"
 grep -q 'opatch apply' "$T/opatch.log" && bad "opatch apply ran alongside SPBAT" || ok
 rc="$(run "$OH" verify --oracle-home "$OH" --java-home "$T/jdk")"
 [ "$rc" = 0 ] && ok || bad "verify after an SPB apply exited $rc: $(lastlog)"
@@ -124,10 +125,27 @@ grep -q '^p39372515_122140_Generic|' "$(find "$T" -maxdepth 1 -name 'run.*.log' 
 # ---- an SPBAT failure stops the apply; nothing is recorded as applied ---------------------------------
 OH3="$T/oh-fail"; mk_home "$OH3" 13.9.4.2.23
 PD4="$T/patches-fail"; mk_spb "$PD4"
-printf '#!/bin/sh\nexit 1\n' >"$PD4/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$PD4/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<S
+#!/bin/sh
+printf '%s\n' 'SPBAT tool-line-1: checking the bundle'
+printf '%s\n' 'SPBAT tool-line-2: rejecting the bundle'
+exit 17
+S
+chmod +x "$PD4/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
 rc="$(run "$OH3" apply "$PD4" --oracle-home "$OH3" --java-home "$T/jdk" --yes)"
 [ "$rc" != 0 ] && ok || bad "apply exited 0 although SPBAT failed"
-grep -q 'SPBAT apply failed' "$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)" && ok || bad "a failed SPBAT apply was not reported: $(lastlog)"
+flog="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+grep -q 'SPBAT apply failed' "$flog" && ok || bad "a failed SPBAT apply was not reported: $(lastlog)"
+grep -q '^=== BUNDLE TOOL RESULT ===$' "$flog" && ok || bad "no fixed bundle-result heading: $(lastlog)"
+grep -q '^exit: 17$' "$flog" && ok || bad "the tool's exit status is not under the heading: $(lastlog)"
+block="$(sed -n '/^=== BUNDLE TOOL RESULT ===$/,/^inventory:/p' "$flog")"
+grep -q '^SPBAT tool-line-2: rejecting the bundle$' <<<"$block" && ok || bad "the tool's final line is not under the heading: $(lastlog)"
+grep -q '^inventory: before rc=0 after rc=not read compare rc=not compared$' "$flog" && ok || bad "no before/after record under the heading: $(lastlog)"
+capture="$(find "$T" -path '*/wls-patch/runs/*/spbat.apply.out' -type f | sort | tail -1)"
+before_dry="$(cksum <"$capture")"
+dry_rc="$(HOME="$T" ORACLE_OUTPUT_DIR="$T" ORACLE_HOME="$OH3" JAVA_HOME="$T/jdk" bash "$SCRIPT" apply "$PD4" --oracle-home "$OH3" --java-home "$T/jdk" --yes --dry-run --run-dir "$(dirname "$capture")" >/dev/null 2>&1; echo $?)"
+[ "$dry_rc" = 0 ] && ok || bad "a dry rerun of a failed apply exited $dry_rc"
+[ "$before_dry" = "$(cksum <"$capture")" ] && ok || bad "a dry rerun overwrote the real tool transcript"
 
 # ---- a dry run applies nothing and must not record the SPB as applied --------------------------------
 PD5="$T/patches-dry"; mk_spb "$PD5"; : >"$T/spbat.log"
@@ -203,6 +221,174 @@ rc="$(run "$OH10" run "$PD15" --oracle-home "$OH10" --java-home "$T/jdk" --yes -
 L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
 grep -q 'ORACLE_HOME restored' "$L" && bad "recovery restored BACKUP_DIR/latest (an older backup), not this run's: $(tail -4 "$L")" || ok
 grep -q 'servers NOT started' "$L" && ok || bad "with no backup recorded for this run, the servers were not left stopped: $(tail -4 "$L")"
+
+# ---- a failed BEFORE inventory read must not let verify claim the inventory changed ----
+OH11="$T/oh-beforefail"; mk_home "$OH11" 13.9.4.2.23
+PD11="$T/patches-beforefail"; mk_spb "$PD11"; rm -f "$T/psu"; : >"$T/spbat.log"
+: >"$T/lsp_fail"
+rc="$(run "$OH11" apply "$PD11" --oracle-home "$OH11" --java-home "$T/jdk" --yes)"
+rm -f "$T/lsp_fail"
+rc="$(run "$OH11" verify --oracle-home "$OH11" --java-home "$T/jdk")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+[ "$rc" != 0 ] && ok || bad "verify passed although the BEFORE inventory read failed: $(tail -3 "$L")"
+grep -qi 'before' "$L" && ok || bad "verify did not name the failed before-read: $(tail -3 "$L")"
+! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on an unreadable baseline: $(tail -3 "$L")"
+
+# ---- a failed immediate after-read must not become a successful comparison later ----
+OH12="$T/oh-afterfail"; mk_home "$OH12" 13.9.4.2.23
+PD12="$T/patches-afterfail"; mk_spb "$PD12"; rm -f "$T/psu"; : >"$T/spbat.log"
+# SPBAT reports success without moving the inventory; opatch fails ONLY the second
+# lspatches call (apply's immediate after-read), then normal reads are restored.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\ncase "$*" in *-phase\ apply*) : >"%s/afterfail-now";; esac\nexit 0\n' "$T" "$T" >"$PD12/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$OH12/OPatch/opatch" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "OPatch Version: 13.9.4.2.23"; exit 0 ;;
+  lspatches)
+    [ -f "$T/afterfail-now" ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE 12.2.1.4.260514"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$OH12/OPatch/opatch"
+rm -f "$T/afterfail-now" "$T/lsp_fail"
+rc="$(run "$OH12" apply "$PD12" --oracle-home "$OH12" --java-home "$T/jdk" --run-dir "$T/run-afterfail" --yes)"
+rm -f "$T/afterfail-now"   # fresh reads work again
+rc="$(run "$OH12" verify --oracle-home "$OH12" --java-home "$T/jdk" --run-dir "$T/run-afterfail")"
+L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
+[ "$rc" != 0 ] && ok || bad "verify passed after apply could not compare the inventory: $(tail -3 "$L")"
+! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on a comparison that never happened: $(tail -3 "$L")"
+grep -Eqi 'comparison|compare|before snapshot' "$L" && ok || bad "verify did not name the missing comparison: $(tail -3 "$L")"
+
+# ---- a cmp ERROR is not an inventory change ----
+OH13="$T/oh-cmperr"; mk_home "$OH13" 13.9.4.2.23
+PD13="$T/patches-cmperr"; mk_spb "$PD13"; rm -f "$T/psu"; : >"$T/spbat.log"; rm -f "$T/lsp_fail" "$T/afterfail-now"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 0\n' "$T" >"$PD13/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+mkdir -p "$T/cmpbin"; printf '#!/bin/sh\nexit 2\n' >"$T/cmpbin/cmp"; chmod +x "$T/cmpbin/cmp"
+OLDPATH="$PATH"; PATH="$T/cmpbin:$PATH"
+rc="$(run "$OH13" apply "$PD13" --oracle-home "$OH13" --java-home "$T/jdk" --run-dir "$T/run-cmperr" --yes)"
+PATH="$OLDPATH"
+rc="$(run "$OH13" verify --oracle-home "$OH13" --java-home "$T/jdk" --run-dir "$T/run-cmperr")"
+L="$T/run-cmperr/wls-patch.log"
+[ "$rc" != 0 ] && ok || bad "verify passed after cmp could not compare: $(tail -3 "$L")"
+! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on a cmp error: $(tail -3 "$L")"
+grep -qi 'compare' "$L" && ok || bad "verify did not name the failed comparison: $(tail -3 "$L")"
+
+# ---- a reused run dir must not inherit the previous attempt's comparison ----
+OH14="$T/oh-retry-equal"; mk_home "$OH14" 13.9.4.2.23
+PD14="$T/patches-retry-equal"; mk_spb "$PD14"; rm -f "$T/psu" "$T/lsp_fail"; : >"$T/spbat.log"
+cat >"$PD14/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+[ -f "$T/spb-change" ] && echo 12.2.1.4.261007 >"$T/psu"
+exit 0
+EOF
+chmod +x "$PD14/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rm -f "$T/spb-change"
+rc="$(run "$OH14" apply "$PD14" --oracle-home "$OH14" --java-home "$T/jdk" --run-dir "$T/run-retry-equal" --yes)"
+: >"$T/spb-change"
+rc="$(run "$OH14" apply "$PD14" --oracle-home "$OH14" --java-home "$T/jdk" --run-dir "$T/run-retry-equal" --yes)"
+rc="$(run "$OH14" verify --oracle-home "$OH14" --java-home "$T/jdk" --run-dir "$T/run-retry-equal")"
+L="$T/run-retry-equal/wls-patch.log"
+[ "$rc" = 0 ] && ! grep -q 'is unchanged after the bundle' "$L" && ok || bad "a changed retry inherited the equal verdict: rc $rc: $(tail -3 "$L")"
+
+OH15="$T/oh-retry-fail"; mk_home "$OH15" 13.9.4.2.23
+PD15="$T/patches-retry-fail"; mk_spb "$PD15"; rm -f "$T/psu" "$T/lsp_fail"; : >"$T/spbat.log"
+cat >"$PD15/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+[ -f "$T/spb-fail" ] && exit 1
+echo 12.2.1.4.261007 >"$T/psu"
+exit 0
+EOF
+chmod +x "$PD15/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rm -f "$T/spb-fail"
+rc="$(run "$OH15" apply "$PD15" --oracle-home "$OH15" --java-home "$T/jdk" --run-dir "$T/run-retry-fail" --yes)"
+: >"$T/spb-fail"
+rc="$(run "$OH15" apply "$PD15" --oracle-home "$OH15" --java-home "$T/jdk" --run-dir "$T/run-retry-fail" --yes)"
+rm -f "$T/spb-fail"
+rc="$(run "$OH15" verify --oracle-home "$OH15" --java-home "$T/jdk" --run-dir "$T/run-retry-fail")"
+L="$T/run-retry-fail/wls-patch.log"
+[ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed retry inherited the earlier success: rc $rc: $(tail -3 "$L")"
+
+# ---- a dry run must not invalidate the comparison from the last real apply ----
+OH16="$T/oh-dry-after"; mk_home "$OH16" 13.9.4.2.23
+PD16="$T/patches-dry-after"; mk_spb "$PD16"; rm -f "$T/psu" "$T/lsp_fail" "$T/spb-change" "$T/spb-fail"; : >"$T/spbat.log"
+rc="$(run "$OH16" apply "$PD16" --oracle-home "$OH16" --java-home "$T/jdk" --run-dir "$T/run-dry-after" --yes)"
+rc="$(run "$OH16" apply "$PD16" --oracle-home "$OH16" --java-home "$T/jdk" --run-dir "$T/run-dry-after" --dry-run --yes)"
+rc="$(run "$OH16" verify --oracle-home "$OH16" --java-home "$T/jdk" --run-dir "$T/run-dry-after")"
+L="$T/run-dry-after/wls-patch.log"
+[ "$rc" = 0 ] && grep -q 'VERIFY PASSED' "$L" && ok || bad "a dry apply invalidated a real comparison: rc $rc: $(tail -3 "$L")"
+
+# ---- a failed first SPBAT attempt must fail standalone verify, not pass silently ----
+OH17="$T/oh-spbfail"; mk_home "$OH17" 13.9.4.2.23
+PD17="$T/patches-spbfail"; mk_spb "$PD17"; rm -f "$T/psu" "$T/lsp_fail"; : >"$T/spbat.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/spbat.log"\nexit 17\n' "$T" >"$PD17/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+chmod +x "$PD17/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+rc="$(run "$OH17" apply "$PD17" --oracle-home "$OH17" --java-home "$T/jdk" --run-dir "$T/run-spbfail" --yes)"
+rc="$(run "$OH17" verify --oracle-home "$OH17" --java-home "$T/jdk" --run-dir "$T/run-spbfail")"
+L="$T/run-spbfail/wls-patch.log"
+[ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed SPBAT attempt passed standalone verify: rc $rc: $(tail -3 "$L")"
+grep -q '^spb_pending=' "$T/run-spbfail/state" && ok || bad "the pending record needed by recovery was lost"
+
+# ---- one failed after-read must not roll back a bundle that really changed the inventory ----
+OH18="$T/oh-afterfail-changed"; mk_home "$OH18" 13.9.4.2.23
+PD18="$T/patches-afterfail-changed"; mk_spb "$PD18"; rm -f "$T/psu" "$T/lsp_fail" "$T/afterfail-now"; : >"$T/spbat.log"
+cat >"$PD18/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+echo 12.2.1.4.261007 >"$T/psu"
+: >"$T/afterfail-now"
+exit 0
+EOF
+chmod +x "$PD18/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$OH18/OPatch/opatch" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "OPatch Version: 13.9.4.2.23"; exit 0 ;;
+  lspatches) [ -f "$T/afterfail-now" ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$OH18/OPatch/opatch"
+rc="$(run "$OH18" apply "$PD18" --oracle-home "$OH18" --java-home "$T/jdk" --run-dir "$T/run-afterchanged" --yes)"
+rm -f "$T/afterfail-now"
+rc="$(run "$OH18" verify --oracle-home "$OH18" --java-home "$T/jdk" --run-dir "$T/run-afterchanged")"
+L="$T/run-afterchanged/wls-patch.log"
+[ "$rc" = 0 ] && grep -q 'VERIFY PASSED' "$L" && ok || bad "one failed after-read rolled back a changed bundle: rc $rc: $(tail -3 "$L")"
+grep -q 'fresh read against the before snapshot' "$L" && ok || bad "verify did not say it re-compared the fresh read: $(tail -3 "$L")"
+
+# ---- a failed retry in a reused run dir must not inherit an after-read flag ----
+OH19="$T/oh-retry-flag"; mk_home "$OH19" 13.9.4.2.23
+PD19="$T/patches-retry-flag"; mk_spb "$PD19"; rm -f "$T/psu" "$T/lsp_fail" "$T/afterfail-now"; : >"$T/spbat.log"
+cat >"$PD19/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+[ -f "$T/spb-fail" ] && { echo 12.2.1.4.261007 >"$T/psu"; exit 17; }
+: >"$T/afterfail-now"
+exit 0
+EOF
+chmod +x "$PD19/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$OH19/OPatch/opatch" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "OPatch Version: 13.9.4.2.23"; exit 0 ;;
+  lspatches) [ -f "$T/afterfail-now" ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$OH19/OPatch/opatch"
+rc1="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+[ "$rc1" = 0 ] && grep -q '^spb_after_read_failed=1$' "$T/run-retry-flag/state" && ok || bad "first apply did not record the after-read failure: rc $rc1"
+rm -f "$T/afterfail-now"; : >"$T/spb-fail"
+rc2="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+[ "$rc2" != 0 ] && ok || bad "SPBAT failure on retry was not refused: rc $rc2"
+rm -f "$T/spb-fail"
+rc="$(run "$OH19" verify --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag")"
+L="$T/run-retry-flag/wls-patch.log"
+[ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed retry inherited the earlier after-read flag: rc $rc: $(tail -3 "$L")"
 
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
