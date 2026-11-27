@@ -196,7 +196,7 @@ run_sql() {
   out="$(printf 'whenever sqlerror exit 1\nconnect %s\nset heading off feedback off pagesize 0 linesize 32767 trimspool on verify off echo off\n%s\n%s\nexit\n' \
           "${SQL_CONNECT:-/ as sysdba}" "${PDB:+alter session set container=$PDB;}" "$1" | $SQL_CMD -L /nolog 2>&1)" || { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
   # a connect that failed (ORA-01017, ORA-12xxx) or a 'not connected' session must not come back as rows
-  printf '%s\n' "$out" | grep -qE '^ERROR:|SP2-0640|ORA-01017|ORA-12[0-9]{3}|ORA-65011|ORA-65019' && { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
+  printf '%s\n' "$out" | grep -E '^ERROR:|SP2-0640|ORA-01017|ORA-12[0-9]{3}|ORA-65011|ORA-65019' >/dev/null&& { dbg "SQL failed: $out"; printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 sql_val() { run_sql "select $1 from dual;" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//'; }
@@ -532,7 +532,7 @@ ords_stop() {
   [ -n "$ORDS_RUNNING" ] || { log "ORDS not running on this host"; return 0; }
   if [ -n "${ORDS_STOP_CMD:-}" ]; then run_sh "$ORDS_STOP_CMD"
   elif [ "$WLS_MODE" = 1 ]; then wls_deployer -stop -name "$WLS_ORDS_APP" && { ORDS_RUNNING=""; state_set app_stopped 1; log "app $WLS_ORDS_APP stopped"; }; return $?
-  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
+  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service 2>/dev/null | grep '\bords\.service' >/dev/null; then run_sh "sudo systemctl stop ${ORDS_SERVICE:-ords}"
   else log "Stopping ORDS pid $ORDS_RUNNING"; [ "$DRY_RUN" = 1 ] || kill "$ORDS_RUNNING" || { err "cannot signal ORDS pid $ORDS_RUNNING (owner: $(ps -o user= -p "$ORDS_RUNNING" 2>/dev/null || echo '?')): not stopped"; return 1; }; fi
   [ "$DRY_RUN" = 1 ] && { ORDS_RUNNING=""; return 0; }
   # the proof is the process table, not kill -0: kill -0 also fails on a process this user may not signal (EPERM), which read as 'gone'
@@ -551,13 +551,13 @@ ords_stop() {
 # ords_pid: the first ORDS pid, empty when none; rc 1 when pgrep itself could not run (rc 2/3) - an unreadable process list is not 'no ORDS'
 ords_pid() { local p rc; p="$(pgrep -f 'ords.war|ords serve|ords --config' 2>/dev/null)"; rc=$?; [ $rc -le 1 ] || return 1; printf '%s\n' "$p" | head -1; }
 # pid_alive <pid>: 0 alive, 1 gone, 2 the process table cannot be read (ps does not even show this shell) - 2 is never 'gone' (wls-patch 3ab88b8's stop)
-pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -qE "^ *$$\$" || return 2; ps -p "$1" -o pid= 2>/dev/null | grep -qE "^ *$1\$"; }
+pid_alive() { ps -p $$ -o pid= 2>/dev/null | grep -E "^ *$$\$" >/dev/null|| return 2; ps -p "$1" -o pid= 2>/dev/null | grep -E "^ *$1\$" >/dev/null; }
 ords_start() {
   ords_detect
   [ -z "$ORDS_RUNNING" ] || { log "ORDS already running"; return 0; }
   if [ -n "${ORDS_START_CMD:-}" ]; then run_sh "$ORDS_START_CMD"
   elif [ "$WLS_MODE" = 1 ]; then wls_deployer -start -name "$WLS_ORDS_APP" || return 1; state_set app_stopped 0
-  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service --all 2>/dev/null | grep -q '\bords\.service'; then run_sh "sudo systemctl start ${ORDS_SERVICE:-ords}"
+  elif [ -n "${ORDS_SERVICE:-}" ] || systemctl list-units --type=service --all 2>/dev/null | grep '\bords\.service' >/dev/null; then run_sh "sudo systemctl start ${ORDS_SERVICE:-ords}"
   elif [ -n "${ORDS_HOME:-}" ] && [ -n "${ORDS_CONFIG:-}" ]; then run_sh "nohup '$ORDS_HOME/bin/ords' --config '$ORDS_CONFIG' serve >'$RUN_DIR/ords.out' 2>&1 &"
   else warn "Do not know how to start ORDS here (set ORDS_START_CMD or ORDS_SERVICE)"; return 0; fi
   [ "$DRY_RUN" = 1 ] && return 0
@@ -615,7 +615,7 @@ cmd_apply() {
   local off; off="$(wc -c <"$LOG_FILE" | tr -d ' ')"   # only this run's output counts: the run dir is reused ('latest') and may hold an earlier success
   run_sql_script "$src" "$script" "$APEX_TS" "$APEX_FILES_TS" "$APEX_TEMP_TS" "/i/" || true   # the script's own exit code is unreliable; verify by querying
   db_detect || true
-  if tail -c +$((off + 1)) "$LOG_FILE" | grep -q 'Thank you for installing Oracle APEX' && [ "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)" = "$ver" ] && [ "$APEX_STATUS" = VALID ] && [ "$APEX_SCHEMA" = "$(apex_schema_for "$ver")" ]; then
+  if tail -c +$((off + 1)) "$LOG_FILE" | grep 'Thank you for installing Oracle APEX' >/dev/null&& [ "$(printf '%s' "$APEX_VER" | cut -d. -f1,2)" = "$ver" ] && [ "$APEX_STATUS" = VALID ] && [ "$APEX_SCHEMA" = "$(apex_schema_for "$ver")" ]; then
     log "APEX $ver installed in the database (registry VALID, schema $APEX_SCHEMA)"
     state_set applied "$ver"
   else

@@ -224,7 +224,7 @@ comp_version() {
 version_in_path() {
   local p
   for p in "$(basename "$1")" "$(basename "$(dirname "$1")")"; do
-    printf '%s' "$p" | grep -qE '^[0-9]+(\.[0-9]+)+$' && { printf '%s' "$p"; return; }
+    grep -qE <<<"$p" '^[0-9]+(\.[0-9]+)+$' && { printf '%s' "$p"; return; }
   done
 }
 
@@ -319,7 +319,7 @@ fmw_lines() {
       *BUNDLE*|*SPB*|*CUMULATIVE*PATCH*)
         acc="${acc}OTHER|${desc}|${id}"$'\n' ;;
       *)
-        printf '%s' "$up" | grep -qiE "$shaped" && acc="${acc}OTHER|${desc}|${id}"$'\n' ;;
+        grep -qiE <<<"$up" "$shaped" && acc="${acc}OTHER|${desc}|${id}"$'\n' ;;
     esac
   done <<EOF
 $(printf '%s\n' "$lsp" | tr -d '\r')
@@ -346,7 +346,7 @@ other_lines() {
   wls="$(wls_homes)"
   for h in $(inventory_homes | sort -u); do
     [ -x "$h/OPatch/opatch" ] || continue
-    printf '%s\n' "$wls" | grep -qxF "$h" && continue
+    printf '%s\n' "$wls" | grep -xF "$h" >/dev/null&& continue
     kind="$(home_kind "$h")"
     opatch="$(ORACLE_HOME="$h" "$h/OPatch/opatch" version 2>/dev/null | sed -n 's/^OPatch Version: *//p')"
     [ -n "$opatch" ] || echo "patch-manifest: warning: could not read the OPatch version of $h - get-patches.ps1 may skip the OPatch kit" >&2
@@ -409,7 +409,7 @@ main() {
   body="$(wls_lines)" || exit 1
   others="$(other_lines)" || exit 1
   body="$body"$'\n'"$others"$'\n'"$(jdk_lines)"
-  printf '%s' "$body" | grep -q . || die "No WebLogic home or JDK found. Set ORACLE_HOME (or JAVA_HOME) and run again."
+  grep -q <<<"$body" . || die "No WebLogic home or JDK found. Set ORACLE_HOME (or JAVA_HOME) and run again."
 
   {
     echo "# patch-manifest v1 - copy to the Windows machine and run: .\\get-patches.ps1 -Manifest <this file>"
