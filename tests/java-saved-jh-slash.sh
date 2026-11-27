@@ -20,7 +20,7 @@ rollback() { # <saved old_jh> [recorded old_real] -> $RC and $T/out
   local saved="$1" real="${2:-$T/home}"
   # Each case gets its own real JDK pair: an in-place rollback MOVES these
   # directories, so a shared fixture makes later cases pass on any script.
-  rm -rf "$T/home" "$T/jdk" "$T"/home.failed-* "$T"/jdk.failed-*
+  rm -rf -- "${T:?}/home" "${T:?}/jdk" "${T:?}"/home.failed-* "${T:?}"/jdk.failed-*
   mkdir -p "$T/home/bin" "$T/jdk/bin" "$T/home/java-patch/runs/r1"
   printf '#!/bin/sh\necho "openjdk version \\"1.8.0_471\\" 2024-07-16" >&2\n' >"$T/home/bin/java"
   printf '#!/bin/sh\necho "openjdk version \\"1.8.0_471\\" 2024-07-16" >&2\n' >"$T/jdk/bin/java"
