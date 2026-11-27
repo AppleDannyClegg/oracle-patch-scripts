@@ -240,7 +240,7 @@ rc="$(run "$OH12" verify --oracle-home "$OH12" --java-home "$T/jdk" --run-dir "$
 L="$(find "$T" -maxdepth 1 -name 'run.*.log' | sort | tail -1)"
 [ "$rc" != 0 ] && ok || bad "verify passed after apply could not compare the inventory: $(tail -3 "$L")"
 ! grep -q 'VERIFY PASSED' "$L" && ok || bad "verify claimed success on a comparison that never happened: $(tail -3 "$L")"
-grep -qi 'comparison\|compare' "$L" && ok || bad "verify did not name the missing comparison: $(tail -3 "$L")"
+grep -Eqi 'comparison|compare|before snapshot' "$L" && ok || bad "verify did not name the missing comparison: $(tail -3 "$L")"
 
 # ---- a cmp ERROR is not an inventory change ----
 OH13="$T/oh-cmperr"; mk_home "$OH13" 13.9.4.2.23
@@ -312,6 +312,34 @@ rc="$(run "$OH17" verify --oracle-home "$OH17" --java-home "$T/jdk" --run-dir "$
 L="$T/run-spbfail/wls-patch.log"
 [ "$rc" != 0 ] && ! grep -q 'VERIFY PASSED' "$L" && ok || bad "a failed SPBAT attempt passed standalone verify: rc $rc: $(tail -3 "$L")"
 grep -q '^spb_pending=' "$T/run-spbfail/state" && ok || bad "the pending record needed by recovery was lost"
+
+# ---- one failed after-read must not roll back a bundle that really changed the inventory ----
+OH18="$T/oh-afterfail-changed"; mk_home "$OH18" 13.9.4.2.23
+PD18="$T/patches-afterfail-changed"; mk_spb "$PD18"; rm -f "$T/psu" "$T/lsp_fail" "$T/afterfail-now"; : >"$T/spbat.log"
+cat >"$PD18/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$T/spbat.log"
+echo 12.2.1.4.261007 >"$T/psu"
+: >"$T/afterfail-now"
+exit 0
+EOF
+chmod +x "$PD18/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh"
+cat >"$OH18/OPatch/opatch" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "OPatch Version: 13.9.4.2.23"; exit 0 ;;
+  lspatches) [ -f "$T/afterfail-now" ] && exit 1
+    echo "39372515;WLS PATCH SET UPDATE \$(cat "$T/psu" 2>/dev/null || echo 12.2.1.4.260514)"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$OH18/OPatch/opatch"
+rc="$(run "$OH18" apply "$PD18" --oracle-home "$OH18" --java-home "$T/jdk" --run-dir "$T/run-afterchanged" --yes)"
+rm -f "$T/afterfail-now"
+rc="$(run "$OH18" verify --oracle-home "$OH18" --java-home "$T/jdk" --run-dir "$T/run-afterchanged")"
+L="$T/run-afterchanged/wls-patch.log"
+[ "$rc" = 0 ] && grep -q 'VERIFY PASSED' "$L" && ok || bad "one failed after-read rolled back a changed bundle: rc $rc: $(tail -3 "$L")"
+grep -q 'fresh read against the before snapshot' "$L" && ok || bad "verify did not say it re-compared the fresh read: $(tail -3 "$L")"
 
 echo "wls-patch spb gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
