@@ -367,6 +367,19 @@ build; printf 'Prereq "checkApplicable" for patch 40005842 failed.\nPatch 400058
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*not applicable.*Platform 46' "$T/out" && ok || bad "'for patch N failed' was not blocking: rc $rc: $(grep -E 'BLOCK|UNKNOWN' "$T/out" | head -2)"
 build; printf 'OPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ok || bad "rc 0 without the 'passed' line was taken as a pass: rc $rc"
+# The tool can break the verdict phrase ITSELF across two lines - by wrapping it, or by a line arriving between
+# the writes that make up the phrase, which the capture at :472 can carry because stderr shares that stream.
+# Either way the phrase is no longer one line and the check reads a real verdict as absent. The red case:
+build; printf 'Oracle Interim Patch Installer version 13.9.4.2.1\nInvoking prereq "checkapplicable"\n\nPrereq "checkApplicable"\nfor patch 38098858 passed.\n\nOPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 0 ] && ! grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && grep -q 'components: every component' "$T/out" && ok || bad "a pass phrase broken across two lines read as no verdict: rc $rc: $(grep -E 'UNKNOWN|components' "$T/out" | head -2)"
+# The same break in FAILURE wording must still block. This is the boundary: folding line breaks must not turn a
+# genuine failure into a pass (the wording is the tree's own field failure, 12 Nov 2026, :362-367 above).
+build; printf 'Invoking prereq "checkapplicable"\n\nPrereq "checkApplicable"\nfor patch 40005842 failed.\nPatch 40005842: Platform 46 is not supported\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 1 ] && grep -q 'BLOCKING: .*not applicable.*Platform 46' "$T/out" && ! grep -q 'components: every component' "$T/out" && ok || bad "a failure phrase broken across two lines was not blocking: rc $rc: $(grep -E 'BLOCK|UNKNOWN|components' "$T/out" | head -2)"
+# CONTROL: a diagnostic line BETWEEN the two halves is a different fault, not this one. Folding cannot repair
+# it - the diagnostic's own words sit inside the phrase - and it must stay UNKNOWN. A verdict must not be invented.
+build; printf 'Invoking prereq "checkapplicable"\n\nPrereq "checkApplicable"\nWARNING: could not read /u01/inv/oneoffs.xml\nfor patch 40005842 passed.\n\nOPatch succeeded.\n' >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 2 ] && grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" && ! grep -q 'components: every component' "$T/out" && ok || bad "an interleaved diagnostic line was read as a verdict: rc $rc: $(grep -E 'UNKNOWN|components' "$T/out" | head -2)"
 build; rc="$(run)"
 grep -q 'components: every component 40005842 needs is in' "$T/out" && ok || bad "a passing CheckApplicable is not reported"
 
