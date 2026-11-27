@@ -3,7 +3,8 @@
 #   - preflight of every present folder BEFORE the stop, java-patch preflight gets --will-stop
 #   - stop once, then JDK -> SPB -> wls applies, then start once, then verify
 #   - a failure recovers in reverse (wls restore, then java rollback) and starts only when both recovered
-#   - a missing/empty folder is skipped; dry-run reaches no changing child verb
+#   - a missing/empty folder is skipped; dry-run reaches no changing child verb, and its last line says DRY RUN
+#   - a run where the child recorded nothing as running says so, at step 5 and on the last line
 #
 # Usage: tests/wls-quarter.sh [repo-root]
 
@@ -41,7 +42,12 @@ case "\$1" in
   rollback) [ -n "\${FAIL_JAVA_ROLLBACK:-}" ] && exit 1 ;;
   verify) [ "\$who" = java ] && [ -n "\${FAIL_JAVA_VERIFY:-}" ] && exit 1 ;;
   start) [ -n "\${FAIL_WLS_START:-}" ] && exit 1 ;;
-  stop) [ -n "\${FAIL_WLS_STOP:-}" ] && [ -e "$T/stop.ok" ] && exit 1; : >"$T/stop.ok" ;;
+  stop) [ -n "\${FAIL_WLS_STOP:-}" ] && [ -e "$T/stop.ok" ] && exit 1; : >"$T/stop.ok"
+        # the real child records what was running; one space means nothing was
+        if [ -n "\$rd" ]; then
+          if [ -n "\${NOTHING_WAS_RUNNING:-}" ]; then printf 'servers_were_running= \n' >>"\$rd/state"
+          else printf 'servers_were_running= AdminServer ManagedSrv1 \n' >>"\$rd/state"; fi
+        fi ;;
 esac
 exit 0
 EOF
@@ -137,6 +143,29 @@ grep -qE '^(java|wls) (stop|apply|start|backup)' "$T/calls.log" && bad "a changi
 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run >"$T/out" 2>&1 && ok || bad "dry-run failed: $(tail -3 "$T/out")"
 miss="$(grep -E '^(java|wls) (stop|apply|start|backup|restore|rollback)' "$T/calls.log" | grep -v -- '--dry-run')"
 [ -z "$miss" ] && ok || bad "a changing call ran without --dry-run: $miss"
+
+# the last line is the one an operator reads: over a dry run it must not read like a finished outage
+tail -1 "$T/out" | grep -q 'DRY RUN' && ok || bad "a dry run's last line does not say DRY RUN: [$(tail -1 "$T/out")]"
+tail -1 "$T/out" | grep -q 'QUARTER OK' && bad "a dry run's last line says QUARTER OK: [$(tail -1 "$T/out")]" || ok
+tail -1 "$T/out" | grep -q 'applied' && bad "a dry run's last line says applied: [$(tail -1 "$T/out")]" || ok
+# (a shared-backup artifact cannot be pinned here: the stub child never writes one, so asserting it would pass
+#  whether or not the code was right. The --dry-run flag on every changing verb above is the real check.)
+# the dry line is a branch, not a replacement: a real run still ends on the OK line
+runq "$T/root" && tail -1 "$T/out" | grep -q 'QUARTER OK' && ok || bad "a real run no longer ends on QUARTER OK: [$(tail -1 "$T/out")]"
+runq "$T/root" && ! grep -q 'DRY RUN' "$T/out" && ok || bad "a real run carried the dry-run line"
+
+# ---- a run where the child recorded nothing as running says so, at step 5 and on the last line -----------------
+: >"$T/calls.log"; rm -rf "$T/run"; rm -f "$T/stop.ok"
+NOTHING_WAS_RUNNING=1 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --yes >"$T/out" 2>&1 && ok || bad "a run where nothing was running failed: $(tail -3 "$T/out")"
+grep -q 'nothing was running before the outage, so nothing was started' "$T/out" && ok || bad "step 5 did not say nothing was running: [$(grep '5/6' -A1 "$T/out" | tail -1)]"
+tail -1 "$T/out" | grep -q 'NO SERVERS STARTED' && ok || bad "the last line does not carry NO SERVERS STARTED: [$(tail -1 "$T/out")]"
+# an ordinary run must not carry it, or the marker means nothing
+runq "$T/root"; rc=$?; grep -q 'NO SERVERS STARTED' "$T/out" && bad "an ordinary run said NO SERVERS STARTED (rc=$rc): [$(tail -1 "$T/out")]" || ok
+[ "$rc" = 0 ] && ok || bad "an ordinary run after the nothing-was-running case failed (rc=$rc): $(tail -3 "$T/out")"
+# a dry run is not a 'nothing was running' run: it never claimed to have started anything
+: >"$T/calls.log"; rm -rf "$T/run"
+NOTHING_WAS_RUNNING=1 bash "$QUARTER" --patch-root "$T/root" --run-dir "$T/run" --yes --dry-run >"$T/out" 2>&1 && ok || bad "a dry run where nothing was running failed: $(tail -3 "$T/out")"
+! grep -q 'NO SERVERS STARTED' "$T/out" && ok || bad "a dry run carried NO SERVERS STARTED"
 
 # ---- recovery restores THIS quarter's backup, never a bare 'restore' (which falls back to BACKUP_DIR/latest) ----
 mkroot "$T/rootbk"
