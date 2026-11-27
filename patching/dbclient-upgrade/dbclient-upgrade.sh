@@ -484,6 +484,13 @@ os_check() {
     case "$name" in *"Red Hat"*) id=rhel;; *Oracle*) id=ol;; *) id="";; esac
   fi
   [ -n "$ver" ] || { echo "unknown no version in $f"; return; }
+  # Oracle Linux 9 ships none of the packages the installer's own "Check:Packages" wants: the field run on 16 Nov
+  # 2026 (OL 9.4) passed every other prereq and aborted on that one. The OS rule above only asks for 7.4, so the
+  # release reads "ok" and the install stops a step later - say so here. A warning, not a block: --ignore-sys-prereqs
+  # is the operator's opt-in, and this function's stdout must stay exactly the verdict, so the line goes to stderr.
+  if [ "$id" = ol ] && version_ge "$ver" 9; then
+    warn "OS $name: the installer's \"Check:Packages\" wants redhat-lsb, redhat-lsb-core and libXtst-devel, which Oracle Linux 9 does not ship - without --ignore-sys-prereqs the install stops on that check"
+  fi
   case "$id" in
     rhel|ol) if version_ge "$ver" 7.4; then echo "ok ${name:-$id $ver}"; else echo "block ${name:-$id $ver} is older than 7.4"; fi ;;
     *) echo "block ${name:-$id $ver} is not Red Hat or Oracle Linux" ;;

@@ -84,6 +84,17 @@ build; printf 'ID="ubuntu"\nVERSION_ID="22.04"\n' >"$T/os-release"; rc="$(pre)"
 [ "$rc" = 1 ] && grep -q 'not Red Hat or Oracle Linux' "$T/out" && ok || bad "ubuntu: rc $rc"
 build; printf 'Red Hat Enterprise Linux Server release 7.9 (Maipo)\n' >"$T/os-release"; rc="$(pre)"
 [ "$rc" = 0 ] && ok || bad "a redhat-release file with 7.9: rc $rc: $(grep -E 'OS|BLOCK|UNKNOWN' "$T/out" | head -2)"
+# OL 9 passes the OS rule (9 > 7.4) and then the installer stops on its own package check: the OUI "Check:Packages"
+# wants redhat-lsb, redhat-lsb-core and libXtst-devel, which Oracle Linux 9 does not ship, so it aborts unless
+# --ignore-sys-prereqs is passed (T1827, the 16 Nov 2026 field run on OL 9.4). Preflight must SAY that - an OS line
+# that reads "ok" over a check the OS cannot pass is the surprise this row is about. It warns; it does not block.
+build; printf 'ID="ol"\nVERSION_ID="9.4"\nPRETTY_NAME="Oracle Linux Server 9.4"\n' >"$T/os-release"; rc="$(pre)"
+[ "$rc" = 0 ] && grep -q 'redhat-lsb' "$T/out" && grep -q 'ignore-sys-prereqs' "$T/out" && ok \
+  || bad "OL 9.4: preflight did not warn about the installer's package check: rc $rc: $(grep -E 'OS |WARN' "$T/out" | head -3)"
+# and the warning is version-bounded: OL 8 has these packages, so a warning there would be noise, not a warning
+build; printf 'ID="ol"\nVERSION_ID="8.9"\nPRETTY_NAME="Oracle Linux Server 8.9"\n' >"$T/os-release"; rc="$(pre)"
+[ "$rc" = 0 ] && ! grep -q 'redhat-lsb' "$T/out" && ok \
+  || bad "OL 8.9: preflight warned about OL9's package check: rc $rc: $(grep -E 'WARN' "$T/out" | head -2)"
 build; rc="$(OSR="$T/nonexistent" pre)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: .*OS' "$T/out" && ok || bad "an unreadable OS release was not UNKNOWN: rc $rc"
 
