@@ -639,11 +639,14 @@ cmd_run() {
 }
 
 usage() { sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; }
+strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+
 main() {
   local cmd="" args=()
-  while [ $# -gt 0 ]; do
+
+while [ $# -gt 0 ]; do
     case "$1" in
-      --ords-base) optchk "$@"; CLI_BASE="$2"; shift 2;; --config) optchk "$@"; CLI_CFG="$2"; shift 2;; --run-dir) optchk "$@"; RUN_DIR="$2"; shift 2;;
+      --ords-base) optchk "$@"; CLI_BASE="$(strip_dir "$2")"; shift 2;; --config) optchk "$@"; CLI_CFG="$(strip_dir "$2")"; shift 2;; --run-dir) optchk "$@"; RUN_DIR="$(strip_dir "$2")"; shift 2;;
       --dry-run) DRY_RUN=1; shift;; --yes|-y) ASSUME_YES=1; shift;; --force) FORCE=1; shift;; --json) JSON_OUT=1; shift;;
       --verbose|-v) VERBOSE=1; shift;; --no-restore-point) NO_RP=1; shift;; --allow-flashback) ALLOW_FLASHBACK=1; shift;;
       -h|--help|help) usage; exit 0;; --version) echo "$VERSION"; exit 0;;
