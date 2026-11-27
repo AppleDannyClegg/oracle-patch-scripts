@@ -50,6 +50,7 @@ case "$GATE_TIMEOUT" in '' | *[!0-9]* | 0) echo "run-all.sh: --timeout needs a p
 # A gate's wall-clock limit: GATE_TIMEOUT_<gate> wins (dashes -> underscores), else a built-in for a gate that
 # needs real headroom, else the run's --timeout. false-success sweeps the whole tree and takes ~258-289s on an
 # idle box, so 300 left under 15% headroom and any overlap turned it into a timeout (T205, Gort #12833).
+# ohs-patch took 289s alone under load ~9 and was killed at 300 three times on 26-27 Nov.
 gate_timeout() { # <gate name>
     local name="$1" var override
     var="GATE_TIMEOUT_${name//-/_}"
@@ -59,7 +60,7 @@ gate_timeout() { # <gate name>
         *) printf '%s' "$override"; return ;;
     esac
     case "$name" in
-        false-success-gate) printf '%s' 600 ;;
+        false-success-gate | ohs-patch) printf '%s' 600 ;;
         *) printf '%s' "$GATE_TIMEOUT" ;;
     esac
 }
