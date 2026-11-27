@@ -34,13 +34,14 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-BASE_REF="origin/main"; HEAD_REF="HEAD"; VERBOSE=0; SELF_TEST=0
+BASE_REF="origin/main"; HEAD_REF="HEAD"; VERBOSE=0; SELF_TEST=0; BIG_MODE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_REF="$2"; shift 2;;
     --head) HEAD_REF="$2"; shift 2;;
     --verbose) VERBOSE=1; shift;;
     --self-test) SELF_TEST=1; shift;;
+    --big) BIG_MODE=1; shift;;
     -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
@@ -109,54 +110,57 @@ pairs() {
 # The same fixture values for both sides. The content the patterns look for lives
 # in the stdin payload AND in the variables, so a pattern reading either is tested.
 FIXTURE_MODE="match"
+# Just over one pipe buffer, first line matching. A larger payload costs seconds per
+# command and buys nothing: the SIGPIPE race is decided by whether the writer needs
+# more than one write, not by the size (a 16 KB capture was measured returning 141).
+mkdir -p "$WORK"
+awk 'BEGIN{for(i=0;i<1200;i++)printf "28575727; row %d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",i}' > "$WORK/big.txt"
 MAKE='
-case "$FIXTURE_MODE" in
-  nomatch) CONTENT="nothing that matches";;
-  big)     CONTENT="$(awk "BEGIN{for(i=0;i<4000;i++)printf \"28575727; row %d\n\",i}")";;
-  *)       CONTENT="28575727;";;
+CHK=28575727                        # the patch the checks are asked about
+case "${FIXTURE_MODE:-match}" in
+  nomatch) HIT=99999999; OTHER="OtherServer"; DOMAIN="/u01/domains/other"; NAMES="Apache Tomcat";;
+  *)       HIT=$CHK;     OTHER="Server1";     DOMAIN="/u01/domains/base";  NAMES="Oracle HTTP Server";;
 esac
-BIG="$(awk "BEGIN{for(i=0;i<4000;i++)printf \"28575727; row %d for the pipeline\n\",i}")"
-INPUT="$1"
+# WHAT MOVES BETWEEN MODES IS THE INPUT THE CHECK READS. An input that contains the
+# patch makes a WRONG pattern and the right one agree, so the gate can only fail on
+# a wrong pattern if some input does not contain it: nomatch feeds a list holding a
+# DIFFERENT patch. This was the hole a mutant (grep "^$id;" -> grep ".*") walked
+# through at wls-patch.sh:1165 and the gate called it "same" on all three inputs.
+CONTENT="28575727;"
+BIG="$(cat "$WORK/big.txt")"
 id=28575727 PID=28575727 short="12.2.1.4" ADMIN_SERVER_NAME="AdminServer"
-out="$(printf "%s\n" "Prereq \"checkConflictAgainstOHWithDetail\" for patch 28575727 passed" "Prereq \"checkApplicable\" for patch 28575727 passed" "Patch 28575727 supersedes subset 12345678" "ORA-01017" "ERROR: nope")"
+out="$(printf "%s\n" "Prereq \"checkConflictAgainstOHWithDetail\" for patch ${HIT} passed" "Prereq \"checkApplicable\" for patch ${HIT} passed" "Patch ${HIT} supersedes subset 12345678" "ORA-01017" "ERROR: nope")"
 pre="$out" app="$out" title="DB19C patch"
-INSTALLED="28575727;28737975;" INSTALLED_PATCHES="$INSTALLED" inv="$INSTALLED"
-lsp="$(printf "%s\n" "OHS (NATIVE) DB19C BUNDLE PATCH 19.0.0.0.0" "28575727;28737975;")"
-now=" 28575727 " PRE_IDS=" 28575727 28737975 " want=" AdminServer Server1 "
-DOMAINS="/u01/domains/base" d="/u01/domains/base" running="Server1 1234 (weblogic.Server)"
-up="Server1 1234" procs="1234 weblogic.Server" names="Oracle HTTP Server"
+INSTALLED="${HIT};28737975;" INSTALLED_PATCHES="$INSTALLED" inv="$INSTALLED"
+lsp="$(printf "%s\n" "OHS (NATIVE) DB19C BUNDLE PATCH 19.0.0.0.0" "${HIT};28737975;")"
+now=" ${HIT} " PRE_IDS=" ${HIT} 28737975 " ids=" ${HIT} " want=" AdminServer ${OTHER} "
+DOMAINS="$DOMAIN" d="$DOMAIN" running="${OTHER} 1234 (weblogic.Server)"
+up="${OTHER} 1234" procs="1234 weblogic.Server" names="$NAMES"
 lst="/tmp/fmw_12.2.1.19.0_dbclient_linux64.bin /tmp/changePerm.sh"
 fp="$(awk "BEGIN{for(i=0;i<64;i++)printf \"A\"}")" present="$fp"
 v="file:/wallet" vr="chain: OK" xml="<html>portal</html>" mentioned="12.2.1.4"
 X_CN=localhost X_ICN=localhost X_ISS=OracleOHS X_SIG=sha1WithRSA X_SAN="localhost,127.0.0.1"
 NEW_CN=localhost NEW_SAN=localhost CHECK_HOST=localhost CN=localhost SAN="localhost,127.0.0.1"
-LIVE_PORTS=" tcp:8080 " done=" listener " s="127.0.0.1" tailtxt="password: x"
-need="oracle.rdbms.rsf:19.0" rsf="19.3.0.0.0" ids=" 28575727 " OPATCH_KIT_BUG=6880880
-first="28575727 - DB19C bundle" LOG_FILE="$WORK/log.txt" LOG="$WORK/log.txt"
+LIVE_PORTS=" tcp:8080 " done=" ${OTHER} " s="127.0.0.1" tailtxt="password: x"
+need="oracle.rdbms.rsf:19.0" rsf="19.3.0.0.0" OPATCH_KIT_BUG=6880880
+first="${HIT} - DB19C bundle" LOG_FILE="$WORK/log.txt" LOG="$WORK/log.txt"
 kit_zip="$WORK/kit.zip" arg="$WORK/arg" pdir="$WORK/pdir" raw="$WORK/raw.html" name="x.part"
 ORACLE_HOME="$WORK/oh" OH="$WORK/oh" TARBALL="$WORK/x.tar.gz" JAVA_HOME="$WORK/jdk"
 OOP="" off=0 ver="12.2.1.4" APEX_VER="22.1.0" spb_path="$WORK/spb" x="config.url=x"
-stmt="select 1 from dual" rp="rp1" proc="1234" n="Server1" MOS_USER="" T_HOME="$WORK/oh"
-export BIG INPUT id PID short ADMIN_SERVER_NAME out pre app title INSTALLED INSTALLED_PATCHES
-export inv lsp now PRE_IDS want DOMAINS d running up procs names lst fp present v vr xml
-export mentioned X_CN X_ICN X_ISS X_SIG X_SAN NEW_CN NEW_SAN CHECK_HOST CN SAN LIVE_PORTS
-export done s tailtxt need rsf ids OPATCH_KIT_BUG first LOG_FILE LOG kit_zip arg pdir raw
-export name ORACLE_HOME OH TARBALL JAVA_HOME OOP off ver APEX_VER spb_path x stmt rp proc n
-export MOS_USER T_HOME
-# names the sites read that the first pass left unbound: a gap is an unrun site, so
-# each one added here is a site that can now be compared (or honestly fail).
-c=28575727; pout="$out"; dout="$out"; l="Server1"; last="Server1 1234"; re="OracleOHS"
+stmt="select 1 from dual" rp="rp1" proc="1234" n="${OTHER}" MOS_USER="" T_HOME="$WORK/oh"
+c=$CHK; pout="$out"; dout="$out"; l="${OTHER}"; last="${OTHER} 1234"; re="OracleOHS"
 shaped="AdminServer"; w="AdminServer"; wls="$WORK/wls"; path="$WORK/oh"; port=7001
 target="$WORK/chain.pem"; body="<html>portal</html>"; CERT="$WORK/chain.pem"; T_FILE="$WORK/t.jks"
-f="$WORK/chain.pem"; CHAIN="$WORK/chain.pem"; h="Server1"
-export c pout dout l last re shaped w wls path port target body CERT T_FILE f CHAIN h
+f="$WORK/chain.pem"; CHAIN="$WORK/chain.pem"; h="${OTHER}"
+# NOT exported, deliberately: the fixture values include a multi-megabyte list in big
+# mode, and an exported multi-megabyte value makes every external command fail to exec
+# with E2BIG ("Argument list too long"). Both sides then fail identically and the gate
+# reports "same" - the exact shape it exists to catch. The commands run in this same
+# shell, so plain assignments are enough.
 # big mode: every variable a producer might write becomes larger than one stdio
-# write, so an early-exiting grep can lose the race and SIGPIPE its writer (the
-# class this PR exists for). Appended after the content, so the first line still
-# MATCHES and the check still takes its matching branch.
+# write, so an early-exiting grep can lose the race and SIGPIPE its writer.
 if [ "${FIXTURE_MODE:-match}" = big ]; then
-  for v in out pre app INSTALLED INSTALLED_PATCHES inv lsp up running procs first names done \
-           want now PRE_IDS ids lst CONTENT src v2 xml body; do
+  for v in out INSTALLED INSTALLED_PATCHES inv lsp now PRE_IDS ids first names; do
     eval "$v=\"\${$v:-\${CONTENT:-}}
 $BIG\""
   done
@@ -170,7 +174,9 @@ recover(){ printf "[recover] %s\n" "$*"; }; block(){ printf "[block] %s\n" "$*";
 add_wallet(){ printf "[add_wallet] %s\n" "$*"; }; add_live(){ printf "[add_live] %s\n" "$*"; }
 patch_desc(){ printf "desc\n"; }; patch_description(){ printf "desc\n"; }
 prepare_patch_dir(){ printf "28575727|x|patch\n"; }; state_get(){ :; }; state_set(){ :; }
-run_sh(){ printf "[run_sh] %s\n" "$*"; }; x509_facts(){ :; }; kt(){ :; }; ks_pass(){ printf x; }
+run_sh(){ printf "[run_sh] %s\n" "$*"; }
+sleep(){ :; }; wait_for_url(){ :; }; port_open(){ :; }; nodemanager_pid(){ :; }
+running_servers(){ printf '%s\n' "Server1 1234 (weblogic.Server)"; }; x509_facts(){ :; }; kt(){ :; }; ks_pass(){ printf x; }
 sql_val(){ printf "%s" "$v"; }; chain_cas(){ printf "%s\n" "$WORK/chain.pem"; }
 wls_homes(){ printf "%s\n" "$WORK/wls"; }; wls_domains(){ printf "%s" "$DOMAINS"; }
 wls_java_home(){ printf "%s" "$JAVA_HOME"; }; cacerts_pw_file(){ printf "%s" "$WORK/pw"; }
@@ -204,9 +210,17 @@ complete() { # $1 segment -> a runnable command on stdout
 # pipefail on, helpers stubbed. Prints: "rc=<n>" then stdout. A shell error is
 # reported as a GAP by the caller, not compared.
 run_cmd() { # $1 command (as written in the file), $2 mode
+  # A site that waits (a retry loop, a ps that never returns) would otherwise stall the
+  # whole gate, so each command gets a hard ceiling. A timeout is reported as a gap with
+  # its reason - an unrun site, never a pass.
   ( set -uo pipefail; FIXTURE_MODE="$2"; export FIXTURE_MODE WORK; eval "$MAKE"; eval "$STUBS"
-    eval "$1" ) > "$WORK/o" 2> "$WORK/e"
-  local rc=$?
+    eval "$1" ) < /dev/null > "$WORK/o" 2> "$WORK/e" &
+  local pid=$! rc wd
+  ( sleep "${PER_CMD_TIMEOUT:-1}"; kill -9 "$pid" 2>/dev/null ) &
+  wd=$!
+  wait "$pid"; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  if [ "$rc" -ge 137 ]; then printf 'TIMEOUT after %ss (an unrun site)\n' "${PER_CMD_TIMEOUT:-1}"; return 0; fi
   if grep -qE 'unbound variable|command not found:|syntax error' "$WORK/e"; then
     printf 'SHELL-ERROR %s\n' "$(grep -oE '[A-Za-z_][A-Za-z0-9_]*: unbound variable|command not found: [A-Za-z_]+|syntax error' "$WORK/e" | head -1)"
     return 0
@@ -218,9 +232,12 @@ run_cmd() { # $1 command (as written in the file), $2 mode
 compare() { # $1 base cmd, $2 head cmd, $3 label
   local b h mode verdict_b verdict_h err=0
   export WORK
-  for mode in match nomatch big; do
+  for mode in $MODES; do
+      case "$mode" in big) case "$1$2" in *"|"*) :;; *) continue;; esac;; esac
     b="$(run_cmd "$1" "$mode")"; h="$(run_cmd "$2" "$mode")"
     case "$b$h" in
+      *TIMEOUT*)
+        gap "$3 [$mode] command did not finish in ${PER_CMD_TIMEOUT:-1}s - unrun, not a pass"; continue;;
       *SHELL-ERROR*)
         gap "$3 [$mode] shell error, not a verdict: $(printf '%s\n' "$b$h" | grep -oE '[A-Za-z_][A-Za-z0-9_]*: unbound variable|command not found: [A-Za-z_]+|syntax error' | head -1)"
         continue;;
@@ -261,12 +278,20 @@ self_test() {
   st differ 'printf "%s\n" "$INSTALLED" | grep -q "^28575727;"' \
             'printf "%s\n" "$INSTALLED" | grep - "^28575727;" >/dev/null' \
             "a bare dash (the pattern becomes -, the real pattern becomes a filename)"
+  st differ 'printf "%s\n" "$INSTALLED_PATCHES" | grep -q "^$id;"' \
+            'printf "%s\n" "$INSTALLED_PATCHES" | grep ".*" >/dev/null' \
+            "a wrong pattern: grep \".*\" where the patch id belongs (the mutant the first gate missed)"
   st differ 'printf "%s\n" "$INSTALLED" | grep -q "^99999999;" || warn "not installed"' \
             'printf "%s\n" "$INSTALLED" | grep - "^99999999;" >/dev/null || warn "not installed" >/dev/null' \
             "a redirect on the wrong command (rc equal, the warning gone)"
   [ "$fails" = 0 ] && { echo "self-test: the gate fails on a regression and passes an honest conversion"; return 0; }
   echo "self-test: the gate cannot fail - do not trust its verdicts"; return 1
 }
+
+# match and nomatch by default: they are the two that catch a WRONG PATTERN, because
+# nomatch feeds content that does not hold the patch. --big adds the large-input case,
+# which is slower and answers a different question (whether a writer can be SIGPIPEd).
+MODES="match nomatch"; [ "$BIG_MODE" = 1 ] && MODES="match nomatch big"
 
 if [ "$SELF_TEST" = 1 ]; then
   self_test
