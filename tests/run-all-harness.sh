@@ -202,7 +202,7 @@ listed="$(bash "$root/tests/run-all.sh" --show-limits | awk 'NF { print $1 }')"
 missing=""
 for f in "$root"/tests/*.sh; do
     name="${f##*/}"; name="${name%.sh}"
-    case "$name" in audit-container|ohs-patch-container|oracle-free-container|okv-diag|run-all) continue ;; esac
+    case "$name" in audit-container|ohs-patch-container|ohs-patch-container-no-skips|oracle-free-container|okv-diag|run-all) continue ;; esac
     grep -qx "$name" <<<"$listed" || missing="$missing $name"
 done
 check "$([ -z "$missing" ] && echo 1)" "every tests/*.sh is in GATES or a docker lane:$missing"
