@@ -71,5 +71,17 @@ rc="$(run 'Prereq "checkConflictAgainstOHWithDetail" for patch  passed.
 [ "$rc" = 1 ] && grep -q 'CONFLICT: ' "$T/out" && ! grep -q 'no conflicts' "$T/out" && ok \
   || bad "'for patch  passed' with no id was not a CONFLICT: rc $rc, $(grep -E 'conflict|CONFLICT|ERROR' "$T/out" | head -2)"
 
+# a prereq answer with no pass or conflict verdict is only a warning, but its whole answer is kept in the run dir
+rc="$(run 'Tool output unreadable.
+OPatch succeeded.
+')"
+[ "$rc" = 0 ] && grep -q 'prereq check gave no verdict' "$T/out" && ok \
+  || bad "a no-verdict prereq answer changed the verdict: rc $rc: $(grep -E 'no verdict|CONFLICT' "$T/out" | head -2)"
+saved="$(grep 'prereq check gave no verdict' "$T/out" | sed -n 's/.*answer saved: \([^ ]*\) (\([0-9][0-9]*\) bytes).*/\1 \2/p' | head -1)"
+answer_file="${saved% *}"; answer_bytes="${saved##* }"
+[ -n "$answer_file" ] && [ -f "$answer_file" ] && grep -q 'OPatch succeeded' "$answer_file" \
+  && [ "$(wc -c <"$answer_file" | tr -d ' ')" = "$answer_bytes" ] && ok \
+  || bad "a no-verdict prereq answer was not kept whole in the run dir with its byte count: saved='$saved'"
+
 echo "db-patch conflict gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

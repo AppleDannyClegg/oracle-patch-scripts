@@ -341,6 +341,12 @@ build; comps 19.0.0.0.0; cat "$zop45" >"$T/applicable"; echo 73 >"$T/applicable.
 [ "$rc" = 1 ] && grep -q 'BLOCKING: .*40005842' "$T/out" && ! grep -q 'deferred' "$T/out" && ok || bad "T1808 fixture 4: a 19c client was deferred: rc $rc"
 build; comps 12.1.0.2.0; printf 'Exception in thread main\n' >"$T/applicable"; echo 1 >"$T/applicable.rc"; rc="$(runp)"
 [ "$rc" = 2 ] && grep -q 'UNKNOWN: opatch prereq CheckApplicable gave no verdict' "$T/out" && ok || bad "--client-19c-pending turned no verdict into a pass: rc $rc: $(grep -E 'UNKNOWN|deferred' "$T/out" | head -2)"
+# a no-verdict must keep the whole tool answer beside the log, with its byte count named in the log line
+saved="$(grep 'CheckApplicable gave no verdict' "$T/out" | sed -n 's/.*answer saved: \([^ ]*\) (\([0-9][0-9]*\) bytes).*/\1 \2/p' | head -1)"
+answer_file="${saved% *}"; answer_bytes="${saved##* }"
+[ -n "$answer_file" ] && [ -f "$answer_file" ] && grep -q 'Exception in thread main' "$answer_file" \
+  && [ "$(wc -c <"$answer_file" | tr -d ' ')" = "$answer_bytes" ] && ok \
+  || bad "CheckApplicable no-verdict did not keep the full answer in a run file with its byte count: saved='$saved'"
 build; comps 12.1.0.2.0; rc="$(run)"
 grep 'DB client :' "$T/out" | grep -q 'oracle.rdbms.rsf 12.1.0.2.0$' && ok || bad "the client level is printed twice or wrong: $(grep 'DB client' "$T/out")"
 
