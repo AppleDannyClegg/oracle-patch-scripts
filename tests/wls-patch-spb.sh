@@ -347,7 +347,7 @@ PD19="$T/patches-retry-flag"; mk_spb "$PD19"; rm -f "$T/psu" "$T/lsp_fail" "$T/a
 cat >"$PD19/extracted/WLS_SPB_12.2.1.4.990101/tools/spbat/generic/SPBAT/spbat.sh" <<EOF
 #!/bin/sh
 printf '%s\n' "\$*" >>"$T/spbat.log"
-[ -f "$T/spb-fail" ] && exit 17
+[ -f "$T/spb-fail" ] && { echo 12.2.1.4.261007 >"$T/psu"; exit 17; }
 : >"$T/afterfail-now"
 exit 0
 EOF
@@ -362,9 +362,11 @@ esac
 exit 0
 EOF
 chmod +x "$OH19/OPatch/opatch"
-rc="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+rc1="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+[ "$rc1" = 0 ] && grep -q '^spb_after_read_failed=1$' "$T/run-retry-flag/state" && ok || bad "first apply did not record the after-read failure: rc $rc1"
 rm -f "$T/afterfail-now"; : >"$T/spb-fail"
-rc="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+rc2="$(run "$OH19" apply "$PD19" --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag" --yes)"
+[ "$rc2" != 0 ] && ok || bad "SPBAT failure on retry was not refused: rc $rc2"
 rm -f "$T/spb-fail"
 rc="$(run "$OH19" verify --oracle-home "$OH19" --java-home "$T/jdk" --run-dir "$T/run-retry-flag")"
 L="$T/run-retry-flag/wls-patch.log"
