@@ -17,9 +17,11 @@
 #
 # Four inputs, and the verdict each site must earn on them:
 #   match     content the pattern matches        old rc == new rc, stdout equal
-#   nomatch   content it does not                old rc == new rc, stdout equal
-#   empty     no content                         old rc == new rc, stdout equal
-#   long      4000 matching lines, > pipe buffer on the EXPECTED long-stream case
+#   nomatch   the id asked about is absent, and the name it looks for is a different one
+#                                                old rc == new rc, stdout equal
+#   absent    the id asked about is ABSENT from a NON-EMPTY list - the input that makes a
+#             wrong pattern visible             old rc == new rc, stdout equal
+#   big       4000 matching lines, > pipe buffer on the EXPECTED long-stream case
 #             the OLD form is allowed to differ and to fail: under pipefail a grep
 #             that exits early sends SIGPIPE to the producer, so the old pipeline
 #             reports 141 where the new one reports the matched status. That
@@ -110,33 +112,53 @@ pairs() {
 # in the stdin payload AND in the variables, so a pattern reading either is tested.
 FIXTURE_MODE="match"
 MAKE='
-case "$FIXTURE_MODE" in
+# WHAT MOVES BETWEEN MODES IS THE INPUT EACH CHECK READS. A wrong pattern and the right one
+# can only disagree on an input that does not hold what the check looks for, and it must not
+# be EMPTY: a match-anything pattern finds nothing in an empty list either, so an empty input
+# hides the mutant. `absent` feeds a NON-EMPTY inventory holding a different patch, which is
+# the input that makes a wrong pattern visible. Without it a mutant at wls-patch.sh:1165
+# (`grep "^$id;"` -> `grep ".*"`) was reported "same" on all three inputs, because the input
+# held the very id the check asks about; tests/quiet-grep-mutant-controls.sh is the control
+# that measures this, and it reports 0 of 4 mutants caught before this fixture existed.
+CHK=28575727
+case "${FIXTURE_MODE:-match}" in
+  nomatch) HIT=99999999; OTHER="OtherServer"; DOMAIN="/u01/domains/other"; NAMES="Apache Tomcat"; HOST="example.invalid";;
+  absent)  HIT=$CHK;     OTHER="Server1";     DOMAIN="/u01/domains/base";  NAMES="Oracle HTTP Server"; HOST="example.invalid";;
+  *)       HIT=$CHK;     OTHER="Server1";     DOMAIN="/u01/domains/base";  NAMES="Oracle HTTP Server"; HOST="updates.oracle.com";;
+esac
+IDS="11111111;22222222;"
+case "${FIXTURE_MODE:-match}" in match|big) IDS="28575727;28737975;";; esac
+BIG="$(awk "BEGIN{for(i=0;i<4000;i++)printf \"28575727; row %d for the pipeline\n\",i}")"
+case "${FIXTURE_MODE:-match}" in
   nomatch) CONTENT="nothing that matches";;
-  big)     CONTENT="$(awk "BEGIN{for(i=0;i<4000;i++)printf \"28575727; row %d\n\",i}")";;
+  big)     CONTENT="$BIG";;
   *)       CONTENT="28575727;";;
 esac
-BIG="$(awk "BEGIN{for(i=0;i<4000;i++)printf \"28575727; row %d for the pipeline\n\",i}")"
 INPUT="$1"
+# A CONTROLLED HOME. The netrc check at wls-patch.sh:1367 reads $HOME/.netrc; leaving HOME
+# alone makes both sides read the same operator file file, so the comparison is between two
+# reads of one input nobody set and cannot fail.
+HOME="$WORK/home"; mkdir -p "$HOME"; printf "machine %s login u password p\n" "$HOST" > "$HOME/.netrc"
 id=28575727 PID=28575727 short="12.2.1.4" ADMIN_SERVER_NAME="AdminServer"
-out="$(printf "%s\n" "Prereq \"checkConflictAgainstOHWithDetail\" for patch 28575727 passed" "Prereq \"checkApplicable\" for patch 28575727 passed" "Patch 28575727 supersedes subset 12345678" "ORA-01017" "ERROR: nope")"
+out="$(printf "%s\n" "Prereq \"checkConflictAgainstOHWithDetail\" for patch $HIT passed" "Prereq \"checkApplicable\" for patch $HIT passed" "Patch $HIT supersedes subset 12345678" "ORA-01017" "ERROR: nope")"
 pre="$out" app="$out" title="DB19C patch"
-INSTALLED="28575727;28737975;" INSTALLED_PATCHES="$INSTALLED" inv="$INSTALLED"
-lsp="$(printf "%s\n" "OHS (NATIVE) DB19C BUNDLE PATCH 19.0.0.0.0" "28575727;28737975;")"
-now=" 28575727 " PRE_IDS=" 28575727 28737975 " want=" AdminServer Server1 "
-DOMAINS="/u01/domains/base" d="/u01/domains/base" running="Server1 1234 (weblogic.Server)"
-up="Server1 1234" procs="1234 weblogic.Server" names="Oracle HTTP Server"
+INSTALLED="$IDS" INSTALLED_PATCHES="$IDS" inv="$IDS"
+lsp="$(printf "%s\n" "OHS (NATIVE) DB19C BUNDLE PATCH 19.0.0.0.0" "$IDS")"
+now=" $HIT " PRE_IDS=" $HIT 28737975 " want=" AdminServer $OTHER "
+DOMAINS="$DOMAIN" d="$DOMAIN" running="$OTHER 1234 (weblogic.Server)"
+up="$OTHER 1234" procs="1234 weblogic.Server" names="$NAMES"
 lst="/tmp/fmw_12.2.1.19.0_dbclient_linux64.bin /tmp/changePerm.sh"
 fp="$(awk "BEGIN{for(i=0;i<64;i++)printf \"A\"}")" present="$fp"
 v="file:/wallet" vr="chain: OK" xml="<html>portal</html>" mentioned="12.2.1.4"
 X_CN=localhost X_ICN=localhost X_ISS=OracleOHS X_SIG=sha1WithRSA X_SAN="localhost,127.0.0.1"
 NEW_CN=localhost NEW_SAN=localhost CHECK_HOST=localhost CN=localhost SAN="localhost,127.0.0.1"
-LIVE_PORTS=" tcp:8080 " done=" listener " s="127.0.0.1" tailtxt="password: x"
-need="oracle.rdbms.rsf:19.0" rsf="19.3.0.0.0" ids=" 28575727 " OPATCH_KIT_BUG=6880880
-first="28575727 - DB19C bundle" LOG_FILE="$WORK/log.txt" LOG="$WORK/log.txt"
+LIVE_PORTS=" tcp:8080 " done=" $OTHER " s="127.0.0.1" tailtxt="password: x"
+need="oracle.rdbms.rsf:19.0" rsf="19.3.0.0.0" ids=" $HIT " OPATCH_KIT_BUG=6880880
+first="$HIT - DB19C bundle" LOG_FILE="$WORK/log.txt" LOG="$WORK/log.txt"
 kit_zip="$WORK/kit.zip" arg="$WORK/arg" pdir="$WORK/pdir" raw="$WORK/raw.html" name="x.part"
 ORACLE_HOME="$WORK/oh" OH="$WORK/oh" TARBALL="$WORK/x.tar.gz" JAVA_HOME="$WORK/jdk"
 OOP="" off=0 ver="12.2.1.4" APEX_VER="22.1.0" spb_path="$WORK/spb" x="config.url=x"
-stmt="select 1 from dual" rp="rp1" proc="1234" n="Server1" MOS_USER="" T_HOME="$WORK/oh"
+stmt="select 1 from dual" rp="rp1" proc="1234" n="$OTHER" MOS_USER="" T_HOME="$WORK/oh"
 export BIG INPUT id PID short ADMIN_SERVER_NAME out pre app title INSTALLED INSTALLED_PATCHES
 export inv lsp now PRE_IDS want DOMAINS d running up procs names lst fp present v vr xml
 export mentioned X_CN X_ICN X_ISS X_SIG X_SAN NEW_CN NEW_SAN CHECK_HOST CN SAN LIVE_PORTS
@@ -145,11 +167,12 @@ export name ORACLE_HOME OH TARBALL JAVA_HOME OOP off ver APEX_VER spb_path x stm
 export MOS_USER T_HOME
 # names the sites read that the first pass left unbound: a gap is an unrun site, so
 # each one added here is a site that can now be compared (or honestly fail).
-c=28575727; pout="$out"; dout="$out"; l="Server1"; last="Server1 1234"; re="OracleOHS"
+c=28575727; pout="$out"; dout="$out"; l="$OTHER"; last="$OTHER 1234"; re="OracleOHS"
 shaped="AdminServer"; w="AdminServer"; wls="$WORK/wls"; path="$WORK/oh"; port=7001
 target="$WORK/chain.pem"; body="<html>portal</html>"; CERT="$WORK/chain.pem"; T_FILE="$WORK/t.jks"
-f="$WORK/chain.pem"; CHAIN="$WORK/chain.pem"; h="Server1"
+f="$WORK/chain.pem"; CHAIN="$WORK/chain.pem"; h="$OTHER"
 export c pout dout l last re shaped w wls path port target body CERT T_FILE f CHAIN h
+export HOME HIT OTHER IDS HOST
 # big mode: every variable a producer might write becomes larger than one stdio
 # write, so an early-exiting grep can lose the race and SIGPIPE its writer (the
 # class this PR exists for). Appended after the content, so the first line still
@@ -218,7 +241,7 @@ run_cmd() { # $1 command (as written in the file), $2 mode
 compare() { # $1 base cmd, $2 head cmd, $3 label
   local b h mode verdict_b verdict_h err=0
   export WORK
-  for mode in match nomatch big; do
+  for mode in match nomatch absent big; do
     b="$(run_cmd "$1" "$mode")"; h="$(run_cmd "$2" "$mode")"
     case "$b$h" in
       *SHELL-ERROR*)
