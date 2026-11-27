@@ -326,7 +326,7 @@ stopped_proved() {
 # then every Listen port answers HTTP. 0 = all up.
 start_all() {
   if [ "$OPERATOR_STOPS" = 1 ]; then operator_stops_note operator_start_commands; return 0; fi
-  local d c t rc=0 havecurl=1
+  local d c t rc=0 havecurl=1 last=0
   # no curl on the host: the ports cannot be checked, so they are not - a missing tool must never roll back a good apply
   command -v curl >/dev/null || { havecurl=0; warn "curl not available - skipping the port check; startComponent.sh's own status is the only start check"; }
   while IFS= read -r d; do [ -n "$d" ] || continue
@@ -335,8 +335,9 @@ start_all() {
     nohup "$d/bin/startNodeManager.sh" >>"$RUN_DIR/nodemanager-$(basename "$d").out" 2>&1 </dev/null &
   done <<<"$DOMS"
   while IFS='|' read -r d c; do [ -n "$c" ] || continue
-    t=0; until do_cmd "$d/bin/startComponent.sh" "$c"; do
+    t=0; last=0; until do_cmd "$d/bin/startComponent.sh" "$c"; do
       t=$((t + POLL)); [ "$t" -le "$START_TIMEOUT" ] || { err "startComponent.sh $c did not succeed in ${START_TIMEOUT}s - see $RUN_DIR/run.log"; why_failed "$d" "$c"; rc=1; continue 2; }
+      [ $((t - last)) -ge "$PROGRESS_EVERY" ] && { log "  still starting $c: ${t}s of ${START_TIMEOUT}s"; last=$t; }
       sleep "$POLL"
     done
     [ "$DRY_RUN" = 1 ] || log "  started $c"
