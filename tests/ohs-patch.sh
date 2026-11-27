@@ -800,5 +800,18 @@ rm -f "$T/kit/p28186730_1394005_Generic.zip"; : >"$T/kit/p28186730_latest_Generi
 build; printf 'Bundle Patch README\n\n ORACLE_HOME must have OPatch version must be atleast 13.9.4.2.30\n' >"$PD/40005842/README.txt"; rc="$(run)"
 [ "$rc" = 1 ] && grep -q 'is older than the 13.9.4.2.30' "$T/out" && ok || bad "'must be atleast' was not read as a minimum: rc $rc"
 
+# a real CheckApplicable answer is long: grep -q closes the pipe early and printf dies of SIGPIPE,
+# so with pipefail the pass condition is false even though rc is 0 and the last line says passed.
+build
+{
+  printf 'Oracle Interim Patch Installer version 13.9.4.2.1\n'
+  printf 'Copyright (c) 2026, Oracle Corporation. All rights reserved.\n'
+  printf 'Prereq "checkApplicable" for patch 38098858 passed.\n'
+  for i in $(seq 1 100000); do printf 'trailing line %s of 100000\n' "$i"; done
+  printf 'OPatch succeeded.\n'
+} >"$T/applicable"; echo 0 >"$T/applicable.rc"; rc="$(run)"
+[ "$rc" = 0 ] && grep -q 'components: every component' "$T/out" && ! grep -q 'UNKNOWN: .*CheckApplicable' "$T/out" \
+  && ok || bad "a long passing CheckApplicable was read as no verdict: rc $rc: $(grep -E 'components|UNKNOWN' "$T/out" | head -2)"
+
 echo "ohs-patch gate: $pass passed, $fail failed$skiptail"
 [ "$fail" = 0 ]

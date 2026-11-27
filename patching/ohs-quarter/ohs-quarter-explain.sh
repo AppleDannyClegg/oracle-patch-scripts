@@ -107,7 +107,7 @@ pick_sets() {
     done
   else
     # recover stopped before them (E1): the sets that applied, and the one whose apply failed
-    { grep -F ': applied ' "$LOG" | grep -vqE 'jdk: applied|wlspsu: applied' || has 'dbclient-upgrade apply failed' || has 'ohs-patch apply failed'; } && sh=1
+    { grep -F ': applied ' "$LOG" | grep -vE 'jdk: applied|wlspsu: applied' >/dev/null|| has 'dbclient-upgrade apply failed' || has 'ohs-patch apply failed'; } && sh=1
     { has 'wlspsu: applied' || has 'wls-patch apply failed'; } && wl=1
     { has 'jdk: applied' || has 'java-patch apply failed'; } && jv=1
     if has 'interrupted after the stop'; then
@@ -118,7 +118,7 @@ pick_sets() {
       unlogged=1
       if [ "$jv" = 0 ] && has 'jdk: '; then jv=2
       elif [ "$wl" = 0 ] && has 'wlspsu: '; then wl=2
-      elif [ "$sh" = 0 ] && grep -F ' preflight OK' "$LOG" | grep -vqE 'jdk: |wlspsu: '; then sh=2
+      elif [ "$sh" = 0 ] && grep -F ' preflight OK' "$LOG" | grep -vE 'jdk: |wlspsu: ' >/dev/null; then sh=2
       fi
     fi
   fi
