@@ -113,6 +113,42 @@ same_tree "$BASE_SHA"
 git -C "$CLONE" checkout -q --detach "$HEAD_SHA"
 echo
 
+# ------------------------------------------------------- the command-count fixtures
+# Three defects were found in the completeness half of the gate after it had been cleared
+# twice: a pipeline sharing its line with a here-string command was ACCEPTED on a successor,
+# a here-string in a quoted pattern hid a real pipeline, and a line holding two commands was
+# counted once. Each fixture is ONE line committed on top of the head with the converted head
+# as the base, so what the gate prints for the head is the whole of the evidence - and the
+# expected count is asserted, not just the exit code, because a count of zero is what the
+# fault looked like from the outside.
+fixture() { # $1 name, $2 line, $3 wanted rc, $4 wanted count
+  local name="$1" line="$2" wrc="$3" wcount="$4" rc count
+  git -C "$CLONE" checkout -q --detach "$HEAD_SHA"
+  git -C "$CLONE" checkout -q -B "fixture-$name" "$HEAD_SHA"
+  printf '%s\n' "$line" >> "$CLONE/patching/wls-patch/wls-patch.sh"
+  git -C "$CLONE" commit -qam "fixture: $name"
+  same_tree "$HEAD_SHA"
+  rc="$(run_default)"
+  count="$(grep -oE '[0-9]+ pipeline grep -q command\(s\) left in the head' "$WORK/default.out" | head -1 | grep -oE '^[0-9]+')"
+  [ -n "$count" ] || count="$(grep -oE 'plus [0-9]+ pipeline grep -q left in the head' "$WORK/default.out" | head -1 | grep -oE '[0-9]+')"
+  if [ "$rc" = "$wrc" ] && [ "${count:-x}" = "$wcount" ]; then
+    passed "fixture $name: rc $rc and $count pipeline grep -q, exactly as the class says"
+  else
+    miss "fixture $name: rc $rc and count ${count:-?}, wanted rc $wrc and count $wcount"
+    grep -E 'left in the head|not converted' "$WORK/default.out" | head -3 | sed 's/^/         /'
+  fi
+}
+fixture 'a-pipeline-alone' 'if printf "%s\n" "$x" | grep -q needle; then :; fi' 1 1
+fixture 'pipeline-plus-here-string' 'if printf "%s\n" "$x" | grep -q needle; then :; fi; grep -q needle <<<"$y"' 1 1
+fixture 'two-pipelines-one-line' 'if printf "%s\n" "$x" | grep -q a && printf "%s\n" "$y" | grep -q b; then :; fi' 1 2
+fixture 'pattern-holds-a-here-string' 'if printf "%s\n" "$x" | grep -q '"'"'<<<'"'"'; then :; fi' 1 1
+# TWO REAL LINES, one each way, because they are the shapes a hand-written rule gets wrong. The
+# first is patching/db-patch/db-patch.sh:255 on the pre-conversion tree: its pipeline is inside
+# a quoted command substitution, which IS executed, so it is in the class. The second is
+# patching/wls-patch/wls-patch.sh:1367: the bar before that grep is the second half of an OR.
+fixture 'pipeline-inside-a-quoted-substitution' 'x="$(printf "%s\n" "$INSTALLED" | grep -q "^$(basename "$p");" && echo yes)"' 1 1
+fixture 'an-or-not-a-pipeline' '{ [ -n "${MOS_USER:-}" ] || grep -qs '"'"'updates.oracle.com'"'"' "$HOME/.netrc"; } && :' 0 0
+
 # ------------------------------------------------------------------ the unmutated head
 rc="$(run_gate "$HEAD_REF")"
 base_failed="$(failed)"

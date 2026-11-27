@@ -379,22 +379,94 @@ done < "$WORK/pairs"
 # when grep exits early, which under pipefail is a status no caller expects. A
 # here-string (grep -q <<<"$x") has no such producer and is not in the class, and a
 # comment is not code.
-unconverted() { # $1 ref
-  local ref="$1" f line found=0
+#
+# THE UNIT IS THE COMMAND, AND THREE CASES CHANGED TO MAKE IT ONE. An earlier
+# version exempted the whole LINE on seeing `<<<`, which is wrong twice over: a
+# pipeline sharing its line with a here-string command is still in the class (a
+# successor holding one was accepted - a verdict fault, not a miscount), and a
+# here-string pattern that is QUOTED, as in `grep -q '<<<'`, is text and not an
+# exemption at all. So the exempt unit is the command, quoting is respected when
+# looking for a bar, a bar is a pipeline only when it is single (`||` is an OR, and
+# the bar inside a pattern is text), and the RHS has to be the same grep shapes the
+# extraction half looks for. Every count below is an OCCURRENCE count.
+#
+# Not handled, exactly as before: a pipeline continued onto the next line with a
+# backslash, and `|&` (the bar is followed by &, not by grep).
+pipeline_greps_left() { # stdin: one line of shell -> stdout: how many of the class
+  awk '
+    # A shell-quoting walk, because the bar is live in some quoted places and dead
+    # in others: `|` inside "..." is text, but `$( )` and backticks inside "..."
+    # ARE commands, and the pipeline in "$(printf ... | grep -q ...)" is real
+    # (patching/db-patch/db-patch.sh:255 on the pre-conversion tree is exactly that
+    # shape - it is in the class and the old line-based count caught it, so a rule
+    # that skips all quoted text would lose it). Not parsed: case patterns and
+    # here-documents.
+    {
+      s = $0; n = 0
+      top = 0; ctx[0] = ""; par[0] = 0
+      i = 1; L = length(s)
+      while (i <= L) {
+        c = substr(s, i, 1); k = ctx[top]
+        if (k == "s") {                             # single quotes: all text
+          if (c == "\047") top--
+          i++; continue
+        }
+        if (k == "d") {                             # double quotes: text, with three exceptions
+          if (c == "\\") { i += 2; continue }
+          if (c == "\"") { top--; i++; continue }
+          if (c == "$" && substr(s, i+1, 1) == "(") { top++; ctx[top] = "p"; par[top] = 1; i += 2; continue }
+          if (c == "`") { top++; ctx[top] = "b"; i++; continue }
+          i++; continue
+        }
+        if (c == "\047") { top++; ctx[top] = "s"; i++; continue }
+        if (c == "\"") { top++; ctx[top] = "d"; i++; continue }
+        if (c == "\\") { i += 2; continue }
+        if (c == "`") { if (k == "b") { top-- } else { top++; ctx[top] = "b" }; i++; continue }
+        if (c == "$" && substr(s, i+1, 1) == "(") { top++; ctx[top] = "p"; par[top] = 1; i += 2; continue }
+        if (k == "p" && c == "(") { par[top]++; i++; continue }
+        if (k == "p" && c == ")") { par[top]--; if (par[top] == 0) top--; i++; continue }
+        if (c == "|") {
+          if (substr(s, i+1, 1) == "|") { i += 2; continue }   # the OR, not a pipe
+          rhs = substr(s, i+1); sub(/^[ \t]+/, "", rhs)
+          if (rhs ~ /^grep[ \t]+-[A-Za-z]*q/) n++
+          i++; continue
+        }
+        i++
+      }
+      print n
+    }'
+}
+leftover_lines() { # $1 ref -> one line per LINE holding any: "<count>TAB<file>:<line>TAB<text>"
+  local ref="$1" f line text c
   while IFS= read -r f; do
     while IFS= read -r line; do
-      local text="${line#*:}"
+      text="${line#*:}"
       case "${text#"${text%%[![:space:]]*}"}" in \#*|"") continue;; esac
-      case "$text" in *'<<<'*) continue;; esac
-      printf '%s\n' "$text" | grep -qE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' || continue
-      printf '      %s:%s  %s\n' "$f" "${line%%:*}" "$(printf '%s' "$text" | cut -c1-120)"
-      found=$((found+1))
-    done < <(sed -n '1,100000{=;p}' /dev/null 2>/dev/null; git -C "$REPO" show "$ref:$f" | grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q')
+      c="$(printf '%s\n' "$text" | pipeline_greps_left)"
+      [ "${c:-0}" -gt 0 ] || continue
+      printf '%s\t%s:%s\t%s\n' "$c" "$f" "${line%%:*}" "$(printf '%s' "$text" | cut -c1-120)"
+    done < <(git -C "$REPO" show "$ref:$f" | grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q')
   done < <(git -C "$REPO" ls-tree -r --name-only "$ref" | grep -E '^patching/.*\.sh$')
-  return "$found"
 }
-base_left=$(unconverted "$BASE_REF" | wc -l | tr -d ' ')
-head_left=$(unconverted "$HEAD_REF" | wc -l | tr -d ' ')
+unconverted() { # $1 ref - the offending lines, for a human
+  local c rest
+  while IFS=$'\t' read -r c rest; do
+    if [ "$c" -gt 1 ]; then
+      printf '      %s   (%s pipeline grep -q on this one line)\n' "$rest" "$c"
+    else
+      printf '      %s\n' "$rest"
+    fi
+  done < <(leftover_lines "$1")
+}
+unconverted_count() { # $1 ref - how many pipeline grep -q COMMANDS are left
+  local c rest n=0
+  while IFS=$'\t' read -r c rest; do
+    n=$((n + c))
+  done < <(leftover_lines "$1")
+  printf '%s\n' "$n"
+}
+base_left=$(unconverted_count "$BASE_REF")
+head_left=$(unconverted_count "$HEAD_REF")
 echo "== unconverted pipeline grep -q commands (the converted class) =="
 echo "   base $BASE_REF: $base_left"
 echo "   head $HEAD_REF: $head_left"
