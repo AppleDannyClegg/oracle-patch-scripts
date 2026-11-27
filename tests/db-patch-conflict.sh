@@ -79,8 +79,9 @@ OPatch succeeded.
   || bad "a no-verdict prereq answer changed the verdict: rc $rc: $(grep -E 'no verdict|CONFLICT' "$T/out" | head -2)"
 saved="$(grep 'prereq check gave no verdict' "$T/out" | sed -n 's/.*answer saved: \([^ ]*\) (\([0-9][0-9]*\) bytes).*/\1 \2/p' | head -1)"
 answer_file="${saved% *}"; answer_bytes="${saved##* }"
-[ -n "$answer_file" ] && [ -f "$answer_file" ] && grep -q 'OPatch succeeded' "$answer_file" \
-  && [ "$(wc -c <"$answer_file" | tr -d ' ')" = "$answer_bytes" ] && ok \
+expected="$T/expected-prereq"; printf '%s' "$(cat "$T/prereq")" >"$expected"
+[ -n "$answer_file" ] && [ -f "$answer_file" ] && cmp -s "$answer_file" "$expected" \
+  && [ "$(wc -c <"$expected" | tr -d ' ')" = "$answer_bytes" ] && ok \
   || bad "a no-verdict prereq answer was not kept whole in the run dir with its byte count: saved='$saved'"
 
 echo "db-patch conflict gate: $pass passed, $fail failed"

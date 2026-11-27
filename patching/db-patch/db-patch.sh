@@ -53,9 +53,11 @@ strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; 
 # named in the line only; it never changes a verdict or an exit status. Prints '<file> (<n> bytes)'.
 keep_answer() {
   local dir file bytes
-  dir="${RUN_DIR:-$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-preflight}"
-  file="$dir/$1.txt"
-  if ( umask 077; mkdir -p "$dir" && printf '%s\n' "$2" >"$file" ); then
+  dir="${RUN_DIR:-${RUN_DIR_ARG:-$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-preflight}}"
+  if ! mkdir -p "$dir" 2>/dev/null || ! file="$(mktemp "$dir/$1.XXXXXX" 2>/dev/null)"; then
+    printf 'not saved'; return 0
+  fi
+  if ( umask 077; printf '%s' "$2" >"$file" ); then
     bytes="$(wc -c <"$file" | tr -d ' ')"
     printf '%s (%s bytes)' "$file" "${bytes:-0}"
   else
