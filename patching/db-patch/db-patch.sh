@@ -49,6 +49,21 @@ DB_VERSION=""; RU_LEVEL=""; RU_DESC=""; OPATCH_VERSION=""; INSTALLED=""; GRID_HO
 
 usage() { usage_from_header "$0"; }
 strip_dir() { case "$1" in ""|"/") printf "%s" "$1";; *) printf "%s" "${1%/}";; esac; }
+# keep_answer <name> <tool answer>: keep a whole no-verdict answer beside the run's log. A write failure is
+# named in the line only; it never changes a verdict or an exit status. Prints '<file> (<n> bytes)'.
+keep_answer() {
+  local dir file bytes
+  dir="${RUN_DIR:-${RUN_DIR_ARG:-$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-preflight}}"
+  if ! mkdir -p "$dir" 2>/dev/null || ! file="$(mktemp "$dir/$1.XXXXXX" 2>/dev/null)"; then
+    printf 'not saved'; return 0
+  fi
+  if ( umask 077; printf '%s' "$2" >"$file" ); then
+    bytes="$(wc -c <"$file" | tr -d ' ')"
+    printf '%s (%s bytes)' "$file" "${bytes:-0}"
+  else
+    printf 'not saved'
+  fi
+}
 
 parse_opts() {
   ARGS=()
@@ -202,7 +217,7 @@ cmd_preflight() {
     local out; out="$(opatch prereq CheckConflictAgainstOHWithDetail -ph "$p" 2>&1)"; printf '%s\n' "$out" >>"$LOG_FILE"
     if grep -qE <<<"$out" 'Prereq "checkConflictAgainstOHWithDetail" (for patch [0-9]+ )?passed'; then log "  no conflicts"
     elif grep -qiE <<<"$out" 'conflict'; then err "  CONFLICT: $(printf '%s' "$out" | grep -iE 'conflict|superset|subset' | head -3 | tr '\n' ' ')"; fail=1
-    else warn "  prereq check gave no verdict (see log)"; fi
+    else warn "  prereq check gave no verdict (see log) - answer saved: $(keep_answer "checkconflict-$id" "$out")"; fi
     # release match
     local prel; prel="$(grep -oE 'release="[0-9.]+"' "$p/etc/config/inventory.xml" 2>/dev/null | head -1 | cut -d'"' -f2)"; [ -n "$prel" ] && [ "${prel%.*}" != "${DB_VERSION%.*}" ] && { err "  patch is for release $prel, home is $DB_VERSION"; fail=1; }
   done

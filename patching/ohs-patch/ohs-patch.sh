@@ -128,6 +128,21 @@ err()  { say 'ERROR' "$*"; }
 die()  { err "$*"; exit 2; }
 block()   { err "BLOCKING: $*"; problems=$((problems + 1)); }
 unknown() { err "UNKNOWN: $*"; unknowns=$((unknowns + 1)); }
+# keep_answer <name> <tool answer>: on a no-verdict path keep the whole answer beside the run's log. A write
+# failure is only said in the line; it never changes a verdict or an exit status. Prints '<file> (<n> bytes)'.
+keep_answer() {
+  local dir file bytes
+  dir="${RUN_DIR:-${RUN_DIR_ARG:-$RUN_BASE/$(date '+%Y%m%d-%H%M%S')-preflight}}"
+  if ! mkdir -p "$dir" 2>/dev/null || ! file="$(mktemp "$dir/$1.XXXXXX" 2>/dev/null)"; then
+    printf 'not saved'; return 0
+  fi
+  if ( umask 077; printf '%s' "$2" >"$file" ); then
+    bytes="$(wc -c <"$file" | tr -d ' ')"
+    printf '%s (%s bytes)' "$file" "${bytes:-0}"
+  else
+    printf 'not saved'
+  fi
+}
 optchk() { [ $# -ge 2 ] || die "$1 needs a value"; case "$2" in -[!0-9]*) die "$1 needs a value, got '$2'";; esac; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -495,7 +510,7 @@ cmd_preflight() {
   elif grep -qiE <<<"$app" 'Prereq "checkApplicable" (for patch [0-9]+ )?failed'; then
     block "$id is not applicable to $OH (opatch prereq CheckApplicable, rc $arc): $(printf '%s\n' "$app" | grep -viE '^(invoking prereq|prereq "checkapplicable" (for patch [0-9]+ )?failed|opatch failed)' | grep . | head -3 | tr '\n' ' ')"
   else
-    unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
+    unknown "opatch prereq CheckApplicable gave no verdict (rc $arc) - whether $OH has every component $id needs is unknown: answer saved: $(keep_answer "checkapplicable-$id" "$app") - first: $(printf '%s\n' "$app" | grep . | head -2 | tr '\n' ' ')... last: $(printf '%s\n' "$app" | grep . | tail -2 | tr '\n' ' ')"
   fi
 
   # conflicts (read-only OPatch prereq)
