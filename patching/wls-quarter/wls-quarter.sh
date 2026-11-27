@@ -27,7 +27,8 @@
 #   --run-dir DIR      the quarter's run dir (default: $RUN_BASE/<stamp>-wls-quarter)
 #   --no-cacerts       do not carry CA aliases (java-patch)
 #   --force            passed to both children (it does NOT waive the in-place JVM stop)
-#   --yes --dry-run    as the children
+#   --yes --dry-run    as the children. A dry run's last line says DRY RUN, never QUARTER OK: it stopped, changed and
+#                      started nothing
 #   -h|--help
 #
 # Env: WLS_QUARTER_JAVA_PATCH / WLS_QUARTER_WLS_PATCH override the child script paths (used by the gate).
@@ -246,10 +247,31 @@ fi
 # ---- 5. start (once) -------------------------------------------------------------------------------------
 log "=== 5/6 start (once - the only restart)"
 wrun start || fail_after "wls-patch start failed after patching"
+# What the child recorded as running when it stopped is the only thing the composer can know about the restart.
+# wls-patch stop writes the list, or a single space when nothing was running, and in that case wls-patch start matches
+# no server and starts none - so say it here rather than end green over an outage that restarted nothing. If
+# wls-patch start ever falls back to starting a default set, this line and the final marker must change with it.
+nothing_was_running=0
+if [ "$DRY" = 0 ]; then
+  were="$(sed -n 's/^servers_were_running=//p' "$WLS_RUN/state" 2>/dev/null | tail -1)"
+  if [ -n "$were" ] && [ -z "${were//[[:space:]]/}" ]; then
+    nothing_was_running=1
+    log "start: nothing was running before the outage, so nothing was started; host is patched and left down"
+  fi
+fi
 
 # ---- 6. verify -------------------------------------------------------------------------------------------
 log "=== 6/6 verify"
 if [ "$have_jdk" = 1 ]; then jrun verify || fail_after "java-patch verify failed"; fi
 if [ "$have_spb" = 1 ] || [ "$have_wls" = 1 ]; then wrun verify || fail_after "wls-patch verify failed"; fi
 
-log "QUARTER OK: JDK $([ "$have_jdk" = 1 ] && echo "$JDK_TAR" || echo '-'), SPB $([ "$have_spb" = 1 ] && echo "$SPB_DIR" || echo '-'), single patches $([ "$have_wls" = 1 ] && echo "$WLS_DIR" || echo '-')"
+# The last line is the one an operator reads, and over a dry run it must not read like a finished outage: nothing was
+# stopped, changed or started. The dry line is a branch, never a replacement - a real run still ends on the OK line.
+applied="JDK $([ "$have_jdk" = 1 ] && echo "$JDK_TAR" || echo '-'), SPB $([ "$have_spb" = 1 ] && echo "$SPB_DIR" || echo '-'), single patches $([ "$have_wls" = 1 ] && echo "$WLS_DIR" || echo '-')"
+# a marker, not a value: "${nothing_was_running:+...}" would expand for the string 0 as well
+marker=""; [ "$nothing_was_running" = 1 ] && marker=" NO SERVERS STARTED"
+if [ "$DRY" = 1 ]; then
+  log "QUARTER DRY RUN: nothing was stopped, changed or started; would apply $applied"
+else
+  log "QUARTER OK: $applied$marker"
+fi
