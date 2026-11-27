@@ -197,5 +197,15 @@ run -j 0 gate-a >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "-j 0 is refu
 run --timeout nope gate-a >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "--timeout nope is refused with exit 2"
 run -j >/dev/null 2>&1; check "$([ "$?" = 2 ] && echo 1)" "-j with no number is refused with exit 2"
 
+# a test file that is neither in GATES nor a named docker lane never runs in the suite (PR 13 finding)
+listed="$(bash "$root/tests/run-all.sh" --show-limits | awk 'NF { print $1 }')"
+missing=""
+for f in "$root"/tests/*.sh; do
+    name="${f##*/}"; name="${name%.sh}"
+    case "$name" in audit-container|ohs-patch-container|oracle-free-container|okv-diag|run-all) continue ;; esac
+    grep -qx "$name" <<<"$listed" || missing="$missing $name"
+done
+check "$([ -z "$missing" ] && echo 1)" "every tests/*.sh is in GATES or a docker lane:$missing"
+
 echo "run-all harness gate: $pass passed, $fail failed"
 [ "$fail" = 0 ]
