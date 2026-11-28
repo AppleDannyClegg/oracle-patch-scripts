@@ -208,17 +208,23 @@ runq "$T/root" FAIL_WLS_APPLY=1 STOP_FAIL_AT=3; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed guard stop exited $rc (want 3)"
 [ -z "$(line '^wls restore')" ] && grep -q 'refusing to restore over a running home' "$T/out" && ok || bad "the wls restore ran although the guard stop could not prove the home stopped"
 
-# T3079 [P3]: the number belongs BEFORE the action it numbers. recover() prints "[1] recovering: stop the
-# components" and then runs the stop, so a restore killed mid-way still has an accounted-for step 1; numbering it
-# after the call leaves the first step unnumbered in the record. Asserted as an ORDER, so moving the number back
-# after the stop turns this red even though the line is still printed.
+# T3079 [P3]: the number belongs BEFORE the action it numbers, and the stop counts as a step. In the wls-restore
+# branch recover() now numbers "[2] recovering: stop the components before the wls restore" and then runs the stop;
+# the old shape numbered only the restore, so the record read 1, 3 with no 2 for the thing it did first. Asserted as
+# an ORDER and a NUMBER, not a presence check: the line is only worth anything if it comes before the stop runs and
+# carries the next step number.
 runq "$T/root" FAIL_WLS_APPLY=1 STUB_SPEAK=1; rc=$?
 [ "$rc" = 1 ] && ok || bad "the renumbering scenario exited $rc (want 1)"
-awk '/recovering: stopping the components first/ { f=1; next }
-     f && /^child: ohs stop/ && !s { s=NR }
-     f && /\[1\] recovering: stop the components/ && !n { n=NR }
-     END { exit !(n && s && n < s) }' "$T/out" \
-  && ok || bad "recover printed [1] after the stop ran, or never numbered it: the number must go before the action"
+awk 1 >/dev/null 2>&1 || true
+awk '
+  /^child: ohs stop/ { stop[++ns] = NR }
+  index($0, "recovering: stop the components before the wls restore") {
+    t = $0; sub(/^.*\[INFO \] \[/, "", t); sub(/\].*$/, "", t)
+    step = t + 0; seen = NR
+  }
+  END { exit !(seen && step == 2 && ns >= 2 && seen < stop[ns]) }
+' "$T/out" \
+  && ok || bad "recover did not number the pre-restore stop as [2] before running it (old shape numbers only the restore)"
 
 # ---- dbclient apply failure: shared restore (covers the WLS home too), NO wls restore, java rollback -----------
 runq "$T/root" FAIL_DB_APPLY=1; rc=$?
