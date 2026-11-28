@@ -48,6 +48,9 @@ case "$1" in
       echo "oracle_home=/u01/ohs"; echo "backup=ok"; echo "backup_dir=__T__/bk"; echo "pre_patches=1 2 3"
     } >>"$rd/state"; mkdir -p "__T__/bk"; : >"__T__/bk/home.tgz"; : >"__T__/bk/oraInventory.tgz"; fi ;;
   stop) n=$(cat "__T__/stops.n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" >"__T__/stops.n"
+    # T3079: on stdout, so its position in the run's own log can be compared with a numbered step line - the
+    # script's log() goes to stderr and the stub's record is calls.log, so neither of those is ordered against the other
+    [ -n "${STUB_SPEAK:-}" ] && echo "child: $who stop"
     [ -n "${STOP_FAIL_AT:-}" ] && [ "$n" = "${STOP_FAIL_AT}" ] && exit 1
     [ -n "${FAIL_FIRST_STOP:-}" ] && exit 1; [ -n "${FAIL_STOP:-}" ] && [ -e "__T__/stop.ok" ] && exit 1; : >"__T__/stop.ok" ;;
   apply)
@@ -204,6 +207,18 @@ runq "$T/root" FAIL_WLS_APPLY=1; rc=$?
 runq "$T/root" FAIL_WLS_APPLY=1 STOP_FAIL_AT=3; rc=$?
 [ "$rc" = 3 ] && ok || bad "a failed guard stop exited $rc (want 3)"
 [ -z "$(line '^wls restore')" ] && grep -q 'refusing to restore over a running home' "$T/out" && ok || bad "the wls restore ran although the guard stop could not prove the home stopped"
+
+# T3079 [P3]: the number belongs BEFORE the action it numbers. recover() prints "[1] recovering: stop the
+# components" and then runs the stop, so a restore killed mid-way still has an accounted-for step 1; numbering it
+# after the call leaves the first step unnumbered in the record. Asserted as an ORDER, so moving the number back
+# after the stop turns this red even though the line is still printed.
+runq "$T/root" FAIL_WLS_APPLY=1 STUB_SPEAK=1; rc=$?
+[ "$rc" = 1 ] && ok || bad "the renumbering scenario exited $rc (want 1)"
+awk '/recovering: stopping the components first/ { f=1; next }
+     f && /^child: ohs stop/ && !s { s=NR }
+     f && /\[1\] recovering: stop the components/ && !n { n=NR }
+     END { exit !(n && s && n < s) }' "$T/out" \
+  && ok || bad "recover printed [1] after the stop ran, or never numbered it: the number must go before the action"
 
 # ---- dbclient apply failure: shared restore (covers the WLS home too), NO wls restore, java rollback -----------
 runq "$T/root" FAIL_DB_APPLY=1; rc=$?
