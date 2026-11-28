@@ -215,7 +215,6 @@ runq "$T/root" FAIL_WLS_APPLY=1 STOP_FAIL_AT=3; rc=$?
 # carries the next step number.
 runq "$T/root" FAIL_WLS_APPLY=1 STUB_SPEAK=1; rc=$?
 [ "$rc" = 1 ] && ok || bad "the renumbering scenario exited $rc (want 1)"
-awk 1 >/dev/null 2>&1 || true
 awk '
   /^child: ohs stop/ { stop[++ns] = NR }
   index($0, "recovering: stop the components before the wls restore") {
